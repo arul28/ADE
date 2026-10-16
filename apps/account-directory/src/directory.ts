@@ -2,6 +2,7 @@ import {
   handleDeviceAuthorizationRequest,
   type DeviceAuthorizationRequestOptions,
 } from "./deviceAuthorization";
+import { handleDeviceAppApprovalRequest, type DeviceAppApprovalOptions } from "./deviceAppApproval";
 import { authenticate, type CallerTokenEnv } from "./callerToken";
 import {
   callActivityRelay,
@@ -25,9 +26,11 @@ export type Env = CallerTokenEnv & ActivityRelayEnv & {
   ONLINE_WINDOW_MS?: string;
 };
 
-export type DirectoryRequestOptions = DeviceAuthorizationRequestOptions & {
-  activityRelay?: ActivityRelayOptions;
-};
+export type DirectoryRequestOptions = DeviceAuthorizationRequestOptions
+  & Partial<Pick<DeviceAppApprovalOptions, "authenticateCaller">>
+  & {
+    activityRelay?: ActivityRelayOptions;
+  };
 
 type MachineRow = {
   user_id: string;
@@ -616,12 +619,63 @@ async function enforceRevocationGate(
   return null;
 }
 
+/**
+ * Heartbeat fast path: when the stored row already equals what `upsertMachine`
+ * would write, only `last_seen_at` moves. Updating just that unindexed column
+ * is one billed row; the upsert sets indexed columns (device_id, hardware_id),
+ * which rewrites their indexes even when the values are unchanged, so it costs
+ * three or four. Every predicate mirrors one SET expression in the upsert —
+ * coalesced fields match when the incoming value is null or equal, and the
+ * endpoint list must match exactly — so a row this touches is byte-identical
+ * to the upsert's result. Any difference, a new machine, or a missing row
+ * matches nothing and falls through to the upsert.
+ */
+async function touchUnchangedMachine(
+  env: Env,
+  args: { userId: string; input: RegisterInput; nowMs: number },
+): Promise<boolean> {
+  const { input } = args;
+  const power = input.power ? JSON.stringify(input.power) : null;
+  const result = await env.DB.prepare(`
+    update machines
+       set last_seen_at = ?
+     where user_id = ? and machine_key = ?
+       and device_id is ? and name is ? and platform is ?
+       and device_type is ? and pubkey is ?
+       and reachable_endpoints is ?
+       and (? is null or hardware_id is ?)
+       and (? is null or power is ?)
+       and (? is null or sleep_state is ?)
+       and (? is null or sleep_state_at is ?)
+       and (? is null or channel is ?)
+       and (? is null or ade_home is ?)
+  `).bind(
+    args.nowMs,
+    args.userId,
+    input.machineKey,
+    input.deviceId,
+    input.name,
+    input.platform,
+    input.deviceType,
+    input.pubkey,
+    JSON.stringify(input.reachableEndpoints),
+    input.hardwareId, input.hardwareId,
+    power, power,
+    input.sleepState, input.sleepState,
+    input.sleepStateAt, input.sleepStateAt,
+    input.channel, input.channel,
+    input.adeHome, input.adeHome,
+  ).run();
+  return (result.meta?.changes ?? 0) > 0;
+}
+
 /** Step two: write the row. The only unconditional write a heartbeat makes. */
 async function upsertMachine(
   env: Env,
   args: { userId: string; input: RegisterInput; nowMs: number },
 ): Promise<void> {
   const { input } = args;
+  if (await touchUnchangedMachine(env, args)) return;
   await env.DB.prepare(`
     insert into machines (
       user_id, machine_key, device_id, name, platform, device_type, pubkey,
@@ -1091,6 +1145,14 @@ async function handleRequestCore(
     })),
   });
   if (deviceResponse) return deviceResponse;
+
+  // The one device route that takes an account bearer: a signed-in ADE app
+  // approves a sign-in for another computer.
+  const appApprovalResponse = await handleDeviceAppApprovalRequest(request, env, {
+    ...options,
+    authenticateCaller: options.authenticateCaller ?? ((incoming) => authenticate(incoming, env)),
+  });
+  if (appApprovalResponse) return appApprovalResponse;
 
   const route = routeAccount(url.pathname);
   if (!route) return text("not found", 404);

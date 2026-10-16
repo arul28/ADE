@@ -83,7 +83,7 @@ async function readPackageManifest(packageName) {
 }
 
 function isOpenCodePlatformPackage(packageName) {
-  return /^opencode-(?:darwin|linux|windows)-/.test(packageName);
+  return /^@opencode\/cli-(?:darwin|linux|windows)-/.test(packageName);
 }
 
 function targetParts(target) {
@@ -96,7 +96,7 @@ function platformPackageTarget(packageName) {
     /^@openai\/codex-(darwin|linux|win32)-(arm64|x64)$/,
     /^@cursor\/sdk-(darwin|linux|win32)-(arm64|x64)$/,
     /^@anthropic-ai\/claude-agent-sdk-(darwin|linux|win32)-(arm64|x64)(?:-musl)?$/,
-    /^opencode-(darwin|linux|windows)-(arm64|x64)$/,
+    /^@opencode\/cli-(darwin|linux|windows)-(arm64|x64)$/,
     /^@esbuild\/(darwin|linux|win32)-(arm64|x64)$/,
   ];
 
@@ -231,8 +231,8 @@ async function copyBuiltTuiClient(bundleRoot) {
 
 async function chmodRuntimeExecutables(bundleRoot, target) {
   const executablePaths = [
-    path.join(bundleRoot, "node_modules", "opencode-ai", "bin", "opencode.exe"),
-    path.join(bundleRoot, "node_modules", `opencode-${target}`, "bin", "opencode"),
+    path.join(bundleRoot, "node_modules", "@opencode", "cli", "bin", "opencode.exe"),
+    path.join(bundleRoot, "node_modules", "@opencode", `cli-${target}`, "bin", "opencode"),
   ];
   if (target.startsWith("darwin-")) {
     executablePaths.push(path.join(bundleRoot, "node_modules", "node-pty", "prebuilds", target, "spawn-helper"));

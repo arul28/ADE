@@ -12,7 +12,6 @@ import {
   buildSessionMetadataPrompt,
   buildSessionMetadataSystemPrompt,
   clipFromEnd,
-  deriveDeterministicSessionMetadata,
   extractLatestAssistantParagraphs,
   formatConversationTranscript,
   formatLaneThreadsForPrompt,
@@ -72,7 +71,11 @@ export type SessionMetadataRegeneratorDependencies<ManagedSession extends Sessio
     worktreePath: string;
     baseRef: string;
   }) => Promise<SessionMetadataLaneWorkSnapshot | null>;
-  runPrompt: SessionMetadataPromptRunner;
+  /** Gets the session so the call can run as the chat's own provider account. */
+  runPrompt: (
+    args: Parameters<SessionMetadataPromptRunner>[0],
+    managed: ManagedSession,
+  ) => ReturnType<SessionMetadataPromptRunner>;
   normalizeTitle: (value: string) => string | null;
   normalizeStatusLine: (value: string) => string | null;
   applyTitle: (managed: ManagedSession, title: string) => Promise<string | null>;
@@ -127,7 +130,6 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
     // Carried to the caller so a zero-applied result can name its real cause
     // instead of blaming a concurrent rename that never happened.
     let generationError: string | null = null;
-    let usedDeterministicFallback = false;
 
     const buildResult = (): AgentChatRegenerateSessionMetadataResult => ({
       sessionId,
@@ -135,7 +137,6 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
       skipped,
       modelId: selectedModelId,
       generationError,
-      usedDeterministicFallback,
     });
 
     const notifyOutcome = (outcome: "completed" | "partial" | "failed"): void => {
@@ -222,7 +223,7 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
           cwd: managed.laneWorktreePath,
           prompt,
           systemPrompt: buildSessionMetadataSystemPrompt(fields),
-          runPrompt: dependencies.runPrompt,
+          runPrompt: (promptArgs) => dependencies.runPrompt(promptArgs, managed),
           normalizeTitle: dependencies.normalizeTitle,
           normalizeStatusLine: dependencies.normalizeStatusLine,
           shouldStop: () => managed.deleted || managed.sessionMetadataGenerationVersion !== generationVersion,
@@ -240,38 +241,29 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
       }
       selectedModelId = generated.selectedModelId;
       attemptCount = generated.attemptCount;
-      generationError = generated.result ? null : generated.lastFailure?.error ?? null;
-      if (generationError && isSandboxUnsupportedFailureText(generationError)) {
-        generationError = presentChatFailure({
-          kind: "configuration",
-          message: generationError,
-        }).body;
-      }
-      const laneNameOnly = needs.laneName && !needs.title && !needs.statusLine;
-      const metadata = generated.result ?? (laneNameOnly
-        ? null
-        : deriveDeterministicSessionMetadata({
-          seeds: needs.statusLine && !needs.title && !needs.laneName
-            ? [latestAssistantParagraphs, latestOutputPreview]
-            : [
-              initialRow.summary,
-              threadTranscript,
-              latestAssistantParagraphs,
-              latestOutputPreview,
-              managed.autoTitleSeed,
-            ],
-          normalizeTitle: dependencies.normalizeTitle,
-          normalizeStatusLine: dependencies.normalizeStatusLine,
-        }));
+      const metadata = generated.result;
       if (!metadata) {
-        throw new Error("The AI returned no usable session metadata.");
-      }
-      if (!generated.result) {
-        usedDeterministicFallback = true;
-        dependencies.logger.info("agent_chat.session_metadata_deterministic_fallback", {
+        // No model produced names, so keep the current ones and say why. A
+        // name guessed from the transcript tail is worse than the old name:
+        // it overwrites a title the user may have liked with clipped words.
+        generationError = generated.lastFailure?.error
+          ?? (candidateModelIds.length
+            ? "The AI returned no usable names."
+            : "No AI model is available to generate names.");
+        if (isSandboxUnsupportedFailureText(generationError)) {
+          generationError = presentChatFailure({
+            kind: "configuration",
+            message: generationError,
+          }).body;
+        }
+        skipped.push(...fields);
+        dependencies.logger.warn("agent_chat.session_metadata_kept_current", {
           sessionId,
           attemptCount,
+          error: generationError,
         });
+        notifyOutcome("failed");
+        return buildResult();
       }
 
       // A newer explicit request cancels every field from this response. Manual

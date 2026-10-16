@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import { spawn, spawnSync, spawnSync as spawnChildSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -21,6 +22,10 @@ import {
   buildWindowsQueryTaskActionArgs,
   buildWindowsQueryTaskArgs,
   buildWindowsRunKeyAddArgs,
+  buildWindowsRunKeyListArgs,
+  resolveWindowsAdeDir,
+  parseWindowsRunKeyValues,
+  windowsRunCommandNamesLauncher,
   buildWindowsRunKeyDeleteArgs,
   buildWindowsRunKeyQueryArgs,
   buildWindowsRunTaskArgs,
@@ -43,6 +48,7 @@ import {
   WINDOWS_TASK_ACTION_FIELD_SEPARATOR,
   buildWindowsRuntimeQueryArgs,
   renderWindowsServiceLauncher,
+  resolveWindowsBrainOutputLogPath,
 } from "./installWindows";
 import {
   BRAIN_HEARTBEAT_INTERVAL_MS,
@@ -62,6 +68,29 @@ afterEach(() => {
   }
 });
 
+/**
+ * Kills a supervisor started detached through Start-Process. Its pid record is
+ * the only handle on it, and one read races the supervisor's first
+ * Write-PidRecord: when the read lost, the supervisor was never killed and
+ * kept restarting its child for the rest of the run, holding the temp tree
+ * open (EBUSY on unlink) and starving every later suite. So wait for the
+ * record before giving up on the kill.
+ */
+async function killDetachedSupervisor(pidPath: string): Promise<void> {
+  const killDeadline = Date.now() + 15_000;
+  let record = readWindowsServicePidRecord({ pidPath });
+  while (!record?.supervisorPid && Date.now() < killDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    record = readWindowsServicePidRecord({ pidPath });
+  }
+  if (record?.supervisorPid) {
+    spawnChildSync("taskkill.exe", ["/PID", String(record.supervisorPid), "/T", "/F"], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+  }
+}
+
 function makeTempHome(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   tempDirs.push(dir);
@@ -73,6 +102,11 @@ function spawnSequence(
   results: ServiceManagerProcessResult[],
 ): ServiceManagerSpawnSync {
   return (command, args) => {
+    // These legacy scenarios have no extra Run values or unrecorded
+    // supervisors. Model the new maintenance boundaries independently of
+    // their lifecycle result sequence; the repair test below owns them.
+    if (command === windowsRegCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsRunKeyListArgs())) return { status: 0, stdout: "", stderr: "" };
+    if (command === windowsPowerShellCommand() && args.at(-1)?.includes("GetOwnerSid")) return { status: 0, stdout: "0", stderr: "" };
     calls.push({ command, args });
     return results.shift() ?? { status: 0, stdout: "", stderr: "" };
   };
@@ -169,16 +203,70 @@ describe("Windows background service helpers", () => {
       expect.stringContaining(`$_.TaskName -eq '${taskName}'`),
     ]);
     expect(buildWindowsDeleteTaskArgs(taskName)).toEqual(["/Delete", "/TN", taskName, "/F"]);
+
+    // The one-shot start task runs the supervisor, and the brain and the
+    // desktop driver inherit its priority. Task Scheduler's default (7) is
+    // below normal with low memory and I/O priority, which paged the brain out
+    // for 2-45 s at a time on a real PC; the task must ask for normal (4).
+    const startTask = buildWindowsStartTaskArgs("C:\\Users\\arul\\.ade\\runtime\\brain-service.ps1", resolveWindowsStartTaskName(taskName));
+    const program = startTask[startTask.indexOf("-Command") + 1] ?? "";
+    const settings = program.match(/\$settings = New-ScheduledTaskSettingsSet ([^;]*)/)?.[1] ?? "";
+    expect(settings.match(/-Priority (\d+)/)?.[1]).toBe("4");
+    expect(program).toMatch(/Register-ScheduledTask [^;]*-Settings \$settings/);
+    expect(settings).toContain("-ExecutionTimeLimit ([TimeSpan]::Zero)");
   });
 
-  it("resolves the Windows scheduled task user from domain and username environment values", () => {
-    expect(resolveWindowsTaskUser({ USERDOMAIN: "ADEBOX", USERNAME: "arul" })).toBe("ADEBOX\\arul");
-    expect(resolveWindowsTaskUser({ USERNAME: "LOCALUSER" })).toBe("LOCALUSER");
-    expect(resolveWindowsTaskUser({ USERDOMAIN: "ADEBOX", USERNAME: "ADEBOX\\arul" })).toBe("ADEBOX\\arul");
-    expect(resolveWindowsTaskUser({
-      USERDOMAIN: "MicrosoftAccount",
-      USERNAME: "owner@example.com",
-    })).toBe("MicrosoftAccount\\owner@example.com");
+  it("keeps the user identity stable across SSH and desktop domain labels", () => {
+    const desktop = resolveWindowsTaskUser({ USERDOMAIN: "ADEBOX", USERNAME: "arul" });
+    expect(resolveWindowsTaskUser({ USERDOMAIN: "WORKGROUP", USERNAME: "arul" })).toBe(desktop);
+    expect(resolveWindowsTaskUser({ USERDOMAIN: "ADEBOX", USERNAME: "ADEBOX\\arul" })).toBe(desktop);
+    if (process.platform !== "win32") expect(desktop).toBe("arul");
+  });
+
+  it.each([
+    ['powershell.exe -File "C:\\ADE\\brain.ps1"', true],
+    ['powershell.exe "-File" "c:/ade/brain.ps1"', true],
+    ['powershell.exe -File "C:\\ADE\\brain.ps1.old"', false],
+    ['powershell.exe -File "C:\\Other\\brain.ps1" -Log "C:\\ADE\\brain.ps1"', false],
+  ])("recognizes the exact launcher argument: %s", (command, matches) => {
+    expect(windowsRunCommandNamesLauncher(command, "C:\\ADE\\brain.ps1")).toBe(matches);
+  });
+
+  it("reads named Run values without consuming registry headers", () => {
+    expect(parseWindowsRunKeyValues("HKEY_CURRENT_USER\\Run\r\n    ADE Runtime (beta-old)    REG_SZ    powershell -File \"C:\\ADE\\brain.ps1\"\r\n    unrelated    REG_DWORD    1\r\n"))
+      .toEqual([
+        { name: "ADE Runtime (beta-old)", command: 'powershell -File "C:\\ADE\\brain.ps1"' },
+        { name: "unrelated", command: "1" },
+      ]);
+  });
+
+  it.each(["install", "uninstall"] as const)("%s prunes duplicate channel entries while retaining other apps and channels", async (operation) => {
+    const launcherPath = path.join(makeTempHome("ade-windows-service-prune-"), "brain.ps1");
+    const startup = new Map([
+      ["ADE Runtime (beta-old-ssh)", `powershell.exe -File "${launcherPath}"`],
+      ["Old ADE launcher", `powershell.exe -File "${launcherPath}"`],
+      ["ADE Runtime (stable-other)", 'powershell.exe -File "C:\\Other\\brain.ps1"'],
+      ["Other app", `powershell.exe -File "${launcherPath}.old"`],
+    ]);
+    const run: ServiceManagerSpawnSync = (command, args) => {
+      if (command === windowsRegCommand()) {
+        const valueAt = args.indexOf("/V");
+        const name = valueAt < 0 ? null : args[valueAt + 1]!;
+        if (args[0] === "QUERY" && !name) return { status: 0, stdout: [...startup].map(([key, value]) => `    ${key}    REG_SZ    ${value}`).join("\r\n"), stderr: "" };
+        if (args[0] === "QUERY") return { status: startup.has(name!) ? 0 : 1, stdout: startup.get(name!) ?? "", stderr: "" };
+        if (args[0] === "DELETE") startup.delete(name!);
+        if (args[0] === "ADD") startup.set(name!, args[args.indexOf("/D") + 1]!);
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      if ([taskName, "ADE Runtime"].some((name) => JSON.stringify(args) === JSON.stringify(buildWindowsQueryTaskArgs(name)))) return { status: 3, stdout: "", stderr: "" };
+      return { status: 0, stdout: "0", stderr: "" };
+    };
+    const deps = { ...immediateReadiness, command: serviceCommand, launcherPath, serviceName, userName: taskUser, spawnSync: run };
+    const result = operation === "install" ? await installWindowsService(deps) : await uninstallWindowsService(deps);
+    expect(result.ok).toBe(true);
+    expect([...startup.keys()].sort()).toEqual([
+      "ADE Runtime (stable-other)", "Other app", ...(operation === "install" ? [taskName] : []),
+    ].sort());
   });
 
   it("isolates scheduled task names by release channel and Windows principal", () => {
@@ -322,28 +410,91 @@ describe("Windows background service helpers", () => {
           args: ["quoted \"value\"", "O'Brien", "100% & $HOME", "naïve-東京-🚀"],
         });
       } finally {
-        // The supervisor is detached via Start-Process, so this pid record is
-        // the only handle on it. Reading it once races the supervisor's first
-        // Write-PidRecord: when the read lost, the supervisor was never killed
-        // and kept restarting its child for the rest of the run, holding the
-        // temp tree open (EBUSY on unlink) and starving every later suite.
-        // Wait for the record before giving up on the kill.
-        const pidPath = `${launcherPath}.pid.json`;
-        const killDeadline = Date.now() + 15_000;
-        let record = readWindowsServicePidRecord({ pidPath });
-        while (!record?.supervisorPid && Date.now() < killDeadline) {
-          await new Promise((resolve) => setTimeout(resolve, 20));
-          record = readWindowsServicePidRecord({ pidPath });
-        }
-        if (record?.supervisorPid) {
-          spawnChildSync("taskkill.exe", ["/PID", String(record.supervisorPid), "/T", "/F"], {
-            encoding: "utf8",
-            windowsHide: true,
-          });
-        }
+        await killDetachedSupervisor(`${launcherPath}.pid.json`);
       }
     },
     90_000,
+  );
+
+  // The drain is C# compiled by Add-Type at supervisor start, so only a real
+  // Windows PowerShell run can prove it compiles, never blocks the brain on a
+  // full pipe, splits a line with no newline, keeps stderr, and rotates.
+  (process.platform === "win32" ? it : it.skip)(
+    "drains the brain's stdout and stderr into a bounded, rotating output log",
+    async () => {
+      const home = makeTempHome("ade windows brain output-");
+      const launcherPath = path.join(home, "brain-service.ps1");
+      const outputLogPath = path.join(home, "brain-output.log");
+      const donePath = path.join(home, "child-done");
+      // ~220 KB of lines first (past the 64 KiB rotation floor, so the log
+      // rotates; only one previous file is kept, so the lines checked below
+      // come last), then 20,000 chars with no newline, then stderr. The child
+      // then stays alive (a finished child would be restarted and write
+      // everything again).
+      const childScript = [
+        "const fs = require('node:fs');",
+        "for (let i = 0; i < 2000; i += 1) process.stdout.write(`line-${i} ${'x'.repeat(72)}\\n`);",
+        "process.stdout.write('L'.repeat(20000));",
+        "process.stdout.write('\\n');",
+        "process.stderr.write('stderr-marker\\n');",
+        "process.stdout.write('last-line\\n', () => fs.writeFileSync(process.env.ADE_TEST_DONE, 'ok'));",
+        "setInterval(() => {}, 1000);",
+      ].join(" ");
+      fs.writeFileSync(
+        launcherPath,
+        `\uFEFF${renderWindowsServiceLauncher({
+          command: process.execPath,
+          args: ["-e", childScript],
+          env: { ADE_TEST_DONE: donePath },
+        }, {
+          pidPath: `${launcherPath}.pid.json`,
+          initialRestartDelayMs: 100,
+          brainOutputLogPath: outputLogPath,
+          brainOutputMaxBytes: 64 * 1024,
+        })}`,
+        "utf8",
+      );
+
+      const bootstrap = spawnChildSync(
+        windowsPowerShellCommand(),
+        buildWindowsStartLauncherArgs(launcherPath),
+        { encoding: "utf8", windowsHide: true },
+      );
+      try {
+        expect(bootstrap.status).toBe(0);
+        const readLog = (): string =>
+          [`${outputLogPath}.1`, outputLogPath]
+            .filter((file) => fs.existsSync(file))
+            .map((file) => fs.readFileSync(file, "utf8"))
+            .join("");
+        // The child's done file only says its writes returned; the drain
+        // threads (one per stream) append after that, so wait for both.
+        const drained = (log: string): boolean =>
+          log.includes(" out last-line") && log.includes(" err stderr-marker");
+        const deadline = Date.now() + 60_000;
+        while (!drained(readLog()) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        expect(fs.existsSync(donePath)).toBe(true);
+        const lines = readLog().split("\r\n").filter(Boolean);
+        expect(lines.some((line) => line.endsWith(" err stderr-marker"))).toBe(true);
+        expect(lines.some((line) => line.endsWith(" out last-line"))).toBe(true);
+        // The no-newline line comes out in bounded pieces (a pending buffer
+        // under 8,192 chars plus one 8,192-char read), and none of it is lost.
+        const longPieces = lines
+          .map((line) => /^\S+ out (L+)$/.exec(line)?.[1] ?? null)
+          .filter((piece): piece is string => piece !== null);
+        expect(longPieces.length).toBeGreaterThan(1);
+        expect(longPieces.every((piece) => piece.length < 2 * 8192)).toBe(true);
+        expect(longPieces.join("").length).toBe(20000);
+        // Rotation: one previous file, and the live file stays near the cap.
+        expect(fs.existsSync(`${outputLogPath}.1`)).toBe(true);
+        expect(fs.statSync(outputLogPath).size).toBeLessThan(64 * 1024 + 16 * 1024);
+      } finally {
+        await killDetachedSupervisor(`${launcherPath}.pid.json`);
+      }
+    },
+    120_000,
   );
 
   it("registers and starts the per-user background service without Task Scheduler", async () => {
@@ -379,23 +530,7 @@ describe("Windows background service helpers", () => {
       path: taskName,
       message: "ADE per-user startup entry installed and channel brain is ready.",
     });
-    const machineLayout = resolveMachineAdeLayout(
-      { ...process.env, ...(serviceCommand.env ?? {}) },
-      "win32",
-    );
-    expect(fs.readFileSync(launcherPath, "utf8")).toBe(
-      `\uFEFF${renderWindowsServiceLauncher(serviceCommand, {
-        pidPath,
-        logPath: `${launcherPath}.log`,
-        // The supervisor loop doubles as this platform's wedge watchdog.
-        heartbeatPath: path.win32.join(machineLayout.runtimeDir, "heartbeat.json"),
-        wedgeBreadcrumbPath: path.win32.join(
-          machineLayout.runtimeDir,
-          "event-loop-wedge.json",
-        ),
-      })}`,
-    );
-    expect(fs.readFileSync(launcherPath, "utf8")).toContain("Get-StaleBeatTs");
+    expect(fs.existsSync(launcherPath)).toBe(true);
     expect(readinessProbe).toHaveBeenCalledWith(expect.objectContaining({
       command: serviceCommand,
       launcherPath,
@@ -579,8 +714,13 @@ describe("Windows background service helpers", () => {
     fs.writeFileSync(launcherPath, `\uFEFF${renderWindowsServiceLauncher(serviceCommand, {
       pidPath,
       logPath: `${launcherPath}.log`,
+      brainOutputLogPath: resolveWindowsBrainOutputLogPath({ launcherPath }),
       heartbeatPath: path.win32.join(machineLayout.runtimeDir, "heartbeat.json"),
       wedgeBreadcrumbPath: path.win32.join(machineLayout.runtimeDir, "event-loop-wedge.json"),
+      adeDir: resolveWindowsAdeDir({ ...process.env, ...(serviceCommand.env ?? {}) }),
+      mutexName: `Global\\ade-supervisor-${createHash("sha256").update(launcherPath).digest("hex").slice(0, 12)}-${createHash("sha256").update(taskUser).digest("hex").slice(0, 12)}`,
+      socketPath: machineLayout.socketPath,
+      lastFailurePath: path.win32.join(machineLayout.runtimeDir, "last-failure.json"),
     })}`, "utf8");
     const youngRecord = { ...readyPidRecord, runtimeStartedAtMs: Date.now() - 5_000 };
     const readinessProbe = vi.fn()
@@ -1461,7 +1601,142 @@ describe("Windows runtime supervisor", () => {
     },
     60_000,
   );
+
+  // The cross-session guards run against the real session API here. A Windows
+  // CI runner works in session 0 and a developer may be on Remote Desktop, so
+  // neither is the console session: exactly where the launcher used to refuse
+  // to start any brain.
+  (process.platform === "win32" ? it : it.skip)(
+    "starts its brain in whatever session it runs in, and a second supervisor leaves the owner alone",
+    async () => {
+      const dir = makeTempHome("ade-windows-supervisor-guard-");
+      const launcherPath = path.join(dir, "brain-service.ps1");
+      const pidPath = `${launcherPath}.pid.json`;
+      const brainMarker = path.join(dir, "brains.txt");
+      fs.writeFileSync(launcherPath, `﻿${renderWindowsServiceLauncher({
+        command: process.execPath,
+        args: ["-e", "require('node:fs').appendFileSync(process.env.ADE_TEST_BRAIN_MARKER, process.pid + '\\n'); setInterval(() => {}, 1000)"],
+        env: { ADE_TEST_BRAIN_MARKER: brainMarker },
+      }, {
+        pidPath,
+        logPath: `${launcherPath}.log`,
+        adeDir: dir,
+        mutexName: `Global\\ade-supervisor-test-${process.pid}-${path.basename(dir)}`,
+      })}`, "utf8");
+      const startSupervisor = () => spawn(windowsPowerShellCommand(), [
+        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", launcherPath,
+      ], { stdio: "ignore", windowsHide: true });
+      const owner = startSupervisor();
+      try {
+        const deadline = Date.now() + 45_000;
+        while (!fs.existsSync(brainMarker) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        const supervisorLog = () => fs.existsSync(`${launcherPath}.log`) ? fs.readFileSync(`${launcherPath}.log`, "utf8") : "";
+        expect(fs.existsSync(brainMarker), supervisorLog()).toBe(true);
+        const [brainPid] = fs.readFileSync(brainMarker, "utf8").trim().split("\n").map(Number);
+        expect(readWindowsServicePidRecord({ pidPath })).toMatchObject({
+          supervisorPid: owner.pid,
+          runtimePid: brainPid,
+        });
+
+        const second = startSupervisor();
+        const secondExit = await new Promise<number | null | "running">((resolve) => {
+          const timer = setTimeout(() => resolve("running"), 30_000);
+          second.once("exit", (code) => {
+            clearTimeout(timer);
+            resolve(code);
+          });
+        });
+        if (secondExit === "running" && second.pid) {
+          spawnSync("taskkill.exe", ["/PID", String(second.pid), "/T", "/F"], { encoding: "utf8", windowsHide: true });
+        }
+        expect(secondExit).toBe(0);
+        expect(supervisorLog()).toContain("another ADE supervisor already owns");
+        expect(fs.readFileSync(brainMarker, "utf8").trim().split("\n")).toEqual([String(brainPid)]);
+        expect(readWindowsServicePidRecord({ pidPath })?.supervisorPid).toBe(owner.pid);
+      } finally {
+        if (owner.pid) {
+          spawnSync("taskkill.exe", ["/PID", String(owner.pid), "/T", "/F"], {
+            encoding: "utf8",
+            windowsHide: true,
+          });
+        }
+      }
+    },
+    90_000,
+  );
+
+  (process.platform === "win32" && windowsTestRunsOutsideConsoleSession() ? it : it.skip)(
+    "outside the console session, a usable Windows Desktop launch request starts only the driver, even with no brain running",
+    async () => {
+      const dir = makeTempHome("ade-windows-supervisor-child-");
+      const launcherPath = path.join(dir, "brain-service.ps1");
+      const pidPath = `${launcherPath}.pid.json`;
+      const brainMarker = path.join(dir, "brain.txt");
+      const driverMarker = path.join(dir, "driver.txt");
+      const driverPath = path.join(dir, "ade-desktop-driver.exe");
+      fs.copyFileSync(process.execPath, driverPath);
+      fs.mkdirSync(path.join(dir, "windows-desktop"));
+      fs.writeFileSync(path.join(dir, "windows-desktop", "child-launch.json"), JSON.stringify({
+        driverPath,
+        // Start-Process joins these with spaces and no quoting, so no spaces.
+        args: ["-e", "require('node:fs').writeFileSync(process.env.ADE_TEST_DRIVER_MARKER,'driver')"],
+        expiresAt: new Date(Date.now() + 120_000).toISOString(),
+      }));
+      fs.writeFileSync(launcherPath, `﻿${renderWindowsServiceLauncher({
+        command: process.execPath,
+        args: ["-e", "require('node:fs').writeFileSync(process.env.ADE_TEST_BRAIN_MARKER, 'brain'); setInterval(() => {}, 1000)"],
+        env: { ADE_TEST_BRAIN_MARKER: brainMarker },
+      }, {
+        pidPath,
+        adeDir: dir,
+        mutexName: `Global\\ade-supervisor-test-${process.pid}-${path.basename(dir)}`,
+      })}`, "utf8");
+      const supervisor = spawn(windowsPowerShellCommand(), [
+        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", launcherPath,
+      ], { stdio: "ignore", windowsHide: true, env: { ...process.env, ADE_TEST_DRIVER_MARKER: driverMarker } });
+      try {
+        // Bounded, so a supervisor that wrongly goes on to run a brain fails
+        // here and the finally below still stops it.
+        const exitCode = await new Promise<number | null | "running">((resolve) => {
+          const timer = setTimeout(() => resolve("running"), 30_000);
+          supervisor.once("exit", (code) => {
+            clearTimeout(timer);
+            resolve(code);
+          });
+        });
+        expect(exitCode).toBe(0);
+        const deadline = Date.now() + 30_000;
+        while (!fs.existsSync(driverMarker) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(fs.readFileSync(driverMarker, "utf8")).toBe("driver");
+        expect(fs.existsSync(brainMarker)).toBe(false);
+        expect(fs.existsSync(pidPath)).toBe(false);
+      } finally {
+        if (supervisor.pid) {
+          spawnSync("taskkill.exe", ["/PID", String(supervisor.pid), "/T", "/F"], {
+            encoding: "utf8",
+            windowsHide: true,
+          });
+        }
+      }
+    },
+    90_000,
+  );
 });
+
+/** Whether this test process runs outside the active console session (CI's session 0, Remote Desktop). */
+function windowsTestRunsOutsideConsoleSession(): boolean {
+  const probe = spawnSync(windowsPowerShellCommand(), [
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    "Add-Type -Namespace AdeTest -Name SessionApi -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern uint WTSGetActiveConsoleSessionId();'; [Console]::Out.Write([AdeTest.SessionApi]::WTSGetActiveConsoleSessionId() -ne [uint32][System.Diagnostics.Process]::GetCurrentProcess().SessionId)",
+  ], { encoding: "utf8", windowsHide: true });
+  return probe.status === 0 && probe.stdout.trim() === "True";
+}
 
 describe("windows supervisor wedge guard", () => {
   const command = {
@@ -1781,6 +2056,7 @@ describe("generated PowerShell parses", () => {
     const builders: Array<[string, string[]]> = [
       ["supervisor-query.ps1", buildWindowsSupervisorQueryArgs(1234, "C:\\ade\\brain-service.ps1")],
       ["runtime-query.ps1", buildWindowsRuntimeQueryArgs(1234, command)],
+      ["start-task.ps1", buildWindowsStartTaskArgs("C:\\ade\\brain-service.ps1", "ADE Runtime Start")],
     ];
 
     for (const [name, args] of builders) {

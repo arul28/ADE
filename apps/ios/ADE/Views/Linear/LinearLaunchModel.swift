@@ -164,6 +164,15 @@ func linearIssueBranchName(identifier: String, title: String) -> String {
   return linearSanitizeBranchName(branch.isEmpty ? ident : branch)
 }
 
+/// Linear's own branch name when the brain sends it, else the slug. Mirrors
+/// desktop's `resolveLinearIssueBranchName`.
+func linearIssueBranchName(for issue: NormalizedLinearIssue) -> String {
+  if let branch = issue.branchName?.trimmingCharacters(in: .whitespacesAndNewlines), !branch.isEmpty {
+    return linearSanitizeBranchName(branch)
+  }
+  return linearIssueBranchName(identifier: issue.identifier, title: issue.title)
+}
+
 private func linearSlug(_ input: String) -> String {
   let lowered = input.trimmingCharacters(in: .whitespaces).lowercased()
   var out = ""
@@ -223,7 +232,7 @@ func laneLinearIssue(from issue: NormalizedLinearIssue) -> LaneLinearIssue {
     creatorName: issue.creatorName,
     dueDate: issue.dueDate,
     estimate: issue.estimate,
-    branchName: linearIssueBranchName(identifier: issue.identifier, title: issue.title),
+    branchName: linearIssueBranchName(for: issue),
     createdAt: issue.createdAt,
     updatedAt: issue.updatedAt
   )

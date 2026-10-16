@@ -40,14 +40,21 @@ import {
   createDynamicAcpModelDescriptor,
   LOCAL_PROVIDER_LABELS,
   replaceDynamicOpenCodeModelDescriptors,
+  resolveCliProviderForModel,
   resolveModelAlias,
   resolveProviderGroupForModel,
   type LocalProviderFamily,
+  type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { disabledProviderSet } from "../../../shared/providerEnablement";
 import { presetSourceLabel } from "../../../shared/harnessPresets";
+import { applyPersistedAcpModelCatalogs, warmAcpModelCatalog } from "../chat/acpHost/acpModelDiscovery";
 import { readHarnessPresetsOrEmpty } from "../chat/harnessPresetSettings";
-import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import {
+  getMachineProviderInstanceStore,
+  providerInstanceEnvPatch,
+} from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import type { ProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../shared/cursorCloudArtifactLimits";
 import { probeAllAcpProviderAuth } from "./acpAuthProbe";
@@ -66,7 +73,7 @@ import {
   peekOpenCodeInventoryCache,
   probeOpenCodeProviderInventory,
 } from "../opencode/openCodeInventory";
-import type { DiscoveredLocalModelEntry } from "../opencode/openCodeRuntime";
+import type { DiscoveredLocalModelEntry } from "../opencode/openCodeConfig";
 import {
   clearOpenCodeBinaryCache,
   resolveOpenCodeBinary,
@@ -81,6 +88,7 @@ import { parseStructuredOutput } from "./utils";
 import {
   deleteApiKey as deleteStoredApiKey,
   getAllApiKeys,
+  getApiKey as getStoredApiKey,
   getApiKeyStoreStatus,
   listStoredProviders,
   storeApiKey as storeStoredApiKey,
@@ -103,6 +111,7 @@ import {
   resetProviderRuntimeHealth,
 } from "./providerRuntimeHealth";
 import { resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
+import { buildClaudeAvailabilityFromConnection, resolveBundledClaudeBinary, withReportedClaudeVersion } from "./claudeAvailability";
 import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { loadCursorSdk } from "./cursorSdkLoader";
@@ -158,24 +167,28 @@ export type AiIntegrationStatus = {
     droid: boolean;
     // Optional, mirroring `AiSettingsStatus`: a host on an older build has no
     // arm for these and its payload must still deserialise.
+    muse?: boolean;
     qwen?: boolean;
     kimi?: boolean;
     grok?: boolean;
     copilot?: boolean;
+    devin?: boolean;
   };
   models: {
     claude: AgentModelDescriptor[];
     codex: AgentModelDescriptor[];
     cursor: AgentModelDescriptor[];
     droid: AgentModelDescriptor[];
+    muse?: AgentModelDescriptor[];
     qwen?: AgentModelDescriptor[];
     kimi?: AgentModelDescriptor[];
     grok?: AgentModelDescriptor[];
     copilot?: AgentModelDescriptor[];
+    devin?: AgentModelDescriptor[];
   };
   detectedAuth?: Array<{
     type: "cli-subscription" | "api-key" | "oauth" | "openrouter" | "local";
-    cli?: "claude" | "codex" | "cursor" | "droid" | "qwen" | "kimi" | "grok" | "copilot";
+    cli?: "claude" | "codex" | "cursor" | "droid" | "muse" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
     provider?: string;
     source?: "config" | "env" | "store" | "file";
     endpointSource?: "auto" | "config";
@@ -225,6 +238,17 @@ export type AiIntegrationStatus = {
   };
 };
 
+/**
+ * The provider account a task on behalf of one chat must run as: that chat's
+ * env patch for its own provider (an empty patch is the base account). It only
+ * applies when the task's model runs on that provider; every other task runs
+ * as the provider's default account.
+ */
+export type ProviderTaskAccount = {
+  provider: ProviderInstanceProvider;
+  env: Record<string, string>;
+};
+
 export type ExecuteAiTaskArgs = {
   feature: AiFeatureKey;
   taskType: AiTaskType;
@@ -239,6 +263,10 @@ export type ExecuteAiTaskArgs = {
   imagePaths?: string[];
   permissionMode?: ExecutorOpts["permissions"]["mode"];
   oneShot?: boolean;
+  /** See `ProviderTaskRunnerArgs.backgroundUtility`. */
+  backgroundUtility?: boolean;
+  /** See `ProviderTaskAccount`. */
+  providerAccount?: ProviderTaskAccount;
   sessionId?: string;
   projectId?: string;
   runId?: string;
@@ -400,60 +428,6 @@ function detectClaudeAuthModeFromEntries(auth: DetectedAuth[]): AiClaudeAvailabi
   return "none";
 }
 
-function detectClaudeAuthModeFromConnection(
-  connection: AiProviderConnections["claude"],
-): AiClaudeAvailability["auth"]["mode"] {
-  const localCredentials = connection.sources.find((source) => source.kind === "local-credentials" && source.detected);
-  if (localCredentials?.source === "claude-credentials-file" || localCredentials?.source === "macos-keychain") return "oauth";
-  if (localCredentials) return "api_key";
-  const cli = connection.sources.find((source) => source.kind === "cli" && source.detected);
-  if (cli || connection.authAvailable) return "oauth";
-  return "none";
-}
-
-function resolveBundledClaudeBinary(): Pick<AiClaudeAvailability["binary"], "present" | "source" | "path"> {
-  const resolved = resolveClaudeCodeExecutable({ env: { PATH: "" } });
-  return resolved.source === "bundled"
-    ? { present: true, source: "bundled", path: resolved.path }
-    : { present: false, source: "missing", path: null };
-}
-
-function buildClaudeAvailabilityFromConnection(
-  connection: AiProviderConnections["claude"],
-  options?: { disabled?: boolean },
-): AiClaudeAvailability {
-  const bundledBinary = resolveBundledClaudeBinary();
-  const binary = bundledBinary.present
-    ? bundledBinary
-    : {
-        present: connection.runtimeDetected,
-        source: connection.runtimeDetected ? "path" as const : "missing" as const,
-        path: connection.path,
-      };
-  const authMode = detectClaudeAuthModeFromConnection(connection);
-  const binaryOnlyBlockers = [
-    "could not find the claude cli",
-    "cli not found",
-    "claude cli is installed",
-    "add that bin directory",
-  ];
-  const normalizedBlocker = connection.blocker?.toLowerCase() ?? "";
-  const blockerIsOnlyAboutPath = binary.source === "bundled"
-    && binaryOnlyBlockers.some((needle) => normalizedBlocker.includes(needle));
-  const ready = options?.disabled !== true
-    && binary.present
-    && connection.authAvailable
-    && (connection.runtimeAvailable || blockerIsOnlyAboutPath || !connection.blocker);
-  return {
-    binary,
-    auth: {
-      ready,
-      mode: ready ? authMode : "none",
-      detail: ready ? null : connection.blocker,
-    },
-  };
-}
-
 function buildClaudeAvailabilityFromCliStatus(status: CliAuthStatus | null): AiClaudeAvailability {
   const bundledBinary = resolveBundledClaudeBinary();
   const installed = Boolean(status?.installed);
@@ -466,7 +440,7 @@ function buildClaudeAvailabilityFromCliStatus(status: CliAuthStatus | null): AiC
         path: status?.path ?? null,
       };
   return {
-    binary,
+    binary: withReportedClaudeVersion(binary),
     auth: {
       ready: binary.present && ready,
       mode: binary.present && ready ? "oauth" : "none",
@@ -1008,6 +982,7 @@ export const ACP_STATUS_FAMILIES = {
   kimi: "moonshot",
   grok: "xai",
   copilot: "github-copilot",
+  devin: "devin",
 } as const;
 
 function buildStatusModelLists(
@@ -1019,6 +994,9 @@ function buildStatusModelLists(
     codex: availability.codex ? agentModelsFromAvailable(available, "openai") : [],
     cursor: availability.cursor ? agentModelsFromAvailable(available, "cursor") : [],
     droid: availability.droid ? agentModelsFromAvailable(available, "factory") : [],
+    // Usable Muse models once Muse is ready (binary + sign-in). Signed out,
+    // the settings page shows the registry's curated list with a sign-in note.
+    muse: availability.muse ? agentModelsFromAvailable(available, "muse") : [],
     // The ACP providers list their models whenever the CLI is present, not only
     // once signed in: the curated list is what the settings page is for, and an
     // empty page would say "this provider has no models" when what is true is
@@ -1027,6 +1005,7 @@ function buildStatusModelLists(
     kimi: availability.kimi ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.kimi) : [],
     grok: availability.grok ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.grok) : [],
     copilot: availability.copilot ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.copilot) : [],
+    devin: availability.devin ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.devin) : [],
   };
 }
 
@@ -1081,7 +1060,8 @@ export function createAiIntegrationService(args: {
         || args.providerConnections.codex.authAvailable
         || args.providerConnections.cursor.authAvailable
         || args.providerConnections.droid.authAvailable
-        || Boolean(args.providerConnections.pi?.authAvailable))
+        || Boolean(args.providerConnections.pi?.authAvailable)
+        || Boolean(args.providerConnections.muse?.authAvailable))
     ) {
       return "subscription";
     }
@@ -1135,6 +1115,8 @@ export function createAiIntegrationService(args: {
     // which populates dynamic OpenCode descriptors (including local providers).
 
     let available = getAvailableModels(auth);
+    // Last session's or probe's live ACP lists, before anything merges on top.
+    applyPersistedAcpModelCatalogs();
     // ACP model ids are provider-owned. In particular, Qwen can be pointed at
     // an arbitrary OpenAI-compatible endpoint, so its own settings are the
     // source of truth when they name models; ADE's curated Alibaba rows are
@@ -1153,6 +1135,7 @@ export function createAiIntegrationService(args: {
       ["kimi", ACP_STATUS_FAMILIES.kimi],
       ["grok", ACP_STATUS_FAMILIES.grok],
       ["copilot", ACP_STATUS_FAMILIES.copilot],
+      ["devin", ACP_STATUS_FAMILIES.devin],
     ] as const;
     for (const [provider, family] of acpModelFamilies) {
       const health = getProviderRuntimeHealth(provider);
@@ -1165,6 +1148,11 @@ export function createAiIntegrationService(args: {
         !(descriptor.isCliWrapped && descriptor.family === family)
       );
       if (!hasAuth) continue;
+      // The provider's own list (persisted from the last chat or probe) is the
+      // picker; curated rows are only the fallback before one exists. Refresh
+      // it in the background when it is missing or old, so this read never
+      // blocks on a subprocess.
+      warmAcpModelCatalog(provider, { logger });
       available.push(...listAcpModelDescriptorsForProvider(provider, {
         ...(provider === "qwen" && qwenSettings.models.length
           ? { configuredModelIds: qwenSettings.models.map((model) => model.id) }
@@ -1182,7 +1170,11 @@ export function createAiIntegrationService(args: {
       let cursorModels: Awaited<ReturnType<typeof discoverCursorSdkModelDescriptors>> = [];
       try {
         cursorModels = await discoverCursorSdkModelDescriptors(cursorApiKey, { mode: cursorDiscoveryMode });
-      } catch {
+      } catch (error) {
+        logger.warn("ai.cursor_model_discovery_failed", {
+          mode: cursorDiscoveryMode,
+          error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+        });
         cursorModels = [];
       }
       if (cursorModels.length) {
@@ -1280,13 +1272,31 @@ export function createAiIntegrationService(args: {
     return key;
   };
 
-  const listCursorCloudRepositories = async (): Promise<CursorCloudRepository[]> => {
+  // Cursor's repositories endpoint allows five requests a minute per account,
+  // and every draft composer in every window asks. One request per account is
+  // shared while in flight, and a success is kept for a few minutes. A failure
+  // is not kept, and `refresh` (the composer's Retry) skips the cache.
+  const CURSOR_REPOS_CACHE_MS = 5 * 60_000;
+  let cursorReposCache: { apiKey: string; at: number; repos: CursorCloudRepository[] } | null = null;
+  let cursorReposInFlight: { apiKey: string; request: Promise<CursorCloudRepository[]> } | null = null;
+  const listCursorCloudRepositories = async (args?: { refresh?: boolean }): Promise<CursorCloudRepository[]> => {
     const apiKey = await requireCursorCloudApiKey();
-    const { Cursor } = await loadCursorSdk();
-    const repos = await Cursor.repositories.list({ apiKey });
-    return repos
-      .map((repo) => ({ url: String(repo.url ?? "").trim() }))
-      .filter((repo) => repo.url.length > 0);
+    if (!args?.refresh && cursorReposCache?.apiKey === apiKey && Date.now() - cursorReposCache.at < CURSOR_REPOS_CACHE_MS) {
+      return cursorReposCache.repos;
+    }
+    if (cursorReposInFlight?.apiKey === apiKey) return cursorReposInFlight.request;
+    const request = (async () => {
+      const { Cursor } = await loadCursorSdk();
+      const repos = (await Cursor.repositories.list({ apiKey }))
+        .map((repo) => ({ url: String(repo.url ?? "").trim() }))
+        .filter((repo) => repo.url.length > 0);
+      cursorReposCache = { apiKey, at: Date.now(), repos };
+      return repos;
+    })().finally(() => {
+      if (cursorReposInFlight?.request === request) cursorReposInFlight = null;
+    });
+    cursorReposInFlight = { apiKey, request };
+    return request;
   };
 
   const listCursorCloudAgents = async (args?: {
@@ -1704,6 +1714,30 @@ export function createAiIntegrationService(args: {
     );
   };
 
+  /**
+   * Which account's config home a Claude or Codex CLI task reads: the calling
+   * chat's account when it names one for this provider, else the provider's
+   * default account — the same one a new chat launches on. Undefined for every
+   * other provider, and when the account store is unreadable (the CLI then
+   * inherits the environment, as before accounts existed).
+   */
+  const resolveTaskAccountEnv = (
+    descriptor: ModelDescriptor,
+    account: ProviderTaskAccount | undefined,
+  ): Record<string, string> | undefined => {
+    const cliProvider = resolveCliProviderForModel(descriptor);
+    const provider: ProviderInstanceProvider | null = cliProvider === "claude" || cliProvider === "codex"
+      ? cliProvider
+      : null;
+    if (!provider) return undefined;
+    if (account?.provider === provider) return account.env;
+    try {
+      return providerInstanceEnvPatch(getMachineProviderInstanceStore().getDefault(provider));
+    } catch {
+      return undefined;
+    }
+  };
+
   const executeProviderTaskPath = async (
     args: ExecuteAiTaskArgs,
     auth?: DetectedAuth[],
@@ -1715,6 +1749,7 @@ export function createAiIntegrationService(args: {
       throw new Error(`Unknown model '${modelId}'.`);
     }
 
+    const accountEnv = resolveTaskAccountEnv(descriptor, args.providerAccount);
     const start = Date.now();
     const result = await runProviderTask({
       cwd: args.cwd,
@@ -1730,6 +1765,8 @@ export function createAiIntegrationService(args: {
       projectConfig: projectConfigService.get().effective,
       imagePaths: args.imagePaths,
       reasoningEffort: args.reasoningEffort ?? null,
+      ...(args.backgroundUtility ? { backgroundUtility: true } : {}),
+      ...(accountEnv ? { accountEnv } : {}),
     });
     const durationMs = Date.now() - start;
     const provider = resolveProviderGroupForModel(descriptor) as AgentProvider;
@@ -1973,6 +2010,8 @@ export function createAiIntegrationService(args: {
     jsonSchema?: unknown;
     reasoningEffort?: string | null;
     imagePaths?: string[];
+    backgroundUtility?: boolean;
+    providerAccount?: ProviderTaskAccount;
   }): Promise<ExecuteAiTaskResult> => {
     return await executeTask({
       feature: args.feature,
@@ -1985,6 +2024,8 @@ export function createAiIntegrationService(args: {
       ...(args.jsonSchema ? { jsonSchema: args.jsonSchema } : {}),
       ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
       ...(args.imagePaths?.length ? { imagePaths: args.imagePaths } : {}),
+      ...(args.backgroundUtility ? { backgroundUtility: true } : {}),
+      ...(args.providerAccount ? { providerAccount: args.providerAccount } : {}),
       permissionMode: "read-only",
       oneShot: true
     });
@@ -2071,7 +2112,7 @@ export function createAiIntegrationService(args: {
           // detectAuth -> detectAllAuth already called detectCliAuthStatuses() and
           // populated the cache, so this reads instantly from cache:
           const cliStatuses = timeSyncPhase("read_cli_auth_cache", () => getCachedCliAuthStatuses());
-          const installedAcp = ( ["qwen", "kimi", "grok", "copilot"] as const)
+          const installedAcp = ( ["qwen", "kimi", "grok", "copilot", "devin"] as const)
             .filter((provider) => cliStatuses.some((status) => status.cli === provider && status.installed));
           // The disk heuristic proves only that a provider left credentials on
           // disk. A forced Settings refresh must wait for the ACP handshake so
@@ -2087,7 +2128,7 @@ export function createAiIntegrationService(args: {
               }))
             : {};
           const runtimeReadyAcpProviders = new Set<string>();
-          for (const provider of ["qwen", "kimi", "grok", "copilot"] as const) {
+          for (const provider of ["qwen", "kimi", "grok", "copilot", "devin"] as const) {
             const probe = acpProbeResults[provider];
             const health = getProviderRuntimeHealth(provider);
             if (probe?.state === "ready" || health?.state === "ready") {
@@ -2101,7 +2142,7 @@ export function createAiIntegrationService(args: {
             const cli = cliStatuses.find((status) => status.cli === provider);
             authForModels.push({
               type: "cli-subscription",
-              cli: provider as "qwen" | "kimi" | "grok" | "copilot",
+              cli: provider as "qwen" | "kimi" | "grok" | "copilot" | "devin",
               path: cli?.path ?? provider,
               authenticated: true,
               verified: true,
@@ -2144,10 +2185,12 @@ export function createAiIntegrationService(args: {
             codex: enabled("codex") && providerConnections.codex.runtimeAvailable,
             cursor: enabled("cursor") && providerConnections.cursor.runtimeAvailable,
             droid: enabled("droid") && providerConnections.droid.runtimeAvailable,
+            muse: enabled("muse") && Boolean(providerConnections.muse?.runtimeAvailable),
             qwen: enabled("qwen") && Boolean(providerConnections.qwen?.runtimeAvailable),
             kimi: enabled("kimi") && Boolean(providerConnections.kimi?.runtimeAvailable),
             grok: enabled("grok") && Boolean(providerConnections.grok?.runtimeAvailable),
             copilot: enabled("copilot") && Boolean(providerConnections.copilot?.runtimeAvailable),
+            devin: enabled("devin") && Boolean(providerConnections.devin?.runtimeAvailable),
           };
           const runtimeFilteredAvailable = timeSyncPhase("filter_available_models", () => available.filter((descriptor) => {
             // API/local rows are not owned by any one provider tile (they reach
@@ -2158,10 +2201,12 @@ export function createAiIntegrationService(args: {
             if (descriptor.family === "openai") return enabled("codex") && providerConnections.codex.runtimeAvailable;
             if (descriptor.family === "cursor") return enabled("cursor") && providerConnections.cursor.runtimeAvailable;
             if (descriptor.family === "factory") return enabled("droid") && providerConnections.droid.runtimeAvailable;
+            if (descriptor.family === "muse") return enabled("muse") && Boolean(providerConnections.muse?.runtimeAvailable);
             if (descriptor.family === ACP_STATUS_FAMILIES.qwen) return availability.qwen === true;
             if (descriptor.family === ACP_STATUS_FAMILIES.kimi) return availability.kimi === true;
             if (descriptor.family === ACP_STATUS_FAMILIES.grok) return availability.grok === true;
             if (descriptor.family === ACP_STATUS_FAMILIES.copilot) return availability.copilot === true;
+            if (descriptor.family === ACP_STATUS_FAMILIES.devin) return availability.devin === true;
             return true;
           }));
 
@@ -2349,6 +2394,7 @@ export function createAiIntegrationService(args: {
     listCursorCloudArtifacts,
     downloadCursorCloudArtifact,
 
+
     getAvailabilityAsync,
     resolveModelForTask,
     getConfiguredFeatureModel,
@@ -2441,7 +2487,11 @@ export function createAiIntegrationService(args: {
       jsonSchema?: unknown;
       systemPrompt?: string;
       taskType?: Extract<AiTaskType, "terminal_summary" | "session_title" | "session_summary" | "handoff_summary" | "continuity_summary" | "context_compaction">;
+      providerAccount?: ProviderTaskAccount;
     }): Promise<ExecuteAiTaskResult> {
+      // Every caller hands over the text to read in the prompt, so these run
+      // as background utility calls: no tools or plan-mode setup on Claude,
+      // standard speed on Codex and Cursor (see `ProviderTaskRunnerArgs.backgroundUtility`).
       return await executeReadOnlyOneShotTask({
         feature: "terminal_summaries",
         taskType: args.taskType ?? "terminal_summary",
@@ -2452,7 +2502,9 @@ export function createAiIntegrationService(args: {
         reasoningEffort: args.reasoningEffort,
         imagePaths: args.imagePaths,
         jsonSchema: args.jsonSchema,
-        systemPrompt: args.systemPrompt
+        systemPrompt: args.systemPrompt,
+        backgroundUtility: true,
+        ...(args.providerAccount ? { providerAccount: args.providerAccount } : {}),
       });
     },
 

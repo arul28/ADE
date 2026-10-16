@@ -779,7 +779,7 @@ describe("WorkToolReadOnlyView live Mac Desktop stream", () => {
   }
 
   describe("createMacDesktopStreamSource", () => {
-    it("withholds P-frames after a sequence gap until the next keyframe", () => {
+    it("hands on this subscription's frames with the host's sequence numbers", () => {
       const { api, push } = controlledApi();
       const received: Array<{ keyframe: boolean; seq?: number }> = [];
       const source = createMacDesktopStreamSource({
@@ -799,20 +799,16 @@ describe("WorkToolReadOnlyView live Mac Desktop stream", () => {
       push(configRecord("sub-1", 0));
       push(frameRecord("sub-1", 1, true));
       push(frameRecord("sub-1", 2, false));
-      expect(received).toHaveLength(2);
-
-      // The host skipped 3 and 4 under backpressure.
+      // The host skipped 3 and 4 under backpressure. The gap must survive to
+      // the player, whose gate holds P-frames on it.
       push(frameRecord("sub-1", 5, false));
-      push(frameRecord("sub-1", 6, false));
-      expect(received).toHaveLength(2);
-
-      push(frameRecord("sub-1", 7, true));
-      expect(received).toHaveLength(3);
-      expect(received[2]).toEqual({ keyframe: true, seq: 7 });
-
       // Another subscription's records never reach this source.
-      push(frameRecord("sub-other", 8, true));
-      expect(received).toHaveLength(3);
+      push(frameRecord("sub-other", 6, true));
+      expect(received).toEqual([
+        { keyframe: true, seq: 1 },
+        { keyframe: false, seq: 2 },
+        { keyframe: false, seq: 5 },
+      ]);
       unsubscribe();
     });
   });

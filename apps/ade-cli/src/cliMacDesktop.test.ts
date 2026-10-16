@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE,
   MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
   MAC_DESKTOP_HANDLE_EXPIRED_CODE,
   MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
@@ -8,7 +9,6 @@ import {
   MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE,
   MAC_DESKTOP_PERMISSION_REQUIRED_CODE,
   MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
-  MAC_DESKTOP_USER_HAS_CONTROL_CODE,
 } from "../../desktop/src/shared/types/macDesktop";
 import {
   buildCliPlan,
@@ -80,8 +80,10 @@ describe("ade mac-desktop dispatch", () => {
     // silently changed what a shipped command does.
     expect(buildCliPlan(["desktop"]).kind).toBe("desktop");
     expect(buildCliPlan(["mac-desktop", "status"]).kind).toBe("execute");
-    expect(plan(["mac-desk", "status"]).label).toBe("mac-desktop status");
-    expect(plan(["desk", "status"]).label).toBe("mac-desktop status");
+    // Every spelling of the family reaches the same screen plan.
+    for (const family of ["screen", "mac-desktop", "mac-desk", "desk", "windows-desktop", "windows-desk"]) {
+      expect(actionName(plan([family, "status"])), family).toBe("getStatus");
+    }
   });
 
   it("defaults the lane from the session environment, like ios-sim", () => {
@@ -90,42 +92,60 @@ describe("ade mac-desktop dispatch", () => {
       .toMatchObject({ laneId: "lane-9" });
   });
 
-  it("refuses a lane-scoped subcommand with no lane anywhere", () => {
+  it("sends where the shell stands when no lane is named, so the runtime can place it", () => {
+    // An OpenCode agent's shell has no ADE_LANE_ID. The runtime binds a call
+    // with no chat identity to the lane worktree its callerRoot is inside, and
+    // refuses the call anywhere else, so the CLI no longer refuses it first.
     delete process.env.ADE_LANE_ID;
-    expect(() => buildCliPlan(["mac-desktop", "observe"])).toThrow(/requires --lane/);
-    // `status` is the capability read and must answer without a lane.
-    expect(plan(["mac-desktop", "status"]).label).toBe("mac-desktop status");
+    const previousWorkspace = process.env.ADE_WORKSPACE_ROOT;
+    delete process.env.ADE_WORKSPACE_ROOT;
+    try {
+      const built = plan(["mac-desktop", "observe"]);
+      expect(actionArgs(built)).not.toHaveProperty("laneId");
+      const envelope = (built.steps[0]?.params as { arguments?: Record<string, unknown> }).arguments;
+      expect(envelope).toMatchObject({ callerRoot: process.cwd(), callerRootSource: "cwd" });
+      // `status` is the capability read and must answer without a lane.
+      expect(actionName(plan(["mac-desktop", "status"]))).toBe("getStatus");
+    } finally {
+      if (previousWorkspace !== undefined) process.env.ADE_WORKSPACE_ROOT = previousWorkspace;
+    }
   });
 
   it("maps every subcommand to its action", () => {
-    const cases: Array<[string[], string, string]> = [
-      [["mac-desktop"], "mac-desktop status", "getStatus"],
-      [["mac-desktop", "start"], "mac-desktop start", "start"],
-      [["mac-desktop", "stop"], "mac-desktop stop", "stop"],
-      [["mac-desktop", "windows"], "mac-desktop windows", "listWindows"],
-      [["mac-desktop", "claim", "--window", "42"], "mac-desktop claim", "claimWindow"],
-      [["mac-desktop", "release"], "mac-desktop release", "releaseWindow"],
-      [["mac-desktop", "open", "Preview"], "mac-desktop open", "open"],
-      [["mac-desktop", "observe"], "mac-desktop observe", "observe"],
-      [["mac-desktop", "click", "obs-a1:e:3"], "mac-desktop click", "click"],
-      [["mac-desktop", "type", "hi"], "mac-desktop type", "type"],
-      [["mac-desktop", "press", "return"], "mac-desktop press", "press"],
-      [["mac-desktop", "scroll", "down"], "mac-desktop scroll", "scroll"],
-      [["mac-desktop", "drag", "--from", "obs-a1:e:3", "--to", "1,2"], "mac-desktop drag", "drag"],
-      [["mac-desktop", "wait", "--text", "Done"], "mac-desktop wait", "wait"],
-      [["mac-desktop", "screenshot"], "mac-desktop screenshot", "screenshot"],
-      [["mac-desktop", "record", "start"], "mac-desktop record start", "startRecording"],
-      [["mac-desktop", "record", "stop"], "mac-desktop record stop", "stopRecording"],
-      [["mac-desktop", "stream"], "mac-desktop stream status", "getStreamStatus"],
-      [["mac-desktop", "lease"], "mac-desktop lease", "requestInputLease"],
-      [["mac-desktop", "display"], "mac-desktop display", "getStatus"],
-      [["mac-desktop", "display", "1080p"], "mac-desktop display", "start"],
-      [["mac-desktop", "present", "main"], "mac-desktop present", "present"],
+    const cases: Array<[string[], string]> = [
+      [["mac-desktop"], "getStatus"],
+      [["mac-desktop", "start"], "start"],
+      [["mac-desktop", "stop"], "stop"],
+      [["mac-desktop", "windows"], "listWindows"],
+      [["mac-desktop", "claim", "--window", "42"], "claimWindow"],
+      [["mac-desktop", "release"], "releaseWindow"],
+      [["mac-desktop", "open", "Preview"], "open"],
+      [["mac-desktop", "observe"], "observe"],
+      [["mac-desktop", "click", "obs-a1:e:3"], "click"],
+      [["mac-desktop", "type", "hi"], "type"],
+      [["mac-desktop", "press", "return"], "press"],
+      [["mac-desktop", "scroll", "down"], "scroll"],
+      [["mac-desktop", "drag", "--from", "obs-a1:e:3", "--to", "1,2"], "drag"],
+      [["mac-desktop", "wait", "--text", "Done"], "wait"],
+      [["mac-desktop", "screenshot"], "screenshot"],
+      [["mac-desktop", "record", "start"], "startRecording"],
+      [["mac-desktop", "record", "stop"], "stopRecording"],
+      [["mac-desktop", "stream"], "getStreamStatus"],
+      [["mac-desktop", "lease"], "requestInputLease"],
+      [["mac-desktop", "display"], "getStatus"],
+      [["mac-desktop", "display", "1080p"], "start"],
+      [["mac-desktop", "present", "main"], "present"],
+      // The Windows verbs share the family; the service gates them by host.
+      [["screen", "focus", "--window", "7"], "focusWindow"],
+      [["screen", "minimize", "--window", "7"], "minimizeWindow"],
+      [["screen", "close", "--window", "7"], "closeWindow"],
+      [["screen", "start", "--shared", "--reason", "check the tray"], "requestSharedDesktop"],
+      [["screen", "start", "--shared", "--consent"], "useSharedDesktop"],
+      [["screen", "setup", "--allow-prompt"], "setupWindows"],
+      [["screen", "takeover"], "takeoverWindows"],
     ];
-    for (const [argv, label, action] of cases) {
-      const built = plan(argv);
-      expect(built.label, argv.join(" ")).toBe(label);
-      expect(actionName(built), argv.join(" ")).toBe(action);
+    for (const [argv, action] of cases) {
+      expect(actionName(plan(argv)), argv.join(" ")).toBe(action);
     }
   });
 
@@ -166,6 +186,8 @@ describe("ade mac-desktop dispatch", () => {
     expect(actionArgs(plan(["mac-desktop", "type", "--submit", "reddit"])))
       .toMatchObject({ text: "reddit", submit: true });
     expect(actionArgs(plan(["mac-desktop", "type", "hi"])).submit).toBeUndefined();
+    // Typed text is sent as given: a leading space is part of what to type.
+    expect(actionArgs(plan(["mac-desktop", "type", " - done "])).text).toBe(" - done ");
     expect(actionArgs(plan(["mac-desktop", "key", "tab"]))).toMatchObject({ key: "tab" });
     expect(actionArgs(plan(["mac-desktop", "observe", "--map", "--limit", "50"])))
       .toMatchObject({ map: true, limit: 50 });
@@ -186,9 +208,28 @@ describe("ade mac-desktop dispatch", () => {
     expect(() => buildCliPlan(["mac-desktop", "claim"])).toThrow(/requires --window/);
   });
 
-  it("fences an opened app's own argv behind `--`", () => {
+  it("fences an opened app's own argv behind `--`, except a trailing output flag", () => {
     expect(actionArgs(plan(["mac-desktop", "open", "Xcode", "--", "-foo", "bar"])))
       .toMatchObject({ target: "Xcode", args: ["-foo", "bar"] });
+    // `ade screen open notepad -- C:\\tmp\\a.txt --text`: the help says output
+    // flags may come last, even after `--`. The rightmost one wins.
+    const text = parseCliArgs(["screen", "open", "notepad", "--", "C:\\tmp\\a.txt", "--json", "--text"]);
+    expect(text.options.text).toBe(true);
+    expect(actionArgs(plan(text.command))).toMatchObject({ target: "notepad", args: ["C:\\tmp\\a.txt"] });
+    const json = parseCliArgs(["--text", "windows-desktop", "open", "notepad", "--", "a.txt", "--json"]);
+    expect(json.options.text).toBe(false);
+    expect(actionArgs(plan(json.command)).args).toEqual(["a.txt"]);
+    // Only the screen family: elsewhere everything after `--` is passed through.
+    expect(parseCliArgs(["chat", "send", "--", "--text"]).command).toContain("--text");
+  });
+
+  it("keeps --lane out of a proof step's caption and sends it as the lane", () => {
+    const built = buildCliPlan(["proof", "step", "Open", "the", "settings", "--lane", "lane-9"]);
+    expect(built.kind).toBe("execute");
+    const params = (built as ExecutePlan).steps[0]?.params as { name?: string; arguments?: Record<string, unknown> };
+    expect(params.name).toBe("note_demo_step");
+    expect(params.arguments?.text).toBe("Open the settings");
+    expect(params.arguments?.laneId).toBe("lane-9");
   });
 
   it("validates enumerated arguments at the CLI, before a round trip", () => {
@@ -201,7 +242,7 @@ describe("ade mac-desktop dispatch", () => {
     expect(() => buildCliPlan(["mac-desktop", "drag", "--from", "obs-a1:e:3"]))
       .toThrow(/requires --from .* and --to/);
     expect(() => buildCliPlan(["mac-desktop", "nonsense"]))
-      .toThrow(/Unknown mac-desktop subcommand 'nonsense'/);
+      .toThrow(/'nonsense'/);
   });
 
   it("refuses proof without a caption, and otherwise captures, re-observes, then ingests", () => {
@@ -233,19 +274,42 @@ describe("ade mac-desktop dispatch", () => {
 });
 
 describe("macDesktopErrorHint", () => {
-  it("turns each service code into the command that unblocks it", () => {
-    expect(macDesktopErrorHint(`${MAC_DESKTOP_PERMISSION_REQUIRED_CODE}: no screen recording`))
+  /**
+   * The `ade screen <verb>` a hint tells the caller to run, and the action that
+   * command plans. A hint is only useful if its command parses and reaches the
+   * action that unblocks the code; the sentence around it is free to change.
+   */
+  function hintedAction(hint: string | null): string | null {
+    const verb = hint?.match(/ade (?:screen|mac-desktop) ([a-z-]+)/)?.[1];
+    if (!verb) return null;
+    const argv = ["screen", verb, ...(verb === "claim" ? ["--window", "1"] : verb === "open" ? ["Notes"] : [])];
+    return actionName(plan(argv));
+  }
+
+  it.each([
+    [MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE, "darwin", "requestInputLease"],
+    [MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE, "win32", "requestInputLease"],
+    [MAC_DESKTOP_HANDLE_EXPIRED_CODE, "darwin", "observe"],
+    [MAC_DESKTOP_NO_DISPLAY_CODE, "win32", "start"],
+    [MAC_DESKTOP_NO_WINDOW_CODE, "darwin", "open"],
+    [MAC_DESKTOP_PERMISSION_REQUIRED_CODE, "darwin", "getStatus"],
+    [MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE, "win32", "getStatus"],
+  ])("turns %s on %s into a command that reaches %s", (code, host, action) => {
+    const hint = macDesktopErrorHint(`${code}: detail`, host);
+    expect(hint, "a hint exists for the code").toBeTruthy();
+    expect(hintedAction(hint)).toBe(action);
+    // The hint is the next step, not a restatement of the error.
+    expect(hint).not.toContain(code);
+  });
+
+  it("names the right fix per code, and nothing for an unknown message", () => {
+    expect(macDesktopErrorHint(`${MAC_DESKTOP_PERMISSION_REQUIRED_CODE}: no screen recording`, "darwin"))
       .toContain("System Settings");
-    expect(macDesktopErrorHint(`${MAC_DESKTOP_USER_HAS_CONTROL_CODE}: taken over`))
-      .toBe("The user has control; wait for them to hand it back, then retry.");
-    expect(macDesktopErrorHint(`${MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE}: real input`))
-      .toContain("ade mac-desktop lease");
     expect(macDesktopErrorHint(`${MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE}: Xcode is held by lane-7`))
-      .toContain("single-instance");
-    expect(macDesktopErrorHint(`${MAC_DESKTOP_HANDLE_EXPIRED_CODE}: obs-a1:e:3`))
-      .toContain("ade mac-desktop observe");
-    expect(macDesktopErrorHint(`${MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE}: not a Mac`))
-      .toContain("macOS runtime host");
+      .toBeTruthy();
+    // A Mac-only fix (a macOS runtime) is never offered on a Windows host.
+    expect(macDesktopErrorHint(`${MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE}: not here`, "win32"))
+      .not.toContain("macOS runtime");
     // Both allowed roots are named: the worktree and the OS temp dir, which the
     // proof skill tells agents to write under.
     expect(macDesktopErrorHint(`${MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE}: /etc/x.png is outside both`))
@@ -259,11 +323,9 @@ describe("macDesktopErrorHint", () => {
     const hint = macDesktopErrorHint(
       `${MAC_DESKTOP_NO_WINDOW_CODE}: Lane lane-1 has a display but no window to send a key to.`,
     );
-    expect(hint).toContain("ade mac-desktop open");
-    expect(hint).toContain("ade mac-desktop claim --window");
-    expect(hint).not.toContain("mac-desktop start");
-    expect(macDesktopErrorHint(`${MAC_DESKTOP_NO_DISPLAY_CODE}: Lane lane-1 has no display.`))
-      .toContain("ade mac-desktop start");
+    expect(hint).toMatch(/ade screen open/);
+    expect(hint).toMatch(/ade screen claim --window/);
+    expect(hint).not.toMatch(/screen start/);
   });
 
   it("does not restate the lane the message already names", () => {
@@ -301,6 +363,15 @@ describe("ade mac-desktop text output", () => {
     expect(text).toContain("denied");
     expect(text).toContain("running (idle rate) @ 3fps");
     expect(text).toContain("#91 Preview — shot.png");
+    expect(text).not.toContain(LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE);
+
+    // Linux has no lane screen: the answer leads with that, not a table of empty rows.
+    const linux = formatOutput(
+      { platform: "linux", supported: false, unsupportedReason: null, display: null, windows: [], lanes: [] },
+      { text: true } as never,
+      "mac-desktop-status",
+    );
+    expect(linux.startsWith(LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE)).toBe(true);
   });
 
   it("prints stop's quit apps and left-open sentences in full", () => {
@@ -393,12 +464,13 @@ describe("ade mac-desktop text output", () => {
     expect(observation({ truncatedReason: "timeout", stalledApps: [] })).toContain("ran out of time after 0 elements");
   });
 
-  it("prints an action result as what it resolved plus the state that followed", () => {
+  it("prints an action result as what it hit, whether it changed anything, and the state that followed", () => {
     const text = formatOutput(
       {
         ok: true,
         action: "click",
         mode: "accessibility",
+        effect: { status: "unconfirmed", reason: "nothing on screen changed" },
         resolved: {
           index: 3,
           handle: "obs-a1:e:3",
@@ -421,7 +493,10 @@ describe("ade mac-desktop text output", () => {
       "mac-desktop-action",
     );
     expect(text).toContain("ADE Mac Desktop action");
-    expect(text).toContain('[3] AXButton "Sign in" (912,430)');
+    expect(text.split("\n").slice(0, 2)).toEqual([
+      'hit: AXButton "Sign in" (obs-a1:e:3)',
+      "effect: unconfirmed — nothing on screen changed; observe again before you continue",
+    ]);
     // The follow-up observation rides along, so no second round trip is needed.
     expect(text).toContain('[0] AXStaticText "Welcome" (10,10)');
     expect(text).toContain("windows  (none parked)");
@@ -447,8 +522,8 @@ describe("ade mac-desktop misplaced --socket", () => {
       return true;
     }) as never;
     try {
-      expect(plan(["mac-desktop", "observe", "--socket", "/tmp/a.sock"]).label)
-        .toBe("mac-desktop observe");
+      expect(actionName(plan(["mac-desktop", "observe", "--socket", "/tmp/a.sock"])))
+        .toBe("observe");
     } finally {
       (process.stderr as { write: unknown }).write = original;
     }
@@ -457,6 +532,22 @@ describe("ade mac-desktop misplaced --socket", () => {
 });
 
 describe("mac-desktop recording duration", () => {
+  it("exits non-zero when a stop ends with an error and no file, in text and JSON alike", () => {
+    const failed = { running: false, lastError: "The recording was not filed. It has no frames.", filePath: null };
+    for (const output of ["--text", "--json"]) {
+      const parsed = parseCliArgs(["screen", "record", "stop", output]);
+      const exitCode = plan(parsed.command).exitCodeFromResult;
+      expect(exitCode, output).toBeTypeOf("function");
+      expect(exitCode!(failed), output).toBe(1);
+      // The action envelope the runtime answers with wraps the same status.
+      expect(exitCode!({ domain: "mac_desktop", action: "stopRecording", result: failed }), output).toBe(1);
+      // A filed recording, and a stop that found nothing running, succeed.
+      expect(exitCode!({ running: false, lastError: null, filePath: "/tmp/clip.mp4" }), output).toBe(0);
+      expect(exitCode!({ running: false, lastError: null, filePath: null }), output).toBe(0);
+    }
+  });
+
+
   it("prefers a container-measured duration over the stop-time delta", () => {
     // The driver's delta spans record start → finishWriting returned, which
     // overshoots the clip by the warm-up plus the mux.
@@ -486,13 +577,13 @@ describe("mac-desktop recording duration", () => {
     expect(text).toContain("/tmp/clip.mp4");
   });
 
-  it("passes --keep-idle and --max-seconds the way `apple record-start` does", () => {
+  it("passes --keep-idle as plain capture and keeps the duration cap", () => {
     expect(actionArgs(plan(["mac-desktop", "record", "start", "--caption", "flow"])))
       .not.toHaveProperty("keepIdle");
     const args = actionArgs(plan([
       "mac-desktop", "record", "start", "--keep-idle", "--max-seconds", "1200", "--caption", "flow",
     ]));
-    expect(args).toMatchObject({ keepIdle: true, maxSeconds: 1200, caption: "flow", chatSessionId: "chat-1" });
+    expect(args).toMatchObject({ plain: true, maxSeconds: 1200, caption: "flow", chatSessionId: "chat-1" });
     expect(() => buildCliPlan(["mac-desktop", "record", "start", "--max-seconds", "0"]))
       .toThrow(/--max-seconds must be greater than 0/);
   });
@@ -642,5 +733,48 @@ describe("mac-desktop proof text output", () => {
   it("says so when the ingest returned no rows", () => {
     const text = formatOutput({ artifacts: [], links: [] }, { text: true } as never, "mac-desktop-proof");
     expect(text).toContain("(no artifact rows returned)");
+  });
+});
+
+describe("mac-desktop action answer lines", () => {
+  const action = (effect: Record<string, unknown>) =>
+    formatOutput(
+      {
+        ok: true,
+        action: "click",
+        mode: "accessibility",
+        resolved: { role: "AXStaticText", label: "Read more" },
+        observation: null,
+        effect,
+      },
+      { text: true } as never,
+      "mac-desktop-action",
+    );
+
+  it("prints next and drops the generic observe suffix when a next step exists", () => {
+    const text = action({
+      status: "unconfirmed",
+      reason: "nothing on screen changed",
+      next: { method: "lease", reason: "ask for the lease", command: "ade mac-desktop lease --text" },
+    });
+    expect(text).toContain("effect: unconfirmed — nothing on screen changed");
+    expect(text).not.toContain("observe again before you continue");
+    expect(text).toContain("next: ask for the lease — run: ade mac-desktop lease --text");
+  });
+
+  it("keeps the generic observe suffix when the effect has no next step", () => {
+    const text = action({ status: "unconfirmed", reason: "nothing on screen changed" });
+    expect(text).toContain("observe again before you continue");
+    expect(text).not.toContain("next:");
+  });
+
+  it("prints a next line without a run command when the step has none", () => {
+    const text = action({
+      status: "unconfirmed",
+      reason: "nothing on screen changed",
+      next: { method: "observe", reason: "wait for the label you expect" },
+    });
+    expect(text).toContain("next: wait for the label you expect");
+    expect(text).not.toContain("— run:");
   });
 });

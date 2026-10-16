@@ -9,7 +9,11 @@ import {
   isPersonalChatActionQueueable,
   isPersonalChatActionViewerAllowed,
 } from "../../../../desktop/src/shared/types/personalChats";
-import { PersonalChatScope, validatePersonalHostCwd } from "./personalChatScope";
+import { PersonalChatScope } from "./personalChatScope";
+import {
+  validatePersonalAttachmentRoots,
+  validatePersonalHostCwd,
+} from "../../../../desktop/src/main/services/chat/personalHostPaths";
 
 describe("PersonalChatScope", () => {
   let adeHome: string;
@@ -25,6 +29,7 @@ describe("PersonalChatScope", () => {
     if (previousAdeHome == null) delete process.env.ADE_HOME;
     else process.env.ADE_HOME = previousAdeHome;
     fs.rmSync(adeHome, { recursive: true, force: true });
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -288,6 +293,27 @@ describe("PersonalChatScope", () => {
     })).rejects.toThrow(/^invalid_argument:/);
     expect(service.createSession).not.toHaveBeenCalled();
     await scope.dispose();
+  });
+
+  it("refuses attachment roots whose resolved path escapes into ADE state", () => {
+    const fsImpl = {
+      realpathSync: (target: string) => target === "C:\\Allowed\\alias"
+        ? "C:\\ADE\\secrets"
+        : target,
+    };
+
+    expect(() => validatePersonalAttachmentRoots(["C:\\Allowed\\alias"], {
+      platform: "win32",
+      adeDir: "C:\\ADE",
+      homeDir: "C:\\Users\\tester",
+      fs: fsImpl,
+    })).toThrow(/^invalid_argument: attachmentRoots\[0\] must not be inside ADE's own state directory\./);
+    expect(validatePersonalAttachmentRoots(["C:\\Projects\\notes"], {
+      platform: "win32",
+      adeDir: "C:\\ADE",
+      homeDir: "C:\\Users\\tester",
+      fs: fsImpl,
+    })).toEqual(["C:\\Projects\\notes"]);
   });
 
   it("refuses the home directory itself but allows a folder inside it", () => {
@@ -840,6 +866,29 @@ describe("PersonalChatScope", () => {
     await scope.dispose();
   });
 
+  it("never answers a user-only consent card, and still answers an ordinary one", async () => {
+    // `personalChats.call` is an untrusted edge: the Mac input-lease and the
+    // Windows shared-seat cards are the user's own permission.
+    const { service, createRuntime } = fixture();
+    Object.assign(service, {
+      isUserOnlyPendingInput: vi.fn(({ itemId }: { sessionId: string; itemId: string }) => itemId === "consent-card"),
+    });
+    const scope = new PersonalChatScope({ createRuntime });
+
+    for (const action of ["respondToInput", "approve"] as const) {
+      await expect(scope.call(action, { sessionId: "chat-1", itemId: " consent-card ", decision: "accept" }))
+        .rejects.toThrow(/user/i);
+    }
+    expect(service.respondToInput).not.toHaveBeenCalled();
+    expect(service.approveToolUse).not.toHaveBeenCalled();
+
+    await scope.call("respondToInput", { sessionId: "chat-1", itemId: "item-1", decision: "accept" });
+    await scope.call("approve", { sessionId: "chat-1", itemId: "item-1", decision: "accept" });
+    expect(service.respondToInput).toHaveBeenCalledTimes(1);
+    expect(service.approveToolUse).toHaveBeenCalledTimes(1);
+    await scope.dispose();
+  });
+
   it("refuses pendingInputs without a sessionId", async () => {
     const { createRuntime } = fixture();
     const scope = new PersonalChatScope({ createRuntime });
@@ -887,6 +936,195 @@ describe("PersonalChatScope", () => {
       mimeType: "image/png",
       base64: Buffer.from("not an image").toString("base64"),
     })).rejects.toThrow(/MIME type does not match/);
+  });
+
+  it("stages any non-image file as bytes under a fresh name in hidden state", async () => {
+    const { createRuntime } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+    const attachmentsRoot = path.join(adeHome, "personal-chats", "state", ".ade", "attachments");
+    const csv = "name,total\nada,3\n";
+
+    const first = await scope.call("saveTempAttachment", {
+      filename: "../../report.csv",
+      mimeType: "text/csv",
+      base64: Buffer.from(csv).toString("base64"),
+    });
+    const second = await scope.call("saveTempAttachment", {
+      filename: "report.csv",
+      base64: Buffer.from(csv).toString("base64"),
+    });
+    const firstPath = (first.result as { path: string }).path;
+    const secondPath = (second.result as { path: string }).path;
+    // The caller never picks the path: only the extension survives, under a
+    // UUID name, so two saves of one name never overwrite each other.
+    expect(path.dirname(firstPath)).toBe(attachmentsRoot);
+    expect(path.basename(firstPath)).toMatch(/^[0-9a-f-]{36}\.csv$/);
+    expect(secondPath).not.toBe(firstPath);
+    expect(fs.readFileSync(firstPath, "utf8")).toBe(csv);
+  });
+
+  it.each([
+    ["invalid base64", { filename: "notes.txt", base64: "not base64!!" }, /base64 is invalid/],
+    ["an empty file", { filename: "notes.txt", base64: "" }, /base64 is invalid/],
+    ["more than the attachment cap", {
+      filename: "big.bin",
+      base64: "A".repeat(Math.ceil((10 * 1024 * 1024 + 4) / 3) * 4),
+    }, /10 MB|cap|too large|limit/i],
+  ])("refuses a non-image attachment with %s", async (_label, args, error) => {
+    const { createRuntime } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+    await expect(scope.call("saveTempAttachment", args)).rejects.toThrow(error);
+    const attachmentsRoot = path.join(adeHome, "personal-chats", "state", ".ade", "attachments");
+    expect(fs.existsSync(attachmentsRoot) ? fs.readdirSync(attachmentsRoot) : []).toEqual([]);
+  });
+
+  it.each([
+    // [runtime profile, requested personalProfile, stored profile, session profile]
+    ["chat", "assistant", "assistant", "workflow"],
+    ["chat", undefined, "embedded", "light"],
+    ["chat", "embedded", "embedded", "light"],
+    ["embedded", "assistant", "embedded", "light"],
+  ] as const)("creates on a %s runtime asked for %s as %s", async (runtimeProfile, requested, stored, sessionProfile) => {
+    const { service, createRuntime } = fixture();
+    const scope = new PersonalChatScope({ createRuntime, runtimeProfile });
+    await scope.call("create", {
+      provider: "codex",
+      model: "gpt-5",
+      ...(requested ? { personalProfile: requested } : {}),
+    });
+    expect(service.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      surface: "personal",
+      personalProfile: stored,
+      sessionProfile,
+    }));
+    await scope.dispose();
+  });
+
+  it.each([
+    // [runtime profile, action, assistant claim on the call, expect adoption]
+    ["chat", "getSummary", true, true],
+    ["chat", "send", true, true],
+    ["chat", "steer", true, true],
+    ["chat", "send", false, false],
+    ["embedded", "send", true, false],
+  ] as const)("on a %s runtime, %s with claim=%s adopts a legacy row: %s", async (runtimeProfile, action, claim, adopts) => {
+    const { service, createRuntime } = fixture();
+    const adopt = vi.fn(() => true);
+    Object.assign(service, { adoptLegacyPersonalSessionAsAssistant: adopt });
+    const scope = new PersonalChatScope({ createRuntime, runtimeProfile });
+
+    await scope.call(action, {
+      sessionId: "chat-1",
+      ...(action === "getSummary" ? {} : { text: "hi" }),
+      ...(claim ? { personalProfile: "assistant" } : {}),
+    });
+
+    expect(adopt.mock.calls).toEqual(adopts ? [["chat-1"]] : []);
+    // The claim is the scope's business: no chat service method receives it.
+    const forwarded = (action === "send" ? service.sendMessage.mock.calls
+      : action === "steer" ? service.steer.mock.calls : []) as unknown as Array<[Record<string, unknown>]>;
+    expect(forwarded).toHaveLength(action === "getSummary" ? 0 : 1);
+    for (const [args] of forwarded) expect(args).not.toHaveProperty("personalProfile");
+    await scope.dispose();
+  });
+
+  it.each([
+    // [runtime profile, the row's stored profile, claim on the lookup, lane-only skills withheld]
+    ["chat", "assistant", false, true],
+    ["chat", undefined, true, true],
+    ["chat", undefined, false, false],
+    ["chat", "embedded", true, false],
+    ["embedded", "assistant", true, false],
+  ] as const)("on a %s runtime, a %s chat's / menu (claim=%s) withholds lane-only skills: %s", async (
+    runtimeProfile,
+    stored,
+    claim,
+    withheld,
+  ) => {
+    const { summary, service, createRuntime } = fixture();
+    service.getSessionSummary.mockImplementation(async (sessionId: string) =>
+      sessionId === summary.sessionId ? { ...summary, ...(stored ? { personalProfile: stored } : {}) } as never : null);
+    const commands = [
+      { name: "/ade-browser" },
+      { name: "/ade-lanes-git" },
+      { name: "/ade:ade-pr-workflows" },
+      { name: "/review" },
+    ];
+    Object.assign(service, { getSlashCommands: vi.fn(() => commands) });
+    const scope = new PersonalChatScope({ createRuntime, runtimeProfile });
+
+    const response = await scope.call("slashCommands", {
+      sessionId: "chat-1",
+      ...(claim ? { personalProfile: "assistant" } : {}),
+    });
+
+    const names = (response.result as Array<{ name: string }>).map((command) => command.name);
+    expect(names).toEqual(withheld ? ["/ade-browser", "/review"] : commands.map((command) => command.name));
+    // The lookup reads the personal workspace, never a caller's project lane.
+    expect((service as unknown as { getSlashCommands: ReturnType<typeof vi.fn> }).getSlashCommands)
+      .toHaveBeenCalledWith(expect.objectContaining({ sessionId: "chat-1", laneId: "internal-lane" }));
+    await scope.dispose();
+  });
+
+  it("reuses draft slash commands for 15 seconds but always refreshes a session lookup", async () => {
+    vi.useFakeTimers();
+    const { service, createRuntime } = fixture();
+    const getSlashCommands = vi.fn(() => [{ name: "/review" }]);
+    Object.assign(service, { getSlashCommands });
+    const scope = new PersonalChatScope({ createRuntime });
+    try {
+      const draft = { provider: "codex", personalProfile: "assistant" };
+      await scope.call("slashCommands", draft);
+      vi.advanceTimersByTime(14_999);
+      await scope.call("slashCommands", draft);
+      expect(getSlashCommands).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1);
+      await scope.call("slashCommands", draft);
+      expect(getSlashCommands).toHaveBeenCalledTimes(2);
+      await scope.call("slashCommands", { sessionId: "chat-1" });
+      await scope.call("slashCommands", { sessionId: "chat-1" });
+      expect(getSlashCommands).toHaveBeenCalledTimes(4);
+    } finally {
+      await scope.dispose();
+    }
+  });
+
+  it("pins a chat and reports the agent's own row state on the next list", async () => {
+    const { runtime, createRuntime } = fixture();
+    const row: Record<string, unknown> = { transcriptPath: "/tmp/chat-1.jsonl" };
+    Object.assign(runtime.sessionService, {
+      get: vi.fn(() => row),
+      updateMeta: vi.fn(({ pinned }: { pinned: boolean }) => { row.pinned = pinned; }),
+      setSessionActivity: vi.fn((_id: string, value: string | null) => { row.activityStatus = value; return true; }),
+      setStatusNote: vi.fn((_id: string, note: string | null) => { row.statusNote = note; return true; }),
+      requestAttention: vi.fn((_id: string, message: string) => {
+        row.attentionRequestedAt = "2026-01-01T00:01:00.000Z";
+        row.attentionMessage = message;
+        return true;
+      }),
+    });
+    const scope = new PersonalChatScope({ createRuntime });
+
+    await expect(scope.call("setPinned", { sessionId: "chat-1", pinned: true }))
+      .resolves.toMatchObject({ result: { sessionId: "chat-1", pinned: true } });
+    await scope.call("setSessionActivity", { sessionId: "chat-1", value: "testing" });
+    await scope.call("setSessionStatusNote", { sessionId: "chat-1", note: "Drafting" });
+    await scope.call("requestSessionAttention", { sessionId: "chat-1", message: "Which file?" });
+
+    const listed = await scope.call("list", {});
+    expect(listed.result).toEqual([expect.objectContaining({
+      sessionId: "chat-1",
+      pinned: true,
+      activityStatus: "testing",
+      statusNote: "Drafting",
+      attentionMessage: "Which file?",
+    })]);
+
+    // Every row action is refused for a chat that is not this scope's.
+    await expect(scope.call("setPinned", { sessionId: "other", pinned: true })).rejects.toThrow();
+    await expect(scope.call("setSessionStatusNote", { sessionId: "chat-1", note: 3 })).rejects.toThrow(/string `note`/);
+    await expect(scope.call("requestSessionAttention", { sessionId: "chat-1" })).rejects.toThrow(/message/);
+    await scope.dispose();
   });
 });
 

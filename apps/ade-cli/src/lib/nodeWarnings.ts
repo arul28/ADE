@@ -11,7 +11,7 @@
  * We wrap `process.emitWarning` rather than removing the `warning` listeners.
  * Removing listeners means re-implementing Node's own output format for every
  * warning we *do* want to show; wrapping the emitter leaves that formatting
- * untouched and simply drops the one warning class we know is noise.
+ * untouched and simply drops the few warnings we know are noise.
  */
 
 /** Escape hatch: set to 1 to see every warning Node emits, unfiltered. */
@@ -44,15 +44,43 @@ function warningMessage(warning: string | Error): string {
   return typeof warning === "string" ? warning : (warning?.message ?? "");
 }
 
+function warningCode(warning: string | Error, rest: readonly unknown[]): string | null {
+  // process.emitWarning(warning, type, code, ctor?)
+  const [second, third] = rest;
+  if (typeof second === "string" && typeof third === "string") return third;
+  // process.emitWarning(warning, { type, code, detail })
+  if (second && typeof second === "object" && "code" in second) {
+    const { code } = second as { code?: unknown };
+    if (typeof code === "string") return code;
+  }
+  if (typeof warning !== "string") {
+    const code = (warning as Error & { code?: unknown })?.code;
+    if (typeof code === "string") return code;
+  }
+  return null;
+}
+
 /**
- * Only the SQLite experimental notice. Every other warning — deprecations, our
- * own `process.emitWarning` calls, unhandled rejection notices — still prints,
- * because those are ones a user or a bug report genuinely needs.
+ * The Claude Agent SDK warns on every `query()` that a bare `allowedTools`
+ * entry (`mcp__versic` for a whole server) skips `canUseTool`. ADE builds that
+ * list on purpose from the chat's permission policy (see
+ * `policyToClaudeToolLists`), so the warning describes the intended behavior,
+ * and it repeated several times per turn.
+ */
+const SUPPRESSED_WARNING_CODES = new Set(["CLAUDE_SDK_CAN_USE_TOOL_SHADOWED"]);
+
+/**
+ * The SQLite experimental notice and the codes above. Every other warning —
+ * deprecations, our own `process.emitWarning` calls, unhandled rejection
+ * notices — still prints, because those are ones a user or a bug report
+ * genuinely needs.
  */
 export function isSuppressedNodeWarning(
   warning: string | Error,
   rest: readonly unknown[] = [],
 ): boolean {
+  const code = warningCode(warning, rest);
+  if (code && SUPPRESSED_WARNING_CODES.has(code)) return true;
   if (warningType(warning, rest) !== "ExperimentalWarning") return false;
   return /\bsqlite\b/i.test(warningMessage(warning));
 }

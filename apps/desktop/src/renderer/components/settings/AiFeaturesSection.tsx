@@ -3,25 +3,21 @@ import type {
   AiConfig,
   AgentChatScheduledWorkItem,
 } from "../../../shared/types";
-import {
-  COLORS,
-  MONO_FONT,
-  SANS_FONT,
-} from "../lanes/laneDesignTokens";
-import { SettingsCard, SettingsGroup, SettingsToggle } from "./primitives";
+import { Clock } from "@phosphor-icons/react";
+import { showToast } from "../app/toast/toastStore";
+import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 
 /**
- * Background work settings.
- *
- * One card — the global scheduled-work pause — with the live job list as its
- * children, because inspecting a job and pausing every job are the same
- * decision seen from two distances.
+ * Scheduled work: the global pause, then the live job list in the same panel,
+ * because inspecting a job and pausing every job are the same decision seen
+ * from two distances.
  */
 export function AiFeaturesSection() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [configLoadFailed, setConfigLoadFailed] = useState(false);
   const [scheduledWorkPaused, setScheduledWorkPaused] = useState(false);
+  const [continueAfterRestart, setContinueAfterRestart] = useState(true);
   const [scheduledWork, setScheduledWork] = useState<AgentChatScheduledWorkItem[]>([]);
   const [scheduledWorkError, setScheduledWorkError] = useState<string | null>(null);
 
@@ -52,6 +48,7 @@ export function AiFeaturesSection() {
       const effectiveAiRaw = snapshotResult.snapshot.effective?.ai;
       const effectiveAi = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
       setScheduledWorkPaused(effectiveAi?.chat?.scheduledWorkPaused === true);
+      setContinueAfterRestart(effectiveAi?.chat?.continueAfterRestart !== false);
     } finally {
       setLoading(false);
     }
@@ -61,19 +58,32 @@ export function AiFeaturesSection() {
     void loadStatus();
   }, [loadStatus]);
 
-  const handleScheduledWorkPaused = useCallback(async (paused: boolean) => {
+  /** Save one chat toggle optimistically; a failed save puts it back and says so. */
+  const saveChatToggle = useCallback(async (
+    key: "scheduledWorkPaused" | "continueAfterRestart",
+    value: boolean,
+    setLocal: (value: boolean) => void,
+  ) => {
     if (saving) return;
     setSaving(true);
-    setScheduledWorkPaused(paused);
+    setLocal(value);
     try {
-      await window.ade.ai.updateConfig({ chat: { scheduledWorkPaused: paused } });
+      await window.ade.ai.updateConfig({ chat: { [key]: value } });
     } catch (error) {
-      setScheduledWorkPaused(!paused);
-      console.error("[AiFeaturesSection] scheduled-work pause update failed:", error);
+      setLocal(!value);
+      showToast({
+        title: "Couldn't save the setting",
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
     } finally {
       setSaving(false);
     }
   }, [saving]);
+  const handleScheduledWorkPaused = (paused: boolean) =>
+    saveChatToggle("scheduledWorkPaused", paused, setScheduledWorkPaused);
+  const handleContinueAfterRestart = (enabled: boolean) =>
+    saveChatToggle("continueAfterRestart", enabled, setContinueAfterRestart);
 
   const handleCancelScheduledWork = useCallback(async (item: AgentChatScheduledWorkItem) => {
     setScheduledWorkError(null);
@@ -92,105 +102,79 @@ export function AiFeaturesSection() {
     }
   }, [loadStatus]);
 
-  if (loading) {
-    return (
-      <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 12, padding: 20 }}>
-        Loading AI features...
-      </div>
-    );
-  }
-
-  if (configLoadFailed) {
-    return (
-      <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 12, padding: 20 }}>
-        Couldn't load AI features. The scheduled-work pause stays unavailable until configuration loads.
-      </div>
-    );
-  }
+  const unavailable = loading
+    ? "Loading…"
+    : configLoadFailed
+      ? "Couldn't load the configuration. The pause switch stays off until it loads."
+      : null;
 
   return (
-    <SettingsGroup
-      title="Background work"
-      description="Background naming, idle status lines, and commit suggestions follow the ADE provider of the session that needs them. Pause or inspect durable scheduled work here."
-    >
-      <SettingsCard
-        anchor="scheduled-work"
-        title="Pause all scheduled work"
-        description="Wakeups, cron tasks, and loops stay armed. Overdue work fires once when you resume."
-        control={
-          <SettingsToggle
-            label="Pause all scheduled work"
-            checked={scheduledWorkPaused}
-            onChange={(paused) => void handleScheduledWorkPaused(paused)}
+    <ModernSection group="Scheduled work" title="Scheduled work" hint="Jobs agents schedule, and what happens to chats after a restart.">
+      <ModernRows>
+        <ModernRow
+          anchor="scheduled-work"
+          title="Pause all scheduled work"
+          hint={unavailable ?? "Wakeups, cron tasks, and loops stay armed. Overdue work runs once on resume."}
+          control={
+            <SettingsToggle
+              label="Pause all scheduled work"
+              checked={scheduledWorkPaused}
+              disabled={unavailable != null || saving}
+              onChange={(paused) => void handleScheduledWorkPaused(paused)}
+            />
+          }
+        />
+        <ModernRow
+          anchor="continue-after-restart"
+          title="Continue chats after restarts"
+          hint={loading ? "Loading…" : configLoadFailed ? "Unavailable until the configuration loads." : "When ADE restarts mid-response — a crash, a force quit, a reboot — the chat picks up where it stopped, and the agent is told which background jobs were stopped. Settled chats stay asleep."}
+          control={
+            <SettingsToggle
+              label="Continue chats after restarts"
+              checked={continueAfterRestart}
+              disabled={unavailable != null || saving}
+              onChange={(enabled) => void handleContinueAfterRestart(enabled)}
+            />
+          }
+        />
+        {unavailable ? null : scheduledWorkError ? (
+          <ModernRow
+            title="Scheduled work is unavailable"
+            hint={<span style={{ color: "var(--color-warning)" }}>{scheduledWorkError}</span>}
           />
-        }
-      >
-        <div
-          style={{
-            border: `1px solid ${COLORS.borderMuted}`,
-            borderRadius: 10,
-            background: COLORS.recessedBg,
-            overflow: "hidden",
-          }}
-        >
-          <div style={{ padding: "10px 12px", borderBottom: `1px solid ${COLORS.borderMuted}` }}>
-            <div style={{ fontSize: 12, fontFamily: SANS_FONT, fontWeight: 600, color: COLORS.textPrimary }}>
-              Active scheduled work
-            </div>
-            <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim, marginTop: 2 }}>
-              Jobs normally manage themselves. Use this list only when you need to inspect or stop one directly.
-            </div>
-          </div>
-          {scheduledWorkError ? (
-            <div style={{ padding: "12px", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.warning }}>
-              Scheduled work is unavailable: {scheduledWorkError}
-            </div>
-          ) : scheduledWork.length ? scheduledWork.map((item, index) => (
-            <div
+        ) : scheduledWork.length ? (
+          scheduledWork.map((item) => (
+            <ModernRow
               key={`${item.sessionId}:${item.id}`}
-              style={{
-                display: "grid",
-                gridTemplateColumns: "minmax(0, 1fr) auto",
-                gap: 12,
-                alignItems: "center",
-                padding: "10px 12px",
-                borderTop: index === 0 ? undefined : `1px solid ${COLORS.borderMuted}`,
-              }}
-            >
-              <div style={{ minWidth: 0 }}>
-                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+              title={(
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <Clock size={14} style={{ color: "var(--kit-text-3)" }} />
                   {item.title}
-                </div>
-                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 2, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                  {item.kind} · {item.status} · session {item.sessionId.slice(0, 8)}{item.nextRunAt ? ` · ${new Date(item.nextRunAt).toLocaleString()}` : ""}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => void handleCancelScheduledWork(item)}
-                disabled={!item.cancellable}
-                style={{
-                  border: `1px solid ${COLORS.outlineBorder}`,
-                  borderRadius: 6,
-                  background: "transparent",
-                  color: item.cancellable ? COLORS.warning : COLORS.textMuted,
-                  padding: "5px 9px",
-                  fontSize: 11,
-                  fontFamily: SANS_FONT,
-                  cursor: item.cancellable ? "pointer" : "not-allowed",
-                  opacity: item.cancellable ? 1 : 0.5,
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          )) : (
-            <div style={{ padding: "12px", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>
-              No active durable jobs.
-            </div>
-          )}
-        </div>
-      </SettingsCard>
-    </SettingsGroup>
+                </span>
+              )}
+              hint={
+                <span className="kit-num" style={{ fontSize: 11 }}>
+                  {item.kind} · {item.status}
+                  {item.nextRunAt ? ` · next ${new Date(item.nextRunAt).toLocaleString()}` : ""}
+                </span>
+              }
+              control={
+                <button
+                  type="button"
+                  className="ade-settings-section-action"
+                  style={{ border: "1px solid color-mix(in srgb, var(--color-fg) 12%, transparent)", borderRadius: 7 }}
+                  onClick={() => void handleCancelScheduledWork(item)}
+                  disabled={!item.cancellable}
+                >
+                  Cancel
+                </button>
+              }
+            />
+          ))
+        ) : (
+          <ModernRow title="Nothing scheduled" hint="Jobs agents schedule show up here." />
+        )}
+      </ModernRows>
+    </ModernSection>
   );
 }

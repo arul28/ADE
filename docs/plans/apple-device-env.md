@@ -699,7 +699,7 @@ Reuse, unchanged:
 | Launch stepper | `apps/desktop/src/renderer/components/chat/IosSimLaunchStepper.tsx` |
 | Tool chips + unsupported card | `apps/desktop/src/renderer/components/chat/IosSimToolChips.tsx` |
 | Every drawer control, `ToolMenu`, `ROW`, `CONTROL`, `BUTTON`, `INPUT` | `apps/desktop/src/renderer/components/chat/IosSimToolsColumn.tsx` |
-| H.264 `<video>` element and its status union | `apps/desktop/src/renderer/components/chat/IosSimH264Video.tsx` |
+| H.264 decoder canvas and its status union | `apps/desktop/src/renderer/components/chat/H264StreamView.tsx` over `h264StreamPlayer.ts` |
 | Stream lifecycle, retry, watchdog, live chip, analytics | `apps/desktop/src/renderer/components/chat/useIosSimLiveView.ts` |
 | Corner card placement, drag, dismissal, captions | `apps/desktop/src/renderer/components/work/workLiveCard.ts` + `WorkLiveCornerCard.tsx` |
 | Header row metrics and control skin | `apps/desktop/src/renderer/components/terminals/workToolChrome.ts` (`WORK_TOOL_CHROME_ROW`, `_BUTTON`, `_CHIP`, `WORK_TOOL_SECTION_LABEL_TEXT`, `WORK_TOOL_SURFACE`) |

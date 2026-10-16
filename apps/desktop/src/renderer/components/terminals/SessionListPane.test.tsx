@@ -73,7 +73,10 @@ vi.mock("../apple/useLaneAppleDevices", async (importOriginal) => ({
 const { laneMacDesktopsForTest } = vi.hoisted(() => ({ laneMacDesktopsForTest: new Set<string>() }));
 vi.mock("./useLaneMacDesktops", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./useLaneMacDesktops")>()),
-  useLaneMacDesktops: () => laneMacDesktopsForTest,
+  useLaneDesktopSeats: () => ({
+    lanes: laneMacDesktopsForTest,
+    kinds: new Map([...laneMacDesktopsForTest].map((laneId) => [laneId, "mac" as const])),
+  }),
 }));
 
 function makePr(overrides: Partial<PrSummary> = {}): PrSummary {
@@ -430,7 +433,7 @@ describe("SessionListPane", () => {
 
   it("hides an in-flight handoff when its running status is filtered out", () => {
     renderPane({
-      workSessionFilters: { status: ["settled"], tool: [], hasPr: false, dirtyLane: false },
+      workSessionFilters: { status: ["settled"], tool: [], hasPr: false, dirtyLane: false, machine: [] },
       setWorkSessionFilters: vi.fn(),
       handoffJobs: [
         {
@@ -491,7 +494,8 @@ describe("SessionListPane", () => {
     expect(filterButton).toBeTruthy();
 
     fireEvent.click(filterButton!);
-    fireEvent.click(within(view.container).getByRole("button", { name: "Time" }));
+    fireEvent.keyDown(within(view.container).getByRole("button", { name: /^Group by:/ }), { key: "Enter" });
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Time" }));
 
     expect(setSessionListOrganization).toHaveBeenCalledWith("by-time");
     expect(screen.queryByText("Tiers")).toBeNull();
@@ -504,7 +508,7 @@ describe("SessionListPane", () => {
 
     rerender(paneElement({ filterLaneId: "lane-known" }));
 
-    expect(screen.getByRole("button", { name: "Filters, lane filter active" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Filters, 1 on" })).toBeTruthy();
     expect(screen.getByTestId("work-lane-filter-active-indicator")).toBeTruthy();
   });
 
@@ -513,7 +517,7 @@ describe("SessionListPane", () => {
   // and the canonical `stale` phase tells the story through the status label.
   // Its presentation is asserted in SessionCard.test.tsx, where the label lives.
 
-  it("collapses and expands child shell sections under a chat parent", () => {
+  it("starts a chat's shell drawer collapsed and opens it with an explicit marker", () => {
     const parent = makeSession({
       id: "chat-parent",
       laneId: "lane-known",
@@ -539,22 +543,68 @@ describe("SessionListPane", () => {
       toggleWorkSectionCollapsed,
     });
 
-    expect(screen.getByText("Child shell")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /1 shell/i }));
-    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("chat:chat-parent");
+    expect(screen.queryByText("Child shell")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Show 1 shell/i }));
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("drawer-open:chat:chat-parent");
 
     view.unmount();
     renderPane({
       runningFiltered: [parent, child],
       sessionsGroupedByLane,
-      workCollapsedSectionIds: ["chat:chat-parent"],
+      workCollapsedSectionIds: ["drawer-open:chat:chat-parent"],
       toggleWorkSectionCollapsed,
     });
 
-    expect(screen.queryByText("Child shell")).toBeNull();
+    expect(screen.getByText("Child shell")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /1 shell/i }));
     expect(toggleWorkSectionCollapsed).toHaveBeenCalledTimes(2);
-    expect(toggleWorkSectionCollapsed).toHaveBeenLastCalledWith("chat:chat-parent");
+    expect(toggleWorkSectionCollapsed).toHaveBeenLastCalledWith("drawer-open:chat:chat-parent");
+  });
+
+  it("reveals a collapsed drawer once when the selection lands inside it", () => {
+    const parent = makeSession({
+      id: "chat-parent",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      toolType: "codex-chat",
+      title: "Parent chat",
+    });
+    const child = makeSession({
+      id: "child-shell",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      toolType: "shell",
+      title: "Child shell",
+      ptyId: "pty-child",
+      chatSessionId: parent.id,
+    });
+    const sessionsGroupedByLane = new Map([[parent.laneId, [parent, child]]]);
+    const toggleWorkSectionCollapsed = vi.fn();
+
+    const view = renderPane({
+      runningFiltered: [parent, child],
+      allSessionsUnfiltered: [parent, child],
+      sessionsGroupedByLane,
+      selectedSessionId: child.id,
+      toggleWorkSectionCollapsed,
+    });
+
+    // A deeplink/notification landing on the child opens the drawer holding it.
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledTimes(1);
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith(
+      "drawer-open:chat:chat-parent",
+      { preserveDeeplink: true },
+    );
+
+    // Re-rendering the same selection must not toggle it again.
+    view.rerender(paneElement({
+      runningFiltered: [parent, child],
+      allSessionsUnfiltered: [parent, child],
+      sessionsGroupedByLane,
+      selectedSessionId: child.id,
+      toggleWorkSectionCollapsed,
+    }));
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledTimes(1);
   });
 
   it("nests same-lane subagent chats under the parent in a second drawer", () => {
@@ -588,6 +638,7 @@ describe("SessionListPane", () => {
       runningFiltered: [parent, child, peer],
       allSessionsUnfiltered: [parent, child, peer],
       sessionsGroupedByLane: new Map([[parent.laneId, [parent, child, peer]]]),
+      workCollapsedSectionIds: ["drawer-open:chat-subagents:chat-parent"],
       toggleWorkSectionCollapsed,
     });
 
@@ -603,7 +654,7 @@ describe("SessionListPane", () => {
     expect(glyph.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(title.compareDocumentPosition(logo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /1 subagent/i }));
-    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("chat-subagents:chat-parent");
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("drawer-open:chat-subagents:chat-parent");
   });
 
   it("keeps a settled subagent nested under an active parent instead of a quiet tail", () => {
@@ -638,7 +689,7 @@ describe("SessionListPane", () => {
       settledFiltered: [child],
       allSessionsUnfiltered: [parent, child, peer],
       sessionsGroupedByLane: new Map([[parent.laneId, [parent, child, peer]]]),
-      workCollapsedSectionIds: ["settled-open:lane-known"],
+      workCollapsedSectionIds: ["settled-open:lane-known", "drawer-open:chat-subagents:chat-parent"],
     });
 
     expect(screen.getByRole("button", { name: /1 subagent/i })).toBeTruthy();
@@ -726,6 +777,7 @@ describe("SessionListPane", () => {
         [parent.id, "running"],
         [child.id, "running"],
       ]),
+      workCollapsedSectionIds: ["drawer-open:chat-subagents:chat-parent"],
     }));
 
     expect(screen.getByRole("button", { name: /1 subagent/i })).toBeTruthy();
@@ -1275,97 +1327,6 @@ describe("SessionListPane", () => {
       resetCrossMachineLaneSyncForTest();
     });
 
-    /**
-     * The reported bug, end to end.
-     *
-     * Sitting at the MacBook with the project tab bound to the Mac Studio and no
-     * other machine contributing rows, NOTHING in the sidebar was badged — the
-     * Studio's lanes least of all, even though every one of them was somewhere
-     * else. The union computed their markers correctly and then discarded the
-     * whole map, because it bailed on "no rows outside the active binding"
-     * rather than "no rows outside this machine".
-     */
-    it("badges the tab's own lanes when the tab is bound to another machine", () => {
-      useAppStore.setState({
-        projectBinding: {
-          kind: "remote",
-          key: "remote:target-studio:project-a",
-          targetId: "target-studio",
-          runtimeName: "Mac Studio (12)",
-          projectId: "project-a",
-          rootPath: "/repo-a",
-          displayName: "Repo A",
-        },
-        // Deliberately empty: the Studio IS the tab's binding, so it contributes
-        // no union row. This is exactly the configuration that used to blank
-        // every badge.
-        crossMachineLanesByMachineId: {},
-        // The union reads the tab's lanes from the STORE, not from the pane's
-        // props — that slice is what the binding attributes to its machine.
-        lanes: [makeLane({ id: "lane-studio", name: "Studio Lane" })],
-      });
-      const studioLane = makeLane({ id: "lane-studio", name: "Studio Lane" });
-      const first = makeSession({
-        id: "session-studio-a", laneId: "lane-studio", laneName: "Studio Lane", title: "First",
-      });
-      const second = makeSession({
-        id: "session-studio-b", laneId: "lane-studio", laneName: "Studio Lane", title: "Second",
-      });
-
-      const { container } = renderPane({
-        lanes: [studioLane],
-        runningFiltered: [first, second],
-        allSessionsUnfiltered: [first, second],
-        sessionsGroupedByLane: new Map([["lane-studio", [first, second]]]),
-      });
-
-      const header = container.querySelector('[data-section-id="lane-studio"]')!;
-      const marker = header.querySelector("[data-machine-marker-mode]");
-      expect(marker).toBeTruthy();
-      expect(marker?.getAttribute("data-machine-marker-mode")).toBe("glyph");
-      expect(marker?.getAttribute("aria-label")).toBe("Mac Studio (12)");
-      // Named on the header, so the rows below it do not repeat it.
-      expect(cardPropsFor("session-studio-a")?.suppressMachineChip).toBe(true);
-    });
-
-    it("badges a one-chat lane on the bound machine through its card", () => {
-      // Same bug, singleton shape — an auto-created lane with a single chat,
-      // which is the common way work starts. It has no header to hang a badge
-      // on, and the card's own chip was fed only by foreign rows, so this case
-      // stayed blank even once the union kept its markers.
-      useAppStore.setState({
-        projectBinding: {
-          kind: "remote",
-          key: "remote:target-studio:project-a",
-          targetId: "target-studio",
-          runtimeName: "Mac Studio (12)",
-          projectId: "project-a",
-          rootPath: "/repo-a",
-          displayName: "Repo A",
-        },
-        crossMachineLanesByMachineId: {},
-        lanes: [makeLane({ id: "lane-solo", name: "Solo Lane" })],
-      });
-      const studioLane = makeLane({ id: "lane-solo", name: "Solo Lane" });
-      const only = makeSession({
-        id: "session-solo", laneId: "lane-solo", laneName: "Solo Lane", title: "Only chat",
-      });
-
-      const { container } = renderPane({
-        lanes: [studioLane],
-        runningFiltered: [only],
-        allSessionsUnfiltered: [only],
-        sessionsGroupedByLane: new Map([["lane-solo", [only]]]),
-      });
-
-      expect(container.querySelector('[data-section-id="lane-solo"]')).toBeNull();
-      const badge = container.querySelector(
-        '[data-session-id="session-solo"] [data-machine-marker-mode]',
-      );
-      expect(badge?.getAttribute("data-session-machine")).toBe("Mac Studio (12)");
-      expect(badge?.getAttribute("aria-label")).toBe("On Mac Studio (12)");
-    });
-
     function seedForeignMachine(overrides: Partial<CrossMachineMachineLanes> = {}) {
       seedStudioMachine(
         [makeLane({ id: "lane-elsewhere", name: "Elsewhere Lane", branchRef: "feature/elsewhere" })],
@@ -1379,40 +1340,17 @@ describe("SessionListPane", () => {
       );
     }
 
-    it("marks only lanes that are not on this machine", () => {
-      seedForeignMachine();
-      const onSelectSession = vi.fn();
-      renderPane({ onSelectSession });
+    it("shows an offline marker on the stale foreign lane", () => {
+      seedForeignMachine({ online: false });
+      renderPane();
 
-      expect(screen.getByText("Elsewhere Lane")).toBeTruthy();
-      expect(screen.getByText("Chat on the other machine")).toBeTruthy();
-      expect(document.querySelector('[data-session-id="session-elsewhere"]')).toBeTruthy();
+      expect(screen.getByRole("button", { name: /Elsewhere Lane/ })).toBeTruthy();
 
-      // One marker, for the foreign lane only — the local lanes stay untouched.
-      // The foreign lane has a single chat, so it renders headerless and its
-      // card IS the header: the badge lives there, under the same attribute a
-      // lane header would use.
-      const markers = document.querySelectorAll("[data-machine-marker-mode]");
-      expect(markers).toHaveLength(1);
-      const foreignCard = document.querySelector('[data-session-id="session-elsewhere"]');
-      expect(foreignCard?.querySelector("[data-machine-marker-mode]")).toBeTruthy();
-      expect(foreignCard?.querySelector("[data-session-machine]")?.getAttribute("data-session-machine"))
-        .toBe("Mac Studio (12)");
-      const localHeader = screen.getByRole("heading", {
-        name: "Orphaned sessions: Mobile-created lane (1)",
-      });
-      expect(localHeader?.querySelector("[data-machine-marker-mode]")).toBeNull();
-
-      fireEvent.click(screen.getByRole("button", { name: /Chat on the other machine/ }));
-      expect(onSelectSession).toHaveBeenCalledWith(
-        "session-elsewhere",
-        expect.anything(),
-        ["session-elsewhere"],
-        expect.objectContaining({
-          targetId: "target-studio",
-          projectId: "project-a",
-        }),
-      );
+      // The foreign lane has a single chat, so its card carries the marker.
+      const marker = document.querySelector("[data-machine-marker-mode]");
+      expect(marker?.getAttribute("data-machine-marker-mode")).toBe("glyph");
+      expect(marker?.getAttribute("aria-label")).toBe("Mac Studio (12), offline");
+      expect(marker?.getAttribute("data-machine-online")).toBe("false");
     });
 
     /**
@@ -1456,12 +1394,33 @@ describe("SessionListPane", () => {
       seedForeignMachine();
 
       renderPane({
-        workSessionFilters: { status: [], tool: ["claude"], hasPr: false, dirtyLane: false },
+        workSessionFilters: { status: [], tool: ["claude"], hasPr: false, dirtyLane: false, machine: [] },
         setWorkSessionFilters: vi.fn(),
       });
 
       expect(screen.queryByText("Elsewhere Lane")).toBeNull();
       expect(screen.queryByText("Chat on the other machine")).toBeNull();
+    });
+
+    it("keeps a foreign machine's matching rows when a machine chip hides every local row", () => {
+      seedForeignMachine();
+
+      renderPane({
+        // The hook already removed every local row for the chip; the pane's own
+        // buckets are what is left.
+        runningFiltered: [],
+        allSessionsUnfiltered: [],
+        sessionsGroupedByLane: new Map(),
+        workSessionFilters: {
+          status: [], tool: [], hasPr: false, dirtyLane: false, machine: ["target-studio"],
+        },
+        setWorkSessionFilters: vi.fn(),
+      });
+
+      // The local roster is empty under the chip, but the other machine's chat
+      // still matches, so this must NOT read as a filtered-out empty list.
+      expect(screen.queryByText("No sessions match")).toBeNull();
+      expect(screen.getByText("Chat on the other machine")).toBeTruthy();
     });
 
     it("files settled foreign chats into the same collapsed quiet tail as local chats", () => {
@@ -1624,6 +1583,100 @@ describe("SessionListPane", () => {
       expect(screen.getByRole("menuitem", { name: "Open in Lanes" })).toBeTruthy();
     });
 
+    it("floats a foreign lane back to the front of the inbox when it leaves the Working shelf", () => {
+      const foldLane = makeLane({
+        id: "lane-fold",
+        name: "Fold Lane",
+        branchRef: "feature/fold",
+        createdAt: "2026-04-01T00:00:00.000Z",
+      });
+      const activeLane = makeLane({
+        id: "lane-active",
+        name: "Active Lane",
+        branchRef: "feature/active",
+        // Created newer, so this is the natural order while both are in the inbox.
+        createdAt: "2026-04-03T00:00:00.000Z",
+      });
+      const foldRunning = makeSession({
+        id: "fold-run-1",
+        laneId: "lane-fold",
+        laneName: "Fold Lane",
+        title: "Fold work one",
+      });
+      const foldRunningTwo = makeSession({
+        id: "fold-run-2",
+        laneId: "lane-fold",
+        laneName: "Fold Lane",
+        title: "Fold work two",
+      });
+      const activeNeeds = makeSession({
+        id: "active-needs",
+        laneId: "lane-active",
+        laneName: "Active Lane",
+        title: "Active asks",
+        pendingInputItemId: "ask-active",
+      });
+      const activeRunning = makeSession({
+        id: "active-run",
+        laneId: "lane-active",
+        laneName: "Active Lane",
+        title: "Active work",
+      });
+      const seed = (foldSessions: TerminalSessionSummary[]) => {
+        seedStudioMachine(
+          [foldLane, activeLane],
+          [...foldSessions, activeNeeds, activeRunning],
+        );
+      };
+      seed([foldRunning, foldRunningTwo]);
+
+      const props: Partial<ComponentProps<typeof SessionListPane>> = {
+        lanes: [],
+        runningFiltered: [],
+        awaitingInputFiltered: [],
+        allSessionsUnfiltered: [],
+        sessionsGroupedByLane: new Map(),
+        workFoldBusyLanes: true,
+        workCollapsedSectionIds: ["shelf-open:lane-shelf:working"],
+      };
+      const { rerender } = render(paneElement(props));
+
+      const foreignOrder = () => Array.from(
+        document.querySelectorAll<HTMLElement>('[data-section-id^="target-studio:"]'),
+      ).map((element) => element.getAttribute("data-section-id"));
+      const inWorkingShelf = (compositeId: string) => Boolean(
+        document.querySelector(
+          `[data-testid="shelf-body-working"] [data-section-id="${compositeId}"]`,
+        ),
+      );
+
+      // Fold Lane is all-busy, so it starts on the Working shelf while Active
+      // Lane (holding a raised hand) stays in the inbox.
+      expect(inWorkingShelf("target-studio:lane-fold")).toBe(true);
+
+      // A raised hand returns Fold Lane from the shelf.
+      act(() => {
+        seed([{ ...foldRunning, pendingInputItemId: "ask-fold" }, foldRunningTwo]);
+      });
+      rerender(paneElement(props));
+
+      expect(inWorkingShelf("target-studio:lane-fold")).toBe(false);
+      // It leads the active foreign rows despite sorting older, because it just
+      // came back out of the Working shelf.
+      expect(foreignOrder()).toEqual([
+        "target-studio:lane-fold",
+        "target-studio:lane-active",
+      ]);
+
+      // Manual sort is the user's own order: the returned lane does not float,
+      // or every drag of it would be undone.
+      rerender(paneElement({ ...props, workLaneSortMode: "manual" }));
+      expect(foreignOrder()).toEqual([
+        "target-studio:lane-active",
+        "target-studio:lane-fold",
+      ]);
+    });
+
     it("nests a foreign parent and child shell as one headerless unit", () => {
       const parent = makeSession({
         id: "foreign-chat-parent",
@@ -1642,7 +1695,7 @@ describe("SessionListPane", () => {
       });
       seedForeignMachine({ sessions: [parent, child] });
 
-      const { container } = renderPane();
+      const { container } = renderPane({ workCollapsedSectionIds: ["drawer-open:chat:foreign-chat-parent"] });
 
       expect(container.querySelector('[data-section-id="target-studio:lane-elsewhere"]')).toBeNull();
       expect(screen.getByText("Foreign parent chat")).toBeTruthy();
@@ -1679,7 +1732,10 @@ describe("SessionListPane", () => {
       renderPane({
         runningFiltered: [],
         sessionsGroupedByLane: new Map(),
-        workCollapsedSectionIds: ["settled-open:target-studio:lane-elsewhere"],
+        workCollapsedSectionIds: [
+          "settled-open:target-studio:lane-elsewhere",
+          "drawer-open:chat-subagents:foreign-chat-parent",
+        ],
         onSelectSession,
       });
 
@@ -1738,18 +1794,6 @@ describe("SessionListPane", () => {
         expect.anything(),
         ["shell-elsewhere"],
       );
-    });
-
-    it("shows a hover label for one online foreign machine", async () => {
-      seedForeignMachine();
-      renderPane();
-      const marker = document.querySelector("[data-machine-marker-mode]")!;
-      expect(marker.getAttribute("data-machine-marker-mode")).toBe("glyph");
-      // The compact non-Primary header marker spells nothing out until hover.
-      expect(marker.textContent).not.toContain("Mac Studio (12)");
-      expect(screen.queryByRole("tooltip")).toBeNull();
-      fireEvent.mouseEnter(marker.parentElement!);
-      expect((await screen.findByRole("tooltip")).textContent).toContain("Mac Studio (12)");
     });
 
     it("dims an offline machine's lane and folds its chats away instead of removing them", () => {
@@ -1837,7 +1881,7 @@ describe("SessionListPane", () => {
       };
 
       it("files a fully settled foreign lane into the Settled shelf, marker intact", () => {
-        seedForeignMachine({ sessions: [foreignSettled()] });
+        seedForeignMachine({ online: false, sessions: [foreignSettled()] });
         const { container } = renderPane({ workCollapsedSectionIds: OPEN_QUIET_SHELVES });
 
         expect(shelfContains(container, "settled")).toBe(true);
@@ -2277,7 +2321,7 @@ describe("SessionListPane lane ordering, pins, chips and drag", () => {
       settledFiltered: [],
       allSessionsUnfiltered: [],
       sessionsGroupedByLane: new Map(),
-      workSessionFilters: { status: ["awaiting-input"], tool: ["claude"], hasPr: false, dirtyLane: false },
+      workSessionFilters: { status: ["awaiting-input"], tool: ["claude"], hasPr: false, dirtyLane: false, machine: [] },
       setWorkSessionFilters,
     });
 
@@ -2289,7 +2333,7 @@ describe("SessionListPane lane ordering, pins, chips and drag", () => {
 
   it("marks the funnel as active when only chips are set", () => {
     renderTwoLanes({
-      workSessionFilters: { status: ["running"], tool: [], hasPr: false, dirtyLane: false },
+      workSessionFilters: { status: ["running"], tool: [], hasPr: false, dirtyLane: false, machine: [] },
       setWorkSessionFilters: vi.fn(),
     });
     expect(screen.getByTestId("work-lane-filter-active-indicator")).toBeTruthy();
@@ -2748,7 +2792,7 @@ describe("SessionListPane singleton lanes and shelves", () => {
       settledFiltered: [parent],
       allSessionsUnfiltered: [parent, child],
       sessionsGroupedByLane: new Map([["lane-known", [parent, child]]]),
-      workCollapsedSectionIds: OPEN_QUIET_SHELVES,
+      workCollapsedSectionIds: [...OPEN_QUIET_SHELVES, "drawer-open:chat:settled-parent-chat"],
     });
 
     const settledShelf = container.querySelector('[data-testid="shelf-body-settled"]');
@@ -2947,21 +2991,19 @@ describe("SessionListPane visual hierarchy", () => {
       });
     }
 
-    it("pins Primary above every other lane, pinned ones included", () => {
-      const { container } = renderWithPrimary({ workPinnedLaneIds: ["lane-other"] });
-      const order = Array.from(container.querySelectorAll("[data-section-id]"))
+    it("lists a pinned lane above Primary, and Primary above unpinned lanes", () => {
+      const pinned = renderWithPrimary({ workPinnedLaneIds: ["lane-other"] });
+      const laneOrder = (root: HTMLElement) => Array.from(root.querySelectorAll("[data-section-id]"))
         .map((el) => el.getAttribute("data-section-id") ?? "")
         .filter((id) => id.startsWith("lane-") && !id.startsWith("lane-shelf:"));
-      expect(order).toEqual(["lane-primary", "lane-other"]);
+      expect(laneOrder(pinned.container)).toEqual(["lane-other", "lane-primary"]);
+      pinned.unmount();
+      expect(laneOrder(renderWithPrimary().container)).toEqual(["lane-primary", "lane-other"]);
     });
 
-    it("separates two Primaries by badging only the one that is elsewhere", () => {
-      // Every ADE machine has a Primary, so two connected machines put two
-      // identically-named, identically-purple rows in one column. This used to
-      // need a bespoke badge naming the LOCAL Primary. It no longer does: under
-      // the physical-machine rule exactly one Primary on screen can be unbadged
-      // — the one on the Mac you're sitting at — so presence versus absence
-      // separates the pair on its own.
+    it("marks the offline Primary while leaving this computer's Primary alone", () => {
+      // Every ADE machine has a Primary, so an offline one needs its marker to
+      // distinguish stale work from the Primary that remains actionable here.
       seedStudioMachine(
         [makeLane({ id: "lane-primary-studio", name: "Primary", laneType: "primary", branchRef: "main" })],
         [makeSession({
@@ -2970,6 +3012,7 @@ describe("SessionListPane visual hierarchy", () => {
           laneName: "Primary",
           title: "Primary chat elsewhere",
         })],
+        { online: false },
       );
 
       const { container } = renderWithPrimary();
@@ -2979,16 +3022,13 @@ describe("SessionListPane visual hierarchy", () => {
       expect(localHeader.querySelector("[data-machine-marker-mode]")).toBeNull();
       expect(within(localHeader).queryByText(THIS_MACHINE_NAME)).toBeNull();
 
-      // The Studio's Primary: badged, in the resting glyph form. Primary is no
-      // longer an exception to that — its name is on hover like every other
-      // lane's. This fixture sorts manually, which opts every lane out of the
-      // headerless form, so the badge sits on the header where it always did.
+      // The Studio's Primary carries the offline marker in the lane header.
       const foreignGroup = container.querySelector(
         '[data-group-id="target-studio:lane-primary-studio"]',
       ) as HTMLElement;
       const foreignMarker = foreignGroup.querySelector("[data-machine-marker-mode]");
       expect(foreignMarker?.getAttribute("data-machine-marker-mode")).toBe("glyph");
-      expect(foreignMarker?.getAttribute("aria-label")).toBe("Mac Studio (12)");
+      expect(foreignMarker?.getAttribute("aria-label")).toBe("Mac Studio (12), offline");
       expect(within(foreignGroup).queryByText("Mac Studio (12)")).toBeNull();
     });
 
@@ -3062,10 +3102,6 @@ describe("SessionListPane machine chip suppression", () => {
     Reflect.deleteProperty(window, "ade");
   });
 
-  function seedMachine(lane: LaneSummary, sessions: TerminalSessionSummary[]) {
-    seedStudioMachine([lane], sessions);
-  }
-
   it("suppresses the row chip under a machine-labelled lane header, but not for a singleton", () => {
     const foreignLane = makeLane({ id: "lane-elsewhere", name: "Elsewhere Lane", branchRef: "feature/elsewhere" });
     const foreignA = makeSession({
@@ -3080,7 +3116,7 @@ describe("SessionListPane machine chip suppression", () => {
       laneName: "Elsewhere Lane",
       title: "Foreign second",
     });
-    seedMachine(foreignLane, [foreignA, foreignB]);
+    seedStudioMachine([foreignLane], [foreignA, foreignB], { online: false });
     const local = makeSession({
       id: "session-local-solo",
       laneId: "lane-known",
@@ -3094,10 +3130,11 @@ describe("SessionListPane machine chip suppression", () => {
       runningFiltered: [local],
       allSessionsUnfiltered: [local],
       sessionsGroupedByLane: new Map([["lane-known", [local]]]),
+      workCollapsedSectionIds: ["lane-open:target-studio:lane-elsewhere"],
     });
 
     // The foreign header names the machine, so its rows stop repeating it.
-    const foreignHeader = screen.getByText("Elsewhere Lane").closest(".ade-lane-group-header")!;
+    const foreignHeader = screen.getByRole("button", { name: /Elsewhere Lane/ }).closest(".ade-lane-group-header")!;
     expect(foreignHeader.querySelector("[data-machine-marker-mode]")).toBeTruthy();
     expect(cardPropsFor("session-foreign-a")?.suppressMachineChip).toBe(true);
     expect(cardPropsFor("session-foreign-b")?.suppressMachineChip).toBe(true);
@@ -3114,14 +3151,14 @@ describe("SessionListPane machine chip suppression", () => {
     // header label for its rows to repeat — and nothing to suppress. Work that
     // is here says so by staying quiet.
     const foreignPrimary = makeLane({ id: "lane-primary-remote", name: "Primary", laneType: "primary" });
-    seedMachine(foreignPrimary, [
+    seedStudioMachine([foreignPrimary], [
       makeSession({
         id: "session-remote-primary",
         laneId: "lane-primary-remote",
         laneName: "Primary",
         title: "Remote primary chat",
       }),
-    ]);
+    ], { online: false });
     const localPrimary = makeLane({ id: "lane-primary-local", name: "Primary", laneType: "primary" });
     const first = makeSession({
       id: "session-primary-a",
@@ -3281,6 +3318,40 @@ describe("SessionListPane quiet-shelf defaults", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Snoozed (1)" }));
     expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("shelf-open:lane-shelf:snoozed");
+  });
+
+  it("folds the open lane into the collapsed Working shelf like any other busy lane", () => {
+    const running = makeSession({
+      id: "session-default-working",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Working chat",
+    });
+    const props: Partial<ComponentProps<typeof SessionListPane>> = {
+      lanes: [makeLane()],
+      runningFiltered: [running],
+      allSessionsUnfiltered: [running],
+      sessionsGroupedByLane: new Map([["lane-known", [running]]]),
+      workFoldBusyLanes: true,
+      selectedSessionId: running.id,
+      workCollapsedSectionIds: [],
+    };
+    const { container, rerender } = renderPane(props);
+
+    // The shelf is shut by default, and the open lane folds into it: the chat
+    // is open in the main pane, but its card is not pinned above the shelf.
+    expect(container.querySelector('[data-section-id="lane-shelf:working"]')).toBeTruthy();
+    expect(container.querySelector('[data-section-id="lane-known"]')).toBeNull();
+    expect(container.querySelector(`[data-session-id="${running.id}"]`)).toBeNull();
+
+    rerender(paneElement({
+      ...props,
+      workCollapsedSectionIds: ["shelf-open:lane-shelf:working"],
+    }));
+    // Expanding the shelf brings the lane back, still filed under Working.
+    expect(
+      container.querySelector(`[data-testid="shelf-body-working"] [data-session-id="${running.id}"]`),
+    ).toBeTruthy();
   });
 });
 

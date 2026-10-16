@@ -1,7 +1,9 @@
 import React from "react";
 import { ArrowSquareOut, ChatCircleText, Check, Clipboard, WarningCircle } from "@phosphor-icons/react";
 import type { LaneLinearIssue } from "../../../shared/types";
-import { COLORS, MONO_FONT } from "./laneDesignTokens";
+import { linearIssueRef } from "../../../shared/issueRefs";
+import { openIssueRef } from "../../lib/issueNavigation";
+import { COLORS, MONO_FONT, fgTint } from "./laneDesignTokens";
 import { LinearMark, LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "./linearBrand";
 
 function priorityLabel(issue: LaneLinearIssue): string {
@@ -87,13 +89,27 @@ export function LinearIssueBadge({
     onStartChatWithIssue?.();
   }, [onStartChatWithIssue]);
 
+  // The badge opens the issue itself, where you are: the issue sheet on the
+  // Lanes page, the Issues tab when a Work view is on screen.
+  const openIssue = React.useCallback(() => {
+    const ref = linearIssueRef(issue.identifier, issue.url ?? null);
+    if (ref) openIssueRef({ ref, source: "lane" });
+  }, [issue.identifier, issue.url]);
+
   return (
     <span className="group relative inline-flex shrink-0" onClick={(event) => event.stopPropagation()}>
       <span
         tabIndex={0}
         role="button"
         aria-label={`${issue.identifier}: ${issue.title}`}
-        className="inline-flex items-center gap-1 rounded-md border outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+        onClick={openIssue}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openIssue();
+          }
+        }}
+        className="inline-flex cursor-pointer items-center gap-1 rounded-md border outline-none focus-visible:ring-2 focus-visible:ring-fg/20"
         style={{
           borderColor: LINEAR_BRAND.borderSubtle,
           background: LINEAR_BRAND.surface,
@@ -125,7 +141,7 @@ export function LinearIssueBadge({
         <span
           className="flex items-center gap-2 border-b px-3 py-2"
           style={{
-            borderColor: "rgba(255,255,255,0.05)",
+            borderColor: fgTint(5),
             background: LINEAR_BRAND.surface,
           }}
         >
@@ -190,7 +206,7 @@ export function LinearIssueBadge({
                 <span
                   key={label}
                   className="rounded-full px-2 py-0.5 text-[9.5px] text-muted-fg/80"
-                  style={{ background: "rgba(255,255,255,0.04)" }}
+                  style={{ background: fgTint(4) }}
                 >
                   {label}
                 </span>
@@ -202,7 +218,7 @@ export function LinearIssueBadge({
         {(onStartChatWithIssue || issue.url) ? (
           <span
             className="flex items-center gap-1.5 border-t px-3 py-2"
-            style={{ borderColor: "rgba(255,255,255,0.05)", background: "rgba(0,0,0,0.20)" }}
+            style={{ borderColor: fgTint(5), background: "rgba(0,0,0,0.20)" }}
           >
             {onStartChatWithIssue ? (
               <button
@@ -228,7 +244,7 @@ export function LinearIssueBadge({
               <>
                 <button
                   type="button"
-                  className="inline-flex h-6 items-center gap-1 rounded px-2 text-[10.5px] font-medium transition-colors hover:bg-white/[0.06]"
+                  className="inline-flex h-6 items-center gap-1 rounded px-2 text-[10.5px] font-medium transition-colors hover:bg-fg/[0.06]"
                   style={{
                     color: copyButtonColor(copyState),
                     background: copyState === "copied" ? "rgba(34,197,94,0.10)" : "transparent",
@@ -245,7 +261,7 @@ export function LinearIssueBadge({
                 </button>
                 <button
                   type="button"
-                  className="inline-flex h-6 items-center justify-center rounded px-1.5 text-muted-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg"
+                  className="inline-flex h-6 items-center justify-center rounded px-1.5 text-muted-fg/65 transition-colors hover:bg-fg/[0.06] hover:text-fg"
                   title="Open in Linear"
                   onMouseDown={(event) => {
                     event.preventDefault();

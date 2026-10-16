@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { isAdeRuntimeNamedPipePath } from "../../../../desktop/src/shared/adeRuntimeIpc";
-import { shellQuote } from "../../serviceManager/common";
+import { packagedCliNodeModulePaths, shellQuote } from "../../serviceManager/common";
+
+export { packagedCliNodeModulePaths };
 
 /**
  * Which brain an agent's `ade` should reach when its env names none.
@@ -76,8 +78,11 @@ export function renderAdeCliShim(args: {
   execPath: string;
   brain: AdeCliShimBrain;
   platform?: NodeJS.Platform;
+  /** Module dirs put in front of the caller's NODE_PATH (see `packagedCliNodeModulePaths`). */
+  nodeModulePaths?: readonly string[];
 }): string {
   const platform = args.platform ?? process.platform;
+  const nodeModulePaths = (args.nodeModulePaths ?? []).filter((entry) => shimSafe(entry, platform));
   // A JS entry runs under the runtime that wrote the shim; anything else runs as is.
   const isJsEntry = /\.(?:cjs|mjs|js)$/i.test(args.entryPath);
   const defaults = [
@@ -95,6 +100,11 @@ export function renderAdeCliShim(args: {
       );
     }
     if (isJsEntry) {
+      if (nodeModulePaths.length) {
+        // An unset NODE_PATH expands to nothing in a batch file; Node skips
+        // the empty entry the trailing `;` leaves.
+        lines.push(`set "NODE_PATH=${cmdBatchLiteral(nodeModulePaths.join(";"))};%NODE_PATH%"`);
+      }
       lines.push(
         "set ELECTRON_RUN_AS_NODE=1",
         `"${cmdBatchLiteral(args.execPath)}" "${cmdBatchLiteral(args.entryPath)}" %*`,
@@ -111,6 +121,9 @@ export function renderAdeCliShim(args: {
       ...defaults.map(([name, value]) => `  ${name}=${shellQuote(value)}; export ${name}`),
       "fi",
     );
+  }
+  if (isJsEntry && nodeModulePaths.length) {
+    lines.push(`NODE_PATH=${shellQuote(nodeModulePaths.join(":"))}\${NODE_PATH:+:$NODE_PATH}; export NODE_PATH`);
   }
   lines.push(isJsEntry
     ? `ELECTRON_RUN_AS_NODE=1 exec ${shellQuote(args.execPath)} ${shellQuote(args.entryPath)} "$@"`

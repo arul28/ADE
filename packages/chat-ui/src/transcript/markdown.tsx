@@ -14,6 +14,8 @@
 
 import { Fragment, type ReactNode } from "react";
 
+import { AdeLink } from "./links";
+
 type Block =
   | { kind: "code"; language: string | null; text: string }
   | { kind: "heading"; level: 1 | 2 | 3; text: string }
@@ -194,9 +196,9 @@ function renderInline(source: string, keyPrefix: string): ReactNode {
         const href = safeHref(token.href);
         if (!href) return <Fragment key={key}>{token.value}</Fragment>;
         return (
-          <a key={key} href={href} target="_blank" rel="noreferrer noopener">
+          <AdeLink key={key} href={href} source="markdown">
             {token.value}
-          </a>
+          </AdeLink>
         );
       }
       default:

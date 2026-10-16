@@ -16,6 +16,7 @@ export function LaneDialogShell({
   children,
   footer,
   scrollBody = true,
+  bodyPadding = true,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -36,6 +37,8 @@ export function LaneDialogShell({
    * Default stays auto so existing dialogs keep their current layout.
    */
   scrollBody?: boolean;
+  /** When false, the child draws edge to edge and owns its own padding. */
+  bodyPadding?: boolean;
 }) {
   return (
     <Dialog
@@ -50,6 +53,7 @@ export function LaneDialogShell({
       height={height}
       maxHeight="min(92dvh, calc(100vh - 1rem))"
       scrollBody={scrollBody}
+      bodyPadding={bodyPadding}
       dismissible={!busy}
       footer={footer}
       onCloseAutoFocus={onCloseAutoFocus}

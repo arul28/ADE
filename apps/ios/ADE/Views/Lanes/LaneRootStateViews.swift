@@ -88,7 +88,7 @@ extension LanesTabView {
         Button(actionTitle) {
           handleNoticeAction(action)
         }
-        .buttonStyle(.glassProminent)
+        .buttonStyle(ADEKitButtonStyle(prominent: true))
         .tint(ADEColor.accent)
       }
     }

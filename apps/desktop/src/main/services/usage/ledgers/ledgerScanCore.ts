@@ -14,6 +14,8 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import type { SqlValue } from "../../state/kvDb";
 import { finiteNumberOrNull, toOptionalString } from "../../shared/utils";
+import type { UsageSpeed } from "../../../../shared/types/usage";
+import { isRegisteredLinkedLanePath } from "../../../../../../ade-cli/src/services/projects/projectRoots";
 
 /**
  * Whether a scan could read everything it set out to read.
@@ -114,6 +116,12 @@ export interface TokenEntry {
   webSearchRequests?: number;
   costOverrideUsd?: number;
   /**
+   * The service tier the request billed at: Claude Code's fast mode
+   * (`usage.speed: "fast"`), Codex `service_tier` (`priority` is Fast,
+   * `ultrafast`). Absent means standard.
+   */
+  speed?: UsageSpeed;
+  /**
    * Context size of the ONE model request this entry records (uncached input
    * + cache read + cache write). Set only by scanners whose entries are single
    * requests; pricing uses it to pick a vendor's long-context tier. Absent on
@@ -132,8 +140,23 @@ export function normalizeUsageLabel(value: unknown, fallback: string): string {
   return toOptionalString(value) ?? fallback;
 }
 
+/** A ledger repeats a handful of folders across thousands of rows. */
+const externalLanePathMemo = new Map<string, boolean>();
+const EXTERNAL_LANE_PATH_MEMO_LIMIT = 4096;
+
+/**
+ * Whether a folder is an ADE lane: anything under `.ade/worktrees/`, or a git
+ * linked worktree elsewhere (a sibling `repo-worktrees/feature` checkout) that
+ * its ADE project lists as a lane.
+ */
 export function isAdeWorktreePath(value: string): boolean {
-  return value.replace(/\\/g, "/").includes("/.ade/worktrees/");
+  if (value.replace(/\\/g, "/").includes("/.ade/worktrees/")) return true;
+  const cached = externalLanePathMemo.get(value);
+  if (cached !== undefined) return cached;
+  const result = isRegisteredLinkedLanePath(value);
+  if (externalLanePathMemo.size >= EXTERNAL_LANE_PATH_MEMO_LIMIT) externalLanePathMemo.clear();
+  externalLanePathMemo.set(value, result);
+  return result;
 }
 
 export function numberFromRecord(record: Record<string, unknown> | undefined, ...keys: string[]): number {

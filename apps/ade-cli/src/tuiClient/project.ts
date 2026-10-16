@@ -4,21 +4,35 @@ import path from "node:path";
 import type { AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { ProjectLaunchContext } from "./types";
+import { gitOwnershipMessage, parseGitOwnershipError } from "../services/projects/gitOwnership";
+import { findLinkedLaneWorktreeRoot } from "../services/projects/projectRoots";
+import { isPathInside } from "../../../desktop/src/main/services/shared/pathCompare";
 
 function normalizeRoot(value: string): string {
   return path.resolve(value);
 }
+
+let reportedUntrustedGitFolder = false;
 
 function findGitRoot(cwd: string): string | null {
   try {
     const stdout = execFileSync("git", ["rev-parse", "--show-toplevel"], {
       cwd,
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
     const root = stdout.trim();
     return root ? path.resolve(root) : null;
-  } catch {
+  } catch (error) {
+    // Git refuses folders that belong to another account; say why once
+    // (before the TUI takes the screen) instead of silently losing the root.
+    const stderr = String((error as { stderr?: unknown } | null)?.stderr ?? "");
+    const ownership = parseGitOwnershipError(stderr);
+    if (ownership && !reportedUntrustedGitFolder) {
+      reportedUntrustedGitFolder = true;
+      process.stderr.write(`ade: ${gitOwnershipMessage(ownership)}\n`);
+    }
     return null;
   }
 }
@@ -54,7 +68,11 @@ export function detectProjectLaunchContext(args: {
   const explicitProjectRootArg = args.projectRoot?.trim() || null;
   const explicitWorkspaceRoot = args.workspaceRoot?.trim() || null;
   const remote = args.remote === true;
-  const worktree = findAdeWorktreeContext(launchCwd);
+  // A lane outside `.ade/worktrees/` resolves to its project the same way;
+  // the lane itself is then picked by path in `chooseInitialLane`.
+  const linkedLane = remote ? null : findLinkedLaneWorktreeRoot(launchCwd);
+  const worktree = findAdeWorktreeContext(launchCwd)
+    ?? (linkedLane ? { ...linkedLane, laneHint: null } : null);
   const gitRoot = findGitRoot(launchCwd);
 
   const projectRoot = remote
@@ -116,10 +134,8 @@ export function chooseInitialLane(
       const worktreePath = normalizeRoot(lane.worktreePath);
       const attachedRootPath = lane.attachedRootPath ? normalizeRoot(lane.attachedRootPath) : null;
       return (
-        workspaceRoot === worktreePath
-        || workspaceRoot.startsWith(`${worktreePath}${path.sep}`)
-        || (attachedRootPath !== null
-          && (workspaceRoot === attachedRootPath || workspaceRoot.startsWith(`${attachedRootPath}${path.sep}`)))
+        isPathInside(workspaceRoot, worktreePath)
+        || (attachedRootPath !== null && isPathInside(workspaceRoot, attachedRootPath))
       );
     });
   if (byPath) return byPath;

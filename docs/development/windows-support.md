@@ -1,10 +1,10 @@
 # Windows support and troubleshooting
 
 ADE supports the packaged Windows 10/11 x64 desktop, shipped as a public beta.
-Windows ARM64, native Windows OS computer use, and iOS Simulator remain out of
-scope. App Control over CDP, the built-in Browser, proof-file ingestion, phone
-pairing, the local Windows brain, and Windows as an SSH-bootstrap runtime target
-are supported.
+Windows ARM64 and iOS Simulator remain out of scope. App Control over CDP, the
+built-in Browser, proof-file ingestion, phone pairing, the local Windows brain,
+Windows as an SSH-bootstrap runtime target, and a per-lane Windows screen
+([Windows Desktop](../features/windows-desktop/README.md)) are supported.
 
 Public Windows installers ship. v1.2.52 was the first signed public release;
 downloads are served from `https://ade-app.dev/download/windows` and the
@@ -18,6 +18,12 @@ Every capability below behaves differently on Windows than on macOS. The list is
 exhaustive by intent: if a Windows user notices something missing or weaker and
 it is not named here, treat that as a bug, not a known gap.
 
+Running a dev app, profiling a running brain, or benchmarking anything on a
+Windows host: see **On Windows** in
+[local-development.md](local-development.md#on-windows). It carries the dev-app
+recipe, the `ade`-CLI-resolves-the-project-from-cwd trap, and which measurement
+techniques give wrong answers here.
+
 Three outcomes are possible, and they are not interchangeable. **Degraded** means
 the capability works with a stated cost. **Blocked** means the capability is
 absent and the surface says so. **Unavailable** means the OS offers no route at
@@ -25,10 +31,11 @@ all and the surface does not exist.
 
 | Capability | Outcome | What Windows does | Why |
 | --- | --- | --- | --- |
-| Native OS computer use — screenshot, video, GUI automation | Blocked | App Control over CDP, the built-in Browser, and proof-file ingestion all work. Only OS-level capture is gated. | Backed by `screencapture` and `osascript`. The Windows equivalent is Windows.Graphics.Capture plus UI Automation, which is a separate project. |
+| Native OS computer use — screenshot, video, GUI automation | Degraded | [Windows Desktop](../features/windows-desktop/README.md) gives each lane a Windows screen through `ade screen`: a private Remote Desktop child session of the user's account after a one-time admin setup, or the user's main desktop when they tap Allow on the card in the chat. Screenshots, recordings, UI Automation and real input work on both seats. Codex Computer Use and Ghost OS stay macOS-only. | The private seat needs the one-time setup, the brain in the console session, an unlocked PC and a free holder (one lane at a time); the shared seat takes the user's foreground. |
+| ADE desktop app started as administrator | Degraded | Agents get no built-in browser, App Control recording or demo videos while it runs; the app docks a warning banner. Recordings are filed as recorded. | Windows refuses the medium-integrity brain access to the elevated app's desktop-bridge pipe. Quit ADE and open it normally. |
 | iOS Simulator drawer, Xcode Preview | Unavailable | Hidden. | Requires macOS and Xcode. |
-| Native Notch | Unavailable | Hidden. | macOS window-server feature with no counterpart. |
-| Claude Code background-job reattach | Degraded | Each follow-up prompt respawns the CLI instead of replying into the live background job. Turns are slower and in-flight context is lost. | Claude Code ships no `control.sock` on Windows, and `os.userInfo().uid` is `-1`, so there is nothing to attach to. |
+| Claude Code background-job reattach | Supported | ADE resolves the daemon at `\.\pipe\cc-daemon-<nonce>-control`, reading the nonce from `<Claude config dir>/daemon/pipe.key`. No key, a malformed key or a daemon that does not answer resolves to nothing, which is byte-for-byte the old behaviour. The endpoint and the line protocol are verified against a stand-in pipe server on a Windows host; an exchange with a live Claude daemon has not been observed, because `claude --bg` refuses to start from a non-TTY on workspace trust. | This row used to read Degraded, on the reasoning that Claude Code ships no `control.sock` on Windows and `os.userInfo().uid` is `-1`, so there was nothing to attach to. The premise is right and the conclusion was wrong: Claude Code has a Windows branch that publishes a named pipe instead of a socket file, and only ADE's POSIX discovery existed. The per-turn respawn the row warned about was also unreachable — ADE's Claude `--bg` turn path has no callers. See `docs/OPTIMIZATION_OPPORTUNITIES.md`, round 2. |
+| Auto-update install time and relaunch | Degraded | Installing an update takes minutes, not the <10 s macOS needs. The relaunch itself is fixed: the installer is now driven silently, which is the only mode the assisted NSIS target can start the app from. Phase timings, what is ruled out, and what is still unattributed: `windows-update-timeline.md`. | NSIS extraction of ~300 MB plus two synchronous PowerShell steps inside the install, one of which registers a scheduled task and starts a brain the app then replaces. |
 | Graceful brain shutdown | Degraded | ADE asks the brain to shut down over its own RPC channel and force-terminates only after the grace window. | Windows has no deliverable `SIGTERM`; `process.kill` is `TerminateProcess`, which no handler can intercept. |
 | Orphan agent recovery | Degraded | Recovery uses the on-disk PID registry and a listening-port scan. | Windows cannot read another process's environment, so the macOS `ps -wwE` environment-tag pass has no equivalent. The port half is implemented. |
 | Open files of another process (import-list liveness / CLI session capture) | Degraded | When Sysinternals `handle.exe` is on PATH, ADE lists files a provider CLI has open and treats that as live. Without it, ADE cannot enumerate handles: it does not guess from mtime except as an explicit last-resort fallback, and Claude `--session-id` assignment plus transcript capture still identify ADE-owned sessions. | Windows has no `lsof`. `openfiles /query` requires a global audit flag. |
@@ -65,6 +72,97 @@ environment, starts the packaged ADE runtime, and writes an advisory JSON record
 containing supervisor and runtime process ids. Status validates that the
 recorded supervisor is a PowerShell process whose command line names the exact
 launcher before treating it as ADE-owned.
+
+The Run value's name is `ADE Runtime (<channel>-<hash>)`, and the hash is derived
+from the channel and the user's **SID**, never from `USERDOMAIN`. That variable
+is `WORKGROUP` inside an OpenSSH session and the machine name at the desktop, so
+an install over SSH used to register a second value for the same launcher and
+every sign-in then started two supervisors. Install, repair and uninstall
+enumerate every value whose name starts `ADE Runtime (<channel>-` or whose
+command names this channel's launcher and delete all but the current one;
+uninstall deletes all of them. A host where the SID cannot be read falls back to
+the bare account name, which is also session-independent.
+
+One supervisor and one brain exist per user and channel, whatever the number of
+logon sessions. Before starting a supervisor the launcher:
+
+1. **reads the session.** It compares `WTSGetActiveConsoleSessionId()` with its
+   own `Process.SessionId` and logs both. This only decides whether the
+   child-session branch below applies; it does not stop a brain from starting.
+   If the API cannot answer, it logs the failure and exits rather than guessing.
+2. **outside the console session, honours a Windows Desktop launch request.**
+   A usable `child-launch.json` (below) means the session was opened for the
+   driver: the launcher starts the driver and exits, and never starts a brain
+   there. Without a usable request it carries on to the mutex.
+3. **takes a cross-session mutex,** `Global\ade-supervisor-<launcher-hash>-<SID>`.
+   This is what keeps one brain per user and channel. An existing owner, in
+   any session, causes the newcomer to exit 0, leaving that owner alone. A
+   mutex API or creation failure causes it to exit 1. The handle is held for
+   the supervisor's lifetime; Windows releases it on exit. `Global\` excludes
+   duplicates across sessions rather than just inside one session.
+
+So the brain runs in whichever session first starts a supervisor while none is
+running. That is usually the console session, but it can be a Remote Desktop
+session: Remote Desktop moves the user's session off the console and gives the
+console a fresh, empty one, and the launcher used to refuse every session but the
+console, so no brain could start at all while the user worked over Remote
+Desktop (an update installed from RDP on 2026-10-08 ended with no brain). A host
+with no console session at all (`0xFFFFFFFF`: Windows Sandbox, headless VMs,
+RDP-only servers) also runs its brain.
+
+A brain outside the console session keeps running while Remote Desktop is
+disconnected, and when Windows reconnects that session at the PC (its default
+when the user signs in there again), the brain is back on the console with it.
+It ends only when that session signs out. Nothing restarts it until the user's
+account has a session again; then
+the first of these starts it, in whichever session it runs: the startup Run
+value at the next sign-in, the desktop app's service install at launch, or
+`ade brain start`. Windows Desktop private screens need the brain in the console
+session; `ade doctor` shows which session the brain is in.
+
+`ade brain start` hands the launcher to a one-shot Scheduled Task (or, when
+that is refused, WMI `Win32_Process.Create`) so it escapes the caller's job
+object. The task is registered with priority 4, an ordinary app's. The Task
+Scheduler default, 7, starts the launcher below normal with low memory and I/O
+priority, and the brain and the desktop driver inherit both: on a PC under
+memory pressure Windows trims the brain first and pages it back in behind every
+other process, so its event loop stalled for seconds in page-in waits.
+
+Outside the console session the launcher reads
+`<ADE home>\windows-desktop\child-launch.json`, the Windows Desktop feature's
+launch request:
+
+```json
+{
+  "driverPath": "C:\\Program Files\\ADE\\resources\\native\\ade-desktop-driver.exe",
+  "args": ["child", "--pipe", "\\\\.\\pipe\\ade-screen-..."],
+  "expiresAt": "2026-09-30T12:00:00.000Z"
+}
+```
+
+When the file exists, parses, `expiresAt` is in the future, and `driverPath`
+exists and ends in `ade-desktop-driver.exe`, the launcher starts it hidden with
+those arguments and no wait, so the driver can connect back to the brain over
+the named pipe, and exits. That branch never starts a supervisor or a brain. A
+missing, expired or unusable request is logged and the launcher goes on to the
+mutex, which a running brain already holds.
+
+That branch is the fallback. Explorer starts startup entries only once a new
+session settles, which on a busy PC took longer than the 30 s the driver waits,
+so for each private start the driver also registers a per-user logon task,
+`ADE private screen <home hash>` (no elevation needed for the user's own
+logon trigger). It runs the driver's child mode with the user's interactive
+token at priority 4 about two seconds into the sign-in, through
+`conhost.exe --headless` so the console program opens no terminal window. The task's trigger
+expires after three minutes and Windows then deletes it; the driver deletes it
+as soon as the child connects or the start is torn down.
+
+Install and repair treat the PID record as advisory. They also enumerate live
+supervisors by command line — PowerShell processes whose command line names this
+launcher, in any session of the user — and stop every one of them before
+starting the replacement. And when the brain exits having failed with
+`socket_owned_by_other` (another brain already owns the pipe), the supervisor
+logs that and exits instead of restarting on a backoff forever.
 
 Release proof records these as separate bounded signals, not one inferred
 "service is running" claim:

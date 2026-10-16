@@ -1,4 +1,6 @@
 import type { OperationRecord } from "../../../shared/types";
+import type { LaneMachine } from "../../state/laneMachineRouting";
+import type { EventIconName } from "./eventIcons";
 import type { EventCategory, EventImportance, NodeShape } from "./eventTaxonomy";
 
 // ── History surface (activity timeline vs git commit graph) ───────
@@ -7,14 +9,32 @@ export type HistorySurface = "activity" | "commits";
 // ── View Modes ───────────────────────────────────────────────────
 export type ViewMode = "graph" | "list" | "compact";
 
+// ── Machine tag (which machine recorded an operation) ───────────
+/**
+ * History is one timeline across every machine that holds the project. A lane
+ * owns its machine, so an operation is tagged with the machine it was read
+ * from. Absent on records from sources that are not per-machine.
+ */
+export type TimelineMachineTag = {
+  machine?: HistoryMachineSource;
+};
+
+/** One machine the timeline reads from: a view of the shared machine model. */
+export type HistoryMachineSource = Pick<
+  LaneMachine,
+  "machineId" | "machineName" | "pin" | "online" | "isThisMachine" | "isActiveBinding"
+>;
+
+export type TimelineRecord = OperationRecord & TimelineMachineTag;
+
 // ── Timeline Event (enriched OperationRecord for rendering) ─────
-export type TimelineEvent = OperationRecord & {
+export type TimelineEvent = TimelineRecord & {
   /** Resolved display label */
   label: string;
   /** Event category for grouping/filtering */
   category: EventCategory;
-  /** Icon name from Phosphor */
-  iconName: string;
+  /** Key of EVENT_ICONS (eventIcons.ts) */
+  iconName: EventIconName;
   /** Category color */
   color: string;
   /** Node shape for graph rendering */

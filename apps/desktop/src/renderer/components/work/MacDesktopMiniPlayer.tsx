@@ -1,8 +1,10 @@
+import { desktopToolProductName, workToolDefinition, type DesktopWorkTool } from "../terminals/workTools";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   MacDesktopEventPayload,
   MacDesktopLeaseHolderKind,
   MacDesktopLeaseState,
+  MacDesktopRecordingStatus,
   MacDesktopStatus,
   OpenProjectBinding,
 } from "../../../shared/types";
@@ -10,7 +12,7 @@ import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { isWorkLivePreviewDisabled } from "../../state/workLiveCardState";
 import { cn } from "../ui/cn";
 import { clearMacDesktopFrame, useMacDesktopFrame } from "../chat/macDesktopFrameStore";
-import { H264VideoCanvas } from "../chat/H264VideoCanvas";
+import { H264StreamView } from "../chat/H264StreamView";
 import { useMacDesktopLiveView } from "../chat/useMacDesktopLiveView";
 import { MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY } from "../chat/macDesktopLiveViewLease";
 import { macDesktopErrorText } from "../chat/macDesktopErrorText";
@@ -25,7 +27,10 @@ import {
   FloatingPlayerShell,
   useCanvasPictureInPicture,
   useFloatingPlayerFrame,
+  useFloatingPlayerCapture,
+  type FloatingPlayerCapture,
 } from "../shared/FloatingPlayer";
+import { showToast } from "../app/toast/toastStore";
 import { floatingPlayerSourceSize, type FloatingPlayerSize } from "../shared/floatingPlayerLayout";
 import { isWorkLivePictureInPictureSupported } from "./workLiveIosPictureInPicture";
 import { macDesktopFloatState, workLiveMacDesktopSessionKey, workLiveSource } from "./workLiveCard";
@@ -44,10 +49,9 @@ import { readMacDesktopMiniPlayerChoice, writeMacDesktopMiniPlayerChoice } from 
  * and Close. At rest it is the picture and an 8px dot, red while the desktop
  * records. Its place and width are kept across restarts.
  *
- * It used to be one of the corner card's sources, which the owner found
- * wanting on 2026-09-23: it could not be moved, it could not be resized, and it
- * floated over a tools pane that was already showing the desktop. Its rules
- * are now its own (`macDesktopFloatState`).
+ * It is not one of the corner card's sources: as one it could not be moved or
+ * resized, and it floated over a tools pane that was already showing the
+ * desktop. Its rules are its own (`macDesktopFloatState`).
  *
  * The picture is the lane's one decoder when this player holds it (the pane
  * outranks it, see `macDesktopLiveViewLease`), and the last frame from
@@ -81,6 +85,10 @@ function useMacDesktopChatScope(args: {
   leaseHolderId: string | null;
   leaseHolderKind: MacDesktopLeaseHolderKind | null;
   recording: boolean;
+  /** The running recording's start, and whether its demo is being made. */
+  capture: MacDesktopCaptureState;
+  /** Apply a recording status this player fetched itself (its Stop's answer). */
+  noteRecording: (status: MacDesktopRecordingStatus | null | undefined) => void;
   displayKey: string | null;
   displayGone: boolean;
   /** Apply a status this player fetched itself (the Off state's Start). */
@@ -89,7 +97,8 @@ function useMacDesktopChatScope(args: {
   const { enabled, laneId, chatSessionId, runtimePin } = args;
   const [viewerChatSessionIds, setViewerChatSessionIds] = useState<string[]>([]);
   const [lease, setLease] = useState<{ id: string; kind: MacDesktopLeaseHolderKind } | null>(null);
-  const [recording, setRecording] = useState(false);
+  const [capture, setCapture] = useState<MacDesktopCaptureState>(NO_MAC_CAPTURE);
+  const recording = capture.startedAt != null;
   const [displayKey, setDisplayKey] = useState<string | null>(null);
   const [displayGone, setDisplayGone] = useState(false);
   // Read through a ref so a caller passing a fresh pin object each render cannot
@@ -104,7 +113,7 @@ function useMacDesktopChatScope(args: {
       // Without a chat there is nothing to authorize; skip the reads entirely.
       setViewerChatSessionIds([]);
       setLease(null);
-      setRecording(false);
+      setCapture(NO_MAC_CAPTURE);
       setDisplayKey(null);
       setDisplayGone(false);
       return undefined;
@@ -122,7 +131,7 @@ function useMacDesktopChatScope(args: {
       .then((status) => {
         if (cancelled) return;
         setLease(leaseOf(status?.lease));
-        setRecording(status?.recording?.running === true);
+        setCapture(macCaptureOf(status?.recording));
         setDisplayKey(workLiveMacDesktopSessionKey(status?.display));
         if (status) setDisplayGone(!status.display);
       })
@@ -144,7 +153,7 @@ function useMacDesktopChatScope(args: {
         return;
       }
       if (event.type === "recording-changed" && event.status.laneId === laneId) {
-        setRecording(event.status.running === true);
+        setCapture(macCaptureOf(event.status));
         return;
       }
       if (event.type === "display-created") {
@@ -158,7 +167,8 @@ function useMacDesktopChatScope(args: {
         setDisplayKey(null);
         setDisplayGone(true);
         // A recording cannot outlive its display; the stop event may never come.
-        setRecording(false);
+        // A demo already being made is still being made.
+        setCapture((current) => ({ startedAt: null, makingDemo: current.makingDemo }));
         // The picture is of a display that no longer exists; the pane clears
         // the shared frame too, but the player must not depend on the pane
         // being open to stop showing a dead screen.
@@ -177,19 +187,50 @@ function useMacDesktopChatScope(args: {
     setDisplayGone(false);
   }, [laneId]);
 
+  const noteRecording = useCallback((status: MacDesktopRecordingStatus | null | undefined) => {
+    if (!status || status.laneId !== laneId) return;
+    setCapture(macCaptureOf(status));
+  }, [laneId]);
+
   return {
     viewerChatSessionIds,
     leaseHolderId: lease?.id ?? null,
     leaseHolderKind: lease?.kind ?? null,
     recording,
+    capture,
+    noteRecording,
     displayKey,
     displayGone,
     noteStatus,
   };
 }
 
+type MacDesktopCaptureState = { startedAt: string | null; makingDemo: boolean };
+const NO_MAC_CAPTURE: MacDesktopCaptureState = { startedAt: null, makingDemo: false };
+
+function macCaptureOf(status: MacDesktopRecordingStatus | null | undefined): MacDesktopCaptureState {
+  if (!status) return NO_MAC_CAPTURE;
+  return {
+    // A running recording with no start time still runs; the pill reads 0:00.
+    startedAt: status.running === true ? status.startedAt ?? new Date().toISOString() : null,
+    makingDemo: status.makingDemo === true,
+  };
+}
+
 function leaseOf(lease: MacDesktopLeaseState | null | undefined): { id: string; kind: MacDesktopLeaseHolderKind } | null {
   return lease?.holderId ? { id: lease.holderId, kind: lease.holder } : null;
+}
+
+type DesktopTool = DesktopWorkTool;
+
+const FLOATING_ICONS: Record<DesktopTool, { Icon: NonNullable<ReturnType<typeof workToolDefinition>>["icon"]; color: string } | null> = {
+  "mac-desktop": floatingIcon("mac-desktop"),
+  "windows-desktop": floatingIcon("windows-desktop"),
+};
+
+function floatingIcon(tool: DesktopTool) {
+  const definition = workToolDefinition(tool);
+  return definition ? { Icon: definition.icon, color: definition.color } : null;
 }
 
 export function MacDesktopMiniPlayer({
@@ -200,6 +241,7 @@ export function MacDesktopMiniPlayer({
   sessionLaneId = null,
   runtimePin,
   supported,
+  desktopTool = "mac-desktop",
   onOpenInPane,
 }: {
   /** The Work route is on screen. Everything here is torn down when it is not. */
@@ -217,6 +259,13 @@ export function MacDesktopMiniPlayer({
   runtimePin: OpenProjectBinding | null;
   /** False once the host said it cannot host a display. */
   supported: boolean;
+  /**
+   * Which pane tool shows this lane's screen on its host. The floating player
+   * is one player for both; this only names it and finds the pane's element.
+   * The per-chat preview toggle stays keyed `mac-desktop` on both hosts, so the
+   * pane's toggle and this player always read the same marker.
+   */
+  desktopTool?: DesktopTool;
   onOpenInPane: () => void;
 }) {
   const runtimePinRef = useRef(runtimePin);
@@ -296,7 +345,7 @@ export function MacDesktopMiniPlayer({
   });
   const decoderPlaying = Boolean(live.url) && live.status === "playing";
   // The pane's own element, by the key it registers under: see `macDesktopFloatState`.
-  const paneMounted = useWorkSurfaceElementMounted(laneId ? workSurfaceKey("mac-desktop", scopeKey, laneId) : null);
+  const paneMounted = useWorkSurfaceElementMounted(laneId ? workSurfaceKey(desktopTool, scopeKey, laneId) : null);
 
   const { present, visible } = macDesktopFloatState({
     active,
@@ -325,6 +374,7 @@ export function MacDesktopMiniPlayer({
     macDesktopControl: { leaseHolder: macScope.leaseHolderKind, recording: macScope.recording },
   }), [macScope.displayKey, macScope.leaseHolderKind, macScope.recording, storedFrame]);
 
+  const desktopName = desktopToolProductName(desktopTool);
   /** The Off state's Start: the same explicit start as the pane's Off card. */
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
@@ -340,10 +390,10 @@ export function MacDesktopMiniPlayer({
       .then((status) => noteStatus(status))
       .catch((cause: unknown) => setStartError(
         macDesktopErrorText(cause instanceof Error ? cause.message : String(cause), { laneId })
-          ?? "Mac Desktop did not start.",
+          ?? `${desktopName} did not start.`,
       ))
       .finally(() => setStarting(false));
-  }, [chatSessionId, laneId, noteStatus]);
+  }, [chatSessionId, desktopName, laneId, noteStatus]);
 
   /**
    * × turns the preview off for this chat and ends the agent's float: the
@@ -356,6 +406,32 @@ export function MacDesktopMiniPlayer({
     revokeMacDesktopCardForChat(laneId, chatSessionId);
   }, [chatSessionId, laneId, source.sessionKey]);
 
+  // Stop, with this chat's id: the recording is filed under the chat that
+  // stops it, and the pane's own Stop sends the same.
+  const noteRecording = macScope.noteRecording;
+  const stopRecording = useCallback(async () => {
+    const api = window.ade?.macDesktop;
+    if (!api?.stopRecording || !laneId) return;
+    const status = await api.stopRecording(
+      { laneId, ...(chatSessionId ? { chatSessionId } : {}) },
+      runtimePinRef.current,
+    ).catch((cause: unknown) => {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      showToast({
+        tone: "error",
+        title: "Recording did not stop",
+        message: macDesktopErrorText(message, { laneId }) ?? message,
+      });
+      return null;
+    });
+    noteRecording(status);
+  }, [chatSessionId, laneId, noteRecording]);
+  const capture = useFloatingPlayerCapture({
+    startedAt: macScope.capture.startedAt,
+    makingDemo: macScope.capture.makingDemo,
+    stop: stopRecording,
+  });
+
   if (!present || !laneId) return null;
   return (
     <MacDesktopMiniPlayerBox
@@ -367,7 +443,9 @@ export function MacDesktopMiniPlayer({
       storedSize={storedFrame ? { width: storedFrame.width, height: storedFrame.height } : null}
       ownerLabel={source.ownerLabel}
       recording={macScope.recording}
+      capture={capture}
       off={off}
+      desktopTool={desktopTool}
       starting={starting}
       startError={startError}
       onStart={start}
@@ -386,7 +464,9 @@ function MacDesktopMiniPlayerBox({
   storedSize,
   ownerLabel,
   recording,
+  capture,
   off,
+  desktopTool,
   starting,
   startError,
   onStart,
@@ -394,6 +474,7 @@ function MacDesktopMiniPlayerBox({
   onClose,
 }: {
   laneId: string;
+  desktopTool: DesktopTool;
   /** The `workToolOnScreen` key for this card on this lane and machine. */
   onScreenKey: string;
   /** False while hidden (the pane shows the desktop): mounted, so it keeps its place. */
@@ -403,6 +484,7 @@ function MacDesktopMiniPlayerBox({
   storedSize: FloatingPlayerSize | null;
   ownerLabel: string | null;
   recording: boolean;
+  capture: FloatingPlayerCapture | null;
   off: boolean;
   starting: boolean;
   startError: string | null;
@@ -421,6 +503,7 @@ function MacDesktopMiniPlayerBox({
     source,
     initial,
     onCommit: writeMacDesktopMiniPlayerChoice,
+    slot: { id: `mac-desktop:${laneId}`, shown: visible && !pip.active },
   });
 
   // The player lost the decoder (the pane took it back, the player was closed,
@@ -441,11 +524,13 @@ function MacDesktopMiniPlayerBox({
       hostRef={hostRef}
       frame={frame}
       hidden={!shown}
+      icon={FLOATING_ICONS[desktopTool]}
       concealed={pip.active}
       attrPrefix="mac-mini"
       playerId={laneId}
-      ariaLabel="Mac Desktop, floating"
+      ariaLabel={`${desktopToolProductName(desktopTool)}, floating`}
       recording={recording}
+      capture={capture}
       onStartDrag={startDrag}
       onStartResize={startResize}
       onOpenInPane={() => {
@@ -496,8 +581,8 @@ function MacDesktopMiniPlayerBox({
         ) : null}
         {live.url ? (
           <div ref={decoderHostRef} data-mac-mini-decoder="" className="pointer-events-none absolute inset-0">
-            <H264VideoCanvas
-              url={live.url}
+            <H264StreamView
+              source={{ kind: "http", url: live.url }}
               reconnectNonce={live.reconnectNonce}
               onStatus={live.onStatus}
               onDimensions={live.onDimensions}
@@ -518,7 +603,7 @@ function MacDesktopMiniPlayerBox({
               type="button"
               className={cn(
                 "rounded-full border border-border px-3 py-0.5 font-sans text-[11px] text-fg/85",
-                "hover:bg-white/[0.07] hover:text-fg",
+                "hover:bg-fg/[0.07] hover:text-fg",
               )}
               // The picture moves the player; this button must not.
               onPointerDown={(event) => event.stopPropagation()}
@@ -542,13 +627,15 @@ function MacDesktopMiniPlayerBox({
           data-mac-mini-off=""
           className="absolute inset-0 z-[1] flex flex-col items-center justify-center gap-2 bg-surface px-4 text-center"
         >
-          <p className="font-sans text-[12px] text-fg/85">Mac Desktop is off</p>
+          <p className="font-sans text-[12px] text-fg/85">
+            {`${desktopToolProductName(desktopTool)} is off`}
+          </p>
           <button
             type="button"
             disabled={starting}
             className={cn(
               "rounded-full border border-border px-3 py-0.5 font-sans text-[11px] text-fg/85",
-              "hover:bg-white/[0.07] hover:text-fg disabled:opacity-50",
+              "hover:bg-fg/[0.07] hover:text-fg disabled:opacity-50",
             )}
             onClick={onStart}
           >

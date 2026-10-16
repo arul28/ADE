@@ -197,9 +197,11 @@ a no-op, so POSIX-shaped provider discovery and test fixtures find nothing.
 
 **Do instead.** Split `env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD"` on `;` and try each
 case variant — see `apps/desktop/src/main/services/cli/adeCliService.ts`.
-Discovery uses `where.exe` on Windows where POSIX uses `command -v`. Test
-fixtures must create real `.cmd`/`.exe` names rather than `chmod +x` a bare
-file.
+Provider discovery on Windows lists each PATH and known-install directory once
+(`resolveFromDirs` in `services/ai/cliExecutableResolver.ts`) instead of
+probing every PATHEXT name with `stat` or spawning `where.exe`; see quirk 11
+for why the spawn matters. Test fixtures must create real `.cmd`/`.exe` names
+rather than `chmod +x` a bare file.
 
 ## 10. Capability gates name the capability, never the product
 
@@ -211,7 +213,7 @@ the thing that actually cannot work, and users lose features that were fine.
 `blocked_by_capability` for screenshot, video recording, app launch, GUI
 interaction, and environment info — while App Control and proof-file ingestion
 stay available and tested. Renderer gates are equally narrow
-(`supportsIosSimulatorPlatform`, `supportsNativeNotchPlatform` in
+(`supportsIosSimulatorPlatform` in
 `renderer/lib/platform.ts`); the iOS Simulator pane is *hidden* on Windows and a
 test pins that. Note the arch trap in the same file: `navigator.platform`
 reports `Win32` on Windows-on-ARM too, so architecture must come from the
@@ -223,7 +225,83 @@ it is the parity decision described in `/quality`'s Windows parity rules: state
 the capability and the OS-level reason, say whether macOS/Linux keep it, and
 have the human choose hide / disable-with-reason / remove.
 
+## 11. An "async" spawn blocks the event loop
+
+**Failure.** `child_process.spawn` returns at once, but on Windows libuv runs
+`CreateProcess` on the calling thread before it does — image load, Defender's
+on-access scan, console setup. That is ~5 ms on a quiet PC and 100-1,000 ms on
+a busy one. A brain that runs `git`, `gh`, `where.exe` or `tailscale` on a poll
+freezes its whole event loop for each one: a CPU profile of the installed brain
+put 24 s of every 10 minutes inside `spawn`, in blocks up to 1.3 s, and every
+chat's live status stalls with it. macOS (`posix_spawn`) does not show this.
+
+**Do instead.** For short capture-style commands in the brain or main process,
+use `spawnOffThread` / `execFileOffThread` from
+`apps/desktop/src/main/services/shared/offThreadSpawn.ts`, gated by
+`offThreadSpawnEnabled()`. `runGit` already does. They move `CreateProcess` to
+a worker thread and keep `ChildProcess`-shaped streams, timeouts and tree kills;
+`ADE_DISABLE_OFF_THREAD_SPAWN=1` falls back to a direct spawn. Before adding a
+poll that spawns at all, cache the answer: an origin URL, a CLI path or a
+token rarely changes between two polls (`runGitRepoCached`, the stable class).
+The same goes for synchronous file churn in a hot path — creating and deleting
+a lock file per read cost the brain another 13 s per 10 minutes — and for
+`os.networkInterfaces()`, a synchronous adapter enumeration.
+
 ---
+
+## 12. `localeCompare` with an options object rebuilds a collator per call
+
+**Failure.** V8 caches a collator for `a.localeCompare(b)` only. Pass an options
+object — `localeCompare(b, undefined, { sensitivity: "base" })`, the shape used
+all over ADE for case-insensitive ordering — and every single comparison
+constructs a fresh `Intl.Collator`. A 110-label sort measured 1.40 ms that way
+and 0.023 ms through one collator built at module scope: 60x. It is a cost on
+every platform, but Windows is where it was found, in a sort the chat pane ran on
+every mount.
+
+**Do instead.** `compareTextInsensitive` / `compareTextNatural` from
+`apps/desktop/src/shared/formatting.ts`. A new `localeCompare` call with an
+options argument in a sort comparator is a finding.
+
+---
+
+## 13. A running process never sees a CLI installed after it started
+
+**Failure.** An installer adds its folder to the *persisted* user PATH in the
+registry. ADE and its long-lived brain keep the PATH they started with, so the
+Cursor, Copilot or Codex CLI the user just installed reads as "not installed"
+until ADE restarts, and its models never load.
+
+**Do instead.** Resolve CLIs through `resolveExecutableFromKnownLocations` in
+`apps/desktop/src/main/services/ai/cliExecutableResolver.ts`. On Windows it
+also searches the persisted machine and user PATH
+(`refreshWindowsPersistedPathDirs`: two `reg.exe` reads off the event loop,
+cached 30 s) and the known install folders, including
+`%LOCALAPPDATA%\cursor-agent`. Never add a per-tool PATH hack next to it.
+
+## 14. `spawnAsync` keeps 10 KB of output and hides why a spawn failed
+
+**Failure.** `agent models` prints 12.9 KB; ADE read the first 10 KB, so 63 of
+259 model rows never reached the picker, on every OS. And a command that
+could not start came back as `status: null` with no text, or, through
+`cmd.exe`, as exit 1 with "is not recognized", which looks like a real failure.
+
+**Do instead.** Pass `maxOutputBytes` whenever the output is a list that can
+grow. Read `error`, `notFound` and `timedOut` on the result of `spawnAsync`
+(`apps/desktop/src/main/services/shared/utils.ts`); a timed-out command
+reports `status: null`. Use `isWindowsCmdCommandNotFound`
+(`services/shared/processExecution.ts`) to tell "not installed" from "failed".
+Log the failure; a silent empty fallback is how this went unseen.
+
+## 15. `stat` and `fstat` disagree about `dev` on some Node versions
+
+**Failure.** On Node 22.13 for Windows, `statSync(path).dev` is 0 while
+`fstatSync(fd).dev` is the volume serial. A guard that compared both threw
+"Path changed during open" on every guarded read (agent file reads, image
+attachments). Electron's Node is not affected, so it only showed in the CLI.
+
+**Do instead.** Compare `ino`, and treat a `dev` of 0 on either side as
+unknown, as `readFileWithinRootSecure` in `services/shared/utils.ts` does.
 
 ## Smaller traps worth knowing
 
@@ -231,12 +309,48 @@ have the human choose hide / disable-with-reason / remove.
   falls back across 8787–8999.
 - **PID reuse** is fast. A recorded PID alone is not identity — record process
   start time too (`apps/ade-cli/src/services/sync/syncHostSingleton.ts`).
+- **A file mode is not a permission.** `mode: 0o600` does nothing on Windows.
+  A file that holds secrets needs `securePrivatePath`
+  (`apps/ade-cli/src/lib/trustedWindowsTools.ts`), as the secrets export does.
+- **Paths shown to agents use forward slashes on every OS.** Normalize a
+  relative path before it leaves the process; `path.relative` returns
+  backslashes on Windows.
+- **High refresh rates multiply animation cost.** A stepped CSS animation
+  still ticks on the main thread at the display's rate: one spinner on a
+  240 Hz monitor ran 240 style recalcs a second
+  (`docs/perf/windows-baseline.md`).
 - **PowerShell launcher files need a UTF-8 BOM** or PowerShell 5.1 mis-decodes
   non-ASCII content.
 - **`ps` does not exist.** Resource sampling returns `unsupported-platform` on
   Windows (`services/pty/resourceUsageSampling.ts`) rather than spawning.
 - **Release gates are fail-closed:** `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` and
   `VITE_ADE_WINDOWS_DOWNLOAD_ENABLED`.
+- **144-240 Hz displays are common on Windows PCs**, often with a fractional
+  scale factor (110%, 125%). Anything that changes every display frame costs
+  2-4x what it does at 60 Hz. Electron does not composite CSS rotations, so a
+  `linear` spinner re-ran paint and layerize for the whole window 240 times a
+  second (~58% of a core with the GPU process). Quantize continuous animations
+  with `steps()` — spinners use duration x 30 steps (`--animate-spin` in
+  `renderer/index.css`) — and cap rAF-driven work by elapsed time, as the
+  streaming text reveal does (`TEXT_REVEAL_MIN_COMMIT_INTERVAL_MS`).
+  `steps()` is where it stops: do **not** replace a stepped animation with a JS
+  timer that writes the value itself. A stepped keyframe still draws every vsync,
+  but an unchanged draw is nearly free (three 16px spinners: 65 ms of compositor
+  draw per 8 s, no main-thread work). A 30 Hz JS clock does cut draws to 30/s and
+  still measured 2.3x the total work, because each tick adds style recalc,
+  layerize, raster and script. `will-change: transform` changes nothing.
+  Re-measure with `scripts/perf-animation-lab` before trusting any of this on a
+  new Electron, and read its README first: process CPU is too noisy on a
+  many-core Windows box to measure an animation at all.
+- **A contended SQLite write stops the event loop.** `node:sqlite` is
+  synchronous, so a write waiting on another process's write transaction is not
+  an async wait -- the brain's whole event loop stops for it, for the holder's
+  time plus ~50-80 ms (measured: 164.8 ms behind a 120 ms hold, 326.6 ms behind
+  250 ms, 1,076.7 ms behind 1,000 ms). If releasing the lock depends on the
+  blocked process's own event loop, nothing can: it waits the full
+  `busy_timeout` of 5,000 ms and throws `database is locked`. Uncontended, the
+  same writes cost 0.02-0.08 ms. Never run two brains on one project database,
+  and never add a write that another ADE process can hold a lock against.
 - **The full local suite is not clean on a Windows host.** POSIX-only fixtures,
   Unix-socket browser tests, `chmod` assertions, and some SQLite teardown races
   fail there by design; only the focused Windows suites are signal-bearing

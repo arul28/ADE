@@ -4,6 +4,7 @@ import type { Query } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeCodeExecutable } from "./services/ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "./services/ai/codexExecutable";
 import { resolveDroidExecutable } from "./services/ai/droidExecutable";
+import { resolveMuseExecutable } from "./services/ai/museExecutable";
 import { resolveOpenCodeBinary } from "./services/opencode/openCodeBinaryManager";
 import {
   classifyClaudeStartupFailure,
@@ -133,6 +134,9 @@ async function main(): Promise<void> {
   const codexExecutable = resolveCodexExecutable();
   const droidExecutable = resolveDroidExecutable();
   const openCodeExecutable = resolveOpenCodeBinary();
+  // Informational: Muse is fetched on demand, so a fresh package has no binary
+  // yet. What this proves is that the resolver loads inside the package.
+  const museExecutable = resolveMuseExecutable();
   const cursorNativePackageRoot = path.resolve(
     __dirname,
     "..",
@@ -170,6 +174,9 @@ async function main(): Promise<void> {
     openCodeExecutable: typeof resolveOpenCodeBinary,
     openCodeExecutablePath: openCodeExecutable.path,
     openCodeExecutableSource: openCodeExecutable.source,
+    museExecutablePath: museExecutable.path,
+    museExecutableSource: museExecutable.source,
+    musePinnedVersion: museExecutable.pinnedVersion,
     ptyProbe,
     crsqliteProbe,
   }));

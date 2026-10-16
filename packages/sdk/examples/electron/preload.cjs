@@ -8,7 +8,7 @@
  *
  * This is the hand-written route, shown because a host usually wants its own
  * channels next to ADE's. The other route needs no file at all: point
- * `webPreferences.preload` at `require.resolve("@ade-dev/sdk/electron/preload")`
+ * `webPreferences.preload` at `require.resolve("@ade-dev/sdk/electron/preload-auto")`
  * from the main process, which is what `main.mjs` does by default.
  *
  * Either way the surface is the same two functions, and the renderer half turns

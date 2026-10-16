@@ -9,7 +9,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { resolveCliSpawnInvocation, windowsTaskkillCommand } from "./processExecution";
+import { isWindowsCmdCommandNotFound, resolveCliSpawnInvocation, windowsTaskkillCommand } from "./processExecution";
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -85,6 +85,30 @@ type KillableChildProcess = Pick<
 
 function isValidPid(pid: number | null | undefined): pid is number {
   return typeof pid === "number" && Number.isInteger(pid) && pid > 0;
+}
+
+/**
+ * POSIX `kill(-pid, signal)` for the process group `pid` leads.
+ *
+ * `-1` is not a group: `kill(-1, …)` signals every process this user may
+ * signal — the desktop, the brain, every agent, every terminal — and `-0` is
+ * the caller's own group. A pid of 1 or 0 only reaches here from a test fake,
+ * a stale ledger, or a parse bug, and each of those has ended every process
+ * the developer owned elsewhere. So a pid below 2 (or not an integer) is
+ * refused with the same ESRCH a group that already exited throws, which every
+ * caller already handles by falling back to signalling the pid itself.
+ */
+export function signalProcessGroup(
+  pid: number,
+  signal: NodeJS.Signals | 0,
+  kill: (pid: number, signal: NodeJS.Signals | 0) => unknown = process.kill.bind(process),
+): void {
+  if (!Number.isInteger(pid) || pid < 2) {
+    const error = new Error(`Refusing to signal process group ${pid}`) as NodeJS.ErrnoException;
+    error.code = "ESRCH";
+    throw error;
+  }
+  kill(-pid, signal);
 }
 
 export function destroyChildProcessStreams(child: Pick<KillableChildProcess, "stdin" | "stdout" | "stderr"> | null | undefined): void {
@@ -175,7 +199,7 @@ export function signalChildProcessTree(child: KillableChildProcess, signal: Node
 
   if (isValidPid(pid)) {
     try {
-      process.kill(-pid, signal);
+      signalProcessGroup(pid, signal);
       return true;
     } catch {
       // fall through to direct child signaling
@@ -224,21 +248,43 @@ export function terminateChildProcessTree(
   }, killAfterMs);
 }
 
+export type SpawnAsyncResult = {
+  /** Exit code, or null when the process never ran, was killed, or timed out. */
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  /**
+   * Why `status` is null or the command was missing: the spawn error's message
+   * (with its code, e.g. ENOENT/EINVAL), a timeout, or cmd.exe's "not
+   * recognized" report. Absent on a normal exit.
+   */
+  error?: string;
+  /**
+   * The command does not exist: an ENOENT spawn error, or on Windows the
+   * `cmd.exe` wrapper's "is not recognized" exit (which otherwise looks like an
+   * ordinary exit 1).
+   */
+  notFound?: boolean;
+  timedOut?: boolean;
+};
+
 /** Spawn a child process and collect stdout/stderr with a timeout. */
 export function spawnAsync(
   command: string,
   args: string[],
-  opts?: { timeout?: number; maxOutputBytes?: number; cwd?: string },
-): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  opts?: { timeout?: number; maxOutputBytes?: number; cwd?: string; env?: NodeJS.ProcessEnv },
+): Promise<SpawnAsyncResult> {
   return new Promise((resolve) => {
     try {
-      const invocation = resolveCliSpawnInvocation(command, args);
+      const invocation = resolveCliSpawnInvocation(command, args, opts?.env);
+      const wrappedInCmd = invocation.command !== command && invocation.windowsVerbatimArguments === true;
       const child = spawn(invocation.command, invocation.args, {
         stdio: ["ignore", "pipe", "pipe"],
         detached: process.platform !== "win32",
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         windowsHide: true,
         ...(opts?.cwd ? { cwd: opts.cwd } : {}),
+        ...(opts?.env ? { env: opts.env } : {}),
       });
       let stdout = "";
       let stderr = "";
@@ -248,14 +294,28 @@ export function spawnAsync(
       let hardResolveHandle: NodeJS.Timeout | null = null;
       let killEscalationHandle: NodeJS.Timeout | null = null;
       let settled = false;
-      const settle = (status: number | null): void => {
+      let timedOut = false;
+      const settle = (status: number | null, spawnError?: NodeJS.ErrnoException): void => {
         if (settled) return;
         settled = true;
         if (timeoutHandle) clearTimeout(timeoutHandle);
         if (hardResolveHandle) clearTimeout(hardResolveHandle);
         if (killEscalationHandle) clearTimeout(killEscalationHandle);
         destroyChildProcessStreams(child);
-        resolve({ status, stdout, stderr });
+        // A timed-out child is reported as null whatever it exited with: on
+        // Windows the tree kill makes it exit 1, which read as a real failure.
+        const result: SpawnAsyncResult = { status: timedOut ? null : status, stdout, stderr };
+        if (spawnError) {
+          result.error = describeSpawnError(spawnError);
+          if (spawnError.code === "ENOENT") result.notFound = true;
+        } else if (timedOut) {
+          result.timedOut = true;
+          result.error = `timed out after ${timeoutMs} ms`;
+        } else if (wrappedInCmd && isWindowsCmdCommandNotFound(status, stderr)) {
+          result.notFound = true;
+          result.error = stderr.trim().split(/\r?\n/)[0] ?? "command not found";
+        }
+        resolve(result);
       };
       child.stdout?.on("data", (chunk: Buffer) => {
         stdout += chunk.toString("utf8").slice(0, Math.max(0, limit - stdout.length));
@@ -263,19 +323,33 @@ export function spawnAsync(
       child.stderr?.on("data", (chunk: Buffer) => {
         stderr += chunk.toString("utf8").slice(0, Math.max(0, limit - stderr.length));
       });
-      child.once("error", () => settle(null));
+      child.once("error", (error: NodeJS.ErrnoException) => settle(null, error));
       child.once("close", (code) => settle(code));
       timeoutHandle = setTimeout(() => {
         if (settled) return;
+        timedOut = true;
         // Retain the SIGKILL escalation timer so we can clear it if the
         // SIGTERM induces a clean exit before the kill window elapses.
         killEscalationHandle = terminateChildProcessTree(child, null, 1_500);
         hardResolveHandle = setTimeout(() => settle(null), 5_000);
       }, timeoutMs);
-    } catch {
-      resolve({ status: null, stdout: "", stderr: "" });
+    } catch (error) {
+      const spawnError = error as NodeJS.ErrnoException;
+      resolve({
+        status: null,
+        stdout: "",
+        stderr: "",
+        error: describeSpawnError(spawnError),
+        ...(spawnError?.code === "ENOENT" ? { notFound: true } : {}),
+      });
     }
   });
+}
+
+function describeSpawnError(error: NodeJS.ErrnoException | null | undefined): string {
+  const message = error instanceof Error ? error.message : String(error ?? "spawn failed");
+  const code = typeof error?.code === "string" ? error.code : null;
+  return code && !message.includes(code) ? `${code}: ${message}` : message;
 }
 
 /** Resolve the absolute path of a command, or null if not found. */
@@ -598,7 +672,11 @@ export function readFileWithinRootSecure(
     }
     const currentPath = resolvePathWithinRoot(root, expectedPath, { allowMissing: false });
     const currentStat = fs.statSync(currentPath);
-    if (openStat.dev !== currentStat.dev || openStat.ino !== currentStat.ino) {
+    // Node 22.13 on Windows reports `dev` as 0 from statSync but the volume
+    // serial from fstatSync, so a zero `dev` on either side proves nothing;
+    // the file index (`ino`) still has to match.
+    const sameDevice = openStat.dev === currentStat.dev || openStat.dev === 0 || currentStat.dev === 0;
+    if (!sameDevice || openStat.ino !== currentStat.ino) {
       throw new Error("Path changed during open");
     }
     return fs.readFileSync(fd);

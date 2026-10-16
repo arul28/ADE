@@ -291,6 +291,14 @@ describe("messageClearsAttentionMarkers", () => {
     expect(messageClearsAttentionMarkers({
       scheduledWake: { scheduleId: "s", kind: "cron", firedAt: "now", reason: "tick" },
     } as never)).toBe(false);
+    // Another bound agent writing to this chat is not the user answering.
+    expect(messageClearsAttentionMarkers({
+      agentRelay: { fromSessionId: "sibling" },
+    } as never)).toBe(false);
+    // Nor PR Watch telling the agent its PR changed.
+    expect(messageClearsAttentionMarkers({
+      prWatchWake: { watchId: "w", prId: "p", githubPrNumber: 42, mode: "watch" },
+    } as never)).toBe(false);
   });
 
   it("lets a board move clear, because a drag is a person acting", () => {

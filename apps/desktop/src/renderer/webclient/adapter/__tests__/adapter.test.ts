@@ -66,7 +66,6 @@ describe("createAdeWebAdapter", () => {
   it("boots before and after a bound project", async () => {
     const adapter = createAdeWebAdapter(fake.asClient());
 
-    expect("attentionNotch" in adapter.ade).toBe(false);
     await expect(adapter.ade.app.getProject()).resolves.toBeNull();
     await expect(adapter.ade.app.getWindowSession()).resolves.toMatchObject({
       windowId: null,
@@ -105,6 +104,82 @@ describe("createAdeWebAdapter", () => {
       action: "cto.getAttention",
       args: {},
       opts: { projectId: "project-1" },
+    });
+
+    adapter.dispose();
+  });
+
+  it("exposes Linear agent and inbox actions through the paired web transport", async () => {
+    const actions = [
+      "linear_agent.getOverview",
+      "linear_agent.startInstall",
+      "linear_agent.getInstallSession",
+      "linear_agent.registerMember",
+      "linear_agent.unregisterMember",
+      "linear_agent.updateSettings",
+      "linear_agent.uninstall",
+      "linear_issue_tracker.listNotifications",
+      "linear_issue_tracker.markNotification",
+      "linear_issue_tracker.fetchIssueById",
+      "linear_issue_tracker.cancelIssue",
+    ];
+    fake.descriptors = descriptors(actions).map((descriptor) => ({ ...descriptor, scope: "runtime" }));
+    const overview = {
+      available: true,
+      message: null,
+      status: null,
+      rules: [{ id: "rule-1", name: "Delegations", enabled: true, triggerTypes: ["linear.agent_delegated"], modelId: null, laneMode: null }],
+      activeSessions: [],
+    };
+    const notifications = [{
+      id: "notification-1",
+      type: "issueMention",
+      createdAt: "2026-08-01T12:00:00.000Z",
+      readAt: null,
+      snoozedUntilAt: null,
+      actorName: "Ada",
+      actorAvatarUrl: null,
+      issueId: "issue-1",
+      issueIdentifier: "ADE-123",
+      issueTitle: "Agent delegation",
+      issueUrl: null,
+      issueStateName: "Todo",
+      issueStateType: "unstarted",
+      commentId: null,
+      commentBody: null,
+    }];
+    fake.commandResults.set("linear_agent.getOverview", overview);
+    fake.commandResults.set("linear_agent.startInstall", { sessionId: "install-1" });
+    fake.commandResults.set("linear_agent.getInstallSession", { status: "pending" });
+    fake.commandResults.set("linear_agent.registerMember", overview);
+    fake.commandResults.set("linear_agent.unregisterMember", overview);
+    fake.commandResults.set("linear_agent.updateSettings", overview);
+    fake.commandResults.set("linear_agent.uninstall", overview);
+    fake.commandResults.set("linear_issue_tracker.listNotifications", notifications);
+    fake.commandResults.set("linear_issue_tracker.markNotification", undefined);
+    fake.commandResults.set("linear_issue_tracker.fetchIssueById", { id: "issue-1", identifier: "ADE-123" });
+    fake.commandResults.set("linear_issue_tracker.cancelIssue", { canceled: true, issue: null });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.cto!.getLinearAgentOverview()).resolves.toEqual(overview);
+    await expect(adapter.ade.cto!.startLinearAgentInstall()).resolves.toEqual({ sessionId: "install-1" });
+    await expect(adapter.ade.cto!.getLinearAgentInstallSession("install-1")).resolves.toEqual({ status: "pending" });
+    await expect(adapter.ade.cto!.registerLinearAgentMember({ replace: true })).resolves.toEqual(overview);
+    await expect(adapter.ade.cto!.unregisterLinearAgentMember()).resolves.toEqual(overview);
+    await expect(adapter.ade.cto!.updateLinearAgentSettings({ fallbackMode: "runner", runner: "self" })).resolves.toEqual(overview);
+    await expect(adapter.ade.cto!.uninstallLinearAgent()).resolves.toEqual(overview);
+    await expect(adapter.ade.cto!.getLinearInbox({ first: 20, includeRead: true })).resolves.toEqual(notifications);
+    await expect(adapter.ade.cto!.markLinearNotification({ notificationId: "notification-1", action: "archive" })).resolves.toBeUndefined();
+    await expect(adapter.ade.cto!.getLinearIssueRelationsIssue("issue-1")).resolves.toMatchObject({ identifier: "ADE-123" });
+    await expect(adapter.ade.cto!.cancelLinearIssue("issue-1")).resolves.toEqual({ canceled: true, issue: null });
+
+    expect(fake.commandCalls.map(({ action }) => action)).toEqual(actions);
+    expect(fake.commandCalls.find(({ action }) => action === "linear_agent.updateSettings")?.args).toEqual({
+      args: { fallbackMode: "runner", runner: "self" },
+    });
+    expect(fake.commandCalls.find(({ action }) => action === "linear_issue_tracker.cancelIssue")?.args).toEqual({
+      argsList: ["issue-1"],
     });
 
     adapter.dispose();
@@ -1949,9 +2024,9 @@ describe("createAdeWebAdapter", () => {
 
   it("routes prompt stashes through the web chat adapter", async () => {
     fake.descriptors = descriptors([
-      "chat.listPromptStashes",
-      "chat.createPromptStash",
-      "chat.deletePromptStash",
+      "chat.listDrafts",
+      "chat.createDraft",
+      "chat.deleteDraft",
     ]);
     const stashedPrompt = {
       id: "stash-1",
@@ -1960,49 +2035,49 @@ describe("createAdeWebAdapter", () => {
       modelId: "openai/gpt-5.4",
       createdAt: "2026-07-31T12:00:00.000Z",
     };
-    fake.commandResults.set("chat.listPromptStashes", [stashedPrompt]);
-    fake.commandResults.set("chat.createPromptStash", stashedPrompt);
-    fake.commandResults.set("chat.deletePromptStash", true);
+    fake.commandResults.set("chat.listDrafts", [stashedPrompt]);
+    fake.commandResults.set("chat.createDraft", stashedPrompt);
+    fake.commandResults.set("chat.deleteDraft", true);
 
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.agentChat.promptStashes.list()).resolves.toEqual([stashedPrompt]);
-    await expect(adapter.ade.agentChat.promptStashes.create({
+    await expect(adapter.ade.agentChat.drafts.list()).resolves.toEqual([stashedPrompt]);
+    await expect(adapter.ade.agentChat.drafts.create({
       text: stashedPrompt.text,
       provider: stashedPrompt.provider,
       modelId: stashedPrompt.modelId,
     })).resolves.toEqual(stashedPrompt);
-    await expect(adapter.ade.agentChat.promptStashes.delete({
+    await expect(adapter.ade.agentChat.drafts.delete({
       id: stashedPrompt.id,
     })).resolves.toBe(true);
 
     expect(fake.commandCalls.map(({ action, args }) => ({ action, args }))).toEqual([
-      { action: "chat.listPromptStashes", args: {} },
+      { action: "chat.listDrafts", args: {} },
       {
-        action: "chat.createPromptStash",
+        action: "chat.createDraft",
         args: {
           text: stashedPrompt.text,
           provider: stashedPrompt.provider,
           modelId: stashedPrompt.modelId,
         },
       },
-      { action: "chat.deletePromptStash", args: { id: stashedPrompt.id } },
+      { action: "chat.deleteDraft", args: { id: stashedPrompt.id } },
     ]);
     adapter.dispose();
   });
 
-  it("treats an unavailable or malformed prompt-stash list as empty", async () => {
+  it("treats an unavailable or malformed drafts list as empty", async () => {
     const adapterWithoutAction = createAdeWebAdapter(fake.asClient());
     adapterWithoutAction.bindProject(project, "project-1");
-    await expect(adapterWithoutAction.ade.agentChat.promptStashes.list()).resolves.toEqual([]);
+    await expect(adapterWithoutAction.ade.agentChat.drafts.list()).resolves.toEqual([]);
     adapterWithoutAction.dispose();
 
-    fake.descriptors = descriptors(["chat.listPromptStashes"]);
-    fake.commandResults.set("chat.listPromptStashes", null);
+    fake.descriptors = descriptors(["chat.listDrafts"]);
+    fake.commandResults.set("chat.listDrafts", null);
     const adapterWithMalformedResult = createAdeWebAdapter(fake.asClient());
     adapterWithMalformedResult.bindProject(project, "project-1");
-    await expect(adapterWithMalformedResult.ade.agentChat.promptStashes.list()).resolves.toEqual([]);
+    await expect(adapterWithMalformedResult.ade.agentChat.drafts.list()).resolves.toEqual([]);
     adapterWithMalformedResult.dispose();
   });
 
@@ -3151,7 +3226,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("rejects branch-drift resolution the host cannot run", async () => {
+  it("rejects branch-drift resolution and branch switches the host cannot run", async () => {
     // The drift strip disarms its warning as soon as this resolves, so an
     // unreachable host must reject instead of handing back a status object.
     fake.descriptors = descriptors(["lanes.getBranchDrift"]);
@@ -3163,6 +3238,13 @@ describe("createAdeWebAdapter", () => {
       laneId: "lane-1",
       resolution: "switch-back",
     })).rejects.toThrow(/unavailable/i);
+    // No remote command switches a branch: "Switch back" must fail, not read
+    // a null fallback as a switch that happened.
+    await expect(adapter.ade.lanes.switchBranch({
+      laneId: "lane-1",
+      branchName: "ade/lane",
+      mode: "existing",
+    })).rejects.toThrow(/not available/i);
     // Reads still degrade to their typed fallback.
     await expect(adapter.ade.lanes.getBranchDrift({ laneId: "lane-1" })).resolves.toBeNull();
 
@@ -3216,6 +3298,143 @@ describe("createAdeWebAdapter", () => {
     ).toBe(streamCallsAfter);
 
     unsubscribe();
+    adapter.dispose();
+  });
+
+  it.each(["fleet", "app-control"] as const)("backs off %s reads, resets and follows visibility", async (surface) => {
+    vi.useFakeTimers();
+    const visibility = new EventTarget();
+    let hidden = false;
+    vi.stubGlobal("document", {
+      get visibilityState() { return hidden ? "hidden" : "visible"; },
+      addEventListener: visibility.addEventListener.bind(visibility),
+      removeEventListener: visibility.removeEventListener.bind(visibility),
+    });
+    Object.assign(fake, {
+      supportsAppControlStream: () => false,
+      onAppControlStreamFrame: () => () => undefined,
+      onAppControlStreamEnded: () => () => undefined,
+    });
+    const action = surface === "fleet" ? "ai.cursorCloudFleet" : "appControl.status";
+    const baseMs = surface === "fleet" ? 2_000 : 3_000;
+    fake.descriptors = descriptors([action]);
+    const fleet = { items: [], relayState: "unconfigured", lastEventAt: null, fetchedAt: "" };
+    fake.commandResults.set(action, surface === "fleet" ? fleet : { laneId: "lane", session: null });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    const stop = surface === "fleet"
+      ? adapter.ade.ai.onCursorCloudFleetEvent(() => undefined)
+      : adapter.ade.appControl.onEvent(() => undefined);
+    const reads = () => fake.commandCalls.filter((call) => call.action === action).length;
+    // Fleet reads immediately, App Control starts at its base delay.
+    await vi.advanceTimersByTimeAsync(0);
+    if (surface === "app-control") await vi.advanceTimersByTimeAsync(baseMs);
+    expect(reads()).toBe(1);
+    for (const delay of [baseMs, baseMs, 2 * baseMs, 4 * baseMs, 15_000]) {
+      const before = reads();
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(reads()).toBe(before);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(reads()).toBe(before + 1);
+    }
+    if (surface === "app-control") {
+      await adapter.ade.appControl.getStatus({ laneId: "lane" });
+      const before = reads();
+      await vi.advanceTimersByTimeAsync(baseMs);
+      expect(reads()).toBe(before + 1);
+    }
+    hidden = true;
+    visibility.dispatchEvent(new Event("visibilitychange"));
+    const paused = reads();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reads()).toBe(paused);
+    hidden = false;
+    visibility.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads()).toBe(paused + 1);
+    // A changed session/fleet restarts the active cadence.
+    fake.commandResults.set(action, surface === "fleet"
+      ? { ...fleet, items: [{ agent: { agentId: "agent", status: "RUNNING" } }] }
+      : { laneId: "lane", session: { id: "session", laneId: "lane", status: "connected" } });
+    await vi.advanceTimersByTimeAsync(baseMs);
+    const changed = reads();
+    await vi.advanceTimersByTimeAsync(baseMs);
+    expect(reads()).toBe(changed + 1);
+    stop();
+    const stopped = reads();
+    hidden = true;
+    visibility.dispatchEvent(new Event("visibilitychange"));
+    hidden = false;
+    visibility.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reads()).toBe(stopped);
+    adapter.dispose();
+  });
+
+  it("pauses quiet OAuth drains while hidden and resumes immediately", async () => {
+    vi.useFakeTimers();
+    const visibility = new EventTarget();
+    let hidden = false;
+    vi.stubGlobal("document", {
+      get visibilityState() { return hidden ? "hidden" : "visible"; },
+      addEventListener: visibility.addEventListener.bind(visibility),
+      removeEventListener: visibility.removeEventListener.bind(visibility),
+    });
+    fake.descriptors = descriptors(["ai.opencodeOAuthStart", "personalChats.streamEvents"]);
+    fake.commandResults.set("ai.opencodeOAuthStart", { url: "https://example.test/auth", method: "auto", instructions: "" });
+    fake.commandResults.set("personalChats.streamEvents", { events: [], nextCursor: 0, hasMore: false });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    await adapter.ade.ai.opencodeOAuthStart({ providerId: "anthropic", methodIndex: 0 });
+    const reads = () => fake.commandCalls.filter((call) => call.action === "personalChats.streamEvents").length;
+    const initial = reads();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(reads()).toBe(initial + 1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const quiet = reads();
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(reads()).toBe(quiet);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(reads()).toBe(quiet + 1);
+    hidden = true;
+    visibility.dispatchEvent(new Event("visibilitychange"));
+    const paused = reads();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reads()).toBe(paused);
+    hidden = false;
+    visibility.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads()).toBe(paused + 1);
+    adapter.dispose();
+    const stopped = reads();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reads()).toBe(stopped);
+  });
+
+  it("delivers cancellation when OAuth is cancelled during an in-flight drain", async () => {
+    vi.useFakeTimers();
+    fake.descriptors = descriptors(["ai.opencodeOAuthStart", "ai.opencodeOAuthCancel", "personalChats.streamEvents"]);
+    fake.commandResults.set("ai.opencodeOAuthStart", { url: "https://example.test/auth", method: "auto", instructions: "" });
+    fake.commandResults.set("personalChats.streamEvents", { events: [], nextCursor: 0, hasMore: false });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    const statuses: unknown[] = [];
+    const stop = adapter.ade.ai.onOpencodeOAuthStatus((status) => statuses.push(status));
+    await adapter.ade.ai.opencodeOAuthStart({ providerId: "anthropic", methodIndex: 0 });
+    let finish!: (value: unknown) => void;
+    fake.commandResults.set("personalChats.streamEvents", new Promise((resolve) => { finish = resolve; }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    await adapter.ade.ai.opencodeOAuthCancel({ providerId: "anthropic" });
+    fake.commandResults.set("personalChats.streamEvents", {
+      events: [{ id: 1, timestamp: "2026-10-09T00:00:00.000Z", category: "runtime",
+        payload: { kind: "opencodeOAuthStatus", event: { providerId: "anthropic", state: "cancelled" } } }],
+      nextCursor: 1, hasMore: false,
+    });
+    finish({ events: [], nextCursor: 0, hasMore: false });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(statuses).toEqual([{ providerId: "anthropic", state: "cancelled" }]);
+    const count = fake.commandCalls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fake.commandCalls).toHaveLength(count);
+    stop();
     adapter.dispose();
   });
 

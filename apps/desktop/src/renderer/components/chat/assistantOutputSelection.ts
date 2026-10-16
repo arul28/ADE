@@ -3,6 +3,9 @@ export const ASSISTANT_OUTPUT_SELECTOR = "[data-assistant-output]";
 export type AssistantOutputSelection = {
   text: string;
   rect: DOMRect;
+  range: Range;
+  /** The reply the selection sits in. */
+  output: HTMLElement;
 };
 
 function nodeElement(node: Node | null): Element | null {
@@ -36,5 +39,7 @@ export function readAssistantOutputSelection(
   const rect = typeof range.getBoundingClientRect === "function"
     ? range.getBoundingClientRect()
     : new DOMRect(8, 8, 0, 0);
-  return { text, rect };
+  const output = nodeElement(range.startContainer)?.closest(ASSISTANT_OUTPUT_SELECTOR) as HTMLElement | null;
+  if (!output) return null;
+  return { text, rect, range: range.cloneRange(), output };
 }

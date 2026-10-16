@@ -1,0 +1,34 @@
+---
+title: "v1.2.103"
+description: "Release notes for ADE v1.2.103 - October 13, 2026"
+---
+
+ADE 1.2.103 brings Apple Music to the Mac, scenes that ask questions, one place to set up MCP servers, and a Windows installer that no longer crashes on first install.
+
+## Chat
+
+- A scene can ask: its buttons and forms put a draft reply in your prompt box, and nothing is sent until you send it. Scenes also draw charts and show on the phone (#1609).
+- Settings > MCP servers: add a server once and every chat gets it, whatever the provider. A server that brings its own page (an MCP App) shows that page in the chat (#1609).
+- Claude chats show the real prompt cache time: 1 hour on a subscription, 5 minutes on an API key. The "Compact first" offer follows the same time, and compaction reads as one clear line in the thread (#1608).
+
+## Updates
+
+- The install dialog says what the restart will stop, such as "2 agent chats running, 1 terminal open", counted across every project on the computer (#1613).
+- Updating another machine asks first and shows what is running there, and machines on an older version can update in the same click (#1613).
+
+## Music
+
+- Apple Music plays on macOS, at full quality. Reopening continues where you stopped, and playback draws far less (#1611).
+
+## Browser and search
+
+- A chat run from another machine uses the browser on the machine you are looking at. Pages keep their shape when a panel resizes (#1615).
+- A search across projects no longer freezes ADE (#1615).
+
+## Windows
+
+- The installer is built with NSIS 3.12, which fixes a crash on some first installs (#1605).
+
+## iOS
+
+- Lanes and PRs no longer stay stuck loading after the app relaunches. Lanes is reworked, and PR detail is polished (#1610).

@@ -15,8 +15,8 @@ import {
  * `ade ui show` on the brain side.
  *
  * The surfaces an agent wants the user to see (the Apple tool, the floating
- * device, the browser, the proof drawer, the Mac Desktop tool and its floating
- * card) are renderer UI, and the brain cannot tell which renderer is showing
+ * device, the browser, the proof drawer, the Mac Desktop and App Control tools
+ * and their floating cards) are renderer UI, and the brain cannot tell which renderer is showing
  * which chat. So it asks all of them: the request goes out on the runtime event stream every desktop on this project
  * already reads — a local window and a paired desktop on another machine alike
  * — and the one that has the chat answers.
@@ -41,6 +41,21 @@ export const WORK_TOOL_SHOW_ACK_TIMEOUT_MS = 8_000;
 export const WORK_TOOL_SHOW_HELD_GRACE_MS = 600;
 
 /**
+ * A request first goes only to the desktop that sent the chat's last message.
+ * If that desktop has not answered by now (its lid is closed, it disconnected),
+ * the same request goes to every desktop instead. Longer than the renderer's
+ * own wait for a surface to reach the screen (3 s), so a slow but present
+ * target answers before anyone else opens it.
+ */
+export const WORK_TOOL_SHOW_RETARGET_MS = 4_000;
+
+/**
+ * After the targeted desktop answers `held`, how long the others get to answer
+ * `shown`: their own on-screen wait is up to 3 s.
+ */
+export const WORK_TOOL_SHOW_RETARGET_HELD_GRACE_MS = 3_500;
+
+/**
  * One automatic float offer per chat and device in this window. An agent taps
  * many times a second; the renderer only needs to hear "an agent is driving the
  * device" again after it had a chance to change its mind.
@@ -54,6 +69,8 @@ const WORK_TOOL_SHOW_SURFACE_LABELS: Record<WorkToolShowSurface, string> = {
   proof: "proof drawer",
   "mac-desktop": "Mac Desktop in the tools pane",
   "floating-mac-desktop": "floating Mac Desktop",
+  "app-control": "App Control in the tools pane",
+  "floating-app-control": "floating App Control",
 };
 
 type HeldAnswer = { desktopLabel: string | null; opened: boolean };
@@ -81,6 +98,7 @@ type PendingShow = {
   request: WorkToolShowRequest;
   held: HeldAnswer | null;
   heldTimer: ReturnType<typeof setTimeout> | null;
+  retargetTimer: ReturnType<typeof setTimeout> | null;
   timer: ReturnType<typeof setTimeout>;
   resolve: (result: WorkToolShowResult) => void;
 };
@@ -98,6 +116,8 @@ export type WorkToolShowRequests = {
   noteAgentAppleActivity(input: AgentDeviceActivity): boolean;
   /** The same for the lane's Mac Desktop: an `auto` floating-card offer. */
   noteAgentMacDesktopActivity(input: AgentDeviceActivity): boolean;
+  /** The same for the lane's App Control app: an `auto` floating-card offer. */
+  noteAgentAppControlActivity(input: AgentDeviceActivity): boolean;
   dispose(): void;
 };
 
@@ -114,13 +134,21 @@ function trimmedOrNull(value: unknown): string | null {
 export function createWorkToolShowRequests(args: {
   emitEvent: (payload: Record<string, unknown>) => void;
   logger?: Logger | null;
+  /**
+   * The desktop that sent a chat its last message, when one is known. `auto`
+   * requests are never acknowledged, so the resolver may answer null for a
+   * sender that has gone quiet.
+   */
+  resolveTargetClientId?: (chatSessionId: string, kind: "show" | "auto") => string | null;
   ackTimeoutMs?: number;
   heldGraceMs?: number;
+  retargetMs?: number;
   activityThrottleMs?: number;
   now?: () => number;
 }): WorkToolShowRequests {
   const ackTimeoutMs = args.ackTimeoutMs ?? WORK_TOOL_SHOW_ACK_TIMEOUT_MS;
   const heldGraceMs = args.heldGraceMs ?? WORK_TOOL_SHOW_HELD_GRACE_MS;
+  const retargetMs = args.retargetMs ?? WORK_TOOL_SHOW_RETARGET_MS;
   const activityThrottleMs = args.activityThrottleMs ?? WORK_TOOL_AGENT_ACTIVITY_THROTTLE_MS;
   const now = args.now ?? Date.now;
   const pending = new Map<string, PendingShow>();
@@ -139,6 +167,7 @@ export function createWorkToolShowRequests(args: {
     laneId,
     auto,
     requestedAt: new Date(now()).toISOString(),
+    targetClientId: args.resolveTargetClientId?.(chatSessionId, auto ? "auto" : "show") ?? null,
   });
 
   const publish = (request: WorkToolShowRequest): boolean => {
@@ -159,32 +188,41 @@ export function createWorkToolShowRequests(args: {
     status: WorkToolShowStatus,
     desktopLabel: string | null,
     opened = false,
+    /**
+     * The surface that is actually on screen, when the ack named a different
+     * one than the request did (see `WorkToolShowAck.shownAs`). The answer the
+     * agent reads names what it can find, not what it asked for.
+     */
+    shownAs: WorkToolShowSurface | null = null,
   ): boolean => {
     const entry = pending.get(requestId);
     if (!entry) return false;
     pending.delete(requestId);
     clearTimeout(entry.timer);
     if (entry.heldTimer) clearTimeout(entry.heldTimer);
+    if (entry.retargetTimer) clearTimeout(entry.retargetTimer);
     const { request } = entry;
+    const surface = shownAs ?? request.surface;
     args.logger?.info("work_tools.show_settled", {
       requestId,
-      surface: request.surface,
+      surface,
+      requestedSurface: request.surface,
       chatSessionId: request.chatSessionId,
       status,
     });
     entry.resolve({
       status,
-      surface: request.surface,
+      surface,
       chatSessionId: request.chatSessionId,
       requestId,
       desktopLabel,
-      message: describeWorkToolShowResult(status, request.surface, desktopLabel, opened),
+      message: describeWorkToolShowResult(status, surface, desktopLabel, opened),
     });
     return true;
   };
 
   const noteAgentActivity = (
-    surface: "floating-apple" | "floating-mac-desktop",
+    surface: "floating-apple" | "floating-mac-desktop" | "floating-app-control",
     input: AgentDeviceActivity,
   ): boolean => {
     const chatSessionId = trimmedOrNull(input.chatSessionId);
@@ -228,7 +266,18 @@ export function createWorkToolShowRequests(args: {
           else finish(request.requestId, "no_desktop", null);
         }, ackTimeoutMs);
         timer.unref?.();
-        pending.set(request.requestId, { request, held: null, heldTimer: null, timer, resolve });
+        // Nobody answered the desktop it was meant for: ask every desktop.
+        // Same request id, so the target, if it was only slow, ignores the repeat.
+        const retargetTimer = request.targetClientId
+          ? setTimeout(() => {
+            const entry = pending.get(request.requestId);
+            if (!entry) return;
+            entry.retargetTimer = null;
+            publish({ ...request, targetClientId: null });
+          }, retargetMs)
+          : null;
+        retargetTimer?.unref?.();
+        pending.set(request.requestId, { request, held: null, heldTimer: null, retargetTimer, timer, resolve });
         if (!publish(request)) finish(request.requestId, "no_desktop", null);
       });
     },
@@ -240,13 +289,23 @@ export function createWorkToolShowRequests(args: {
       const entry = pending.get(requestId);
       if (!entry) return { ok: false };
       const desktopLabel = trimmedOrNull(record.desktopLabel);
-      if (record.status === "shown") return { ok: finish(requestId, "shown", desktopLabel) };
+      const shownAs = isWorkToolShowSurface(record.shownAs) ? record.shownAs : null;
+      if (record.status === "shown") return { ok: finish(requestId, "shown", desktopLabel, false, shownAs) };
       if (record.status !== "held") return { ok: false };
       const opened = record.opened === true;
       if (!entry.held) {
         const held: HeldAnswer = { desktopLabel, opened };
         entry.held = held;
-        const heldTimer = setTimeout(() => finish(requestId, "held", held.desktopLabel, held.opened), heldGraceMs);
+        // The targeted desktop cannot show it now. Ask every desktop at once,
+        // and wait long enough for one of them to put it on screen.
+        let graceMs = heldGraceMs;
+        if (entry.retargetTimer) {
+          clearTimeout(entry.retargetTimer);
+          entry.retargetTimer = null;
+          publish({ ...entry.request, targetClientId: null });
+          graceMs = Math.max(heldGraceMs, WORK_TOOL_SHOW_RETARGET_HELD_GRACE_MS);
+        }
+        const heldTimer = setTimeout(() => finish(requestId, "held", held.desktopLabel, held.opened), graceMs);
         heldTimer.unref?.();
         entry.heldTimer = heldTimer;
       } else if (opened && !entry.held.opened) {
@@ -263,6 +322,10 @@ export function createWorkToolShowRequests(args: {
 
     noteAgentMacDesktopActivity(input) {
       return noteAgentActivity("floating-mac-desktop", input);
+    },
+
+    noteAgentAppControlActivity(input) {
+      return noteAgentActivity("floating-app-control", input);
     },
 
     dispose() {

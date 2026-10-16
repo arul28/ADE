@@ -54,9 +54,17 @@ export type LocalRuntimeStatus = {
    * "isolated" means the desktop fell back to an app-owned no-sync brain
    * (phone sync and ADE Code attach to the channel service, which is down).
    * The pool keeps probing and reinstalling until it migrates back to
-   * "primary".
+   * "primary". "app_fallback" uses the primary socket but disables sync
+   * because the desktop owns the brain instead of the machine service.
    */
-  runtimeMode: "primary" | "isolated";
+  runtimeMode: "primary" | "isolated" | "app_fallback";
+  /** This desktop owns a no-sync brain on the primary socket for this run. */
+  appFallback?: {
+    reason: "service_not_registered" | "service_not_running" | "service_install_failed"
+      | "predecessor_exit" | "replacement_pid" | "replacement_responsive"
+      | "background_item_blocked" | "launchd_register";
+    since: string;
+  } | null;
   versionSkew: {
     state: "none" | "runtime_newer" | "runtime_older" | "build_mismatch" | "role_mismatch" | "unknown";
     appVersion: string | null;
@@ -85,6 +93,8 @@ export type LocalRuntimeStatus = {
      * brain from here, so recurring installs cannot keep it "starting" forever.
      */
     attemptStartedAt?: string | null;
+    /** The installer's typed failure stage, when the last install failed. */
+    failureStep?: string | null;
   };
   serviceHealth: {
     state: LocalRuntimeServiceHealthState;
@@ -93,8 +103,29 @@ export type LocalRuntimeStatus = {
     path: string | null;
     message: string | null;
     checkedAt: string | null;
+    /**
+     * macOS Background Items verdict for the launch agent, read only while it
+     * is installed but not running. `requires_approval` means "Allow in the
+     * Background" is off for ADE and launchd will never start the brain.
+     */
+    backgroundItem?: "enabled" | "requires_approval" | "not_registered" | "not_found" | "unknown" | null;
   };
 };
+
+/**
+ * Whether macOS's "Allow in the Background" switch is what stops the brain.
+ * The live Background Items reading wins over the last install's failure:
+ * that failure stays recorded until the next install, and a person who has
+ * since turned the switch on must not keep reading "blocked".
+ */
+export function isBackgroundItemBlocked(
+  status: Pick<LocalRuntimeStatus, "serviceInstall" | "serviceHealth">,
+): boolean {
+  const live = status.serviceHealth.backgroundItem;
+  if (live === "requires_approval") return true;
+  if (live === "enabled") return false;
+  return status.serviceInstall.failureStep === "background_item_blocked";
+}
 
 export type AppInfo = {
   appVersion: string;
@@ -203,6 +234,39 @@ export type RecentlyInstalledUpdate = {
   installedAt: string;
   releaseNotesUrl: string | null;
   githubReleaseUrl: string | null;
+  /**
+   * Chats ADE armed a "continue" row for before this install. Absent when the
+   * user declined the resume, when nothing was running, or on any update that
+   * predates the field.
+   */
+  resumedChats?: UpdateInterruptedChat[];
+  /**
+   * When the installed notice was dismissed while `resumedChats` were still
+   * un-armed. The record outlives the notice for that alone: the next launch
+   * still owes these chats a continue row. Absent while the notice is up.
+   */
+  noticeDismissedAt?: string;
+};
+
+/**
+ * One chat an update will interrupt: it has a live turn right now, so the
+ * restart stops it mid-flight. `title` is the chat's own name.
+ */
+export type UpdateInterruptedChat = {
+  sessionId: string;
+  title: string;
+  projectName: string;
+  /**
+   * Where the chat's project lives on its machine. The resume after an install
+   * is armed per project, and the chat may belong to one with no tab open.
+   * Null for a personal chat; absent from any reader that predates the field.
+   */
+  projectRoot?: string | null;
+  /**
+   * False for a chat ADE cannot queue to continue (a personal chat). Absent
+   * means it can.
+   */
+  resumable?: boolean;
 };
 
 /**
@@ -230,7 +294,8 @@ export type UpdateTransactionResult = {
 
 export type AutoUpdateStatus = "idle" | "checking" | "downloading" | "ready" | "installing" | "error";
 
-export type AutoUpdatePhase = "download" | "staging" | "verification" | "install";
+/** `check` is the feed request itself, before anything is downloaded. */
+export type AutoUpdatePhase = "check" | "download" | "staging" | "verification" | "install";
 
 export type AutoUpdateErrorKind =
   | "artifact_too_large"
@@ -238,6 +303,12 @@ export type AutoUpdateErrorKind =
   | "disk_full"
   | "quota"
   | "network"
+  /**
+   * The release server answers, but ADE's own updater connection fails before
+   * it reaches the network, and a fresh connection did not help. Restarting
+   * ADE is the fix.
+   */
+  | "network_stuck"
   | "signature"
   | "permission"
   | "verification"
@@ -309,6 +380,14 @@ export type AutoUpdateSnapshot = {
    * existing snapshot literal keeps compiling.
    */
   updateTransaction?: UpdateTransactionResult | null;
+  /** When the update feed last answered a check (epoch ms). Null until one has. */
+  lastCheckedAt?: number | null;
+  /**
+   * The latest check failed while a downloaded update was kept, so the status
+   * stays `ready` and `latestKnownVersion` may be out of date. Cleared by the
+   * next check the feed answers.
+   */
+  checkFailure?: { kind: AutoUpdateErrorKind; message: string; at: number } | null;
 };
 
 export type RuntimeActivityCounts = {
@@ -320,17 +399,48 @@ export type RuntimeActivitySummary = RuntimeActivityCounts & {
   idle: boolean;
 };
 
+/**
+ * Everything a restart of one machine's ADE stops, answered by that machine's
+ * brain (`runtime.updateImpact`) for every project it has open and its
+ * personal chats, whether or not a window shows them.
+ */
+export type RuntimeUpdateImpact = {
+  /** Chats with a live turn right now. */
+  chats: UpdateInterruptedChat[];
+  /** Agent CLI sessions (Claude Code, Codex, …) that are open; a restart closes them. */
+  cliSessions: number;
+  /** Other terminals that are open, busy or quiet; a restart closes them too. */
+  terminals: number;
+};
+
 export type UpdateInstallImpactPhone = {
   deviceId: string;
   deviceName: string;
 };
 
 /**
- * Live connections that drop while ADE (and its brain service) restarts for an
- * update. Best-effort: probes are time-boxed, so an empty list means "none
- * detected", not a guarantee.
+ * What an update would stop on one machine, as a client shows it before the
+ * update runs.
  */
-export type UpdateInstallImpact = {
+export type UpdateImpact = RuntimeUpdateImpact & {
+  /**
+   * False when the machine did not answer in time, so the rest means
+   * "unknown", not "nothing is running".
+   */
+  checked: boolean;
+  /**
+   * Set when the machine's ADE is too old to name everything it runs: more
+   * work is running than `chats` lists, and that is all it can say.
+   */
+  busyWithoutDetail?: boolean;
+};
+
+/**
+ * What stops or drops while ADE (and its brain service) restarts this
+ * computer for an update: its running work, and the phones connected to it.
+ * A chat on another machine is not interrupted, so it never appears here.
+ */
+export type UpdateInstallImpact = UpdateImpact & {
   connectedPhones: UpdateInstallImpactPhone[];
 };
 
@@ -395,6 +505,20 @@ export type OpenProjectBinding =
       iconDataUrl?: string | null;
     };
 
+/**
+ * Sent to a window when a project tab dragged out of another window is
+ * released over its tab strip. `screenOffsetX` is the release point measured
+ * from the target window's left edge in screen points, so the tab lands where
+ * the user dropped it.
+ */
+export type ProjectTabAdoptRequest = {
+  binding: OpenProjectBinding;
+  screenOffsetX: number;
+};
+
+/** A project binding on another machine. */
+export type RemoteOpenProjectBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
+
 export type AppNavigationTarget =
   | {
       kind: "work" | "chat";
@@ -415,6 +539,8 @@ export type AppNavigationTarget =
       kind: "commit";
       sha: string;
       laneId?: string | null;
+      /** The machine that owns `laneId`, when the caller knows it. */
+      machineId?: string | null;
       envelope?: DeeplinkEnvelope | null;
     }
   | {
@@ -425,6 +551,8 @@ export type AppNavigationTarget =
   | {
       kind: "lane";
       laneId: string;
+      /** The machine that owns `laneId`, when the caller knows it. */
+      machineId?: string | null;
       sessionId?: string | null;
       envelope?: DeeplinkEnvelope | null;
     }
@@ -455,8 +583,8 @@ export type AppNavigationTarget =
   | {
       /**
        * A settings tab, optionally anchored at a specific setting. Lets
-       * surfaces outside the router tree (the attention popover, the notch)
-       * hand off to Settings without taking a `useNavigate` dependency.
+       * surfaces outside the router tree (the Activity popover) hand off to
+       * Settings without taking a `useNavigate` dependency.
        */
       kind: "settings";
       tab?: string | null;
@@ -738,7 +866,7 @@ export type KeybindingDefinition = {
   id: string;
   description: string;
   defaultBinding: string;
-  scope: "global" | "lanes" | "work" | "files" | "conflicts" | "history";
+  scope: "global" | "lanes" | "work" | "files" | "conflicts" | "history" | "home";
 };
 
 export type KeybindingsSnapshot = {

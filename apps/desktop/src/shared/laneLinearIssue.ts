@@ -1,8 +1,17 @@
 import type { LinearPriorityLabel } from "./types/linearSync";
 import type { LaneLinearIssue, NormalizedLinearIssue } from "./types";
-import { linearIssueBranchName } from "./linearIssueBranch";
+import { resolveLinearIssueBranchName } from "./linearIssueBranch";
 
 const VALID_PRIORITY_LABELS = new Set<LinearPriorityLabel>(["urgent", "high", "normal", "low", "none"]);
+
+/** Linear's priority number (0–4) as ADE's label. */
+export function linearPriorityLabel(priority: number): LinearPriorityLabel {
+  if (priority === 1) return "urgent";
+  if (priority === 2) return "high";
+  if (priority === 3) return "normal";
+  if (priority === 4) return "low";
+  return "none";
+}
 
 function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -167,7 +176,8 @@ export function normalizedLinearIssueToLaneIssue(issue: NormalizedLinearIssue): 
     creatorName: issue.creatorName ?? null,
     dueDate: issue.dueDate ?? null,
     estimate: issue.estimate ?? null,
-    branchName: linearIssueBranchName(issue),
+    // Linear's own branch name when the workspace sent one, else the slug.
+    branchName: resolveLinearIssueBranchName(issue),
     createdAt: issue.createdAt,
     updatedAt: issue.updatedAt,
   };

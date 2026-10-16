@@ -8,6 +8,7 @@ import {
   mergeStreamingText,
   resolveToolName,
   shouldMergeTextRows,
+  TranscriptRowBuilder,
   type ApprovalRow,
   type ToolChipRow,
 } from "../src/transcript/transcriptRows";
@@ -622,5 +623,49 @@ describe("restored pending approvals", () => {
       [request],
     );
     expect(rows.map((row) => row.event.type)).toEqual(["text", "approval"]);
+  });
+});
+
+describe("TranscriptRowBuilder", () => {
+  it("matches buildTranscriptRows as envelopes arrive incrementally", () => {
+    // The builder is the streaming path in AdeChatContext: it must produce the
+    // same rows as a full rebuild at every step, patching only the tail/target
+    // instead of re-collapsing everything.
+    const all: AgentChatEventEnvelope[] = [
+      envelope({ type: "text", text: "Hel", messageId: "m1", turnId: "t1" }),
+      envelope({ type: "reasoning", text: "thinking", turnId: "t1" }),
+    ];
+    const builder = new TranscriptRowBuilder();
+
+    builder.append(all.slice(0, 2));
+    expect(builder.rows).toEqual(buildTranscriptRows(all));
+
+    all.push(envelope({ type: "tool_call", tool: "search", args: { q: "x" }, itemId: "i1", turnId: "t1" }));
+    builder.append(all.slice(2, 3));
+    expect(builder.rows).toEqual(buildTranscriptRows(all));
+
+    // A tool result upgrades the existing chip in place.
+    all.push(
+      envelope({
+        type: "tool_result",
+        tool: "search",
+        result: { hits: 2 },
+        itemId: "i1",
+        turnId: "t1",
+        status: "completed",
+      }),
+    );
+    builder.append(all.slice(3, 4));
+    expect(builder.rows).toEqual(buildTranscriptRows(all));
+
+    // A streamed delta on the open message patches the tail row.
+    all.push(envelope({ type: "text", text: "lo", messageId: "m1", turnId: "t1" }, "2026-01-01T00:00:59.000Z"));
+    builder.append(all.slice(4, 5));
+    expect(builder.rows).toEqual(buildTranscriptRows(all));
+
+    // A new message starts a new row.
+    all.push(envelope({ type: "text", text: "world", messageId: "m2", turnId: "t1" }));
+    builder.append(all.slice(5, 6));
+    expect(builder.rows).toEqual(buildTranscriptRows(all));
   });
 });

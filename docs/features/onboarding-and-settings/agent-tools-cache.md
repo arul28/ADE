@@ -1,6 +1,6 @@
 # Agent tools cache
 
-ADE drives five agent CLIs, and three of them ship as native binaries that dwarf
+ADE drives six agent CLIs, and four of them ship as native binaries that dwarf
 everything else in the product. They used to be vendored twice — once inside the
 packaged desktop app, once inside the brain runtime tarball — at roughly 650 MB
 unpacked per target. They are now fetched on demand from the npm registry into a
@@ -17,13 +17,13 @@ through one shared lookup, `cacheLookup.ts`.
 | Codex | `codex` | Native platform package | ~110 MB compressed, ~297 MB unpacked per target. |
 | Claude Code | `claude-code` | Native platform package | Same order of magnitude; the SDK's binary half. |
 | OpenCode | `opencode` | Native platform package | Same. |
+| Muse Code | `muse` | One bare executable from Meta's release manifest | Not on npm at all; 330-470 MB per target. See [Muse: a direct-file pin](#muse-a-direct-file-pin). |
 | Cursor | — | No, still bundled | `@cursor/sdk` is reached through a bare `import()` (`services/ai/cursorSdkLoader.ts`), so moving it means rewiring module resolution, and the platform half is only ~7.6 MB. All risk, ~1% of the saving. |
 | Factory Droid | — | No, still bundled | `@factory/droid-sdk` is pure JS (~15 MB) and force-inlined into the ade-cli bundle. There is no platform package to fetch. |
 
 The JS launcher and SDK packages of the fetched three — `@anthropic-ai/claude-agent-sdk`
-(ADE calls `query()` on it in-process), `@openai/codex`, `opencode-ai`,
-`@opencode-ai/sdk` — keep shipping. Only their **native platform siblings** move
-to the cache.
+(ADE calls `query()` on it in-process), `@openai/codex`, `@opencode/client` —
+keep shipping. Only their **native platform siblings** move to the cache.
 
 There is no offline or full-install variant. Internet at install time is an
 accepted requirement, not a degraded mode.
@@ -61,19 +61,19 @@ The manifest is a data file, so it is treated as untrusted input.
 
 **The codex install-dir name is not the published package name.**
 `@openai/codex-darwin-arm64` is an npm alias: the tarball is published under
-`@openai/codex` at version `0.156.1-darwin-arm64`. So the pin reads
+`@openai/codex` at version `0.162.1-darwin-arm64`. So the pin reads
 
 ```
 package:   @openai/codex-darwin-arm64      <- the node_modules directory name
-version:   0.156.1-darwin-arm64
-tarball:   .../@openai/codex/-/codex-0.156.1-darwin-arm64.tgz
+version:   0.162.1-darwin-arm64
+tarball:   .../@openai/codex/-/codex-0.162.1-darwin-arm64.tgz
 ```
 
 `ToolTargetPin.package` is deliberately documented as the *install directory*
 name, because that is what consumers expect to find in a `node_modules` tree.
 
-**Windows x64 OpenCode maps to `opencode-windows-x64-baseline`, never
-`opencode-windows-x64`.** The non-baseline build requires AVX2 and dies with an
+**Windows x64 OpenCode maps to `@opencode/cli-windows-x64-baseline`, never
+`@opencode/cli-windows-x64`.** The non-baseline build requires AVX2 and dies with an
 illegal instruction on pre-Haswell CPUs and older VMs. The baseline build targets
 the lower instruction set, is the same size, and shows no measurable throughput
 cost for how ADE drives OpenCode (a local HTTP server), so baseline *replaces*
@@ -84,7 +84,7 @@ That substitution is mirrored in about six places and they must move together:
 | File | Form |
 |---|---|
 | `apps/desktop/src/main/services/opencode/openCodeBinaryManager.ts` | `OPENCODE_PLATFORM_PACKAGES.win32.x64` — the only name the resolver looks for |
-| `apps/desktop/package.json` | `"!node_modules/opencode-windows-x64-baseline/**"` in `build.files` — the packaged app ships neither build now, so both names are excluded |
+| `apps/desktop/package.json` | `"!node_modules/@opencode/cli-windows-x64-baseline/**"` in `build.files` — the packaged app ships neither build now, so both names are excluded |
 | `apps/desktop/scripts/after-pack-runtime-fixes.cjs` | the prune list, derived from `RUNTIME_FETCHED_TOOL_PACKAGES` |
 | `apps/ade-cli/scripts/generate-tools-manifest.mjs` | `TOOLS[opencode].packages["win32-x64"]` |
 | `apps/ade-cli/scripts/native-deps-entry-filter.mjs` | `RUNTIME_FETCHED_TOOL_PACKAGES` |
@@ -103,6 +103,53 @@ without unpacking the tarball.
 | `codex` | `vendor/*/bin/codex` | `vendor/*/bin/codex.exe` |
 | `claude-code` | `claude` | `claude.exe` |
 | `opencode` | `bin/opencode` | `bin/opencode.exe` |
+| `muse` | `muse` | `muse.exe` |
+
+## Muse: a direct-file pin
+
+Meta publishes `muse` as one bare executable per platform, not as an npm
+package, so its pins have `"format": "file"` instead of the default
+`npm-tarball`:
+
+```
+format:   file
+package:  muse-code-darwin-arm64     <- the cache directory name, not an npm package
+version:  1.4.7-R6101.1
+url:      https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-aarch64-macos
+sha256:   87ff5a31…                  <- lowercase hex, from Meta's manifest
+size:     358892272                  <- exact bytes, for the disk preflight and a truncation check
+```
+
+The download **is** the binary. `install.ts` writes it straight to the entry
+path inside the staging payload, checks its sha256 and byte size, `chmod 755`s
+it off Windows, writes the sentinel (with `sha256` instead of `integrity`), and
+publishes it with the same atomic rename. Nothing is extracted. The disk
+preflight uses the pinned size plus 256 MiB headroom, not the ×4 unpack
+estimate. A file pin's entry must be a `binary` with a literal path (no `*`),
+which `manifest.ts` enforces.
+
+Where the pins come from, and why the generator stays offline:
+
+| Step | What |
+|---|---|
+| `npm run tools:muse-pin` (`scripts/pin-muse-release.mjs`) | The only network step. Reads the locked `@muse-code/sdk` version, picks the paired binary build (`--version X.Y.Z-R…`, else Meta's `muse-stable` channel, else the existing pin), refuses anything that does not start with `<sdk version>-R`, fetches `…/download/?channel=muse&version=<v>&file=manifest.json`, and writes `scripts/muse-release.json` (per target: Meta artifact key, url, sha256, size; plus the MSP schema fingerprint). It warns when that fingerprint differs from the SDK's. Then it runs the generator. |
+| `scripts/muse-release.json` | Checked in. |
+| `npm run tools:manifest` | Offline. Reads `muse-release.json` and **fails when its `sdkVersion` is not the locked `@muse-code/sdk`**, so a Dependabot SDK bump without a re-pin fails `tools:manifest:check` (the `pretest` gate) instead of shipping a mismatched binary. |
+
+Target mapping: `darwin-arm64` → `aarch64_macos`, `darwin-x64` → `x86_macos`,
+`linux-arm64` → `aarch64_linux`, `linux-x64` → `x86_linux`, `win32-x64` →
+`x86_windows`. Meta also publishes `aarch64_windows` and a `universal_macos_pkg`;
+ADE does not pin either.
+
+The macOS builds carry a Developer ID signature with hardened runtime, and the
+same no-quarantine property as the npm tools holds: the fetched `muse` runs
+`--version` straight from the cache.
+
+The desktop app prefetches `muse` on packaged launch with the other pinned
+tools, and `ade serve` does in the brain. Settings > Providers > Muse Code can
+also start the download on the machine the page is showing
+(`ai.ensureMuseBinary`, which returns at once) and poll it
+(`ai.museBinaryStatus`), because 350+ MB must not hold a remote action open.
 
 ## Cache layout on disk
 
@@ -125,11 +172,11 @@ profile — 650 MB must never roam.
 
 ```
 <tools root>/
-  @openai/codex-darwin-arm64/0.156.1-darwin-arm64/
+  @openai/codex-darwin-arm64/0.162.1-darwin-arm64/
     vendor/aarch64-apple-darwin/bin/codex
     .install-complete
-  @anthropic-ai/claude-agent-sdk-darwin-arm64/0.3.280/
-  opencode-darwin-arm64/1.18.31/
+  @anthropic-ai/claude-agent-sdk-darwin-arm64/0.3.287/
+  @opencode/cli-darwin-arm64/2.0.29/
   .staging/
   .locks/
 ```
@@ -211,17 +258,21 @@ resolve).
 
 All three desktop resolvers call it before their bundled-`node_modules` probe, so
 cache-first ordering is defined once and cannot drift. This is the whole
-resolution surface for both processes: **`apps/ade-cli` does not keep its own
-copies of these resolvers.** It imports the desktop main-process services across
-packages (`import … from "../../desktop/src/main/services/…"`), so desktop main
-and the brain share one resolution path by construction rather than by
-convention.
+resolution surface for both processes: **neither package keeps a second copy of
+a resolver.** `apps/ade-cli` imports the Claude, Codex and OpenCode resolvers
+from the desktop main-process services (`import … from
+"../../desktop/src/main/services/…"`). Muse runs the other way: its
+Electron-free resolver lives in `apps/ade-cli/src/services/tools/muse.ts`, and
+desktop's `museExecutable.ts` re-exports it and adds only the UI blocker text.
+Either way desktop main and the brain share one resolution path by
+construction rather than by convention.
 
 | Tool | Resolver | Order |
 |---|---|---|
-| `claude-code` | `apps/desktop/src/main/services/ai/claudeCodeExecutable.ts` | `CLAUDE_CODE_EXECUTABLE_PATH` → tools cache → bundled `node_modules` → detected auth → PATH / known dirs → bare `claude` |
+| `claude-code` | `apps/desktop/src/main/services/ai/claudeCodeExecutable.ts` | `CLAUDE_CODE_EXECUTABLE_PATH` → tools cache → bundled `node_modules` (packaged, else ADE's own install, resolved from the module and never the working directory) → the previous pinned version still in the cache (`previousCachedToolEntryPath`) → detected auth → PATH / known dirs → bare `claude` |
 | `codex` | `apps/desktop/src/main/services/ai/codexExecutable.ts` | `CODEX_EXECUTABLE` / `CODEX_EXECUTABLE_PATH` → tools cache → bundled → detected auth → PATH / known dirs → standalone installer dirs → bare `codex` |
 | `opencode` | `apps/desktop/src/main/services/opencode/openCodeBinaryManager.ts` | tools cache → bundled `node_modules` roots → user-installed PATH → `missing` |
+| `muse` | `apps/ade-cli/src/services/tools/muse.ts` (re-exported by `apps/desktop/src/main/services/ai/museExecutable.ts`) | `ADE_MUSE_EXECUTABLE` (dev runs only) → tools cache → `missing`. Never PATH: ADE runs only the pinned build. |
 
 Codex is the special case. It is the one tool that cannot be reached by seeding a
 module search path: its binary lives at `vendor/<triple>/bin/codex` and is found
@@ -277,7 +328,15 @@ This was verified empirically with a partially-warm cache:
 |---|---|---|
 | `opencode` | cached | `tools-cache` |
 | `codex` | not cached | `bundled` |
-| `claude-code` | not cached | the developer's own PATH install |
+| `claude-code` | not cached | `bundled` (ADE's own `node_modules`) |
+
+Claude used to fall through to the developer's own `claude` here, because its
+bundled lookup accepted only a packaged copy. That ran whatever Claude Code
+version the machine had, and without ADE's plugins, which ADE delivers only to
+its own copies. After an ADE update, while the new pin downloads, Claude now
+runs the previous pinned version that `gcTools` keeps instead of the PATH one.
+A first install with nothing in the cache still falls back to the machine's
+`claude`, so chats work before the download lands.
 
 ## When the cache gets populated
 
@@ -353,8 +412,10 @@ typed `kind` is the whole point of the module: callers and support threads branc
 on it rather than parsing prose.
 
 `gc` keeps the newest superseded version of each package by default
-(`keepPrevious`), so rolling back to the previous ADE build does not re-download
-hundreds of megabytes. Packages the manifest has never heard of are left alone:
+(`keepPrevious`), preferring a finished install over a newer half-written one,
+so rolling back to the previous ADE build does not re-download hundreds of
+megabytes, and a machine still downloading a new pin has the old one to run
+(`tryResolvePreviousTool` reads the same order, `supersededVersionDirs`). Packages the manifest has never heard of are left alone:
 on a machine running two ADE channels, an unknown directory is far more likely to
 belong to the other channel than to be garbage.
 
@@ -379,7 +440,7 @@ A later UX layer maps these onto retry buttons, "free up disk" banners, and
 | `manifest` | Malformed bundled manifest, or a tool name that does not exist | A broken build or a typo; not a transient condition. |
 | `unsupported-target` | No pinned build for this platform/arch | e.g. `win32-arm64`, where the bundled copy is the only answer. |
 | `network` | DNS, TLS, HTTP status, redirect limit, truncation, or an idle socket | Retry. |
-| `integrity` | Download completed but sha512 did not match the pin | Do not retry blindly — either the registry or the transport is wrong. |
+| `integrity` | Download completed but its sha512 (npm tools) or sha256 and byte size (Muse) did not match the pin | Do not retry blindly — either the source or the transport is wrong. |
 | `disk-space` | Preflight failed, or `ENOSPC` mid-write | Free space and retry; the message names required vs available. |
 | `extract` | `tar` failed, or the archive did not contain the declared entry | Corrupt archive or a wrong entry path in the manifest. |
 | `lock-timeout` | Another process held the install lock past 15 minutes | Names the holding pid and host when the lock record is readable. |
@@ -447,14 +508,12 @@ Verified spawns from the cache:
 |---|---|---|
 | `codex` | `codex-cli 0.144.5` | accepted — Notarized Developer ID, OpenAI OpCo LLC |
 | `claude` | `2.1.220 (Claude Code)` | accepted — Notarized Developer ID, Anthropic PBC |
-| `opencode` | `1.18.31` | **`invalid signature`** — ad-hoc / linker-signed, **not notarized** |
+| `opencode` | `2.0.29` | Developer ID, Anomaly Innovations, Inc., hardened runtime (`spctl` rejects only the exec assessment of a bare CLI, which is not an app) |
 
-OpenCode runs anyway. Its execution therefore depends entirely on the
-no-quarantine property above, not on notarization — if anything ever caused the
-cache to be written by a quarantine-applying agent, OpenCode is the binary that
-would break first. `probeOpenCodeBinaryQuarantine` in `openCodeBinaryManager.ts`
-exists to distinguish exactly that case (fixable with `xattr -d`) from a genuine
-bad signature.
+OpenCode 1.x was ad-hoc signed and depended on the no-quarantine property above.
+2.0 carries a Developer ID signature. `probeOpenCodeBinaryQuarantine` in
+`openCodeBinaryManager.ts` still tells a quarantined binary (fixable with
+`xattr -d`) apart from a bad signature.
 
 Extraction preserves mode 755, so no chmod pass is needed after unpacking.
 
@@ -469,8 +528,8 @@ whole tree, and it is independent of `target` — no target ships any of them.
 
 The set is exact-name rather than a prefix match on purpose: a prefix test on
 `@anthropic-ai/claude-agent-sdk` would swallow the SDK itself, which ADE calls
-`query()` on in-process and must keep shipping. The same holds for `@openai/codex`,
-`opencode-ai`, and `@opencode-ai/sdk`.
+`query()` on in-process and must keep shipping. The same holds for `@openai/codex`
+and `@opencode/client`.
 
 The packaged desktop app drops the same platform siblings, and imports the same
 `Set` to do it — `apps/desktop/scripts/runtime-fetched-tool-packages.mjs` re-exports
@@ -495,6 +554,10 @@ with an empty cache the expected answers are `fallback-command` (Claude, Codex)
 and `missing` (OpenCode).
 
 ## Bumping a pinned version
+
+For `@muse-code/sdk`, bump the SDK in both `apps/desktop` and `apps/ade-cli`,
+then run `npm run tools:muse-pin` in `apps/ade-cli` (it regenerates the
+manifest too). The steps below are for the npm-published tools.
 
 1. Edit the version in `apps/ade-cli/package.json`.
 2. Reinstall so `apps/ade-cli/package-lock.json` picks up the new version,

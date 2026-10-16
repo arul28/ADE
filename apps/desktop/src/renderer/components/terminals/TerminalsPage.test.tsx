@@ -1,7 +1,8 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { getToasts } from "../app/toast/toastStore";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentChatSession,
@@ -50,6 +51,7 @@ import {
   macDesktopCardGrantedAt,
   resetMacDesktopCardGrantsForTests,
 } from "../work/macDesktopCardGrants";
+import { resetAppControlCardGrantsForTests } from "../work/appControlCardGrants";
 import {
   readChatCompanionUiState,
   resetChatCompanionUiStateCacheForTests,
@@ -151,6 +153,7 @@ const workMocks = vi.hoisted(() => {
     openSessionTab: vi.fn(),
     upsertOptimisticChatSession: vi.fn(),
     refresh: vi.fn().mockResolvedValue(undefined),
+    refreshLanes: vi.fn().mockResolvedValue(undefined),
     switchRemoteProject: vi.fn().mockResolvedValue(undefined),
     switchProjectToPath: vi.fn().mockResolvedValue(undefined),
     setWorkViewState: vi.fn(),
@@ -336,6 +339,7 @@ vi.mock("../../state/appStore", () => ({
     projectBinding: typeof workMocks.projectBinding;
     laneDeleteProgressByLaneId: Record<string, never>;
     switchRemoteProject: typeof workMocks.fns.switchRemoteProject;
+    refreshLanes: typeof workMocks.fns.refreshLanes;
     switchProjectToPath: typeof workMocks.fns.switchProjectToPath;
     selectLane: typeof workMocks.fns.selectLane;
     focusSession: typeof workMocks.fns.focusSession;
@@ -357,6 +361,7 @@ vi.mock("../../state/appStore", () => ({
       openRemoteProjectTabs: workMocks.openRemoteProjectTabs,
       openProjectTabRoots: [],
       switchRemoteProject: workMocks.fns.switchRemoteProject,
+      refreshLanes: workMocks.fns.refreshLanes,
       switchProjectToPath: workMocks.fns.switchProjectToPath,
       selectLane: workMocks.fns.selectLane,
       focusSession: workMocks.fns.focusSession,
@@ -1022,6 +1027,33 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("chat-spawned-child");
   });
 
+  it("selects the lane of a chat the list loads only after select-session asked for it", async () => {
+    // A chat created a moment ago is not in the list yet. The jump refreshes
+    // the list; once the chat renders, its lane is selected — not the lane the
+    // stale pre-refresh list implied (none).
+    mockBrowserEvents();
+    const view = render(<TerminalsPage />);
+    await screen.findByTestId("work-view-area");
+
+    window.dispatchEvent(
+      new CustomEvent("ade:work:select-session", {
+        detail: { sessionId: "chat-just-created" },
+      }),
+    );
+    expect(workMocks.fns.refresh).toHaveBeenCalled();
+    expect(workMocks.fns.selectLane).not.toHaveBeenCalled();
+
+    workMocks.currentWork.sessions = [
+      workMocks.makeTerminalSession("chat-just-created", "lane-new", "claude-chat"),
+    ];
+    await act(async () => {});
+    view.rerender(<TerminalsPage />);
+
+    expect(workMocks.fns.selectLane).toHaveBeenCalledWith("lane-new");
+    expect(workMocks.fns.focusSession).toHaveBeenLastCalledWith("chat-just-created");
+    expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenLastCalledWith("chat-just-created");
+  });
+
   it("opens a bindingless foreign select-session target from the union without selecting a local lane", async () => {
     const binding = STUDIO_BINDING;
     const foreign = workMocks.makeTerminalSession("chat-foreign-child", "lane-foreign", "codex-chat");
@@ -1458,6 +1490,19 @@ describe("TerminalsPage chat session activation", () => {
       await screen.findByTestId("work-view-area");
     };
 
+    /*
+     * A float these requests take writes real module state — the card grants
+     * and the chat's companion-UI marker — and the Mac Desktop suite below
+     * reads it. A leftover grant would let its first assertion pass for
+     * nothing, so the same resets it uses run here too.
+     */
+    afterEach(() => {
+      resetMacDesktopCardGrantsForTests();
+      resetAppControlCardGrantsForTests();
+      resetChatCompanionUiStateCacheForTests();
+      window.localStorage.clear();
+    });
+
     /** The pane, as far as a show can tell: the tool mounts when it is written. */
     const paneMountsWhatIsWritten = () => {
       setDocumentVisibleForTests(true);
@@ -1468,20 +1513,14 @@ describe("TerminalsPage chat session activation", () => {
       );
     };
 
-    it("opens the Apple tool, the browser, or Mac Desktop for the chat in front", async () => {
+    it("activates the tool in a pane the person already has open", async () => {
       paneMountsWhatIsWritten();
-      await renderWithChatInFront();
+      await renderWithChatInFront({ workSidebarOpen: true });
       await expect(answerWorkToolShowRequest(showRequest({ surface: "apple" }))).resolves.toEqual({ status: "shown" });
       expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
         "/repo",
         "lane-background",
         { workSidebarTool: "ios", workSidebarOpenTools: ["ios"] },
-      );
-      await expect(answerWorkToolShowRequest(showRequest({ surface: "browser" }))).resolves.toEqual({ status: "shown" });
-      expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
-        "/repo",
-        "lane-background",
-        expect.objectContaining({ workSidebarTool: "browser" }),
       );
       await expect(answerWorkToolShowRequest(showRequest({ surface: "mac-desktop" }))).resolves.toEqual({ status: "shown" });
       expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
@@ -1492,15 +1531,90 @@ describe("TerminalsPage chat session activation", () => {
     });
 
     /*
+     * The browser keeps opening the pane, closed or not: `ade browser handoff`
+     * is an agent saying it cannot get past a page and the person has to act
+     * there, and there is no floating player for a page.
+     */
+    it("opens the pane for a browser show even with it closed", async () => {
+      paneMountsWhatIsWritten();
+      await renderWithChatInFront();
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "browser" }))).resolves.toEqual({ status: "shown" });
+      expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
+        "/repo",
+        "lane-background",
+        expect.objectContaining({ workSidebarTool: "browser" }),
+      );
+    });
+
+    /*
+     * A screen, app or device show with the pane CLOSED is answered by the
+     * lane's floating player. Whether the pane is open is the person's own
+     * preference, and the surface an agent drives continuously re-opening it
+     * every time they close it is what the owner reported on 2026-10-14.
+     */
+    it.each([
+      ["apple", "floating-apple"],
+      ["mac-desktop", "floating-mac-desktop"],
+    ] as const)("floats %s over the chat instead of opening a closed pane", async (surface, floating) => {
+      paneMountsWhatIsWritten();
+      await renderWithChatInFront();
+      // Nothing activated in a pane, so nothing could have opened one...
+      await expect(answerWorkToolShowRequest(showRequest({ surface })))
+        // ...and the answer names the floating surface, not the pane: that is
+        // what the agent reads and reports to the person.
+        .resolves.toEqual({ status: "shown", shownAs: floating });
+      expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalled();
+    });
+
+    /*
+     * App Control has no session in this harness, so its card never reaches the
+     * screen. The answer is the spent `held` — never a pane, and never a
+     * promise that the surface will turn up on its own later.
+     */
+    it("does not open a closed pane for app-control, and reports the card as not up", async () => {
+      paneMountsWhatIsWritten();
+      await renderWithChatInFront();
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "app-control" })))
+        .resolves.toEqual({ status: "held", opened: true });
+      expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalled();
+    });
+
+    it("opens the pane when the float it would use declines", async () => {
+      paneMountsWhatIsWritten();
+      await renderWithChatInFront();
+      // A lane with no device to float: the player refuses, and the ask would
+      // otherwise be a `held` for a chat whose handler is right here.
+      floatMocks.floatAppleMiniPlayerForChat.mockResolvedValueOnce(false);
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "apple" }))).resolves.toEqual({ status: "shown" });
+      expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
+        "/repo",
+        "lane-background",
+        { workSidebarTool: "ios", workSidebarOpenTools: ["ios"] },
+      );
+    });
+
+    it("answers an apple show with the pane closed as the floating device", async () => {
+      paneMountsWhatIsWritten();
+      await renderWithChatInFront();
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "apple" })))
+        .resolves.toEqual({ status: "shown", shownAs: "floating-apple" });
+      expect(floatMocks.floatAppleMiniPlayerForChat).toHaveBeenCalledWith(
+        expect.objectContaining({ laneId: "lane-background", chatSessionId: "chat-1", auto: false }),
+      );
+    });
+
+    /*
      * Regression, 2026-09-23 (chat 13d65dd4): `apple show` printed "shown"
-     * while only the floating player was on screen. "shown" now waits for the
-     * Apple tool to mount in a pane the user can see.
+     * while only the floating player was on screen. The answer must describe
+     * what is really on screen — which is now either the pane the user has
+     * open (this test) or the floating surface the ack names (`shownAs`), never
+     * a pane that stayed shut.
      */
     it("answers shown for the Apple tool only once it is on screen", async () => {
       // The pane does not mount on its own here: this test mounts it.
       workMocks.fns.setLaneWorkViewState.mockImplementation(() => undefined);
       setDocumentVisibleForTests(true);
-      await renderWithChatInFront();
+      await renderWithChatInFront({ workSidebarOpen: true });
       let answer: string | null = "pending";
       const pending = answerWorkToolShowRequest(showRequest({ surface: "apple" }))
         .then((reply) => { answer = reply?.status ?? null; });
@@ -2365,6 +2479,155 @@ describe("TerminalsPage chat session activation", () => {
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("cli-running");
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running");
     });
+  });
+
+  it("scopes right-click to the multi-selection: bulk menu inside it, the row's own menu outside it", async () => {
+    const atRest = workMocks.makeTerminalSession("chat-at-rest", "lane-primary", "codex-chat", {
+      status: "completed", runtimeState: "exited", endedAt: "2026-05-14T18:05:00.000Z", exitCode: 0,
+    });
+    const waiting = workMocks.makeTerminalSession("chat-waiting", "lane-primary", "codex-chat", {
+      status: "completed", runtimeState: "exited", endedAt: "2026-05-14T18:05:00.000Z", exitCode: 0,
+      pendingInputItemId: "input-1",
+    });
+    const outside = workMocks.makeTerminalSession("chat-outside", "lane-primary", "codex-chat", {
+      status: "completed", runtimeState: "exited", endedAt: "2026-05-14T18:05:00.000Z", exitCode: 0,
+    });
+    const settle = vi.fn().mockResolvedValue(undefined);
+    const writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"));
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        sessions: { settle, delete: vi.fn() },
+        agentChat: { delete: vi.fn() },
+      },
+    });
+    const sessions = [atRest, waiting, outside];
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions,
+      visibleSessions: sessions,
+      endedFiltered: sessions,
+      filtered: sessions,
+      sessionsGroupedByLane: new Map([["lane-primary", sessions]]),
+    };
+
+    render(<TerminalsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "select chat-at-rest" }), { metaKey: true });
+    fireEvent.click(await screen.findByRole("button", { name: "select chat-waiting" }), { metaKey: true });
+
+    fireEvent.click(screen.getByRole("button", { name: "context menu chat-waiting" }));
+    const bulk = await screen.findByRole("menu", { name: "2 selected sessions" });
+    expect(screen.queryByRole("button", { name: "context delete chat chat-waiting" })).toBeNull();
+
+    // Bulk settle files away only the at-rest row; the one waiting on the user
+    // keeps its pending input.
+    const settleRow = within(bulk).getByRole("menuitem", { name: /Settle/ });
+    expect(settleRow.textContent).toContain("1 of 2");
+    fireEvent.click(settleRow);
+    await waitFor(() => expect(settle).toHaveBeenCalledTimes(1));
+    expect(settle.mock.calls[0]).toEqual(["chat-at-rest"]);
+
+    // A refused clipboard write says so instead of closing silently.
+    fireEvent.click(screen.getByRole("button", { name: "context menu chat-at-rest" }));
+    fireEvent.click(within(await screen.findByRole("menu", { name: "2 selected sessions" }))
+      .getByRole("menuitem", { name: "Copy session IDs" }));
+    await waitFor(() => expect(getToasts().some((toast) => toast.title === "Could not copy session IDs")).toBe(true));
+    expect(writeText).toHaveBeenCalledWith("chat-at-rest\nchat-waiting");
+
+    // A row outside the selection keeps its own single-session menu.
+    fireEvent.click(screen.getByRole("button", { name: "context menu chat-outside" }));
+    expect(await screen.findByRole("button", { name: "context delete chat chat-outside" })).toBeTruthy();
+    expect(screen.queryByRole("menu", { name: "2 selected sessions" })).toBeNull();
+  });
+
+  it("shift-selects a range from the open row when the selection anchor has left the screen", async () => {
+    const one = workMocks.makeTerminalSession("chat-range-1", "lane-primary", "codex-chat");
+    const two = workMocks.makeTerminalSession("chat-range-2", "lane-primary", "codex-chat");
+    const three = workMocks.makeTerminalSession("chat-range-3", "lane-primary", "codex-chat");
+    const sessions = [one, two, three];
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions,
+      visibleSessions: sessions,
+      runningFiltered: sessions,
+      filtered: sessions,
+      sessionsGroupedByLane: new Map([["lane-primary", sessions]]),
+      selectedSessionId: "chat-range-2",
+    };
+
+    render(<TerminalsPage />);
+    await screen.findByTestId("session-list-pane");
+
+    const click = (id: string, event: Partial<React.MouseEvent>, visible: string[]) => act(() => {
+      sessionListPaneProps.latest?.onSelectSession(id, {
+        shiftKey: false, metaKey: false, ctrlKey: false, ...event,
+      } as React.MouseEvent, visible);
+    });
+    // The anchor is chat-range-1; by the next shift-click its lane has folded
+    // out of the visible list, so the anchor is not part of `visible`.
+    click("chat-range-1", {}, ["chat-range-1", "chat-range-2", "chat-range-3"]);
+    click("chat-range-3", { shiftKey: true }, ["chat-range-2", "chat-range-3"]);
+
+    await waitFor(() => {
+      const selected = (sessionListPaneProps.latest as unknown as { selectedSessionIds?: Set<string> })
+        .selectedSessionIds;
+      expect(selected ? [...selected].sort() : null).toEqual(["chat-range-2", "chat-range-3"]);
+    });
+    // The range branch selects; it never opens the clicked row off-screen.
+    expect(workMocks.currentWork.openSessionTab).not.toHaveBeenCalledWith("chat-range-3");
+  });
+
+  it("offers Lanes bulk actions only for sessions in the tab's own roster with a lane it can manage", async () => {
+    const managed = workMocks.makeTerminalSession("chat-managed", "lane-background", "codex-chat");
+    // Shown as a local row but not in the tab's own roster (a runtime-pinned row).
+    const pinnedElsewhere = workMocks.makeTerminalSession("chat-pinned-elsewhere", "lane-background-2", "codex-chat");
+    // In the roster, but its lane is not one the Work tab knows about.
+    const unknownLane = workMocks.makeTerminalSession("chat-unknown-lane", "lane-gone", "codex-chat");
+    const backgroundTwo = { ...workMocks.baseWork.lanes[1]!, id: "lane-background-2", name: "Background Two" };
+    const navigate = vi.fn();
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      navigate,
+      lanes: [workMocks.baseWork.lanes[0]!, workMocks.baseWork.lanes[1]!, backgroundTwo],
+      sessions: [managed, unknownLane],
+      visibleSessions: [managed, pinnedElsewhere, unknownLane],
+      runningFiltered: [managed, pinnedElsewhere, unknownLane],
+      filtered: [managed, pinnedElsewhere, unknownLane],
+      sessionsGroupedByLane: new Map([
+        ["lane-background", [managed]],
+        ["lane-background-2", [pinnedElsewhere]],
+        ["lane-gone", [unknownLane]],
+      ]),
+    };
+
+    render(<TerminalsPage />);
+    for (const id of ["chat-managed", "chat-pinned-elsewhere", "chat-unknown-lane"]) {
+      fireEvent.click(await screen.findByRole("button", { name: `select ${id}` }), { metaKey: true });
+    }
+    fireEvent.click(screen.getByRole("button", { name: "context menu chat-managed" }));
+
+    const bulk = await screen.findByRole("menu", { name: "3 selected sessions" });
+    fireEvent.keyDown(within(bulk).getByTestId("session-bulk-menu-lanes"), { key: "ArrowRight" });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Manage…" }));
+
+    // Only the roster lane on a known lane is batched; the pinned-elsewhere and
+    // unknown-lane rows are reported as out of reach instead of silently joining.
+    await waitFor(() => expect(navigate).toHaveBeenCalledTimes(1));
+    const url = navigate.mock.calls[0]![0] as string;
+    expect(url).toContain("action=batch");
+    expect(url).toContain("laneIds=lane-background");
+    expect(url).not.toContain("lane-background-2");
+    expect(url).not.toContain("lane-gone");
   });
 
   const studioBindingForDelete = STUDIO_BINDING;

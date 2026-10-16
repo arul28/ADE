@@ -4,8 +4,9 @@ export type ClaudeCliModelAlias =
   | "claude-fable-5-1"
   | "claude-opus-5-5"
   | "claude-opus-5"
+  | "claude-sonnet-5-5"
   | "claude-sonnet-5"
-  | "claude-haiku-4-5";
+  | "claude-haiku-5-5";
 
 export const CLAUDE_CLI_MODEL_ALIAS_MAP: Readonly<Record<string, ClaudeCliModelAlias>> = {
   fable: "claude-fable-5-1",
@@ -52,7 +53,12 @@ export const CLAUDE_CLI_MODEL_ALIAS_MAP: Readonly<Record<string, ClaudeCliModelA
   "claude-opus-4-7[1m]": "claude-opus-5",
   "claude-opus-4-7-1m": "claude-opus-5",
   "anthropic/claude-opus-4-7-1m": "claude-opus-5",
-  sonnet: "claude-sonnet-5",
+  sonnet: "claude-sonnet-5-5",
+  "sonnet-5.5": "claude-sonnet-5-5",
+  "sonnet-5-5": "claude-sonnet-5-5",
+  "claude-sonnet-5-5": "claude-sonnet-5-5",
+  "anthropic/claude-sonnet-5-5": "claude-sonnet-5-5",
+  "anthropic/claude-sonnet-5-5-api": "claude-sonnet-5-5",
   "sonnet-5": "claude-sonnet-5",
   "claude-sonnet-5": "claude-sonnet-5",
   "anthropic/claude-sonnet-5": "claude-sonnet-5",
@@ -64,12 +70,18 @@ export const CLAUDE_CLI_MODEL_ALIAS_MAP: Readonly<Record<string, ClaudeCliModelA
   "claude-sonnet-4-5-20241022": "claude-sonnet-5",
   "anthropic/claude-sonnet-4-6": "claude-sonnet-5",
   "anthropic/claude-sonnet-4-6-api": "claude-sonnet-5",
-  haiku: "claude-haiku-4-5",
-  "haiku-4-5": "claude-haiku-4-5",
-  "claude-haiku-4-5": "claude-haiku-4-5",
-  "claude-haiku-4-5-20251001": "claude-haiku-4-5",
-  "anthropic/claude-haiku-4-5": "claude-haiku-4-5",
-  "anthropic/claude-haiku-4-5-api": "claude-haiku-4-5",
+  haiku: "claude-haiku-5-5",
+  "haiku-5.5": "claude-haiku-5-5",
+  "haiku-5-5": "claude-haiku-5-5",
+  "claude-haiku-5-5": "claude-haiku-5-5",
+  "anthropic/claude-haiku-5-5": "claude-haiku-5-5",
+  "anthropic/claude-haiku-5-5-api": "claude-haiku-5-5",
+  "haiku-4.5": "claude-haiku-5-5",
+  "haiku-4-5": "claude-haiku-5-5",
+  "claude-haiku-4-5": "claude-haiku-5-5",
+  "claude-haiku-4-5-20251001": "claude-haiku-5-5",
+  "anthropic/claude-haiku-4-5": "claude-haiku-5-5",
+  "anthropic/claude-haiku-4-5-api": "claude-haiku-5-5",
 };
 
 export function resolveClaudeCliModelAlias(
@@ -90,7 +102,13 @@ export function resolveClaudeCliModelAlias(
   if (known?.providerRoute === "claude-cli") return known.providerModelId;
 
   if (normalized.includes("fable")) return "claude-fable-5-1";
-  if (normalized.includes("sonnet")) return "claude-sonnet-5";
+  // A generation-qualified Sonnet id resolves to the generation it names: only
+  // the unqualified `sonnet` and explicit 5.5 spellings take the newest row.
+  // Without this a dated Sonnet 5 id (`claude-sonnet-5-20260501`) would snap
+  // forward to 5.5 and run a different model than the caller asked for.
+  if (normalized.includes("sonnet-5-5") || normalized.includes("sonnet-5.5")) return "claude-sonnet-5-5";
+  if (normalized.includes("sonnet-5")) return "claude-sonnet-5";
+  if (normalized.includes("sonnet")) return "claude-sonnet-5-5";
   if (
     normalized.includes("opus-5-5")
     || normalized.includes("opus-5.5")
@@ -100,7 +118,7 @@ export function resolveClaudeCliModelAlias(
   }
   if (normalized.includes("opus-5") || normalized.includes("opus 5")) return "claude-opus-5";
   if (normalized.includes("opus")) return "claude-opus-5";
-  if (normalized.includes("haiku")) return "claude-haiku-4-5";
+  if (normalized.includes("haiku")) return "claude-haiku-5-5";
 
   // Preserve custom IDs for forward compatibility.
   return raw;

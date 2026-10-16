@@ -1,7 +1,20 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
+import {
+  laneSlugForWorktree,
+  laneUserDataPath,
+  listDevUserDataFolders,
+  prepareLaneUserData,
+  pruneStaleDevUserData,
+  removeIfStillStale,
+  removeUnmarkedIfIdle,
+  userDataInUse,
+} from "./dev-user-data.mjs";
 import {
   canAutoStartRuntime,
   computeRuntimeBuildHash,
@@ -117,7 +130,10 @@ test("detached dev runtime does not inherit another runtime's shutdown controls"
   );
 
   assert.equal(env.ADE_RUNTIME_PARENT_PID, undefined);
-  assert.equal(env.ADE_RUNTIME_IDLE_EXIT_MS, undefined);
+  // The inherited budget is dropped, not carried over. The detached dev brain
+  // sets its own 20-minute default (DEV_RUNTIME_IDLE_EXIT_MS), so a caller's
+  // arbitrary value can neither shorten nor lengthen its life.
+  assert.equal(env.ADE_RUNTIME_IDLE_EXIT_MS, String(20 * 60 * 1000));
   assert.equal(env.ADE_CHAT_SESSION_ID, undefined);
   assert.equal(env.ADE_RUN_ID, undefined);
   assert.equal(env.ADE_STEP_ID, undefined);
@@ -311,4 +327,174 @@ test("a detached dev launch finds npm on Windows and hides the console", () => {
 
   const mac = resolveDetachedDevInvocation("npm", ["run", "dev:desktop"], { platform: "darwin" });
   assert.deepEqual(mac, { command: "npm", args: ["run", "dev:desktop"], windowsVerbatimArguments: false, windowsHide: true });
+});
+
+/* ── Per-lane dev user-data folders (scripts/dev-user-data.mjs) ──────────── */
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** A pid that cannot be alive: above every platform's pid ceiling. */
+const DEAD_PID = 999_999_999;
+
+function tempDir(prefix) {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+function laneWorktree(projectRoot, name) {
+  return path.join(projectRoot, ".ade", "worktrees", name);
+}
+
+function writeMarker(folder, marker) {
+  fs.writeFileSync(path.join(folder, ".ade-dev-lane.json"), `${JSON.stringify(marker, null, 2)}\n`);
+}
+
+test("per-lane dev user data: the primary checkout keeps the shared folder, a lane gets its own", () => {
+  const projectRoot = "/Users/dev/Projects/ADE";
+  const laneRoot = laneWorktree(projectRoot, "my-lane-1234abcd");
+  const appDataPath = tempDir("ade-dev-user-data-appdata-");
+
+  assert.equal(laneSlugForWorktree(projectRoot), null);
+  assert.equal(laneUserDataPath(projectRoot, appDataPath), null);
+  assert.equal(prepareLaneUserData(projectRoot, { appDataPath }), null);
+
+  assert.equal(laneSlugForWorktree(laneRoot), "my-lane-1234abcd");
+  assert.equal(
+    laneUserDataPath(laneRoot, appDataPath),
+    path.join(appDataPath, "ade-desktop-dev-my-lane-1234abcd"),
+  );
+  assert.equal(
+    prepareLaneUserData(laneRoot, { appDataPath }),
+    path.join(appDataPath, "ade-desktop-dev-my-lane-1234abcd"),
+  );
+});
+
+test("per-lane dev user data: a long lane slug keeps its lane-id tail so two lanes never share a folder", () => {
+  const projectRoot = "/Users/dev/Projects/ADE";
+  const longName = `${"a".repeat(100)}-1111aaaa`;
+  const otherName = `${"a".repeat(100)}-2222bbbb`;
+  const slug = laneSlugForWorktree(laneWorktree(projectRoot, longName));
+  const otherSlug = laneSlugForWorktree(laneWorktree(projectRoot, otherName));
+
+  assert.ok(slug.length <= 80, `slug too long: ${slug.length}`);
+  assert.ok(slug.endsWith("-1111aaaa"), `slug lost its lane-id tail: ${slug}`);
+  assert.notEqual(slug, otherSlug);
+});
+
+test("per-lane dev user data: a new lane folder seeds ade-state.json from the shared folder once", () => {
+  const projectRoot = "/Users/dev/Projects/ADE";
+  const laneRoot = laneWorktree(projectRoot, "seed-lane-1111aaaa");
+  const appDataPath = tempDir("ade-dev-user-data-seed-");
+  fs.mkdirSync(path.join(appDataPath, "ade-desktop-dev"), { recursive: true });
+  fs.writeFileSync(path.join(appDataPath, "ade-desktop-dev", "ade-state.json"), '{"seeded":true}');
+  fs.writeFileSync(path.join(appDataPath, "ade-desktop-dev", "window-layout.json"), '{"ignored":true}');
+
+  const folder = prepareLaneUserData(laneRoot, { appDataPath });
+  assert.equal(fs.readFileSync(path.join(folder, "ade-state.json"), "utf8"), '{"seeded":true}');
+  // Only the seeded files copy; other machine-local state starts fresh.
+  assert.equal(fs.existsSync(path.join(folder, "window-layout.json")), false);
+  // A second prepare does not overwrite the lane's own state.
+  fs.writeFileSync(path.join(folder, "ade-state.json"), '{"seeded":false}');
+  prepareLaneUserData(laneRoot, { appDataPath });
+  assert.equal(fs.readFileSync(path.join(folder, "ade-state.json"), "utf8"), '{"seeded":false}');
+});
+
+test("per-lane dev user data: a held single-instance lock means the folder is in use", () => {
+  const folder = tempDir("ade-dev-user-data-lock-");
+  fs.symlinkSync(`devhost-${process.pid}`, path.join(folder, "SingletonLock"));
+  assert.equal(userDataInUse(folder, "darwin"), true);
+
+  // A symlink to `<host>-<pid>`: `existsSync` follows the dangling target.
+  assert.equal(fs.lstatSync(path.join(folder, "SingletonLock")).isSymbolicLink(), true);
+  fs.rmSync(path.join(folder, "SingletonLock"));
+  fs.symlinkSync(`devhost-${DEAD_PID}`, path.join(folder, "SingletonLock"));
+  assert.equal(userDataInUse(folder, "darwin"), false);
+});
+
+test("per-lane dev user data: prune removes a folder whose worktree is gone", () => {
+  const appDataPath = tempDir("ade-dev-user-data-prune-");
+  const folder = path.join(appDataPath, "ade-desktop-dev-gone-1111aaaa");
+  fs.mkdirSync(folder, { recursive: true });
+  writeMarker(folder, { worktreePath: laneWorktree("/p/ADE", "gone-1111aaaa"), lastUsedAt: new Date().toISOString() });
+
+  const removed = pruneStaleDevUserData({ appDataPath });
+  assert.equal(removed.length, 1);
+  assert.equal(fs.existsSync(folder), false);
+});
+
+test("per-lane dev user data: prune leaves a folder whose launcher is still alive", () => {
+  const appDataPath = tempDir("ade-dev-user-data-launcher-");
+  const folder = path.join(appDataPath, "ade-desktop-dev-live-1111aaaa");
+  fs.mkdirSync(folder, { recursive: true });
+  // The worktree is gone, but the launcher that marked it is this process.
+  writeMarker(folder, {
+    worktreePath: laneWorktree("/p/ADE", "live-1111aaaa"),
+    lastUsedAt: new Date().toISOString(),
+    launcherPid: process.pid,
+  });
+
+  const entries = listDevUserDataFolders({ appDataPath });
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].inUse, true);
+  assert.equal(entries[0].stale, false);
+  assert.deepEqual(pruneStaleDevUserData({ appDataPath }), []);
+  assert.equal(fs.existsSync(folder), true);
+});
+
+test("per-lane dev user data: prune leaves a folder whose Electron lock is held", () => {
+  const appDataPath = tempDir("ade-dev-user-data-held-");
+  const folder = path.join(appDataPath, "ade-desktop-dev-held-1111aaaa");
+  fs.mkdirSync(folder, { recursive: true });
+  writeMarker(folder, { worktreePath: laneWorktree("/p/ADE", "held-1111aaaa"), lastUsedAt: new Date().toISOString() });
+  fs.symlinkSync(`devhost-${process.pid}`, path.join(folder, "SingletonLock"));
+
+  assert.deepEqual(pruneStaleDevUserData({ appDataPath }), []);
+  assert.equal(fs.existsSync(folder), true);
+});
+
+test("per-lane dev user data: a folder re-stamped between list and delete is kept", () => {
+  const appDataPath = tempDir("ade-dev-user-data-restamp-");
+  const folder = path.join(appDataPath, "ade-desktop-dev-restamp-1111aaaa");
+  const worktreePath = laneWorktree(appDataPath, "restamp-1111aaaa");
+  fs.mkdirSync(folder, { recursive: true });
+  fs.mkdirSync(worktreePath, { recursive: true });
+  writeMarker(folder, { worktreePath, lastUsedAt: new Date(Date.now() - 31 * DAY_MS).toISOString() });
+  // Stale on this read: the worktree exists but the folder is past the idle window.
+  assert.equal(listDevUserDataFolders({ appDataPath })[0].stale, true);
+
+  // A lane starts on it after the list: its launcher re-stamps the marker.
+  writeMarker(folder, {
+    worktreePath,
+    lastUsedAt: new Date().toISOString(),
+    launcherPid: DEAD_PID,
+  });
+  assert.equal(removeIfStillStale(folder), false);
+  assert.equal(fs.existsSync(folder), true);
+});
+
+test("per-lane dev user data: a half-deleted folder is never listed or pruned", () => {
+  const appDataPath = tempDir("ade-dev-user-data-deleting-");
+  const folder = path.join(appDataPath, "ade-desktop-dev-x-1111aaaa.deleting-123-456");
+  fs.mkdirSync(folder, { recursive: true });
+
+  assert.deepEqual(listDevUserDataFolders({ appDataPath }), []);
+  assert.equal(fs.existsSync(folder), true);
+});
+
+test("per-lane dev user data: an unmarked folder stamped before deletion is kept", () => {
+  const appDataPath = tempDir("ade-dev-user-data-unmarked-");
+  const idle = path.join(appDataPath, "ade-desktop-dev-idle-2222bbbb");
+  fs.mkdirSync(idle, { recursive: true });
+  // Unmarked and idle: the removal is the whole point of --include-unmarked.
+  assert.equal(removeUnmarkedIfIdle(idle), true);
+  assert.equal(fs.existsSync(idle), false);
+
+  // A launcher stamps the folder after the list was read. The marker now makes
+  // it not ours to remove, even though it carried none when listed.
+  const stamped = path.join(appDataPath, "ade-desktop-dev-handmade-1111aaaa");
+  fs.mkdirSync(stamped, { recursive: true });
+  writeMarker(stamped, {
+    worktreePath: laneWorktree("/p/ADE", "handmade-1111aaaa"),
+    lastUsedAt: new Date().toISOString(),
+  });
+  assert.equal(removeUnmarkedIfIdle(stamped), false);
+  assert.equal(fs.existsSync(stamped), true);
 });

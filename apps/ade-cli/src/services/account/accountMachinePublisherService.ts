@@ -1,3 +1,4 @@
+import { isPresetSourceAvailableLocally } from "../../../../desktop/src/main/services/chat/harnessRouteCatalog";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -229,6 +230,8 @@ async function readMachineInventoryInputs(args: MachineInventorySourceArgs): Pro
     name: preset.name,
     harness: preset.harness,
     model: preset.model,
+    logo: preset.logo,
+    accentColor: preset.accentColor,
   }));
 
   const modelCounts: Record<string, number> = {};
@@ -251,6 +254,9 @@ async function readMachineInventoryInputs(args: MachineInventorySourceArgs): Pro
     // This fallback keeps presets created before the explicit binding list
     // useful while never carrying that source reference over the wire.
     if (preset.source.kind === "account" && args.providerInstanceStore.get(preset.source.instanceId)) {
+      boundPresetIds.add(preset.id);
+    }
+    if ((preset.source.kind === "key" || preset.source.kind === "opencode") && isPresetSourceAvailableLocally(preset.source)) {
       boundPresetIds.add(preset.id);
     }
   }
@@ -1029,6 +1035,7 @@ export function createAccountMachinePublisherService(options: {
       "timeout",
       "transport_error",
     ]);
+    const previousState = health.state;
     health = {
       state,
       skipReason: args.skipReason,
@@ -1048,6 +1055,15 @@ export function createAccountMachinePublisherService(options: {
           : null,
     };
     if (state === "published") recoveryGaveUpAtMs = null;
+    // Most skips return without a log line (only some failures warn, once),
+    // so a publisher that never publishes looked exactly like one publishing
+    // quietly. Say each change of outcome once.
+    if (state !== previousState && state !== "published") {
+      options.logger?.info?.("account.machine_publish_skipped", {
+        state,
+        skipReason: args.skipReason,
+      });
+    }
     if (health.failingSinceMs == null) {
       publishFailureAnalytics.end();
       sustainedFailureReported = false;
@@ -1629,7 +1645,7 @@ export function createAccountMachinePublisherService(options: {
       );
       if (slow) {
         options.logger?.warn("account.machine_publish_ok", logMeta);
-      } else if (successfulPublishCount % PUBLISH_INFO_INTERVAL === 0) {
+      } else if (successfulPublishCount === 1 || successfulPublishCount % PUBLISH_INFO_INTERVAL === 0) {
         options.logger?.info?.("account.machine_publish_ok", logMeta);
       } else {
         options.logger?.debug?.("account.machine_publish_ok", logMeta);

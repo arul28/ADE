@@ -124,6 +124,34 @@ func workLinkifiedPreview(_ text: String, linkify: Bool) -> AttributedString {
   return result
 }
 
+/// The chat's live goal for its Work row (desktop `projectActiveGoal`): read
+/// off the chat summary when the phone has one, since database-backed rows
+/// drop the host's `activeGoal` projection; the wire row's copy otherwise.
+func workSessionActiveGoal(
+  session: TerminalSessionSummary,
+  summary: AgentChatSessionSummary?
+) -> SessionActiveGoal? {
+  guard let summary else { return session.activeGoal }
+  if let codex = summary.codexGoal, codex.isLive {
+    return SessionActiveGoal(
+      provider: "codex",
+      objective: codex.objective?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+      status: codex.status ?? "active"
+    )
+  }
+  let condition = summary.claudeGoal?.condition.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !condition.isEmpty {
+    return SessionActiveGoal(provider: "claude", objective: condition, status: "active")
+  }
+  return session.activeGoal
+}
+
+/// "Goal: …" or "Goal (paused): …", the row glyph's spoken and long-press text.
+func workSessionActiveGoalTitle(_ goal: SessionActiveGoal) -> String {
+  let status = goal.status == "active" ? "" : " (\(goal.status.replacingOccurrences(of: "_", with: " ")))"
+  return "Goal\(status): \(goal.objective)"
+}
+
 private struct WorkSessionRowRenderSignature: Equatable {
   let sessionId: String
   let title: String
@@ -186,6 +214,8 @@ private struct WorkSessionRowRenderSignature: Equatable {
   /// Spawned BY the CTO. Held separately from `isSubagent` because it REPLACES
   /// it on screen rather than adding to it — see `lineageMark`.
   let isCtoChild: Bool
+  /// The chat's live goal; drawn as a quiet glyph on line 1.
+  let activeGoal: SessionActiveGoal?
   let showsLaneIdentity: Bool
   let settledAt: String?
   let statusNote: String?
@@ -213,6 +243,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
   let nestedSubagent: Bool
   /// Setup rail of a chat launch that still owns this row; nil otherwise.
   let launchRail: [ChatLaunchRailSegment]?
+  let waitingOnSubagent: Bool
 
   init(
     session: TerminalSessionSummary,
@@ -225,7 +256,8 @@ private struct WorkSessionRowRenderSignature: Equatable {
     isSelectedTransitionSource: Bool,
     compact: Bool,
     nestedSubagent: Bool,
-    showsLaneIdentity: Bool
+    showsLaneIdentity: Bool,
+    waitingOnSubagent: Bool
   ) {
     self.sessionId = session.id
     self.title = chatSummary?.title ?? session.title
@@ -244,8 +276,10 @@ private struct WorkSessionRowRenderSignature: Equatable {
     // shell in the lane to redraw state none of them draws.
     let drawsLaneGitState = showsLaneIdentity && !compact
     self.laneDirty = drawsLaneGitState && lane?.status.dirty == true
-    self.laneAhead = drawsLaneGitState ? (lane?.status.ahead ?? 0) : 0
-    self.laneBehind = drawsLaneGitState ? (lane?.status.behind ?? 0) : 0
+    // Ahead/behind arrows are not drawn on a card: they read as file-change
+    // counts and repeated the lane header. Only the dirty dot stays.
+    self.laneAhead = 0
+    self.laneBehind = 0
     self.activityTimestamp = workSessionActivityTimestamp(session: session, summary: chatSummary)
     // One derivation, one clock. The phase, the capsule, the dot hue and the
     // status slot all fall out of a single canonical state; reaching for the
@@ -254,7 +288,12 @@ private struct WorkSessionRowRenderSignature: Equatable {
     // snooze boundary and the row would paint a capsule from one instant beside
     // a status slot from another.
     let now = Date()
-    let row = workSessionRowPresentation(session: session, summary: chatSummary, now: now)
+    let row = workSessionRowPresentation(
+      session: session,
+      summary: chatSummary,
+      waitingOnSubagent: waitingOnSubagent,
+      now: now
+    )
     self.previewLine = workSessionRowPreviewSource(
       session: session,
       chatSummary: chatSummary,
@@ -270,7 +309,9 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.statusLabel = row.status?.label
     self.statusGlyph = row.status?.glyph
     self.statusElapsedSince = row.status?.showsElapsed == true
-      ? (chatSummary?.currentTurnStartedAt ?? row.status?.activityReportUpdatedAt ?? self.activityTimestamp)
+      // An activity ("Testing") counts from when the session entered it, not
+      // from the turn start; mirrors `sessionElapsedAnchor` on desktop.
+      ? (row.status?.activityReportUpdatedAt ?? chatSummary?.currentTurnStartedAt ?? self.activityTimestamp)
       : nil
     self.showsElapsed = row.status?.showsElapsed ?? false
     // Settled resolves to a nil presentation, so it is not prominent and recedes.
@@ -278,6 +319,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.isProminent = row.status?.prominent ?? false
     self.statusTone = row.status?.tone
     self.model = chatSummary?.model
+    self.waitingOnSubagent = waitingOnSubagent
     // Same source as `workSpawnKind` in WorkSpawnNesting: the session row
     // carries the host projection, and the chat summary is a fallback when
     // the list has not hydrated it yet. Nested compact rows key the leading
@@ -289,6 +331,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
     // filtered out of every roster the phone holds — so there is no parent
     // summary here to ask, and nothing to derive it from.
     self.isCtoChild = session.isCtoChild
+    self.activeGoal = workSessionActiveGoal(session: session, summary: chatSummary)
     self.showsLaneIdentity = showsLaneIdentity
     self.settledAt = session.settledAt
     self.statusNote = session.statusNote
@@ -336,6 +379,7 @@ struct WorkSessionRow: View, Equatable {
   /// The singleton form: no lane header above this row, so the row shows the
   /// lane itself. Under a lane header the chip would just repeat the header.
   var showsLaneIdentity: Bool = true
+  var waitingOnSubagent: Bool = false
   private let renderSignature: WorkSessionRowRenderSignature
 
   init(
@@ -350,7 +394,8 @@ struct WorkSessionRow: View, Equatable {
     isSelectedTransitionSource: Bool,
     compact: Bool = false,
     nestedSubagent: Bool = false,
-    showsLaneIdentity: Bool = true
+    showsLaneIdentity: Bool = true,
+    waitingOnSubagent: Bool = false
   ) {
     self.session = session
     self.lane = lane
@@ -364,6 +409,7 @@ struct WorkSessionRow: View, Equatable {
     self.compact = compact
     self.nestedSubagent = nestedSubagent
     self.showsLaneIdentity = showsLaneIdentity
+    self.waitingOnSubagent = waitingOnSubagent
     self.renderSignature = WorkSessionRowRenderSignature(
       session: session,
       lane: lane,
@@ -375,7 +421,8 @@ struct WorkSessionRow: View, Equatable {
       isSelectedTransitionSource: isSelectedTransitionSource,
       compact: compact,
       nestedSubagent: nestedSubagent,
-      showsLaneIdentity: showsLaneIdentity
+      showsLaneIdentity: showsLaneIdentity,
+      waitingOnSubagent: waitingOnSubagent
     )
   }
 
@@ -384,6 +431,7 @@ struct WorkSessionRow: View, Equatable {
   }
 
   var body: some View {
+    let _ = ScrollDiagnostics.shared.count(.workRowBody)
     if compact {
       compactBody
     } else {
@@ -415,12 +463,14 @@ struct WorkSessionRow: View, Equatable {
         quietCompactContents
       }
     }
-    .padding(.horizontal, 10)
+    .padding(.horizontal, 4)
     .padding(.vertical, 8)
     .frame(maxWidth: .infinity, alignment: .leading)
-    // Neutral, like the standard card: the provider tint survives only on the
-    // logo, which is the one place it is identity rather than state.
+    // No surface of its own: rows sit flush on the page, like the standard
+    // row. The only fill is the transient open-transition highlight.
     .background(surfaceFill, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+    // With no fill, the whole row still has to take the tap.
+    .contentShape(Rectangle())
     .overlay {
       if isSelectedTransitionSource {
         RoundedRectangle(cornerRadius: 11, style: .continuous)
@@ -521,6 +571,15 @@ struct WorkSessionRow: View, Equatable {
           .font(.caption2)
           .foregroundStyle(ADEColor.textMuted)
           .fixedSize()
+      }
+      if let goal = renderSignature.activeGoal {
+        // Amber while the goal is active, muted when paused or limited — the
+        // same quiet glyph desktop's SessionCard draws.
+        Image(systemName: "target")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(goal.status == "active" ? ADEColor.warning : ADEColor.textMuted)
+          .fixedSize()
+          .accessibilityHidden(true)
       }
       HStack(spacing: 5) {
         if showsLaneIdentity {
@@ -685,7 +744,9 @@ struct WorkSessionRow: View, Equatable {
   }
 
   /// Interaction owns the surface. Background, border and shadow are reserved
-  /// for selection and press; state never spends them.
+  /// for selection and press; state never spends them — and at rest there is
+  /// no surface at all: rows sit flush on the page, separated by the list's
+  /// hairlines, not by card edges.
   ///
   /// This card used to paint its whole body in the provider's brand hue
   /// (`providerTintColor.opacity(0.12)` fill, a 0.25 stroke), and `providerTint`
@@ -694,10 +755,11 @@ struct WorkSessionRow: View, Equatable {
   /// Status now lives in exactly one place: the right-anchored slot on line 1.
   private func sessionCardSurface<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
     content()
-      .padding(.horizontal, 12)
-      .padding(.vertical, 9)
+      .padding(.horizontal, 4)
+      .padding(.vertical, 10)
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(surfaceFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .contentShape(Rectangle())
       .overlay {
         if isSelectedTransitionSource {
           RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -723,9 +785,7 @@ struct WorkSessionRow: View, Equatable {
   }
 
   private var surfaceFill: Color {
-    isSelectedTransitionSource
-      ? ADEColor.accent.opacity(0.12)
-      : ADEColor.surfaceBackground.opacity(0.6)
+    isSelectedTransitionSource ? ADEColor.accent.opacity(0.12) : .clear
   }
 
   /// Non-prominent states recede to 70%, which is how the few rows that want a
@@ -977,6 +1037,9 @@ struct WorkSessionRow: View, Equatable {
     if let model = renderSignature.model, !model.isEmpty {
       parts.append(shortModelLabel(model))
     }
+    if let goal = renderSignature.activeGoal {
+      parts.append(workSessionActiveGoalTitle(goal))
+    }
     if let pullRequest {
       parts.append("pull request #\(pullRequest.githubPrNumber), \(lanePrStateLabel(pullRequest.state))")
     }
@@ -1118,10 +1181,11 @@ struct WorkSessionRowStatusSlot: View {
   let tone: ActivityTone
   let glyph: ActivityGlyph?
   let showsElapsed: Bool
-  /// Elapsed time uses the chat summary's `currentTurnStartedAt` when present,
-  /// matching desktop. When that anchor is absent, iOS falls back to the
-  /// activity report's update time and then the row's activity timestamp;
-  /// desktop and CLI fall back directly to last activity.
+  /// Elapsed counts from when the session entered its activity ("Testing")
+  /// when the row shows one, else from the chat summary's
+  /// `currentTurnStartedAt`, matching desktop's `sessionElapsedAnchor`. Without
+  /// either, iOS falls back to the row's activity timestamp; desktop and CLI
+  /// fall back directly to last activity.
   let elapsedSince: Date?
   /// Accessibility sizes let the slot wrap instead of holding one line.
   var wraps: Bool = false

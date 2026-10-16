@@ -825,6 +825,16 @@ final class AccountService: ObservableObject {
   @Published private(set) var identity: AccountIdentity?
   @Published private(set) var machines: [AccountMachine] = []
   @Published private(set) var machinesState: MachinesState = .idle
+
+  /// The account-directory row for a saved fleet key (`machine:<deviceId>`),
+  /// matched by device identity. Nil when the key carries no identity or the
+  /// directory has not listed that device.
+  func machine(forFleetKey fleetKey: String?) -> AccountMachine? {
+    guard let fleetKey,
+          let identity = HiddenMachineStore.identity(fromFleetKey: fleetKey) else { return nil }
+    return machines.first { $0.deviceId?.caseInsensitiveCompare(identity) == .orderedSame }
+  }
+
   @Published private(set) var authenticationOutcome: AccountAuthenticationOutcome = .unknown
   /// Bumped after a new account Attention snapshot is committed to the App
   /// Group. The in-app model observes this alongside SyncService revisions.
@@ -973,6 +983,10 @@ final class AccountService: ObservableObject {
         accountPreferencesQueue.discardPending()
         cancelAttentionRefresh()
         LiveActivityService.shared.prepareForAccountSignOut()
+        // Cached chat logs belong to the previous account (edge case 19).
+        SyncService.shared?.chatThreadRegistry.purgeAll()
+        // Other machines' roster connections belong to that account too.
+        SyncService.shared?.machineFleet?.reset()
       }
       deviceOwnershipStore.transition(to: nextIdentity.userId)
       // A live signed-in owner has committed the account boundary, including
@@ -981,6 +995,7 @@ final class AccountService: ObservableObject {
       if identity?.userId != nextIdentity.userId {
         invalidatePairingAuthorization()
         clearAttentionSnapshot()
+        CrashReporting.setUser(accountId: nextIdentity.userId)
       }
       SyncService.shared?.removeAccountOwnedPairings(exceptOwnerId: nextIdentity.userId)
       identity = nextIdentity
@@ -1038,6 +1053,11 @@ final class AccountService: ObservableObject {
     accountPreferencesQueue.discardPending()
     if let previousOwnerId {
       attentionPendingAckStore.clear(for: previousOwnerId)
+      // A signed-in owner is signing out: their cached chat logs go too
+      // (edge case 19). Repeated signed-out publishes have no owner and keep
+      // a LAN-only user's cache.
+      SyncService.shared?.chatThreadRegistry.purgeAll()
+      SyncService.shared?.machineFleet?.reset()
     }
     cancelAttentionRefresh()
     stopAttentionPolling()
@@ -1045,6 +1065,7 @@ final class AccountService: ObservableObject {
     SyncService.shared?.removeAccountOwnedPairings(exceptOwnerId: nil)
     identity = nil
     ProductAnalytics.shared.resetAccountIdentity()
+    if previousOwnerId != nil { CrashReporting.setUser(accountId: nil) }
     machines = []
     machinesState = .idle
     phase = .signedOut
@@ -2029,6 +2050,35 @@ final class AccountService: ObservableObject {
     } else {
       await loadMachines()
     }
+  }
+
+  /// Removes `machine` from the account for every device (desktop "Remove from
+  /// account"), then drops it from the local list.
+  func removeMachineFromAccount(_ machine: AccountMachine) async throws {
+    guard isSignedIn,
+          let requestedOwnerId = identity?.userId,
+          let baseURL = AccountConfig.directoryBaseURL,
+          let initialSession = await pairingSession(),
+          initialSession.authorization.ownerId == requestedOwnerId,
+          isPairingCommitAuthorized(initialSession.authorization) else {
+      throw AccountDirectoryClient.DirectoryError.unauthorized
+    }
+    try await directory.deleteMachine(
+      baseURL: baseURL,
+      token: initialSession.token,
+      machineKey: machine.machineKey,
+      refreshToken: { [weak self] in
+        guard let self,
+              self.isPairingCommitAuthorized(initialSession.authorization) else { return nil }
+        return try? await self.freshRelaySession(
+          expectedAuthorization: initialSession.authorization
+        ).token
+      }
+    )
+    guard isPairingCommitAuthorized(initialSession.authorization) else {
+      throw AccountDirectoryClient.DirectoryError.unauthorized
+    }
+    machines.removeAll { $0.machineKey == machine.machineKey }
   }
 
   // MARK: - Identity mapping

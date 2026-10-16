@@ -6,6 +6,7 @@ import {
   FolderOpen,
   Gear,
   GitBranch,
+  GitCommit,
   Globe,
   Link,
   Palette,
@@ -23,7 +24,7 @@ import { buildWebClientUrl } from "../../../shared/webClientUrl";
 import { openExternalUrl } from "../../lib/openExternal";
 import { revealLabel } from "../../lib/platform";
 import { revealLaneWorktree } from "../../lib/revealLaneWorktree";
-import { COLORS, MONO_FONT } from "./laneDesignTokens";
+import { COLORS, MONO_FONT, fgTint } from "./laneDesignTokens";
 import { LANE_CLASSIC_COLORS, LANE_RAINBOW_COLORS, colorsInUse, type LaneColor } from "./laneColorPalette";
 
 export function LaneMenuGlyph({ icon: Icon }: { icon: Icon }) {
@@ -99,6 +100,8 @@ export type LaneMenuArgs = {
   onAppearanceChanged?: () => void | Promise<void>;
   onStartChatInLane?: (laneId: string) => void;
   onToggleWorkPin?: (laneId: string) => void;
+  /** History's commit graph on this lane. */
+  onOpenHistory?: (laneId: string) => void;
   workPinnedLaneIds?: string[];
   /** Work-sidebar pin key; foreign lanes use `machineId:laneId`. */
   workPinLaneId?: string;
@@ -153,6 +156,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     onAppearanceChanged,
     onStartChatInLane,
     onToggleWorkPin,
+    onOpenHistory,
     workPinnedLaneIds,
     workPinLaneId,
     openIn,
@@ -190,9 +194,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     top.push({
       kind: "action",
       key: "work-pin",
-      label: isWorkPinned
-        ? "Unpin from Work sidebar"
-        : "Pin to Work sidebar",
+      label: isWorkPinned ? "Unpin" : "Pin",
       icon: isWorkPinned ? PushPinSlash : PushPin,
       onSelect: () => { onClose(); onToggleWorkPin(pinId); },
     });
@@ -201,6 +203,15 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
 
   // ── Go to: surfaces outside this menu that show the same lane.
   const goTo: LaneMenuEntry[] = [];
+  if (lane && onOpenHistory) {
+    goTo.push({
+      kind: "action",
+      key: "commit-history",
+      label: "Commit history",
+      icon: GitCommit,
+      onSelect: () => { onClose(); onOpenHistory(laneId); },
+    });
+  }
   if (lane?.worktreePath && !isRemoteProject) {
     goTo.push({
       kind: "action",
@@ -242,7 +253,9 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
         onClose();
         void (async () => {
           const repo = await fetchRepoForCopy();
-          const pr = await window.ade.prs.getForLane(lane.id).catch(() => null);
+          const pr = await (runtimePin
+            ? window.ade.prs.getForLane(lane.id, runtimePin)
+            : window.ade.prs.getForLane(lane.id)).catch(() => null);
           const url = buildDeeplink(
             {
               kind: "lane",
@@ -581,7 +594,7 @@ function SwatchGroup({
                 cursor: isTaken ? "not-allowed" : "pointer",
                 outline: isSelected ? `2px solid ${COLORS.textPrimary}` : "none",
                 outlineOffset: 1,
-                boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.18)",
+                boxShadow: `inset 0 0 0 1px ${fgTint(18)}`,
                 border: "none",
                 padding: 0,
                 display: "inline-flex",

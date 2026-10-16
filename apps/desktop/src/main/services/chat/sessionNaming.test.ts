@@ -12,7 +12,6 @@ import {
   buildSessionMetadataPrompt,
   buildSessionMetadataSystemPrompt,
   clipFromEnd,
-  deriveDeterministicSessionMetadata,
   extractLatestAssistantParagraphs,
   isProviderLevelNamingFailure,
   parseGeneratedSessionMetadata,
@@ -44,6 +43,8 @@ describe("isProviderLevelNamingFailure", () => {
     ["401 unauthorized", true],
     ["Image input is not supported with Qwen native metadata tasks", true],
     ["codex: command not found", true],
+    ["Claude failed: You've hit your weekly limit · resets 6am (America/New_York) (HTTP 429)", true],
+    ["Codex exited with code 1\n\nYou've hit your usage limit. Try again later.", true],
     ["Image input is not supported for this model", false],
     ["json schema is not supported by this model", false],
     ["socket hang up", false],
@@ -101,13 +102,13 @@ describe("buildSessionIntelligenceModelCandidates", () => {
       [OPENAI_MODELS[0]!.id]],
     ["a session-model alias resolves to its canonical id",
       { availableModels: ALL_MODELS, sessionModel: "sonnet" },
-      ["anthropic/claude-sonnet-5"]],
+      ["anthropic/claude-sonnet-5-5"]],
     ["an alias resolves with an empty auth snapshot",
       { availableModels: [], sessionModel: "sonnet" },
-      ["anthropic/claude-sonnet-5"]],
+      ["anthropic/claude-sonnet-5-5"]],
     ["an alias follows the provider helper",
       { availableModels: ALL_MODELS, provider: "claude", sessionModel: "sonnet" },
-      [BACKGROUND_UTILITY_CLAUDE_MODEL_ID, "anthropic/claude-sonnet-5"]],
+      [BACKGROUND_UTILITY_CLAUDE_MODEL_ID, "anthropic/claude-sonnet-5-5"]],
   ])("%s", (_label, args, expected) => {
     expect(buildSessionIntelligenceModelCandidates(args)).toEqual(expected);
   });
@@ -298,23 +299,6 @@ describe("parseGeneratedSessionMetadata", () => {
       chatTitle: "Wire Rag Search",
       laneName: "Search Answer Path",
       statusLine: "Sources show before generate",
-    });
-  });
-});
-
-describe("deriveDeterministicSessionMetadata", () => {
-  it("prefers the conversation summary over the original kickoff prompt", () => {
-    expect(deriveDeterministicSessionMetadata({
-      seeds: [
-        "Wired project aiSummary into RAG excerpts so Cmd+K answers from the overview",
-        "start skill using aws other",
-      ],
-      normalizeTitle,
-      normalizeStatusLine,
-    })).toMatchObject({
-      chatTitle: expect.stringMatching(/wired/i),
-      laneName: expect.stringMatching(/wired/i),
-      statusLine: expect.stringMatching(/aiSummary|RAG|Cmd/i),
     });
   });
 });

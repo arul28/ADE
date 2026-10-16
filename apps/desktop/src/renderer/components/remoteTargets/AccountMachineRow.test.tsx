@@ -47,6 +47,7 @@ function renderRow(value: AdeAccountMachine, connected = false) {
       detailOpen={false}
       onToggleDetail={vi.fn()}
       onConnect={vi.fn()}
+      onCancelConnect={vi.fn()}
     />,
   );
 }

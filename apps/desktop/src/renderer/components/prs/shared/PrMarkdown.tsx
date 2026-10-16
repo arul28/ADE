@@ -21,20 +21,31 @@ import {
   SAFE_PREVIEW_SCHEMA,
 } from "../../chat/chatMarkdown";
 import { HighlightedCode } from "../../chat/CodeHighlighter";
-import { COLORS } from "../../lanes/laneDesignTokens";
+import { COLORS, fgTint } from "../../lanes/laneDesignTokens";
 import { ADE_DEEPLINK_FOOTER_LOGO_URL } from "../../../../shared/adeDeeplinkFooter";
 import { normalizeEscapedMarkdownNewlines } from "../../../../shared/prMarkdownText";
-import { PrMermaid } from "./PrMermaid";
+import { MermaidDiagram } from "../../shared/MermaidDiagram";
 import {
   GITHUB_ALERT,
   PrAlertCallout,
   PrFileChip,
   PrMarkdownEnvContext,
+  PrQuoteSourceContext,
   PrRefPill,
   resolveInlineFile,
   type GithubAlertKind,
 } from "./prMarkdownContext";
 import { getFileIcon } from "../../files/filePresentation";
+import {
+  PR_COMPARE_FENCE_LANGUAGE,
+  PR_ATTACHMENT_TITLE,
+  PR_PROOF_PLACEHOLDER_HOST,
+  parsePrCompareFence,
+  prProofIdFromTitle,
+  preparePrBodyProofForAde,
+  type PrCompareFigure,
+} from "../../../../shared/prBodyProof";
+import { PrAddToChatButton, PrCompare, PrProofMedia, PrRemoteMedia } from "./PrProofMedia";
 import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
 
 type PrMarkdownTone = "neutral" | "sky" | "amber";
@@ -52,7 +63,8 @@ export type PrMarkdownProps = {
 
 /* ── Extended sanitization schema ──────────────────────────────────── */
 
-const PR_SAFE_SCHEMA = (() => {
+/** GitHub-flavoured HTML (details, img, task boxes) that is safe to render. Shared with issue bodies. */
+export const PR_SAFE_SCHEMA = (() => {
   const baseTagNames = SAFE_PREVIEW_SCHEMA.tagNames ?? defaultSchema.tagNames ?? [];
   const baseAttributes = {
     ...(defaultSchema.attributes ?? {}),
@@ -233,7 +245,7 @@ function PrDetails({
         type="button"
         onClick={onToggle}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] font-medium transition-colors hover:bg-white/[0.04]"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] font-medium transition-colors hover:bg-fg/[0.04]"
         style={{ color: COLORS.textPrimary }}
       >
         <CaretRight
@@ -294,6 +306,9 @@ function isCursorActionImage(src: string | undefined, altText: string): boolean 
   }
 }
 
+const MIN_QUOTABLE_IMAGE_WIDTH = 160;
+const MIN_QUOTABLE_IMAGE_HEIGHT = 80;
+
 function PrImage({
   src,
   alt,
@@ -304,10 +319,16 @@ function PrImage({
   title?: string;
 }) {
   const [errored, setErrored] = useState(false);
+  // "Add to chat" is for a picture a reader would quote: not a badge, an
+  // avatar or an icon, and not a picture that is itself a link.
+  const [quotable, setQuotable] = useState(false);
+  const env = useContext(PrMarkdownEnvContext);
+  const from = useContext(PrQuoteSourceContext);
   // react-markdown reuses img instances positionally, so reset the error flag
   // when the source changes (e.g. a corrected URL in the editor preview).
   useEffect(() => {
     setErrored(false);
+    setQuotable(false);
   }, [src]);
   const handleClick = useCallback(
     (event: MouseEvent<HTMLImageElement>) => {
@@ -357,6 +378,29 @@ function PrImage({
       </span>
     );
   }
+  // A picture the author uploaded as proof carries its proof id in the title
+  // (see prBodyProof.ts): this machine's copy when it has one, else GitHub's.
+  const proofId = prProofIdFromTitle(title);
+  const addToChat = env?.onAddToChat;
+  const quote = addToChat && !src.includes(PR_PROOF_PLACEHOLDER_HOST)
+    ? () => addToChat({ text: `![${altText}](${src})`, from: `a picture in ${from}` })
+    : null;
+  if (title === PR_ATTACHMENT_TITLE) {
+    return (
+      <span className="group/media relative block w-fit max-w-full">
+        <PrRemoteMedia url={src} alt={altText} likely="video" />
+        {quote ? <PrAddToChatButton onClick={() => addToChat?.({ text: src, from: `a video in ${from}` })} className="absolute right-2 top-4 opacity-0 group-hover/media:opacity-100 focus-visible:opacity-100" /> : null}
+      </span>
+    );
+  }
+  if (proofId) {
+    return (
+      <span className="group/media relative block">
+        <PrProofMedia artifactId={proofId} url={src.includes(PR_PROOF_PLACEHOLDER_HOST) ? null : src} alt={altText} />
+        {quote ? <PrAddToChatButton onClick={quote} className="absolute right-2 top-2 opacity-0 group-hover/media:opacity-100 focus-visible:opacity-100" /> : null}
+      </span>
+    );
+  }
   // A broken/blocked image degrades to its alt text (or nothing) instead of the
   // browser's broken-image glyph.
   if (errored) {
@@ -364,7 +408,7 @@ function PrImage({
       ? <span className="text-[11px]" style={{ color: COLORS.textMuted }}>{altText}</span>
       : null;
   }
-  return (
+  const picture = (
     <img
       src={src}
       alt={altText}
@@ -376,11 +420,43 @@ function PrImage({
       // which is why GitHub itself serves these with referrer stripped.
       referrerPolicy="no-referrer"
       onError={() => setErrored(true)}
+      onLoad={quote ? (event) => {
+        const image = event.currentTarget;
+        setQuotable(
+          image.naturalWidth >= MIN_QUOTABLE_IMAGE_WIDTH
+          && image.naturalHeight >= MIN_QUOTABLE_IMAGE_HEIGHT
+          && image.closest("a") === null,
+        );
+      } : undefined}
       onClick={handleClick}
       className="my-2 block max-w-full cursor-zoom-in rounded-[6px] border"
       style={{ borderColor: COLORS.border, maxHeight: 520 }}
     />
   );
+  if (!quote || !quotable) return picture;
+  return (
+    <span className="group/media relative block w-fit max-w-full">
+      {picture}
+      <PrAddToChatButton onClick={quote} className="absolute right-2 top-4 opacity-0 group-hover/media:opacity-100 focus-visible:opacity-100" />
+    </span>
+  );
+}
+
+/** A ```pr-compare fence: the figure, quotable as a whole. */
+function PrCompareBlock({ figure }: { figure: PrCompareFigure }) {
+  const env = useContext(PrMarkdownEnvContext);
+  const from = useContext(PrQuoteSourceContext);
+  const addToChat = env?.onAddToChat;
+  const quote = addToChat
+    ? () => addToChat({
+      text: [
+        ...figure.sides.map((side) => `${side.title}: ${side.url ? `![${side.label ?? side.title}](${side.url})` : side.label ?? "(not uploaded)"}${side.artifactId ? ` (ADE proof ${side.artifactId})` : ""}`),
+        ...(figure.caption ? [figure.caption] : []),
+      ].join("\n"),
+      from: `a before and after comparison in ${from}`,
+    })
+    : undefined;
+  return <PrCompare figure={figure} onAddToChat={quote} />;
 }
 
 /* ── Link with external-open handling ─────────────────────────────── */
@@ -602,7 +678,7 @@ function CodeBlockWithHeader({ fileName, code, language }: { fileName: string; c
   const { icon: Glyph, color } = getFileIcon(fileName);
   return (
     <div className="mb-3 overflow-hidden rounded-[8px] last:mb-0" style={{ background: "rgba(0,0,0,0.25)" }} data-testid="pr-md-code-file">
-      <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px]" style={{ background: "rgba(255,255,255,0.035)", color: COLORS.textSecondary }}>
+      <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px]" style={{ background: fgTint(3.5), color: COLORS.textSecondary }}>
         <Glyph size={12} style={{ color }} />
         <span className="min-w-0 flex-1 truncate font-mono">{fileName}</span>
         <button
@@ -614,7 +690,7 @@ function CodeBlockWithHeader({ fileName, code, language }: { fileName: string; c
               window.setTimeout(() => setCopied(false), 1200);
             });
           }}
-          className="rounded px-1.5 py-0.5 text-[10.5px] hover:bg-white/[0.07]"
+          className="rounded px-1.5 py-0.5 text-[10.5px] hover:bg-fg/[0.07]"
           style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer" }}
         >
           {copied ? "Copied" : "Copy"}
@@ -624,6 +700,18 @@ function CodeBlockWithHeader({ fileName, code, language }: { fileName: string; c
     </div>
   );
 }
+
+/**
+ * The heading steps of a description that reads as a document. The Brief
+ * draws its part headings with the same steps, so a Brief looks like the
+ * document it is.
+ */
+export const PR_DOCUMENT_HEADING_CLASS = {
+  1: "text-[20px] mt-6 mb-3 tracking-[-0.01em]",
+  2: "text-[17px] mt-6 mb-2.5 tracking-[-0.01em]",
+  3: "text-[15px] mt-5 mb-2",
+  4: "text-[13.5px] mt-4 mb-1.5",
+} as const;
 
 function buildPrOverrides({
   tone,
@@ -643,15 +731,7 @@ function buildPrOverrides({
   // A description reads as a document: real heading steps in the text color,
   // not the small tinted labels a comment uses.
   const headerTone = doc ? COLORS.textPrimary : toneAccent(tone);
-  const headingClass = (level: 1 | 2 | 3 | 4): string => {
-    if (!doc) return "";
-    return {
-      1: "text-[20px] mt-6 mb-3 tracking-[-0.01em]",
-      2: "text-[17px] mt-6 mb-2.5 tracking-[-0.01em]",
-      3: "text-[15px] mt-5 mb-2",
-      4: "text-[13.5px] mt-4 mb-1.5",
-    }[level];
-  };
+  const headingClass = (level: 1 | 2 | 3 | 4): string => (doc ? PR_DOCUMENT_HEADING_CLASS[level] : "");
 
   return {
     p: ({ children }) => (
@@ -713,7 +793,11 @@ function buildPrOverrides({
         const language = match ? match[1] : "text";
         const codeText = extractLinkText(props?.children).replace(/\n$/, "");
         if (language === "mermaid") {
-          return <PrMermaid source={codeText} />;
+          return <MermaidDiagram source={codeText} variant="pr" renderCode={(code) => <HighlightedCode code={code} language="mermaid" />} />;
+        }
+        if (language === PR_COMPARE_FENCE_LANGUAGE) {
+          const figure = parsePrCompareFence(codeText);
+          if (figure) return <PrCompareBlock figure={figure} />;
         }
         // ```ts apps/desktop/src/foo.ts — the info string after the language
         // names the file, so the block gets a file header and a copy button.
@@ -736,7 +820,7 @@ function buildPrOverrides({
       // (instead of `pre > code`), still render the diagram rather than raw
       // source. The `pre` override normally intercepts this first.
       if (className && /language-mermaid\b/.test(className)) {
-        return <PrMermaid source={extractLinkText(children).replace(/\n$/, "")} />;
+        return <MermaidDiagram source={extractLinkText(children).replace(/\n$/, "")} variant="pr" renderCode={(code) => <HighlightedCode code={code} language="mermaid" />} />;
       }
       // Fenced blocks are handled by `pre`. Inline code stays small & mono.
       if (className && /language-/.test(className)) {
@@ -847,7 +931,7 @@ export const PrMarkdown = memo(function PrMarkdown({
   );
 
   const markdown = useMemo(
-    () => normalizeEscapedMarkdownNewlines(children),
+    () => preparePrBodyProofForAde(normalizeEscapedMarkdownNewlines(children)),
     [children],
   );
 

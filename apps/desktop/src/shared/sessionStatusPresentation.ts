@@ -2,6 +2,7 @@ import { resolveUsageLimitResumeState } from "./chatAutoResume";
 import { usageLimitResumeRowStatus } from "./usageLimitResumePresentation";
 import type { AgentChatUsageLimitResume } from "./types/chat";
 import type { SessionActivityReport } from "./types/sessions";
+import { isReportFromTurn } from "./sessionActivity";
 import type {
   CanonicalSessionPhase,
   SessionBackgroundWork,
@@ -60,11 +61,14 @@ export type SessionStatusTone = "blue" | "violet" | "amber" | "emerald" | "red" 
 export type SessionStatusGlyph =
   | "working"
   | "monitoring"
+  | "recording"
   | "planning"
+  | "exploring"
   | "implementing"
   | "testing"
   | "reviewing"
   | "debugging"
+  | "shipping"
   | "waiting"
   | "needs-you"
   | "done"
@@ -95,8 +99,9 @@ export type SessionStatusPresentation = {
   prominent: boolean;
   /** This label is a finer activity detail inside the parent phase. */
   activityDetail?: boolean;
-  /** Present only for a typed status explicitly reported through ADE. */
+  /** Who set the activity: the agent, or ADE's tool-call detector. */
   activitySource?: SessionActivityReport["source"];
+  /** When the session entered this activity — the row's elapsed counts from here. */
   activityUpdatedAt?: string;
 };
 
@@ -155,9 +160,9 @@ export type SessionStatusOverlay = {
 
 export type SessionStatusActivityContext = {
   chatActivityMode?: "planning" | null;
-  /** Typed, host-stamped activity reported through ADE's CLI. */
+  /** Typed, host-stamped activity: detected from tool calls, or reported by the agent. */
   activityStatus?: SessionActivityReport | null;
-  /** Used to reject a report left over from an earlier foreground turn. */
+  /** Used to reject an agent report left over from an earlier foreground turn. */
   currentTurnStartedAt?: string | null;
   /**
    * Why the session is running, from `canonicalSessionState`. Absent (or
@@ -167,6 +172,12 @@ export type SessionStatusActivityContext = {
   /** Live background work, for the "×N" suffix. */
   backgroundWork?: SessionBackgroundWork | null;
   nextWakeAt?: string | null;
+  /**
+   * A nested subagent still keeps this chat busy (`subagentKeepsParentBusy`).
+   * A finished parent then reads Waiting, the same column the board and the
+   * lane rollup file it in, because the subagent wakes it when its turn ends.
+   */
+  subagentBusy?: boolean;
   nowMs?: number;
   /**
    * Host-computed usage-limit resume state (`AgentChatSessionSummary.usageLimitResume`).
@@ -183,25 +194,32 @@ function countSuffix(count: number): string {
 
 const REPORTED_ACTIVITY_PRESENTATION: Record<SessionActivityReport["value"], SessionStatusPresentation> = {
   planning: { label: "Planning", tone: "violet", glyph: "planning", showsElapsed: true, prominent: false, activityDetail: true },
+  exploring: { label: "Exploring", tone: "blue", glyph: "exploring", showsElapsed: true, prominent: false, activityDetail: true },
   implementing: { label: "Implementing", tone: "blue", glyph: "implementing", showsElapsed: true, prominent: false, activityDetail: true },
   testing: { label: "Testing", tone: "blue", glyph: "testing", showsElapsed: true, prominent: false, activityDetail: true },
   reviewing: { label: "Reviewing", tone: "blue", glyph: "reviewing", showsElapsed: true, prominent: false, activityDetail: true },
   debugging: { label: "Debugging", tone: "blue", glyph: "debugging", showsElapsed: true, prominent: false, activityDetail: true },
+  shipping: { label: "Shipping", tone: "blue", glyph: "shipping", showsElapsed: true, prominent: false, activityDetail: true },
   monitoring: { label: "Monitoring", tone: "blue", glyph: "monitoring", showsElapsed: true, prominent: false, activityDetail: true },
+  compacting: { label: "Compacting…", tone: "blue", glyph: "working", showsElapsed: true, prominent: false, activityDetail: true },
+  compaction_failed: { label: "Compaction failed", tone: "amber", glyph: "failed", showsElapsed: false, prominent: false, activityDetail: true },
+  recording: { label: "Recording", tone: "red", glyph: "recording", showsElapsed: true, prominent: false, activityDetail: true },
 };
 
+/**
+ * The activity to show for a live turn, or null. An agent report is
+ * turn-scoped: one from an earlier turn is stale data, possibly from an older
+ * peer. A detected one is not — the host clears it whenever the user engages,
+ * and it deliberately carries across continuation turns.
+ */
 function currentActivityReport(
   report: SessionActivityReport | null | undefined,
   currentTurnStartedAt: string | null | undefined,
 ): SessionActivityReport | null {
   if (!report) return null;
-  const reportedAt = Date.parse(report.updatedAt);
-  if (!Number.isFinite(reportedAt)) return null;
-  if (currentTurnStartedAt) {
-    const turnStartedAt = Date.parse(currentTurnStartedAt);
-    if (Number.isFinite(turnStartedAt) && reportedAt < turnStartedAt) return null;
-  }
-  return report;
+  if (!Number.isFinite(Date.parse(report.updatedAt))) return null;
+  if (report.source === "detected") return report;
+  return isReportFromTurn(report, currentTurnStartedAt) ? report : null;
 }
 
 export function sessionStatusPresentation(
@@ -231,19 +249,25 @@ export function sessionStatusPresentation(
 
   const liveness = activity.liveness ?? "turn";
 
-  // A structured ADE report refines a live turn only. When the turn ends,
-  // host-observed background work (especially Monitoring) becomes the more
-  // current status and must not be hidden by the agent's last report.
-  // A structured ADE report never changes the phase; Needs you, snooze, and
-  // woke remain higher-priority signals.
-  // The turn timestamp is a second line of defence against stale data arriving
-  // from an older peer after a new accepted turn has already begun.
-  const reportedActivity = phase === "running" && liveness === "turn"
+  // A typed activity (detected or agent-reported) refines a live turn only.
+  // When the turn ends, host-observed background work (especially Monitoring)
+  // becomes the more current status and must not be hidden by the last one.
+  // It never changes the phase; Needs you, snooze, and woke remain
+  // higher-priority signals.
+  // A failed compaction stays visible after its turn, but only while the chat is
+  // still open (ready or idle); an ended or stopped chat says so instead.
+  const compactionFailedShows = activity.activityStatus?.value === "compaction_failed" && (phase === "ready" || phase === "idle");
+  const reportedActivity = (phase === "running" && liveness === "turn") || compactionFailedShows
     ? currentActivityReport(activity.activityStatus, activity.currentTurnStartedAt)
     : null;
-  if (reportedActivity) {
+  const nativePlanning = phase === "running" && liveness === "turn" && activity.chatActivityMode === "planning";
+  const detectedExplorationDuringPlanning = nativePlanning
+    && reportedActivity?.source === "detected"
+    && reportedActivity.value === "exploring";
+  if (reportedActivity && !detectedExplorationDuringPlanning) {
     return {
       ...REPORTED_ACTIVITY_PRESENTATION[reportedActivity.value],
+      ...(reportedActivity.value === "compacting" && reportedActivity.contextTokens ? { label: `Compacting… · ${Math.round(reportedActivity.contextTokens / 1000)}k` } : {}),
       activitySource: reportedActivity.source,
       activityUpdatedAt: reportedActivity.updatedAt,
     };
@@ -252,7 +276,7 @@ export function sessionStatusPresentation(
   // Planning is a property of a LIVE TURN. A resting session promoted back to
   // `running` by its background work is not planning anything — its plan-mode
   // flag is just the mode the finished turn ran in.
-  if (phase === "running" && liveness === "turn" && activity.chatActivityMode === "planning") {
+  if (nativePlanning) {
     return {
       label: "Planning",
       tone: "violet",
@@ -308,9 +332,8 @@ export function sessionStatusPresentation(
   // its own, or that is holding on a limit. A live limit outranks it; a chat
   // that failed for any other reason has no resume state and still reads red.
   //
-  // `usageLimitResumeRowStatus` returns null for `opted_out`/`no_reset`: those
-  // states are not waiting for anything, so the row keeps its ordinary
-  // failed/idle presentation rather than being quieted into "Limit".
+  // `opted_out`/`no_reset` read "Usage limit" in amber: nothing will restart
+  // the chat on its own, but it is stopped on a limit, not broken.
   if (phase === "ready" || phase === "idle" || phase === "failed") {
     const nowMs = activity.nowMs ?? Date.now();
     const resume = resolveUsageLimitResumeState(activity.usageLimitResume, nowMs);
@@ -335,9 +358,11 @@ export function sessionStatusPresentation(
     }
   }
 
-  if ((phase === "ready" || phase === "idle") && activity.nextWakeAt) {
-    const wakeAt = Date.parse(activity.nextWakeAt);
-    if (Number.isFinite(wakeAt) && wakeAt > (activity.nowMs ?? Date.now())) {
+  if (phase === "ready" || phase === "idle") {
+    if (
+      activity.subagentBusy === true
+      || scheduledWakeState(activity.nextWakeAt, activity.nowMs ?? Date.now()) === "pending"
+    ) {
       return {
         label: "Waiting",
         tone: "neutral",
@@ -355,9 +380,13 @@ export function sessionStatusPresentation(
  * The ONE elapsed anchor, shared by the desktop status slot and `ade code`'s
  * work list so the two cannot report different durations for the same row.
  *
- * Three anchors, one per kind of "how long":
- *   • a live turn counts from `currentTurnStartedAt` — immutable for the turn,
- *     so a CLI repainting its TUI cannot reset it every few seconds,
+ * Four anchors, one per kind of "how long":
+ *   • a live turn showing an activity ("Testing") counts from when the session
+ *     entered that activity. It used to count from the turn start, so a turn
+ *     that tested for two minutes after an hour of work read "Testing 1h". The
+ *     turn's own total is the chat's "Working…" timer,
+ *   • any other live turn counts from `currentTurnStartedAt` — immutable for
+ *     the turn, so a CLI repainting its TUI cannot reset it every few seconds,
  *   • background work counts from when that work STARTED. It used to count
  *     from `lastActivityAt`, which every provider frame refreshes: a job that
  *     had been running two hours read "Background work ×2 3s", which is the
@@ -375,6 +404,7 @@ export type SessionElapsedAnchors = {
   lastActivityAt?: string | null;
   startedAt?: string | null;
   backgroundWorkSince?: string | null;
+  activityStatus?: SessionActivityReport | null;
 };
 
 export function sessionElapsedAnchor(
@@ -385,7 +415,8 @@ export function sessionElapsedAnchor(
   const lastActivity = session.lastActivityAt ?? session.startedAt ?? null;
   if (phase !== "running") return lastActivity;
   if (liveness && liveness !== "turn") return session.backgroundWorkSince ?? lastActivity;
-  return session.currentTurnStartedAt ?? lastActivity;
+  const activity = currentActivityReport(session.activityStatus, session.currentTurnStartedAt);
+  return activity?.updatedAt ?? session.currentTurnStartedAt ?? lastActivity;
 }
 
 /**
@@ -460,6 +491,150 @@ export function formatWorkingDuration(elapsedMs: number): string {
   const totalHours = Math.floor(totalMinutes / 60);
   if (totalHours < 24) return `${totalHours}h`;
   return `${Math.floor(totalHours / 24)}d`;
+}
+
+/**
+ * How long a LIVE turn may produce no output before ADE calls it stalled.
+ *
+ * A provider that accepts a request and then stops answering looks identical to
+ * a slow one: no error, no result, no event — only silence, and it can stay that
+ * way forever. This is the bar at which a surface stops presenting the turn as
+ * working and offers a way out. It is a presentation bar, not a kill switch:
+ * nothing here stops the turn, because time-based aborts false-positived on
+ * genuinely long tool calls (a foreground command emits nothing for minutes).
+ */
+export const TURN_STALL_AFTER_MS = 5 * 60 * 1000;
+
+/**
+ * How long a live turn has been silent, or null when it is not past the bar.
+ *
+ * The caller supplies a session whose turn is LIVE — this reads the timestamps
+ * and answers the silence question, nothing more. `lastProgressAt` is the
+ * newest progress event in the transcript (`latestTurnProgressAt`): the live
+ * clock, because a renderer's session summary can sit unrefreshed for a whole
+ * turn of tool calls. `lastActivityAt` covers a transcript window that has not
+ * loaded yet. `currentTurnStartedAt` keeps a turn that has produced nothing at
+ * all yet from inheriting the previous turn's quiet stretch, because a turn's
+ * silence cannot start before the turn did. The anchor is the latest of the
+ * three.
+ */
+export function turnStallSilenceMs(
+  session: { lastActivityAt?: string | null; currentTurnStartedAt?: string | null },
+  nowMs: number = Date.now(),
+  lastProgressAt: string | null = null,
+): number | null {
+  const anchorMs = turnSilenceAnchorMs(session, lastProgressAt);
+  if (anchorMs == null) return null;
+  const silentForMs = nowMs - anchorMs;
+  return silentForMs >= TURN_STALL_AFTER_MS ? silentForMs : null;
+}
+
+/** When the turn's silence started: the later of its last output and its start. */
+export function turnSilenceAnchorMs(
+  session: { lastActivityAt?: string | null; currentTurnStartedAt?: string | null },
+  lastProgressAt: string | null = null,
+): number | null {
+  const anchorMs = Math.max(
+    ...[session.lastActivityAt, session.currentTurnStartedAt, lastProgressAt].map((value) => {
+      const ms = value ? Date.parse(value) : Number.NaN;
+      return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
+    }),
+  );
+  return Number.isFinite(anchorMs) ? anchorMs : null;
+}
+
+export type TurnStallInput = {
+  lastActivityAt?: string | null;
+  currentTurnStartedAt?: string | null;
+  turnOpenWorkCount?: number | null;
+};
+
+/**
+ * How long a live turn has been stalled, or null when it is not stalled.
+ *
+ * Stalled means: a turn is live, it owns no open work (no running command,
+ * tool, foreground subagent or pending approval, per the host's fold), and it
+ * has been silent past `TURN_STALL_AFTER_MS`. A turn waiting on a long test run
+ * owns open work, so it is never called stalled. The caller decides the turn
+ * is live (its canonical phase is running); this answers only the stall.
+ */
+export function sessionTurnStallMs(session: TurnStallInput, nowMs: number = Date.now()): number | null {
+  return turnCanStall(session) ? turnStallSilenceMs(session, nowMs) : null;
+}
+
+/**
+ * A live turn known to own no open work, so silence alone can stall it. A
+ * missing count is unknown (a host older than the count), never zero: such a
+ * turn may be waiting on a long command, so it is not called stalled.
+ */
+function turnCanStall(session: TurnStallInput): boolean {
+  return Boolean(session.currentTurnStartedAt) && session.turnOpenWorkCount === 0;
+}
+
+/**
+ * The next instant one of these live turns crosses the stall bar, so a
+ * surface can re-evaluate exactly then instead of polling. Null when none can.
+ */
+export function nextTurnStallDeadlineMs(sessions: Iterable<TurnStallInput>, nowMs: number = Date.now()): number | null {
+  let next: number | null = null;
+  for (const session of sessions) {
+    if (!turnCanStall(session)) continue;
+    const anchorMs = turnSilenceAnchorMs(session);
+    if (anchorMs == null) continue;
+    const deadline = anchorMs + TURN_STALL_AFTER_MS;
+    if (deadline <= nowMs) continue;
+    if (next === null || deadline < next) next = deadline;
+  }
+  return next;
+}
+
+/**
+ * How long a due wake may take to start its turn before the row stops reading
+ * as parked on it. The scheduler starts a due wake at the next turn boundary,
+ * so a wake a few seconds late is normal; one minutes late may never come.
+ */
+export const SCHEDULED_WAKE_GRACE_MS = 2 * 60 * 1000;
+
+/**
+ * Whether a finished (ready/idle) chat is parked on a scheduled wake.
+ *
+ * `pending`: a wake is armed and not yet overdue, so the agent will start
+ * again on its own. Every surface reads this as Waiting, not Done.
+ * `overdue`: the wake is past due by more than the grace and has not started a
+ * turn. The scheduler may be paused, down or gone, so the row is Done again and
+ * needs a person to look, because the work it promised is not coming by itself.
+ *
+ * `nextWakeAt` is the host's earliest ARMED, UNPAUSED wake, so a paused
+ * schedule is already null here. The caller decides the phase is ready/idle.
+ */
+export type ScheduledWakeState = "pending" | "overdue";
+
+export function scheduledWakeState(
+  nextWakeAt: string | null | undefined,
+  nowMs: number = Date.now(),
+): ScheduledWakeState | null {
+  if (!nextWakeAt) return null;
+  const wakeMs = Date.parse(nextWakeAt);
+  if (!Number.isFinite(wakeMs)) return null;
+  return nowMs < wakeMs + SCHEDULED_WAKE_GRACE_MS ? "pending" : "overdue";
+}
+
+/**
+ * The next instant one of these wakes turns overdue, so a surface can
+ * re-evaluate exactly then instead of polling. Null when none can.
+ */
+export function nextScheduledWakeDeadlineMs(
+  sessions: Iterable<{ nextWakeAt?: string | null }>,
+  nowMs: number = Date.now(),
+): number | null {
+  let next: number | null = null;
+  for (const session of sessions) {
+    if (!session.nextWakeAt) continue;
+    const deadline = Date.parse(session.nextWakeAt) + SCHEDULED_WAKE_GRACE_MS;
+    if (!Number.isFinite(deadline) || deadline <= nowMs) continue;
+    if (next === null || deadline < next) next = deadline;
+  }
+  return next;
 }
 
 export function formatFutureDuration(timestampMs: number, nowMs: number): string {

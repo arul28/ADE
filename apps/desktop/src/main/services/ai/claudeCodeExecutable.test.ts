@@ -68,6 +68,10 @@ describe("resolveClaudeCodeExecutable", () => {
         env: envWithoutCachedTool({
           PATH: "/usr/bin:/bin",
         }),
+        // A host with no Claude build of ADE's own, so nothing ADE ships or
+        // fetches outranks the machine's.
+        platform: "freebsd",
+        arch: "x64",
       }),
     ).toEqual({
       path: "/opt/homebrew/bin/claude",

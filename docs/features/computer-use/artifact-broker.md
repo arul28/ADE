@@ -222,8 +222,8 @@ Artifacts flow into downstream workflow surfaces:
 
 - **Lane history** — linked lane surfaces the artifact in the lane timeline.
 - **Chat history** — linked chat sessions bucket proof by capture time and
-  expose a collapsed filmstrip from the producing turn; the drawer keeps the
-  complete set.
+  show a "N proof filed" count on the producing turn that opens the drawer
+  narrowed to it; the drawer keeps the complete set.
 - **Lane cleanup** — lane-linked or lane-attributed records are removed with a
   destructive lane delete, unless another lane's chat still owns the artifact.
 

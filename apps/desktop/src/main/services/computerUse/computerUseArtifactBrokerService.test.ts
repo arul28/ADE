@@ -1194,7 +1194,7 @@ describe("computerUseArtifactBrokerService", () => {
     expect(result.artifacts[0].uri).toMatch(/^\.ade\/artifacts\/computer-use\//);
   });
 
-  it("rejects symlinked artifact paths that escape the project artifact directory", () => {
+  it("rejects symlinked artifact paths that escape the project artifact directory", (ctx) => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -1206,11 +1206,23 @@ describe("computerUseArtifactBrokerService", () => {
     const outsideFile = path.join(outsideDir, "secret.txt");
     const artifactDir = path.join(projectRoot, ".ade", "artifacts");
     const symlinkPath = path.join(artifactDir, "linked-secret.txt");
-    fs.mkdirSync(artifactDir, { recursive: true });
-    fs.writeFileSync(outsideFile, "secret", "utf8");
-    fs.symlinkSync(outsideFile, symlinkPath);
 
     try {
+      fs.mkdirSync(artifactDir, { recursive: true });
+      fs.writeFileSync(outsideFile, "secret", "utf8");
+      try {
+        fs.symlinkSync(outsideFile, symlinkPath);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EPERM" || code === "EACCES") {
+          // Some Windows hosts do not grant symlink creation to the test
+          // process. Skip explicitly, while still cleaning the temp root.
+          ctx.skip();
+          return;
+        }
+        throw error;
+      }
+
       expect(() =>
         broker.ingest({
           backend: {
@@ -1493,6 +1505,50 @@ describe("proof provenance", () => {
       await attach(broker, writeCacheFile("one.mp4", mp4Bytes(null, 3)), "One");
       await attach(broker, writeCacheFile("two.mp4", mp4Bytes(null, 4)), "Two");
       expect(broker.listArtifacts({})).toHaveLength(2);
+    });
+
+    it("stamps the owning chat's turn id and drops one a caller puts in its metadata", async () => {
+      const broker = makeBroker();
+      broker.setChatTurnIdResolver((sessionId) => (sessionId === "chat-1" ? "turn-42" : null));
+      const result = await broker.ingestAsync({
+        backend: { name: "ade-cli", style: "manual", toolName: "proof attach" },
+        owners: [{ kind: "chat_session", id: "chat-1" }],
+        inputs: [{
+          kind: "video_recording",
+          title: "Clip",
+          path: writeCacheFile("tagged.mp4", mp4Bytes(null, 30)),
+          metadata: { turnId: "caller-forged" },
+        }],
+      });
+      expect(result.artifacts[0]!.metadata.turnId).toBe("turn-42");
+    });
+
+    it("leaves proof untagged when the owning chat has no current turn", async () => {
+      const result = await attach(makeBroker(), writeCacheFile("untagged.mp4", mp4Bytes(null, 31)), "Untagged");
+      expect(result.artifacts[0]!.metadata.turnId).toBeUndefined();
+    });
+
+    it("links proof to a PR once, keeping the first comment URL when posted again", async () => {
+      const broker = makeBroker();
+      const ingested = await attach(broker, writeCacheFile("pr.mp4", mp4Bytes(null, 32)), "PR proof");
+      const artifactId = ingested.artifacts[0]!.id;
+      const prUrl = "https://github.com/owner/repo/pull/12";
+
+      broker.linkArtifactsToPullRequest({
+        artifactIds: [artifactId],
+        prUrl,
+        commentUrl: `${prUrl}#issuecomment-1`,
+      });
+      const again = broker.linkArtifactsToPullRequest({
+        artifactIds: [artifactId],
+        prUrl,
+        commentUrl: `${prUrl}#issuecomment-2`,
+      });
+
+      const links = again[0]!.links.filter((link) => link.ownerKind === "github_pr");
+      expect(links).toHaveLength(1);
+      expect(links[0]!.ownerId).toBe(prUrl);
+      expect(links[0]!.metadata).toMatchObject({ commentUrl: `${prUrl}#issuecomment-1` });
     });
 
     it("refuses the same bytes twice in one call", async () => {

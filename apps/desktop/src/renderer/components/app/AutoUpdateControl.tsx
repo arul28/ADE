@@ -1,18 +1,29 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowSquareOut, ArrowsClockwise, CheckCircle, GithubLogo, WarningCircle } from "@phosphor-icons/react";
+import { bundledReleaseNotes } from "../../../shared/bundledReleaseNotes";
+import { updateVersionLabel } from "../../../shared/updateVersions";
+import { parseReleaseNotesMdx, type ReleaseNotesDocument } from "../../../shared/releaseNotesMdx";
 import type { AppInfo, AutoUpdateSnapshot } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { AutoUpdateErrorDialog, isAutoUpdateDiskSpaceError } from "./AutoUpdateErrorDialog";
+import {
+  AutoUpdateErrorDialog,
+  isAutoUpdateCheckError,
+  isAutoUpdateDiskSpaceError,
+} from "./AutoUpdateErrorDialog";
 import { EMPTY_AUTO_UPDATE_SNAPSHOT } from "./useAutoUpdateSnapshot";
 import { requestDownloadedUpdateInstall } from "./autoUpdateInstallAction";
+import { showToast } from "./toast/toastStore";
 import { Dialog } from "../ui/dialog";
 
 const RUNTIME_SKEW_REFRESH_MS = 15_000;
 const RUNTIME_SKEW_TITLE = "ADE has an update. Update ADE before continuing.";
+// A check that fails before it reaches the network ends in milliseconds. Keep
+// "Checking…" up long enough to read, so Check again never looks like a no-op.
+const MIN_RETRY_FEEDBACK_MS = 800;
 type RuntimeVersionSkew = NonNullable<AppInfo["localRuntime"]>["versionSkew"];
 
 function versionLabel(version: string | null): string {
-  return version ? `v${version}` : "the latest update";
+  return updateVersionLabel(version, "the latest update");
 }
 
 function progressLabel(progressPercent: number | null): string | null {
@@ -25,13 +36,29 @@ function activeRuntimeVersionSkew(value: RuntimeVersionSkew | null | undefined):
   return value;
 }
 
+function releaseNotesForVersion(version: string | null): ReleaseNotesDocument | null {
+  if (!version || bundledReleaseNotes.version !== version || !bundledReleaseNotes.markdown) return null;
+  return parseReleaseNotesMdx(bundledReleaseNotes.markdown);
+}
+
 export function AutoUpdateControl() {
   const [snapshot, setSnapshot] = useState<AutoUpdateSnapshot>(EMPTY_AUTO_UPDATE_SNAPSHOT);
   const [runtimeSkew, setRuntimeSkew] = useState<RuntimeVersionSkew | null>(null);
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
   const [updateErrorOpen, setUpdateErrorOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [lastRetryAt, setLastRetryAt] = useState<number | null>(null);
   const [installRequested, setInstallRequested] = useState(false);
+  const snapshotRef = useRef(snapshot);
+  snapshotRef.current = snapshot;
+  // While its Check again runs the snapshot is "checking" with the error
+  // cleared; the dialog keeps describing the failure it was opened for.
+  const lastErrorSnapshotRef = useRef<AutoUpdateSnapshot | null>(null);
+  if (snapshot.status === "error") lastErrorSnapshotRef.current = snapshot;
+  const mountedRef = useRef(true);
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -49,9 +76,12 @@ export function AutoUpdateControl() {
     const unsubscribe = window.ade.onUpdateEvent((nextSnapshot) => {
       if (cancelled) return;
       setSnapshot(nextSnapshot);
-      if (nextSnapshot.status !== "error") {
+      // The dialog stays open through "checking": that is its own Check again
+      // running, and the outcome lands back in it.
+      if (nextSnapshot.status !== "error" && nextSnapshot.status !== "checking") {
         setUpdateErrorOpen(false);
         setRetrying(false);
+        setLastRetryAt(null);
       }
       if (nextSnapshot.status !== "ready") {
         setInstallRequested(false);
@@ -139,13 +169,39 @@ export function AutoUpdateControl() {
       });
   }, []);
 
+  // The IPC settles when the check is over. Whatever it ended in is reported:
+  // a still-failing check says so in the dialog, an up-to-date one in a toast,
+  // and a found update shows up as the download indicator.
   const handleRetryUpdate = useCallback(() => {
+    const startedAt = Date.now();
     setRetrying(true);
+    setLastRetryAt(null);
     void window.ade.updateCheckForUpdates()
       .catch(() => undefined)
-      .finally(() => {
+      .then(() => new Promise<void>((resolve) => {
+        window.setTimeout(resolve, Math.max(0, MIN_RETRY_FEEDBACK_MS - (Date.now() - startedAt)));
+      }))
+      .then(() => {
+        if (!mountedRef.current) return;
         setRetrying(false);
+        const outcome = snapshotRef.current;
+        if (outcome.status === "error") {
+          setLastRetryAt(Date.now());
+        } else if (outcome.status === "idle") {
+          showToast({
+            tone: "success",
+            title: "ADE is up to date",
+            message: outcome.currentVersion
+              ? `v${outcome.currentVersion} is the latest version.`
+              : undefined,
+          });
+        }
       });
+  }, []);
+
+  const handleUpdateErrorOpenChange = useCallback((nextOpen: boolean) => {
+    setUpdateErrorOpen(nextOpen);
+    if (!nextOpen) setLastRetryAt(null);
   }, []);
 
   const effectiveStatus = installRequested && snapshot.status === "ready"
@@ -161,6 +217,8 @@ export function AutoUpdateControl() {
   const releaseNotesUrl = snapshot.recentlyInstalled?.releaseNotesUrl ?? null;
   const githubReleaseUrl = snapshot.recentlyInstalled?.githubReleaseUrl ?? null;
   const installedVersion = snapshot.recentlyInstalled?.version ?? null;
+  const installedReleaseNotes = releaseNotesForVersion(installedVersion);
+  const resumedChats = snapshot.recentlyInstalled?.resumedChats ?? [];
   const runtimeRequiresDesktopUpdate = runtimeSkew?.state === "runtime_newer";
   const showRuntimeSkewIndicator = runtimeRequiresDesktopUpdate && !shouldShowIndicator && !showUpdateError;
 
@@ -226,7 +284,13 @@ export function AutoUpdateControl() {
           title="Open update failure details and recovery steps"
         >
           <WarningCircle size={12} weight="fill" aria-hidden="true" />
-          <span>{isAutoUpdateDiskSpaceError(snapshot) ? "Not enough space to update" : "Update failed"}</span>
+          <span>
+            {isAutoUpdateDiskSpaceError(snapshot)
+              ? "Not enough space to update"
+              : isAutoUpdateCheckError(snapshot)
+                ? "Can't check for updates"
+                : "Update failed"}
+          </span>
         </button>
       ) : null}
 
@@ -274,11 +338,12 @@ export function AutoUpdateControl() {
         </button>
       ) : null}
       <AutoUpdateErrorDialog
-        snapshot={snapshot}
+        snapshot={snapshot.status === "error" ? snapshot : lastErrorSnapshotRef.current ?? snapshot}
         open={updateErrorOpen}
         retrying={retrying}
-        onOpenChange={setUpdateErrorOpen}
+        onOpenChange={handleUpdateErrorOpenChange}
         onRetry={handleRetryUpdate}
+        lastRetryAt={lastRetryAt}
       />
 
       <Dialog
@@ -293,7 +358,7 @@ export function AutoUpdateControl() {
         title={installedVersion ? `Updated to v${installedVersion}` : "ADE updated"}
         tone="success"
         icon={<CheckCircle size={16} weight="fill" />}
-        size="sm"
+        size={installedReleaseNotes || resumedChats.length > 0 ? "md" : "sm"}
         actions={[
           ...(releaseNotesUrl
             ? [
@@ -314,7 +379,39 @@ export function AutoUpdateControl() {
               ]
             : []),
         ]}
-      />
+      >
+        {resumedChats.length > 0 ? (
+          <div style={{ marginBottom: installedReleaseNotes ? 12 : 0 }}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>
+              {resumedChats.length === 1
+                ? "Scheduled 1 chat to resume"
+                : `Scheduled ${resumedChats.length} chats to resume`}
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {resumedChats.map((chat) => (
+                <li key={chat.sessionId} style={{ marginBottom: 2 }}>{chat.title}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {installedReleaseNotes ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {installedReleaseNotes.summary ? (
+              <p style={{ margin: 0 }}>{installedReleaseNotes.summary}</p>
+            ) : null}
+            {installedReleaseNotes.sections.map((section) => (
+              <div key={section.title}>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>{section.title}</div>
+                <ul style={{ margin: 0, paddingLeft: 18 }}>
+                  {section.items.map((item) => (
+                    <li key={item} style={{ marginBottom: 2 }}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </Dialog>
     </>
   );
 }

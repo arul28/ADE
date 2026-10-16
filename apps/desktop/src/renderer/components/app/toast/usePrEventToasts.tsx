@@ -22,13 +22,10 @@ import {
   getPrToastSummary,
   getPrToastTone,
 } from "../prToastPresentation";
-import { dismissToast, showToast, updateToast, type ToastCardAction, type ToastChip, type ToastInput } from "./toastStore";
+import { dismissToast, READABLE_TOAST_DURATION_MS, showToast, updateToast, type ToastCardAction, type ToastChip, type ToastInput } from "./toastStore";
 
 type PrNotificationEvent = Extract<PrEventPayload, { type: "pr-notification" }>;
 type PrAutoLinkedEvent = Extract<PrEventPayload, { type: "pr-auto-linked" }>;
-
-/** PR notices stay up long enough to read a failing-check summary. */
-export const PR_TOAST_DURATION_MS = 18_000;
 
 type LaneRef = Pick<LaneSummary, "id" | "name" | "color">;
 
@@ -121,7 +118,7 @@ export function buildPrNotificationToast(
     message: getPrToastSummary(event),
     actions,
     closeTitle: "Dismiss",
-    durationMs: PR_TOAST_DURATION_MS,
+    durationMs: READABLE_TOAST_DURATION_MS,
   };
 }
 
@@ -181,7 +178,7 @@ export function buildAutoLinkedPrToast(
     message: event.prTitle,
     actions: [autoLinkUndoAction(id, event, { undoing: false, failed: false })],
     closeTitle: "Dismiss",
-    durationMs: PR_TOAST_DURATION_MS,
+    durationMs: READABLE_TOAST_DURATION_MS,
   };
 }
 

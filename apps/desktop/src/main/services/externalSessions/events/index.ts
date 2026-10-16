@@ -18,7 +18,8 @@ import { copilotRecordsToEvents } from "./copilot";
 import { cursorRecordsToEvents, loadCursorStorePage } from "./cursor";
 import { grokRecordsToEvents } from "./grok";
 import { kimiRecordsToEvents } from "./kimi";
-import { openCodeExportToEvents, runOpenCodeExport } from "./opencode";
+import { museRecordsToEvents } from "./muse";
+import { loadOpenCodeStoreEvents } from "./opencode";
 import { cutPage, decodeEventsCursor, readJsonlWindow, type EventsCursor } from "./paging";
 import { piRecordsToEvents } from "./pi";
 import { qwenRecordsToEvents } from "./qwen";
@@ -84,6 +85,7 @@ const JSONL_CONVERTERS: Partial<Record<ExternalSessionProvider, JsonlConverter>>
   grok: grokRecordsToEvents,
   copilot: copilotRecordsToEvents,
   kimi: kimiRecordsToEvents,
+  muse: museRecordsToEvents,
 };
 
 /**
@@ -193,22 +195,22 @@ async function loadOpenCodePage(args: {
   homeDir?: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<RawPage | null> {
-  const exported = await runOpenCodeExport({
+  const loaded = loadOpenCodeStoreEvents({
     sessionId: args.sessionId,
-    cwd: args.record?.cwd ?? null,
+    options: args.options,
+    fallbackBaseMs: args.fallbackBaseMs,
     ...(args.homeDir ? { homeDir: args.homeDir } : {}),
     ...(args.env ? { env: args.env } : {}),
   });
-  const events = exported == null ? null : openCodeExportToEvents(exported, args.options, args.fallbackBaseMs);
-  if (!events) return null;
-  const cut = cutPage(events, {
+  if (!loaded) return null;
+  const cut = cutPage(loaded.events, {
     maxEvents: args.maxEvents,
     index: args.cursor?.index ?? null,
     windowStart: null,
     windowEnd: null,
     windowBytes: null,
   });
-  return { ...cut, bytesTruncated: false };
+  return { ...cut, bytesTruncated: loaded.truncated };
 }
 
 function sampledContentEvents(

@@ -351,7 +351,8 @@ struct WorkSessionTypeSwitcher: View {
   var onUserSelect: ((WorkNewSessionMode) -> Void)? = nil
 
   var body: some View {
-    HStack(spacing: 4) {
+    // The kit segmented track (`.kit-seg`): quiet track, the selection raised.
+    HStack(spacing: 2) {
       ForEach(WorkNewSessionMode.allCases) { mode in
         let isSelected = selection == mode
         Button {
@@ -363,28 +364,19 @@ struct WorkSessionTypeSwitcher: View {
         } label: {
           HStack(spacing: 6) {
             Image(systemName: mode.systemImage)
-              .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-              .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
-              .opacity(0.85)
+              .font(.system(size: 11.5, weight: .medium))
             Text(mode.title)
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
+              .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
           }
+          .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
           .padding(.horizontal, 14)
-          .padding(.vertical, 8)
+          .frame(minHeight: 30)
           .background {
             if isSelected {
-              Capsule(style: .continuous)
-                .fill(ADEColor.surfaceBackground.opacity(0.85))
+              ADEKitSegmentThumb()
             }
           }
-          .overlay {
-            if isSelected {
-              Capsule(style: .continuous)
-                .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-            }
-          }
-          .contentShape(Capsule())
+          .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(mode.title)
@@ -392,12 +384,7 @@ struct WorkSessionTypeSwitcher: View {
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
       }
     }
-    .padding(4)
-    .background(ADEColor.recessedBackground.opacity(0.72), in: Capsule(style: .continuous))
-    .overlay {
-      Capsule(style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-    }
+    .adeKitSegmentTrack()
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Session type")
   }
@@ -519,7 +506,7 @@ private func workPriorityLaneNamingWords(cleanedPrompt: String) -> [String] {
     .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
     .trimmingCharacters(in: .whitespacesAndNewlines)
   guard !normalized.isEmpty else { return [] }
-  let provider = ["claude", "codex", "cursor", "droid", "opencode", "pi"].first {
+  let provider = ["claude", "codex", "muse", "cursor", "droid", "opencode", "pi"].first {
     workRegexContains(normalized, pattern: #"\b\#($0)\b"#)
   } ?? (workRegexContains(normalized, pattern: #"\bopen code\b"#) ? "opencode" : nil)
   guard let provider else { return [] }
@@ -646,8 +633,7 @@ enum WorkNewChatHeaderTier: Int, Comparable {
   }
 }
 
-/// Full-screen "Start a new conversation" composer that replaces the modal
-/// WorkNewChatSheet. Mirrors the desktop welcome screen: big ADE word-mark,
+/// Full-screen "Start a new conversation" composer. Mirrors the desktop welcome screen: big ADE word-mark,
 /// one-line tagline, a minimal workspace pill users can change inline, and a
 /// prominent composer anchored at the bottom. Sending fires the host create
 /// call and immediately pushes the new session route on top of the current
@@ -655,6 +641,7 @@ enum WorkNewChatHeaderTier: Int, Comparable {
 /// of bouncing back to the sidebar.
 struct WorkNewChatScreen: View {
   @EnvironmentObject var syncService: SyncService
+  @EnvironmentObject private var machineFleet: MachineFleet
   @Environment(\.dismiss) private var dismiss
 
   let lanes: [LaneSummary]
@@ -674,6 +661,13 @@ struct WorkNewChatScreen: View {
   let onLaunchStarted: @MainActor (ChatLaunchSnapshot) async -> Void
 
   @State private var selectedLaneId: String = ""
+  /// The machine the chat starts on. Nil = the primary (focused) machine.
+  @State private var selectedMachineKey: String?
+  /// That machine's lanes (namespaced ids), when it is not the primary one.
+  @State private var remoteLanes: [LaneSummary] = []
+  @State private var remoteLanesLoading = false
+  /// Set when the chosen model has no account on the chosen machine.
+  @State private var machineModelHint: String?
   @State private var provider: String = "claude"
   @State private var modelId: String = "claude-sonnet-5"
   @State private var busy: Bool = false
@@ -687,24 +681,19 @@ struct WorkNewChatScreen: View {
   /// re-derived from the curated iOS catalog — which can miss a freshly
   /// advertised fast model and wrongly hide the toggle.
   @State private var selectedModelOption: WorkModelOption?
+  /// The connected machine's saved Custom harnesses
+  /// (`account.getMachineInventory`). Empty against a host that does not
+  /// advertise the action, which hides the picker's Custom section.
+  @State private var harnessPresets: [SyncMachineInventoryPreset] = []
+  /// The Custom harness the next launch runs under, when the user picked one
+  /// from the Custom section. Cleared by any manual model choice.
+  @State private var selectedPreset: SyncMachineInventoryPreset?
+  /// The preset id the persisted composer preference last sent with. Resolved
+  /// against the connected machine's list once it arrives, then dropped, so a
+  /// relaunch keeps the harness the user chose instead of silently falling back
+  /// to the machine's default sign-in.
+  @State private var restoredPresetId: String?
   @State private var sessionMode: WorkNewSessionMode = .chat
-  @State private var cursorCloudMode: Bool = false
-  @State private var cursorCloudServiceTier: String?
-  @State private var cursorCloudRepositories: [CursorCloudRepository] = []
-  @State private var cursorCloudRepositoryUrl: String?
-  @State private var cursorCloudBaseBranch: String = ""
-  @State private var cursorCloudAutoCreatePR: Bool = false
-  @State private var cursorCloudSecretNames: [String] = []
-  @State private var cursorCloudSelectedSecretNames: Set<String> = []
-  @State private var cursorCloudRememberSecretNames: Bool = false
-  /// Scene-scoped so a timed-out create can be retried after an app restart
-  /// without creating a second Cursor agent for the same unchanged draft.
-  @SceneStorage("ade.work.newChat.cursorCloudLaunchFingerprint") private var cursorCloudLaunchFingerprint = ""
-  @SceneStorage("ade.work.newChat.cursorCloudLaunchKey") private var cursorCloudLaunchKey = ""
-  @SceneStorage("ade.work.newChat.cursorCloudLaunchSessionId") private var cursorCloudLaunchSessionId = ""
-  @SceneStorage("ade.work.newChat.cursorCloudLaunchTurnId") private var cursorCloudLaunchTurnId = ""
-  @SceneStorage("ade.work.newChat.cursorCloudLaunchLaneId") private var cursorCloudLaunchLaneId = ""
-  @SceneStorage("ade.work.newChat.cursorCloudLaunchAgentId") private var cursorCloudLaunchAgentId = ""
   @State private var shellLaunchBusy: Bool = false
   @State private var queuedShellLaneIds = Set<String>()
   @State private var usageRefreshRevision = 0
@@ -715,11 +704,21 @@ struct WorkNewChatScreen: View {
   /// scroll area, not by keyboard notifications, so a grown composer collapses
   /// the header exactly like the keyboard does.
   @State private var headerTier: WorkNewChatHeaderTier = .full
+  /// Full scroll-view height and the floating controls' height; the header
+  /// tier is chosen from what is left between them.
+  @State private var scrollAreaHeight: CGFloat = 0
+  @State private var bottomControlsHeight: CGFloat = 0
+  /// Word-mark + action chips, as laid out.
+  @State private var headerContentHeight: CGFloat = 0
   /// Composer keyboard focus, hoisted out of the composer bar so presenting the
   /// lane sheet can park it and restore it on dismiss (mirrors
   /// `HubComposerDrawer`'s destination-picker focus restore).
   @State private var composerFocused: Bool = false
   @State private var composerFocusedBeforeLaneSheet: Bool = false
+  /// The selection the screen opened on, so the host's launch defaults only
+  /// replace it while the user has not picked anything here yet.
+  private let openingSelection: WorkComposerPreferences.Selection
+  @State private var hostLaunchDefaultsChecked = false
 
   init(
     lanes: [LaneSummary],
@@ -755,6 +754,7 @@ struct WorkNewChatScreen: View {
       _runtimeMode = State(initialValue: saved.runtimeMode)
       _reasoningEffort = State(initialValue: saved.reasoningEffort)
       _codexFastMode = State(initialValue: saved.codexFastMode)
+      _restoredPresetId = State(initialValue: saved.presetId)
     }
     // Restore the last explicitly chosen Chat/CLI interface for this project so
     // the choice survives app restarts, project switches, and launching a
@@ -768,6 +768,49 @@ struct WorkNewChatScreen: View {
       modelId: restoredModelId,
       provider: restoredProvider
     ))
+    let saved = WorkComposerPreferences.load()
+    openingSelection = WorkComposerPreferences.Selection(
+      provider: restoredProvider,
+      modelId: restoredModelId,
+      runtimeMode: saved?.runtimeMode ?? "default",
+      reasoningEffort: saved?.reasoningEffort ?? "",
+      codexFastMode: saved?.codexFastMode ?? false
+    )
+  }
+
+  /// Open a new chat on what this machine used last, from any client. Only a
+  /// chat on the focused machine, and only before the user picks anything here.
+  @MainActor
+  private func applyHostLaunchDefaults() async {
+    guard !hostLaunchDefaultsChecked else { return }
+    hostLaunchDefaultsChecked = true
+    guard let defaults = await syncService.fetchChatLaunchDefaults() else { return }
+    guard sessionMode == .chat, selectedMachineKey == nil, composerSelection == openingSelection else { return }
+    // A persisted Custom harness is the user's own last choice and outranks the
+    // machine's launch defaults. Hold the defaults until that preset has been
+    // resolved or proven gone (which clears `restoredPresetId`), so the two
+    // async loads cannot fight over the composer.
+    guard restoredPresetId == nil else { return }
+    selectedModelOption = nil
+    provider = workNormalizedChatProvider(defaults.provider)
+    modelId = defaults.modelId
+    reasoningEffort = defaults.reasoningEffort ?? ""
+    codexFastMode = defaults.fastMode ?? false
+    let mode = workRuntimeMode(
+      provider: defaults.provider,
+      interactionMode: defaults.interactionMode,
+      permissionMode: defaults.permissionMode,
+      claudePermissionMode: defaults.claudePermissionMode,
+      codexConfigSource: defaults.codexConfigSource,
+      codexApprovalPolicy: defaults.codexApprovalPolicy,
+      codexSandbox: defaults.codexSandbox,
+      opencodePermissionMode: defaults.opencodePermissionMode,
+      cursorModeId: defaults.cursorModeId,
+      droidPermissionMode: defaults.droidPermissionMode,
+      musePermissionMode: defaults.musePermissionMode
+    )
+    runtimeMode = mode.isEmpty ? workDefaultRuntimeMode(provider: provider) : mode
+    checkModelOnMachine()
   }
 
   /// The live composer selection. Persisted as the app-wide "last used" choice
@@ -779,7 +822,8 @@ struct WorkNewChatScreen: View {
       modelId: modelId,
       runtimeMode: runtimeMode,
       reasoningEffort: reasoningEffort,
-      codexFastMode: codexFastMode
+      codexFastMode: codexFastMode,
+      presetId: selectedPreset?.id
     )
   }
 
@@ -788,18 +832,35 @@ struct WorkNewChatScreen: View {
     selectedLaneId == workAutoCreateLaneSentinelId
   }
 
+  /// The lanes of the chosen machine.
+  private var visibleLanes: [LaneSummary] {
+    selectedMachineKey == nil ? lanes : remoteLanes
+  }
+
   private var defaultNewSessionLane: LaneSummary? {
-    if let preferredLaneId, let lane = lanes.first(where: { $0.id == preferredLaneId }) {
+    if let preferredLaneId, let lane = visibleLanes.first(where: { $0.id == preferredLaneId }) {
       return lane
     }
-    return lanes.first { $0.laneType == "primary" }
-      ?? lanes.first { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "primary" }
-      ?? lanes.first
+    return workNewChatPrimaryLane(visibleLanes)
   }
 
   private var selectedConcreteLane: LaneSummary? {
     guard !isAutoCreateLane else { return nil }
-    return lanes.first(where: { $0.id == selectedLaneId })
+    return visibleLanes.first(where: { $0.id == selectedLaneId })
+  }
+
+  private var machineOptions: [WorkNewChatMachineOption] {
+    workNewChatMachineOptions(syncService: syncService, fleet: machineFleet)
+  }
+
+  private var selectedMachineOption: WorkNewChatMachineOption {
+    let options = machineOptions
+    return options.first { $0.machineKey == selectedMachineKey } ?? options[0]
+  }
+
+  /// The chosen machine's checkout of the focused repository (nil = primary).
+  private var selectedRemoteRepo: WorkRemoteMachineRepo? {
+    selectedMachineKey.flatMap { syncService.remoteLaneRepo(machineKey: $0) }
   }
 
   private var attachmentsAvailable: Bool {
@@ -824,119 +885,101 @@ struct WorkNewChatScreen: View {
     return workComposerSupportsFastMode(modelId: modelId, provider: provider)
   }
 
-  private var cursorCloudLaunchAvailable: Bool {
-    sessionMode == .chat
-      && syncService.cursorCloudConnected
-      && syncService.canInvokeRemoteAction("ai.createCursorCloudRun")
-      && syncService.canInvokeRemoteAction("ai.openCursorCloudChat")
-  }
-
-  private var activeProjectSummary: MobileProjectSummary? {
-    guard let activeProjectId else { return nil }
-    return syncService.projects.first(where: { $0.id == activeProjectId })
-  }
-
-  private var cursorCloudTierChoices: [String] {
-    guard let option = selectedModelOption,
-          workModelIdsEquivalent(option.id, modelId) else { return [] }
-    return ["fast", "standard"].filter { option.supportsServiceTier($0) }
-  }
-
   var body: some View {
-    VStack(spacing: 0) {
-      // Collapsible header. Everything here is expendable when the composer
-      // grows or the keyboard rises; the lane picker below is not.
-      ScrollView {
-        // Outer stack is unspaced so the collapsed carousel below contributes
-        // neither height nor inter-item spacing.
-        VStack(spacing: 0) {
-          VStack(spacing: 14) {
-            if headerTier.showsBranding {
-              brandMark
-              VStack(spacing: 6) {
-                Text("Start a new conversation")
-                  .font(.title3.weight(.semibold))
-                  .foregroundStyle(ADEColor.textPrimary)
-                Text("Ask ADE anything — refactor code, debug issues, or explore ideas.")
-                  .font(.footnote)
-                  .foregroundStyle(ADEColor.textSecondary)
-                  .multilineTextAlignment(.center)
-                  .padding(.horizontal, 24)
-              }
-            }
-
-            if headerTier.showsActionChips {
-              sessionActionChips
-            }
+    // The header scrolls edge to edge; the lane bubble and the composer float
+    // over it in a bottom safe-area inset that draws no background of its own,
+    // so nothing paints an opaque band behind the floating controls.
+    ScrollView {
+      // Outer stack is unspaced so the collapsed carousel below contributes
+      // neither height nor inter-item spacing.
+      VStack(spacing: 0) {
+        VStack(spacing: 18) {
+          if headerTier.showsBranding {
+            brandMark
           }
 
-          // Keep activity in the scrollable content instead of pinning it
-          // above the composer. When the keyboard appears, the composer can
-          // expand into this space without lifting the activity card with it.
-          //
-          // The carousel stays mounted at every tier and collapses to nothing
-          // when the tier hides it: it owns `@State` stats behind a
-          // `.task(id:)`, so removing it from the tree would refetch and flash
-          // an empty card every time the header tier stepped back up.
-          WorkUsageActivityCarousel(refreshRevision: usageRefreshRevision)
-            .environmentObject(syncService)
-            .padding(.top, usageCarouselTopPadding)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxHeight: headerTier.showsUsageCarousel ? nil : 0)
-            .clipped()
-            .opacity(headerTier.showsUsageCarousel ? 1 : 0)
-            .allowsHitTesting(headerTier.showsUsageCarousel)
-            .accessibilityHidden(!headerTier.showsUsageCarousel)
+          if headerTier.showsActionChips {
+            sessionActionChips
+          }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 20)
-        .padding(.vertical, headerTier.showsBranding ? 16 : 8)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerContentHeight = $0 }
+
+        // The carousel stays mounted at every tier and collapses to nothing
+        // when the tier hides it: it owns `@State` stats behind a
+        // `.task(id:)`, so removing it from the tree would refetch and flash
+        // an empty card every time the header tier stepped back up.
+        WorkUsageActivityCarousel(refreshRevision: usageRefreshRevision, maxHeight: usagePanelMaxHeight)
+          .environmentObject(syncService)
+          .padding(.top, usageCarouselTopPadding)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxHeight: headerTier.showsUsageCarousel ? nil : 0)
+          .clipped()
+          .opacity(headerTier.showsUsageCarousel ? 1 : 0)
+          .allowsHitTesting(headerTier.showsUsageCarousel)
+          .accessibilityHidden(!headerTier.showsUsageCarousel)
       }
-      .scrollBounceBehavior(.basedOnSize)
-      .scrollDismissesKeyboard(.interactively)
-      .refreshable {
-        await MobileUsageQuotaStore.shared.load(using: syncService, refresh: true)
-        usageRefreshRevision &+= 1
+      .frame(maxWidth: .infinity)
+      .padding(.horizontal, 16)
+      .padding(.top, headerTier.showsBranding ? 12 : 8)
+      .padding(.bottom, 16)
+    }
+    .scrollBounceBehavior(.basedOnSize)
+    .scrollDismissesKeyboard(.interactively)
+    .refreshable {
+      await MobileUsageQuotaStore.shared.load(using: syncService, refresh: true)
+      usageRefreshRevision &+= 1
+    }
+    .animation(.smooth(duration: 0.2), value: headerTier)
+    .safeAreaInset(edge: .bottom, spacing: 0) {
+      VStack(spacing: 8) {
+        // Pinned: the lane picker must stay reachable no matter how tall the
+        // composer grows or whether the keyboard is up.
+        laneSelector
+          .padding(.horizontal, 20)
+
+        if let autoCreateStatus, busy {
+          HStack(spacing: 8) {
+            ProgressView().controlSize(.mini)
+            Text(autoCreateStatus)
+              .font(.caption)
+              .foregroundStyle(ADEColor.textSecondary)
+              .lineLimit(1)
+          }
+          .padding(.horizontal, 12)
+          .padding(.vertical, 6)
+          .adeKitPill()
+          .transition(.opacity)
+        }
+
+        if let errorMessage {
+          Text(errorMessage)
+            .font(.caption)
+            .foregroundStyle(ADEColor.danger)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(ADEKit.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+            .padding(.horizontal, 20)
+        }
+
+        composerBar
       }
+      .padding(.bottom, 4)
       .onGeometryChange(for: CGFloat.self) { proxy in
         proxy.size.height
       } action: { height in
-        applyHeaderHeight(height)
+        bottomControlsHeight = height
+        applyHeaderHeight()
       }
-      .animation(.smooth(duration: 0.2), value: headerTier)
-      .layoutPriority(0)
-
-      // Pinned: the lane picker must stay reachable no matter how tall the
-      // composer grows or whether the keyboard is up.
-      laneSelector
-        .padding(.horizontal, 20)
-        .padding(.bottom, 10)
-        .layoutPriority(1)
-
-      if let autoCreateStatus, busy {
-        HStack(spacing: 8) {
-          ProgressView().controlSize(.mini)
-          Text(autoCreateStatus)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-          Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 20)
-        .padding(.bottom, 6)
-        .transition(.opacity)
-      }
-
-      if let errorMessage {
-        Text(errorMessage)
-          .font(.caption)
-          .foregroundStyle(ADEColor.danger)
-          .padding(.horizontal, 20)
-          .padding(.bottom, 6)
-      }
-
-      composerBar
-        .layoutPriority(1)
+    }
+    // Measured outside the inset, so this is the full height the page has;
+    // the floating controls' own height is subtracted in `applyHeaderHeight`.
+    .onGeometryChange(for: CGFloat.self) { proxy in
+      proxy.size.height
+    } action: { height in
+      scrollAreaHeight = height
+      applyHeaderHeight()
     }
     .adeScreenBackground()
     .adeNavigationGlass()
@@ -958,29 +1001,32 @@ struct WorkNewChatScreen: View {
       }
     }
     .onAppear {
+      // A lane of another machine opens the page on that machine.
+      if selectedMachineKey == nil,
+         let preferredLaneId,
+         let remote = workParseRemoteLaneId(preferredLaneId),
+         remote.machineKey != syncService.focusedMachineKey {
+        selectedMachineKey = remote.machineKey
+        selectedLaneId = preferredLaneId
+        Task { await loadRemoteLanes(keepSelection: true) }
+      }
       if selectedLaneId.isEmpty {
         selectedLaneId = defaultNewSessionLane?.id ?? ""
       }
+      #if DEBUG
+      if ProcessInfo.processInfo.arguments.contains("-adePreviewFocusComposer") {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { composerFocused = true }
+      }
+      #endif
       if runtimeMode.isEmpty {
         runtimeMode = workDefaultRuntimeMode(provider: provider)
       }
-    }
-    .onChange(of: sessionMode) { _, mode in
-      if mode != .chat {
-        cursorCloudMode = false
-        cursorCloudServiceTier = nil
-        cursorCloudSecretNames = []
-        cursorCloudSelectedSecretNames = []
-      }
-    }
-    .onChange(of: selectedLaneId) { _, newLaneId in
-      guard cursorCloudMode else { return }
-      Task { await refreshCursorCloudSecrets(for: newLaneId) }
     }
     .onChange(of: composerSelection) { _, newValue in
       // Persist the full selection without deriving one setting from another.
       WorkComposerPreferences.save(newValue)
     }
+    .task { await applyHostLaunchDefaults() }
     .sheet(isPresented: $modelPickerPresented) {
       WorkModelPickerSheet(
         currentModelId: modelId,
@@ -988,22 +1034,38 @@ struct WorkNewChatScreen: View {
         currentReasoningEffort: reasoningEffort,
         currentCodexFastMode: codexFastMode,
         cursorAvailabilityMode: sessionMode == .cli ? .cli : .chat,
-        lanes: lanes,
+        lanes: visibleLanes,
+        // Custom harnesses are the connected host's own; another machine's list
+        // would offer a preset this launch cannot resolve.
+        harnessPresets: selectedMachineKey == nil ? harnessPresets : [],
         isBusy: false,
+        onSelectPreset: { preset in
+          selectedPreset = preset
+          selectedModelOption = nil
+          modelId = preset.model
+          provider = sessionMode == .chat
+            ? workNormalizedChatProvider(preset.harness)
+            : preset.harness
+          if !reasoningEffort.isEmpty { reasoningEffort = "" }
+          if codexFastMode { codexFastMode = false }
+          machineModelHint = nil
+        },
+        selectedPresetId: selectedPreset?.id,
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
-          let changedModel = !workModelIdsEquivalent(option.id, modelId)
+          selectedPreset = nil
           selectedModelOption = option
           modelId = option.id
           provider = sessionMode == .chat
             ? workNormalizedChatProvider(runtimeProvider)
             : workResolveCliProvider(for: option.id, provider: runtimeProvider)
-          if changedModel { cursorCloudServiceTier = nil }
-          if cursorCloudMode && provider != "cursor" { cursorCloudMode = false }
           let nextReasoning = pickedReasoning ?? ""
           if nextReasoning != reasoningEffort { reasoningEffort = nextReasoning }
           if pickedFastMode != codexFastMode { codexFastMode = pickedFastMode }
         }
       )
+    }
+    .task(id: syncService.focusedHostInventoryMachineKey ?? "") {
+      await loadHarnessPresets()
     }
   }
 
@@ -1021,14 +1083,169 @@ struct WorkNewChatScreen: View {
 
   @ViewBuilder
   private var laneSelector: some View {
-    HStack {
-      Spacer(minLength: 0)
-      WorkLanePickerDropdown(
-        lanes: lanes,
-        selectedLaneId: $selectedLaneId,
-        onMenuPresentationChange: handleLaneSheetPresentation
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 8) {
+        // Neither pill may be `fixedSize()`: the machine name and the lane name
+        // + branch are user data, and an ideal width larger than the screen
+        // made the whole page — usage card and composer included — lay out
+        // wider than the viewport until some later interaction forced a
+        // relayout. The machine pill keeps its width; the lane pill absorbs the
+        // squeeze and its own label truncates.
+        WorkNewChatMachineDropdown(
+          options: machineOptions,
+          selected: selectedMachineOption,
+          onSelect: selectMachine
+        )
+        .layoutPriority(1)
+        if remoteLanesLoading {
+          ProgressView().controlSize(.small)
+        } else {
+          WorkLanePickerDropdown(
+            lanes: visibleLanes,
+            selectedLaneId: $selectedLaneId,
+            onMenuPresentationChange: handleLaneSheetPresentation,
+            floatingGlass: true
+          )
+        }
+        Spacer(minLength: 0)
+      }
+      // A hard clamp: however wide the pills' ideal sizes are, the row reports
+      // the container's width, so nothing above it can grow.
+      .frame(maxWidth: .infinity, alignment: .leading)
+      if let machineModelHint {
+        Text(machineModelHint)
+          .font(.caption)
+          .foregroundStyle(ADEColor.warning)
+          .lineLimit(2)
+          .padding(.horizontal, 4)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  /// A new machine: its lanes and accounts. A machine that is not connected is
+  /// reconnected; its lanes load once it is live.
+  private func selectMachine(_ option: WorkNewChatMachineOption) {
+    errorMessage = nil
+    guard option.machineKey != selectedMachineKey else { return }
+    selectedMachineKey = option.machineKey
+    let keepsAutoCreate = isAutoCreateLane
+    if option.machineKey == nil {
+      remoteLanes = []
+      selectedLaneId = keepsAutoCreate ? workAutoCreateLaneSentinelId : (workNewChatPrimaryLane(lanes)?.id ?? "")
+    } else {
+      // A saved Custom harness resolves against the machine that owns its key
+      // and sign-in. Another machine's picker hides presets for exactly that
+      // reason, so a selection made on the primary host must not ride along.
+      selectedPreset = nil
+      selectedLaneId = keepsAutoCreate ? workAutoCreateLaneSentinelId : ""
+      Task { await loadRemoteLanes(keepSelection: keepsAutoCreate) }
+    }
+    checkModelOnMachine()
+  }
+
+  @MainActor
+  private func loadRemoteLanes(keepSelection: Bool) async {
+    guard let key = selectedMachineKey else { return }
+    remoteLanesLoading = true
+    defer { remoteLanesLoading = false }
+    // A machine that is not connected is connected now (a pick reconnects it).
+    let live = await machineFleet.connect(machineKey: key)
+    guard selectedMachineKey == key else { return }
+    guard let repo = syncService.remoteLaneRepo(machineKey: key) else {
+      errorMessage = "That machine has no checkout of this project."
+      return
+    }
+    guard live else {
+      errorMessage = "Can’t reach \(repo.machineName) right now."
+      return
+    }
+    do {
+      let snapshots = try await syncService.fetchRemoteLaneSnapshots(
+        repo: repo,
+        timeoutNanoseconds: LaneRemoteMachinesModel.readTimeoutNanoseconds
       )
-      Spacer(minLength: 0)
+      guard selectedMachineKey == key else { return }
+      remoteLanes = snapshots.map(\.lane).filter { $0.archivedAt == nil }
+      if !keepSelection || !remoteLanes.contains(where: { $0.id == selectedLaneId }) && !isAutoCreateLane {
+        selectedLaneId = workNewChatPrimaryLane(remoteLanes)?.id ?? ""
+      }
+    } catch {
+      guard selectedMachineKey == key else { return }
+      errorMessage = "Can’t read \(repo.machineName)’s lanes: \(error.localizedDescription)"
+    }
+  }
+
+  /// The connected machine's saved Custom harnesses. Silent on any failure:
+  /// a host that does not advertise the action, or is offline, simply shows no
+  /// Custom section.
+  @MainActor
+  private func loadHarnessPresets() async {
+    guard syncService.supportsRemoteAction("account.getMachineInventory"),
+          let machineKey = syncService.focusedHostInventoryMachineKey,
+          !machineKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+      harnessPresets = []
+      return
+    }
+    do {
+      let detail = try await syncService.fetchMachineInventory(machineKey: machineKey)
+      harnessPresets = detail.presets
+      resolveRestoredPreset()
+      if let selectedPreset, !detail.presets.contains(where: { $0.id == selectedPreset.id }) {
+        self.selectedPreset = nil
+      }
+    } catch {
+      harnessPresets = []
+    }
+  }
+
+  /// Re-adopt the harness the last send ran under, once the machine's list
+  /// proves the preset still exists and is bound. A manual pick already made
+  /// while the fetch was in flight wins, and a preset only belongs to the
+  /// primary host — the picker hides them for any other machine for the same
+  /// reason.
+  @MainActor
+  private func resolveRestoredPreset() {
+    guard selectedMachineKey == nil,
+          selectedPreset == nil,
+          selectedModelOption == nil,
+          let restoredPresetId else { return }
+    self.restoredPresetId = nil
+    guard let preset = harnessPresets.first(where: { $0.id == restoredPresetId && $0.bound }) else { return }
+    selectedPreset = preset
+    modelId = preset.model
+    provider = sessionMode == .chat
+      ? workNormalizedChatProvider(preset.harness)
+      : preset.harness
+    machineModelHint = nil
+  }
+
+  /// The chosen model needs an account on the chosen machine. When that
+  /// machine has none for the model's provider, pick its first provider's
+  /// default model and say so.
+  private func checkModelOnMachine() {
+    machineModelHint = nil
+    let machineName = selectedMachineOption.name
+    let mode: WorkCursorAvailabilityMode = sessionMode == .cli ? .cli : .chat
+    switch workNewChatModelCheck(
+      machineKey: selectedMachineKey ?? syncService.focusedMachineKey,
+      provider: provider,
+      mode: mode
+    ) {
+    case .fits:
+      return
+    case .noAccount:
+      machineModelHint = "\(machineName) has no account for this model."
+    case .fallback(let fallbackModelId, let fallbackProvider):
+      let previous = prettyNewChatModelName(modelId)
+      // The machine cannot run the preset's model; a preset whose model no
+      // longer matches must not ride along with the launch.
+      selectedPreset = nil
+      selectedModelOption = nil
+      modelId = fallbackModelId
+      provider = sessionMode == .chat ? workNormalizedChatProvider(fallbackProvider) : fallbackProvider
+      machineModelHint = "\(machineName) has no account for \(previous). Using \(prettyNewChatModelName(fallbackModelId))."
     }
   }
 
@@ -1056,252 +1273,114 @@ struct WorkNewChatScreen: View {
     return (headerTier.showsBranding || chipsRendered) ? 16 : 2
   }
 
-  /// Steps the header tier from the measured scroll-area height, with a small
-  /// deadband so freeing height by hiding content cannot immediately re-show it
-  /// and start an oscillation.
-  private func applyHeaderHeight(_ height: CGFloat) {
-    guard height > 0 else { return }
-    let next = WorkNewChatHeaderTier.resolve(available: height, current: headerTier)
+  /// The page never scrolls: the usage panel gets exactly the height left
+  /// between the header and the floating lane bubble (content taller than that
+  /// scrolls inside the panel), so the panel can no longer run under the
+  /// bubble. Nil until the page has been measured.
+  private var usagePanelMaxHeight: CGFloat? {
+    guard scrollAreaHeight > 0, bottomControlsHeight > 0 else { return nil }
+    let pagePadding: CGFloat = (headerTier.showsBranding ? 12 : 8) + 16
+    let remaining = scrollAreaHeight - bottomControlsHeight - headerContentHeight
+      - usageCarouselTopPadding - pagePadding - 1
+    return max(120, remaining)
+  }
+
+  /// Steps the header tier from the height left above the floating controls,
+  /// with a small deadband so freeing height by hiding content cannot
+  /// immediately re-show it and start an oscillation.
+  private func applyHeaderHeight() {
+    let available = scrollAreaHeight - bottomControlsHeight
+    guard scrollAreaHeight > 0, available > 0 else { return }
+    let next = WorkNewChatHeaderTier.resolve(available: available, current: headerTier)
     if next != headerTier { headerTier = next }
   }
 
-  // Sits just above the composer, like the context chips in a chat.
+  /// Shell and Import session, as quiet neutral pills (desktop's launch-shelf
+  /// ghost buttons). Only offered for a concrete lane — both act on an
+  /// existing worktree.
   @ViewBuilder
   private var sessionActionChips: some View {
-    if cursorCloudLaunchAvailable || selectedConcreteLane != nil {
+    if selectedMachineKey == nil, let lane = selectedConcreteLane {
       let chipsDisabled = busy || shellLaunchBusy
-      let lane = selectedConcreteLane
-      let shellQueued = lane.map { queuedShellLaneIds.contains($0.id) } ?? false
+      let shellQueued = queuedShellLaneIds.contains(lane.id)
       let shellDisabled = chipsDisabled || shellQueued
       HStack(spacing: 8) {
-        Spacer(minLength: 0)
-        if cursorCloudLaunchAvailable {
-          Button {
-            Task { await toggleCursorCloudMode() }
-          } label: {
-            cursorCloudAffordance(enabled: cursorCloudMode, disabled: chipsDisabled)
-          }
-          .buttonStyle(.plain)
-          .disabled(chipsDisabled)
-        }
-        if let lane {
-          Button {
-            Task { await launchShell(in: lane) }
-          } label: {
-            shellSessionAffordance(isBusy: shellLaunchBusy, isQueued: shellQueued, disabled: shellDisabled)
-          }
-          .buttonStyle(.plain)
-          .disabled(shellDisabled)
-
-          NavigationLink {
-            WorkImportSessionScreen(
-              lane: lane,
-              lanes: lanes,
-              onCliImported: onCliStarted,
-              onChatImported: onChatImported
-            )
-            .environmentObject(syncService)
-          } label: {
-            importSessionAffordance(disabled: chipsDisabled)
-          }
-          .buttonStyle(.plain)
-          .disabled(chipsDisabled)
-        }
-        Spacer(minLength: 0)
-      }
-      .padding(.top, 2)
-      if cursorCloudMode {
-        cursorCloudOptions
-      }
-    }
-  }
-
-  @ViewBuilder
-  private var cursorCloudOptions: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 8) {
-        Image(systemName: "cloud.fill")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.accent)
-        if cursorCloudRepositories.isEmpty {
-          Text("Loading Cursor repositories…")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-        } else {
-          Menu {
-            ForEach(cursorCloudRepositories) { repository in
-              Button {
-                cursorCloudRepositoryUrl = repository.url
-              } label: {
-                Text(cursorCloudRepositoryLabel(repository.url))
-              }
-            }
-          } label: {
-            HStack(spacing: 4) {
-              Text(cursorCloudRepositoryLabel(cursorCloudRepositoryUrl ?? "Choose repository"))
-                .lineLimit(1)
-              Image(systemName: "chevron.up.chevron.down")
-                .font(.caption2.weight(.semibold))
-            }
-            .foregroundStyle(ADEColor.textPrimary)
-          }
-        }
-        Spacer(minLength: 0)
-        if !cursorCloudTierChoices.isEmpty {
-          Menu {
-            Button {
-              cursorCloudServiceTier = nil
-            } label: {
-              Label("Automatic", systemImage: cursorCloudServiceTier == nil ? "checkmark" : "")
-            }
-            ForEach(cursorCloudTierChoices, id: \.self) { tier in
-              Button {
-                cursorCloudServiceTier = tier
-              } label: {
-                Label(tier.capitalized, systemImage: cursorCloudServiceTier == tier ? "checkmark" : "")
-              }
-            }
-          } label: {
-            Text(cursorCloudServiceTier?.capitalized ?? "Automatic")
-              .font(.caption.weight(.medium))
-              .foregroundStyle(ADEColor.textSecondary)
-          }
-        }
-      }
-      HStack(spacing: 8) {
-        Image(systemName: "arrow.triangle.branch")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
-        TextField("Base branch", text: $cursorCloudBaseBranch)
-          .textFieldStyle(.plain)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textPrimary)
-      }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 8)
-      .background(ADEColor.surfaceBackground.opacity(0.65), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-      .overlay { RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.6) }
-
-      Toggle(isOn: $cursorCloudAutoCreatePR) {
-        Label("Open a PR when finished", systemImage: "arrow.triangle.pull")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-      .tint(ADEColor.accent)
-
-      if !cursorCloudSecretNames.isEmpty {
-        Menu {
-          ForEach(cursorCloudSecretNames, id: \.self) { name in
-            Button {
-              if cursorCloudSelectedSecretNames.contains(name) {
-                cursorCloudSelectedSecretNames.remove(name)
-              } else {
-                cursorCloudSelectedSecretNames.insert(name)
-              }
-            } label: {
-              Label(name, systemImage: cursorCloudSelectedSecretNames.contains(name) ? "checkmark" : "")
-            }
-          }
-          if !cursorCloudSelectedSecretNames.isEmpty {
-            Divider()
-            Toggle("Remember for this lane", isOn: $cursorCloudRememberSecretNames)
-          }
+        Button {
+          Task { await launchShell(in: lane) }
         } label: {
-          HStack(spacing: 7) {
-            Image(systemName: "key.fill")
-              .font(.caption.weight(.semibold))
-            Text(cursorCloudSelectedSecretNames.isEmpty
-              ? "Attach project secrets"
-              : "Secrets: \(cursorCloudSelectedSecretNames.count)")
-              .font(.caption)
-            Spacer(minLength: 0)
-            Image(systemName: "chevron.up.chevron.down")
-              .font(.caption2.weight(.semibold))
-          }
-          .foregroundStyle(ADEColor.textSecondary)
+          shellSessionAffordance(isBusy: shellLaunchBusy, isQueued: shellQueued, disabled: shellDisabled)
         }
+        .buttonStyle(.plain)
+        .disabled(shellDisabled)
+
+        NavigationLink {
+          WorkImportSessionScreen(
+            lane: lane,
+            lanes: visibleLanes,
+            onCliImported: onCliStarted,
+            onChatImported: onChatImported
+          )
+          .environmentObject(syncService)
+        } label: {
+          importSessionAffordance(disabled: chipsDisabled)
+        }
+        .buttonStyle(.plain)
+        .disabled(chipsDisabled)
       }
     }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 8)
-    .background(ADEColor.surfaceBackground.opacity(0.42), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
   }
 
-  private func cursorCloudRepositoryLabel(_ url: String) -> String {
-    let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return "Choose repository" }
-    let value = trimmed.hasSuffix(".git") ? String(trimmed.dropLast(4)) : trimmed
-    let parts = value.split(separator: "/")
-    return parts.count >= 2 ? "\(parts[parts.count - 2])/\(parts[parts.count - 1])" : value
-  }
-
-  private func cursorCloudAffordance(enabled: Bool, disabled: Bool) -> some View {
+  private func quietChip(
+    systemImage: String?,
+    title: String,
+    disabled: Bool,
+    showsProgress: Bool = false
+  ) -> some View {
     HStack(spacing: 6) {
-      Image(systemName: "cloud.fill")
-        .font(.system(size: 13, weight: .semibold))
-        .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.accent)
-      Text(enabled ? "Cursor Cloud" : "Cursor Cloud")
-        .font(.subheadline.weight(.medium))
-        .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.textPrimary)
+      if showsProgress {
+        ProgressView()
+          .controlSize(.mini)
+      } else if let systemImage {
+        Image(systemName: systemImage)
+          .font(.system(size: 12, weight: .medium))
+      }
+      Text(title)
+        .font(.system(size: 13, weight: .medium))
     }
-    .padding(.horizontal, 14)
-    .frame(height: 34)
-    .background(ADEColor.surfaceBackground.opacity(disabled ? 0.36 : 0.7), in: Capsule(style: .continuous))
-    .overlay { Capsule(style: .continuous).stroke(enabled ? ADEColor.accent.opacity(0.7) : ADEColor.glassBorder, lineWidth: 0.6) }
-    .opacity(disabled ? 0.5 : 1)
-    .accessibilityLabel(enabled ? "Cursor Cloud enabled" : "Launch with Cursor Cloud")
+    .foregroundStyle(ADEColor.textSecondary)
+    .padding(.horizontal, 12)
+    .frame(minHeight: 32)
+    .background(ADEKit.track, in: Capsule(style: .continuous))
+    .contentShape(Capsule(style: .continuous))
+    .opacity(disabled && !showsProgress ? 0.5 : 1)
+    .frame(minHeight: 44)
   }
 
   private func shellSessionAffordance(isBusy: Bool, isQueued: Bool, disabled: Bool) -> some View {
-    HStack(spacing: 6) {
-      if isBusy {
-        ProgressView()
-          .controlSize(.mini)
-          .tint(ADEColor.accent)
-      } else if isQueued {
-        Image(systemName: "clock.badge.checkmark")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
-      } else {
-        Image(systemName: "terminal")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.accent)
-      }
-      Text(isBusy ? "Starting shell" : (isQueued ? "Shell queued" : "Shell"))
-        .font(.subheadline.weight(.medium))
-        .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.textPrimary)
-    }
-    .padding(.horizontal, 14)
-    .frame(height: 34)
-    .background(ADEColor.surfaceBackground.opacity(disabled ? 0.36 : 0.7), in: Capsule(style: .continuous))
-    .overlay { Capsule(style: .continuous).stroke(ADEColor.glassBorder.opacity(disabled ? 0.5 : 1), lineWidth: 0.6) }
-    .opacity(disabled && !isBusy ? 0.5 : 1)
+    quietChip(
+      systemImage: isQueued ? "clock.badge.checkmark" : "terminal",
+      title: isBusy ? "Starting shell" : (isQueued ? "Shell queued" : "Shell"),
+      disabled: disabled,
+      showsProgress: isBusy
+    )
     .accessibilityLabel(isBusy ? "Starting shell" : (isQueued ? "Shell queued" : "Open shell"))
   }
 
   private func importSessionAffordance(disabled: Bool) -> some View {
-    HStack(spacing: 6) {
-      Image(systemName: "square.and.arrow.down")
-        .font(.system(size: 13, weight: .semibold))
-        .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.accent)
-      Text("Import session")
-        .font(.subheadline.weight(.medium))
-        .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.textPrimary)
-    }
-    .padding(.horizontal, 14)
-    .frame(height: 34)
-    .background(ADEColor.surfaceBackground.opacity(disabled ? 0.36 : 0.7), in: Capsule(style: .continuous))
-    .overlay { Capsule(style: .continuous).stroke(ADEColor.glassBorder.opacity(disabled ? 0.5 : 1), lineWidth: 0.6) }
-    .opacity(disabled ? 0.5 : 1)
+    quietChip(systemImage: "square.and.arrow.down", title: "Import session", disabled: disabled)
   }
 
   @ViewBuilder
   private var composerBar: some View {
     WorkNewChatComposerBar(
+      draftScopeProjectId: activeProjectId,
+      draftScopeProjectRootPath: activeProjectRootPath,
       sessionMode: sessionMode,
       provider: $provider,
       modelId: modelId,
-      modelName: prettyNewChatModelName(modelId),
+      modelName: selectedPreset?.name ?? prettyNewChatModelName(modelId),
+      modelBrandKey: modelBrandKey,
+      preset: selectedPreset,
       busy: busy,
       canStart: !busy && !shellLaunchBusy && (isAutoCreateLane || !selectedLaneId.isEmpty) && !modelId.isEmpty,
       attachmentsAvailable: attachmentsAvailable,
@@ -1318,102 +1397,34 @@ struct WorkNewChatScreen: View {
   private func prettyNewChatModelName(_ model: String) -> String {
     let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return "Model" }
+    // The live host catalog names the model the same way the desktop picker
+    // does ("DeepSeek V4.1 Flash"). Only when it has never been seen does the
+    // label fall back to a prettified id — never the raw route.
+    if let entry = WorkModelMentionDirectory.shared.entry(for: trimmed) {
+      let title = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !title.isEmpty { return title }
+    }
+    if let option = selectedModelOption, workModelIdsEquivalent(option.id, trimmed) {
+      let name = option.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !name.isEmpty { return name }
+    }
     if let known = workKnownModelDisplayName(trimmed) {
       return known
     }
-    let lower = trimmed.lowercased()
-    if lower.hasPrefix("claude-") {
-      let tail = trimmed.dropFirst("claude-".count)
-      let joined = tail.split(separator: "-").map { part -> String in
-        let s = String(part)
-        if s.range(of: #"^\d+$"#, options: .regularExpression) != nil { return s }
-        return s.prefix(1).uppercased() + s.dropFirst()
-      }.joined(separator: " ")
-      return "Claude " + joined.replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
+    if let pretty = workPrettyModelNameFromId(trimmed) {
+      return pretty
     }
     return trimmed
   }
 
-  @MainActor
-  private func toggleCursorCloudMode() async {
-    guard cursorCloudLaunchAvailable else { return }
-    cursorCloudMode.toggle()
-    guard cursorCloudMode else { return }
-
-    provider = "cursor"
-    if modelId != "auto" && !modelId.lowercased().hasPrefix("cursor/") {
-      modelId = "auto"
-      selectedModelOption = nil
+  /// The mark the composer's model pill wears. A gateway model (OpenCode Go's
+  /// DeepSeek) is branded by its maker, not by the runtime that routes it; the
+  /// catalog directory carries that resolution once the picker has loaded.
+  private var modelBrandKey: String {
+    if let entry = WorkModelMentionDirectory.shared.entry(for: modelId) {
+      return entry.brandKey
     }
-    cursorCloudServiceTier = nil
-    cursorCloudAutoCreatePR = false
-    cursorCloudSecretNames = []
-    cursorCloudSelectedSecretNames = []
-    cursorCloudRememberSecretNames = false
-    if cursorCloudBaseBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      cursorCloudBaseBranch = activeProjectSummary?.defaultBaseRef
-        ?? selectedConcreteLane?.baseRef
-        ?? "main"
-    }
-
-    do {
-      cursorCloudRepositories = try await syncService.fetchCursorCloudRepositories()
-      if cursorCloudRepositoryUrl == nil {
-        let projectKey = [activeProjectSummary?.repoOwner, activeProjectSummary?.repoName]
-          .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-          .joined(separator: "/")
-        cursorCloudRepositoryUrl = cursorCloudRepositories.first(where: {
-          cursorCloudRepositoryLabel($0.url).lowercased() == projectKey
-        })?.url ?? cursorCloudRepositories.first?.url
-      }
-      await refreshCursorCloudSecrets(for: selectedLaneId)
-    } catch {
-      cursorCloudRepositories = []
-      errorMessage = error.localizedDescription
-    }
-  }
-
-  @MainActor
-  private func refreshCursorCloudSecrets(for laneId: String?) async {
-    guard cursorCloudMode,
-          let laneId,
-          !laneId.isEmpty,
-          laneId != workAutoCreateLaneSentinelId,
-          syncService.canInvokeRemoteAction("ai.getCursorCloudLaneSecretNames") else {
-      cursorCloudSecretNames = []
-      cursorCloudSelectedSecretNames = []
-      cursorCloudRememberSecretNames = false
-      return
-    }
-    do {
-      let names = try await syncService.fetchCursorCloudLaneSecretNames(laneId: laneId)
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter { !$0.isEmpty }
-      cursorCloudSecretNames = names
-      cursorCloudSelectedSecretNames.formIntersection(Set(names))
-      if cursorCloudSelectedSecretNames.isEmpty {
-        cursorCloudRememberSecretNames = false
-      }
-    } catch {
-      cursorCloudSecretNames = []
-      cursorCloudSelectedSecretNames = []
-      cursorCloudRememberSecretNames = false
-    }
-  }
-
-  @MainActor
-  private func cursorCloudIdempotencyKey(for fingerprint: String) -> String {
-    if cursorCloudLaunchFingerprint != fingerprint || cursorCloudLaunchKey.isEmpty {
-      if cursorCloudLaunchSessionId.isEmpty {
-        cursorCloudLaunchSessionId = UUID().uuidString.lowercased()
-      }
-      cursorCloudLaunchTurnId = UUID().uuidString.lowercased()
-      cursorCloudLaunchFingerprint = fingerprint
-      cursorCloudLaunchKey = "ade:\(cursorCloudLaunchSessionId):\(cursorCloudLaunchTurnId):cursor-cloud:create"
-      cursorCloudLaunchLaneId = ""
-      cursorCloudLaunchAgentId = ""
-    }
-    return cursorCloudLaunchKey
+    return provider
   }
 
   @MainActor
@@ -1479,20 +1490,6 @@ struct WorkNewChatScreen: View {
     let opener = workChatOutgoingText(openingMessage, attachmentCount: readyAttachments.count)
     guard !busy && !shellLaunchBusy && (isAutoCreateLane || !selectedLaneId.isEmpty) else { return false }
     guard !opener.isEmpty && !modelId.isEmpty else { return false }
-    if cursorCloudMode {
-      guard cursorCloudLaunchAvailable else {
-        errorMessage = "Cursor Cloud is not connected on the paired machine."
-        return false
-      }
-      guard provider == "cursor" else {
-        errorMessage = "Choose a Cursor model before launching a cloud agent."
-        return false
-      }
-      guard readyAttachments.isEmpty else {
-        errorMessage = "Cursor Cloud launches do not support image attachments yet."
-        return false
-      }
-    }
     let availabilityMode: WorkCursorAvailabilityMode = sessionMode == .cli ? .cli : .chat
     guard workModelAllowedForAvailabilityMode(modelId: modelId, provider: provider, mode: availabilityMode) else {
       errorMessage = sessionMode == .cli
@@ -1503,6 +1500,19 @@ struct WorkNewChatScreen: View {
     guard readyAttachments.isEmpty || canUploadAttachments else {
       errorMessage = "Reconnect to attach images."
       return false
+    }
+    // Another machine: its checkout of this project. CLI sessions stream from
+    // the primary machine only for now.
+    let remoteRepo = selectedRemoteRepo
+    if selectedMachineKey != nil {
+      guard remoteRepo != nil else {
+        errorMessage = "That machine has no checkout of this project."
+        return false
+      }
+      guard sessionMode == .chat else {
+        errorMessage = "Start CLI sessions on the primary machine for now."
+        return false
+      }
     }
     // Anchor the "last time you sent a message" choice — covers the case where
     // the user sent with the restored/default selection without changing it.
@@ -1530,6 +1540,7 @@ struct WorkNewChatScreen: View {
       modelId: modelId,
       reasoningEffort: reasoningEffort,
       codexFastMode: codexFastMode,
+      presetId: selectedPreset?.id,
       piMetadata: piMetadata,
       wire: wire,
       projectId: activeProjectId,
@@ -1537,8 +1548,8 @@ struct WorkNewChatScreen: View {
       originClientId: syncService.pairingDeviceId,
       isAutoCreateLane: isAutoCreateLane,
       isChatSession: sessionMode == .chat,
-      cursorCloudMode: cursorCloudMode,
-      hostCanStartLaunch: syncService.canStartChatLaunch
+      cursorCloudMode: false,
+      hostCanStartLaunch: remoteRepo == nil && syncService.canStartChatLaunch
     ) {
       let syncService = syncService
       let attachmentsToStage = readyAttachments
@@ -1560,44 +1571,6 @@ struct WorkNewChatScreen: View {
       return true
     }
 
-    // Compute the cloud request identity before auto-creating a lane. The lane
-    // itself is retry state, not user input: including a freshly minted lane id
-    // here would generate a new idempotency key after an ambiguous timeout.
-    var cursorCloudRepoUrlForLaunch: String?
-    var cursorCloudLaunchFingerprintForRetry: String?
-    if cursorCloudMode {
-      let project = activeProjectSummary
-      let fallbackRepo = [project?.repoOwner, project?.repoName]
-        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter { !$0.isEmpty }
-        .joined(separator: "/")
-      let selectedRepoUrl = cursorCloudRepositoryUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
-      let repoUrl = selectedRepoUrl?.isEmpty == false
-        ? selectedRepoUrl
-        : (fallbackRepo.isEmpty ? nil : "https://github.com/\(fallbackRepo)")
-      guard let repoUrl else {
-        errorMessage = "Choose a repository for this Cursor Cloud launch."
-        busy = false
-        return false
-      }
-      cursorCloudRepoUrlForLaunch = repoUrl
-      let baseBranch = cursorCloudBaseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
-      let secretNames = cursorCloudSelectedSecretNames.sorted()
-      let launchFingerprint = workCursorCloudLaunchFingerprint(
-        projectId: activeProjectId,
-        laneId: isAutoCreateLane ? workAutoCreateLaneSentinelId : selectedLaneId,
-        promptText: rawText,
-        repoUrl: repoUrl,
-        startingRef: baseBranch.isEmpty ? nil : baseBranch,
-        modelId: workCursorCloudSDKModelId(for: modelId),
-        serviceTier: cursorCloudServiceTier,
-        autoCreatePR: cursorCloudAutoCreatePR,
-        secretNames: secretNames
-      )
-      cursorCloudLaunchFingerprintForRetry = launchFingerprint
-      _ = cursorCloudIdempotencyKey(for: launchFingerprint)
-    }
-
     // Resolve the target lane. When auto-create is selected we mint a fresh
     // lane first; on failure we surface the error and never create the session.
     // Track whether we created the lane so we can clean it up if the session
@@ -1607,16 +1580,7 @@ struct WorkNewChatScreen: View {
     var createdLaneId: String?
     var autoCreatedFallbackName: String?
     var autoCreatedTemporaryBranch: String?
-    if isAutoCreateLane,
-       let pendingFingerprint = cursorCloudLaunchFingerprintForRetry,
-       cursorCloudLaunchFingerprint == pendingFingerprint,
-       !cursorCloudLaunchLaneId.isEmpty {
-      // A previous cloud create may have reached Cursor before the transport
-      // or chat-open step timed out. Reuse its lane instead of creating a new
-      // lane and changing the request identity on retry.
-      targetLaneId = cursorCloudLaunchLaneId
-      targetLaneForScope = lanes.first { $0.id == targetLaneId }
-    } else if isAutoCreateLane {
+    if isAutoCreateLane {
       withAnimation(.snappy(duration: 0.16)) {
         autoCreateStatus = "Creating lane…"
       }
@@ -1626,16 +1590,15 @@ struct WorkNewChatScreen: View {
         let lane = try await syncService.createLane(
           name: laneName,
           description: opener.isEmpty ? "" : String(opener.prefix(280)),
-          branchName: temporaryBranch
+          branchName: temporaryBranch,
+          targetProjectId: remoteRepo?.markedProjectId,
+          targetProjectRootPath: remoteRepo?.rootPath
         )
         targetLaneId = lane.id
         targetLaneForScope = lane
         createdLaneId = lane.id
         autoCreatedFallbackName = laneName
         autoCreatedTemporaryBranch = temporaryBranch
-        if cursorCloudMode {
-          cursorCloudLaunchLaneId = lane.id
-        }
         await onRefreshLanes()
       } catch {
         ADEHaptics.error()
@@ -1644,16 +1607,16 @@ struct WorkNewChatScreen: View {
         busy = false
         return false
       }
-      } else {
-        targetLaneId = selectedLaneId
-        targetLaneForScope = lanes.first { $0.id == selectedLaneId }
-      }
-    if cursorCloudMode {
-      // A newly-created lane can have a different project-secret projection
-      // than the lane selected when the cloud form opened.
-      await refreshCursorCloudSecrets(for: targetLaneId)
+    } else {
+      targetLaneId = selectedLaneId
+      targetLaneForScope = visibleLanes.first { $0.id == selectedLaneId }
     }
-    let targetScope = targetLaneForScope
+    let targetScope = remoteRepo.map {
+      WorkProjectCommandScope(
+        projectId: $0.markedProjectId,
+        projectRootPath: $0.rootPath
+      )
+    } ?? targetLaneForScope
       .map { workShellProjectScope(for: $0, projects: syncService.projects) }
       ?? WorkProjectCommandScope(projectId: nil, projectRootPath: nil)
 
@@ -1663,81 +1626,8 @@ struct WorkNewChatScreen: View {
     var createdChatSummary: AgentChatSessionSummary?
     var createdChatAttachments: [AgentChatFileRef] = []
     var namingAttachmentRefs: [AgentChatFileRef] = []
-    var cursorCloudAgentIdForLaunch: String?
 
     do {
-      if cursorCloudMode {
-        guard let repoUrl = cursorCloudRepoUrlForLaunch else {
-          throw NSError(domain: "ADE", code: 41, userInfo: [NSLocalizedDescriptionKey: "Choose a repository for this Cursor Cloud launch."])
-        }
-        let baseBranch = cursorCloudBaseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
-        let secretNames = cursorCloudSelectedSecretNames.sorted()
-        let launchFingerprint = workCursorCloudLaunchFingerprint(
-          projectId: activeProjectId,
-          laneId: isAutoCreateLane ? workAutoCreateLaneSentinelId : targetLaneId,
-          promptText: rawText,
-          repoUrl: repoUrl,
-          startingRef: baseBranch.isEmpty ? nil : baseBranch,
-          modelId: workCursorCloudSDKModelId(for: modelId),
-          serviceTier: cursorCloudServiceTier,
-          autoCreatePR: cursorCloudAutoCreatePR,
-          secretNames: secretNames
-        )
-        let launchIdempotencyKey = cursorCloudIdempotencyKey(for: launchFingerprint)
-        if isAutoCreateLane {
-          cursorCloudLaunchLaneId = targetLaneId
-        }
-        let agentId: String
-        if !cursorCloudLaunchAgentId.isEmpty,
-           cursorCloudLaunchFingerprint == launchFingerprint {
-          // The create already returned successfully on an earlier attempt;
-          // retry the attach step directly rather than replaying the run.
-          agentId = cursorCloudLaunchAgentId
-        } else {
-          let created = try await performLiveChatCreationWithoutReplay {
-            try await syncService.createCursorCloudRun(
-              promptText: rawText,
-              repoUrl: repoUrl,
-              startingRef: baseBranch.isEmpty ? nil : baseBranch,
-              modelId: workCursorCloudSDKModelId(for: modelId),
-              serviceTier: cursorCloudServiceTier,
-              laneId: targetLaneId,
-              projectId: activeProjectId,
-              autoCreatePR: cursorCloudAutoCreatePR,
-              secretNames: secretNames,
-              rememberSecretNames: cursorCloudRememberSecretNames,
-              idempotencyKey: launchIdempotencyKey,
-              sessionId: cursorCloudLaunchSessionId
-            )
-          }
-          cursorCloudLaunchAgentId = created.agent.agentId
-          agentId = created.agent.agentId
-        }
-        cursorCloudAgentIdForLaunch = agentId
-        let opened = try await syncService.openCursorCloudChat(
-          agentId: agentId,
-          laneId: targetLaneId,
-          modelId: workCursorCloudSDKModelId(for: modelId),
-          serviceTier: cursorCloudServiceTier
-        )
-        let summaries = try await syncService.listChatSessions(laneId: targetLaneId)
-        guard let summary = summaries.first(where: { $0.sessionId == opened.sessionId }) else {
-          throw NSError(domain: "ADE", code: 42, userInfo: [NSLocalizedDescriptionKey: "Cursor Cloud started, but ADE could not open its chat yet. Refresh the lane and try again."])
-        }
-        await onStarted(summary, opener, false, nil, [])
-        // The launch is now attached to an ADE chat. A future draft gets a
-        // fresh turn key; failures above deliberately leave this key intact.
-        cursorCloudLaunchFingerprint = ""
-        cursorCloudLaunchKey = ""
-        cursorCloudLaunchTurnId = ""
-        cursorCloudLaunchLaneId = ""
-        cursorCloudLaunchAgentId = ""
-        if let createdLaneId, let autoCreatedFallbackName {
-          startBackgroundLaneNaming(laneId: createdLaneId, opener: opener, fallbackName: autoCreatedFallbackName, temporaryBranch: autoCreatedTemporaryBranch, attachments: [])
-        }
-        busy = false
-        return true
-      }
       let attachmentRefs = try await workChatSaveInputAttachments(
         readyAttachments,
         syncService: syncService,
@@ -1759,13 +1649,14 @@ struct WorkNewChatScreen: View {
           modelId: modelId,
           reasoningEffort: cliReasoningEffort,
           fastMode: fastModeSupported ? codexFastMode : nil,
+          presetId: selectedPreset?.id,
           cols: 48,
           rows: 24
         )
         if let session = result.session {
           await onCliStarted(session)
         } else {
-          let lane = lanes.first(where: { $0.id == targetLaneId })
+          let lane = visibleLanes.first(where: { $0.id == targetLaneId })
           await onCliStarted(TerminalSessionSummary(
             id: result.sessionId,
             laneId: targetLaneId,
@@ -1817,13 +1708,24 @@ struct WorkNewChatScreen: View {
         codexConfigSource: wire.codexConfigSource,
         opencodePermissionMode: wire.opencodePermissionMode,
         droidPermissionMode: wire.droidPermissionMode,
+        musePermissionMode: wire.musePermissionMode,
         cursorModeId: wire.cursorModeId,
         targetProjectId: targetScope.projectId,
         targetProjectRootPath: targetScope.projectRootPath,
-        pendingDisplayName: opener
+        pendingDisplayName: opener,
+        presetId: selectedPreset?.id
       )
       createdChatSummary = summary
       createdChatAttachments = attachmentRefs
+      if let remoteRepo {
+        // The chat lives on that machine: its reads, sends and stream go there.
+        syncService.setRemoteMachineChatScope(
+          sessionId: summary.sessionId,
+          machineKey: remoteRepo.machineKey,
+          projectId: remoteRepo.projectId,
+          projectRootPath: remoteRepo.rootPath
+        )
+      }
       if attachmentRefs.isEmpty {
         await onStarted(summary, opener, false, nil, [])
       } else {
@@ -1910,17 +1812,6 @@ struct WorkNewChatScreen: View {
         busy = false
         return true
       }
-      if cursorCloudMode {
-        // An explicit create rejection is safe to clean up. A known cloud
-        // agent, including one restored from SceneStorage, must remain intact
-        // so the next submit can attach it instead of creating another run.
-        if cursorCloudAgentIdForLaunch == nil, let createdLaneId {
-          try? await syncService.deleteLane(createdLaneId)
-          await onRefreshLanes()
-        }
-        busy = false
-        return false
-      }
       // The session never launched into a lane we just minted — tear it back
       // down so an auto-create failure doesn't leave an orphaned empty lane.
       if let createdLaneId {
@@ -1971,7 +1862,7 @@ struct WorkNewChatScreen: View {
 
 private func workCliSupportsReasoningSelection(provider: String) -> Bool {
   let family = providerFamilyKey(provider)
-  return family == "claude" || family == "codex" || family == "droid" || family == "pi"
+  return family == "claude" || family == "codex" || family == "muse" || family == "droid" || family == "pi"
 }
 
 private func workCliInitialSessionTitle(provider: String, opener: String) -> String {
@@ -2008,6 +1899,7 @@ private func workCliToolType(provider: String) -> String {
   case "cursor": return "cursor-cli"
   case "opencode": return "opencode"
   case "pi": return "pi"
+  case "muse": return "muse"
   case "droid": return "droid"
   case "qwen": return "qwen"
   case "kimi": return "kimi"
@@ -2019,10 +1911,19 @@ private func workCliToolType(provider: String) -> String {
 }
 
 private struct WorkNewChatComposerBar: View {
+  /// The project the drafts this composer opens belong to, so a draft listed
+  /// or scheduled here targets the project the user is looking at.
+  let draftScopeProjectId: String?
+  let draftScopeProjectRootPath: String?
   let sessionMode: WorkNewSessionMode
   @Binding var provider: String
   let modelId: String
   let modelName: String
+  /// The model pill's mark, resolved upstream of the gateway route.
+  let modelBrandKey: String
+  /// A selected Custom harness, whose own mark and accent replace the provider
+  /// mark while the composer runs on it.
+  let preset: SyncMachineInventoryPreset?
   let busy: Bool
   let canStart: Bool
   let attachmentsAvailable: Bool
@@ -2041,9 +1942,6 @@ private struct WorkNewChatComposerBar: View {
   /// Set by a tap on an image or file pill; the tray opens that preview.
   @State private var attachmentPreviewRequest: UUID?
   @State private var presentedPicker: WorkComposerPicker?
-  @State private var composerTextHeight: CGFloat = 28
-  @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
-  @State private var isDictating = false
   /// Live viewport width of the controls scroll area, so the access control
   /// collapses to the in-session composer's dot-Menu at the same threshold.
   @State private var controlsWidth: CGFloat = 0
@@ -2092,113 +1990,62 @@ private struct WorkNewChatComposerBar: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      WorkChatInputAttachmentTray(attachments: $attachments, openRequest: $attachmentPreviewRequest)
-        .fixedSize(horizontal: false, vertical: true)
-        .layoutPriority(2)
-
-      VStack(alignment: .leading, spacing: 12) {
-        WorkPlainComposerTextView(
-          text: $draft,
-          isFocused: $composerFocused,
-          measuredHeight: $composerTextHeight,
-          placeholder: placeholder,
-          acceptsPastedImages: attachmentsAvailable,
-          onPasteImages: { images in
-            workChatInputPasteImages(images, into: $attachments)
-          },
+    ADEPlainGlassComposer(
+      text: $draft,
+      isFocused: $composerFocused,
+      attachments: $attachments,
+      placeholder: placeholder,
+      acceptsPastedImages: attachmentsAvailable,
+      sendEnabled: canSend && !busy,
+      sending: busy,
+      dictationTargetId: dictationTargetId,
+      onSend: { dispatch() },
+      menu: { startDictation in
+        WorkComposerOverflowButton(
+          presentedPicker: $presentedPicker,
+          draft: $draft,
           attachments: $attachments,
-          acceptsPastedFiles: attachmentsAvailable
-            && syncService.supportsViewerRemoteAction(workChatFileAttachmentHostAction),
-          onOpenAttachment: { attachmentPreviewRequest = $0 }
+          canCompose: !busy,
+          attachmentsAvailable: attachmentsAvailable,
+          onDictate: startDictation,
+          draftsAvailable: syncService.canInvokeRemoteAction("chat.listDrafts"),
+          scheduleAvailable: syncService.canInvokeRemoteAction("chat.createDraft"),
+          scope: WorkDraftScope(
+            projectId: draftScopeProjectId,
+            projectRootPath: draftScopeProjectRootPath
+          ),
+          provider: provider,
+          modelId: modelId,
+          runtimeMode: runtimeMode,
+          extraMenuContent: AnyView(sessionSettingsMenu)
         )
-        .frame(maxWidth: .infinity, minHeight: 28, idealHeight: composerTextHeight, maxHeight: composerTextHeight, alignment: .leading)
-
-        HStack(alignment: .center, spacing: 8) {
-          if !isDictating {
-            WorkComposerOverflowButton(
-              presentedPicker: $presentedPicker,
-              draft: $draft,
-              attachments: $attachments,
-              canCompose: !busy,
-              attachmentsAvailable: attachmentsAvailable,
-              onDictate: { dictationCoordinator.requestStart() },
-              stashAvailable: syncService.canInvokeRemoteAction("chat.listPromptStashes"),
-              scope: WorkPromptStashScope(),
-              provider: provider,
-              modelId: modelId
-            )
-
-            ScrollView(.horizontal, showsIndicators: false) {
-              WorkComposerControlsRow(
-                provider: provider,
-                modelDisplayName: modelName,
-                reasoningEffort: reasoningEffort,
-                currentMode: runtimeMode,
-                modeOptions: runtimeOptions,
-                modeLabel: workRuntimeModeLabel(provider: provider, mode: runtimeMode),
-                isCollapsed: isControlsCollapsed,
-                fastModeEnabled: codexFastMode,
-                onOpenModelPicker: onOpenModelPicker,
-                onSelectMode: { runtimeMode = $0 }
-              )
-              .padding(.trailing, 4)
-            }
-            .background(
-              GeometryReader { proxy in
-                Color.clear
-                  .onAppear { controlsWidth = proxy.size.width }
-                  .onChange(of: proxy.size.width) { _, newValue in
-                    controlsWidth = newValue
-                  }
-              }
-            )
-
-            DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draft)
-          }
-
-          DictationMicButton(
-            draft: $draft,
-            coordinator: dictationCoordinator,
-            targetId: dictationTargetId,
-            showsIdleButton: false,
-            onRecordingChange: { isDictating = $0 }
+      },
+      controls: {
+        ScrollView(.horizontal, showsIndicators: false) {
+          WorkComposerControlsRow(
+            provider: provider,
+            modelDisplayName: modelName,
+            modelBrandKey: modelBrandKey,
+            preset: preset,
+            reasoningEffort: reasoningEffort,
+            currentMode: runtimeMode,
+            modeOptions: runtimeOptions,
+            modeLabel: workRuntimeModeLabel(provider: provider, mode: runtimeMode),
+            isCollapsed: isControlsCollapsed,
+            fastModeEnabled: codexFastMode,
+            onOpenModelPicker: onOpenModelPicker,
+            onSelectMode: { runtimeMode = $0 }
           )
-          .frame(maxWidth: isDictating ? .infinity : nil)
-
-          if !isDictating {
-            foregroundSendButton
-          }
+          .padding(.trailing, 4)
+        }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+          proxy.size.width
+        } action: { width in
+          controlsWidth = width
         }
       }
-      .fixedSize(horizontal: false, vertical: true)
-      .layoutPriority(1)
-    }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 14)
-    .background(
-      RoundedRectangle(cornerRadius: 24, style: .continuous)
-        .fill(ADEColor.composerBackground)
     )
-    .glassEffect(in: .rect(cornerRadius: 24))
-    .overlay(
-      RoundedRectangle(cornerRadius: 24, style: .continuous)
-        .fill(
-          LinearGradient(
-            colors: [Color.white.opacity(0.10), .clear],
-            startPoint: .top,
-            endPoint: .bottom
-          )
-        )
-        .allowsHitTesting(false)
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 24, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 1)
-    )
-    .shadow(color: Color.black.opacity(0.32), radius: 14, y: 6)
     .padding(.horizontal, 16)
-    .padding(.bottom, 0)
     .workChatAttachmentPicker(
       isPresented: $presentedPicker.isPresenting(.photos),
       attachments: $attachments,
@@ -2211,6 +2058,29 @@ private struct WorkNewChatComposerBar: View {
       attachments: $attachments,
       onDismiss: {}
     )
+  }
+
+  /// Model and access in the ⋯ menu too, like the chat's folded composer:
+  /// the controls row that normally shows them is hidden while folded.
+  @ViewBuilder
+  private var sessionSettingsMenu: some View {
+    Section {
+      Button {
+        onOpenModelPicker()
+      } label: {
+        Label("Model · \(modelName)", systemImage: "cpu")
+      }
+      if runtimeOptions.count > 1 {
+        Picker(selection: Binding(get: { runtimeMode }, set: { runtimeMode = $0 })) {
+          ForEach(runtimeOptions, id: \.id) { option in
+            Text(option.title).tag(option.id)
+          }
+        } label: {
+          Label("Access · \(workRuntimeModeLabel(provider: provider, mode: runtimeMode))", systemImage: "lock.shield")
+        }
+        .pickerStyle(.menu)
+      }
+    }
   }
 
   /// Primary foreground launch button — the compact arrow-in-circle send glyph
@@ -2231,4 +2101,241 @@ private struct WorkNewChatComposerBar: View {
 
 struct WorkNewChatRoute: Hashable {
   let preferredLaneId: String?
+}
+
+#if DEBUG
+/// Fixture render of the real New Chat page — two lanes, Claude + Codex limits
+/// across several accounts, and a month of activity — so a simulator can
+/// screenshot it with no pairing. Reached with `-adePreviewScreen new-chat`.
+/// `-adePreviewFocusComposer` opens it with the composer expanded.
+struct WorkNewChatPreviewHost: View {
+  @EnvironmentObject private var syncService: SyncService
+
+  /// `new-chat-deepseek`: start the composer on a gateway-routed model
+  /// (`opencode/opencode-go/deepseek-v4.1-flash`), seed the live catalog that
+  /// names it, and open on the long-branch lane — the inputs the model-chip and
+  /// layout fixes are about, provable with no pairing.
+  let usesGatewayModelFixture: Bool
+
+  init(usesGatewayModelFixture: Bool = false) {
+    self.usesGatewayModelFixture = usesGatewayModelFixture
+    MobileUsageQuotaStore.shared.pinPreviewSnapshot(WorkNewChatPreviewFixtures.quotaSnapshot())
+    WorkUsageActivityCarousel.previewStats = WorkNewChatPreviewFixtures.stats()
+    if usesGatewayModelFixture {
+      WorkComposerPreferences.save(
+        provider: "opencode",
+        modelId: WorkNewChatPreviewFixtures.gatewayModelId,
+        runtimeMode: "default",
+        reasoningEffort: "",
+        codexFastMode: false
+      )
+      if let catalog = WorkNewChatPreviewFixtures.gatewayCatalog() {
+        WorkModelMentionDirectory.shared.record(catalog: catalog)
+      }
+    }
+  }
+
+  var body: some View {
+    NavigationStack {
+      WorkNewChatScreen(
+        lanes: WorkNewChatPreviewFixtures.lanes,
+        preferredLaneId: usesGatewayModelFixture
+          ? WorkNewChatPreviewFixtures.lanes[1].id
+          : WorkNewChatPreviewFixtures.lanes.first?.id,
+        activeProjectId: "preview-project",
+        activeProjectRootPath: "/Users/preview/Projects/ADE",
+        onStarted: { _, _, _, _, _ in },
+        onCliStarted: { _ in },
+        onRefreshLanes: {}
+      )
+    }
+  }
+}
+
+@MainActor
+enum WorkNewChatPreviewFixtures {
+  static let lanes: [LaneSummary] = [
+    lane(id: "preview-lane-primary", name: "Primary", type: "primary", branch: "main", color: "blue"),
+    lane(id: "preview-lane-glass", name: "Glass composer", type: "worktree", branch: "ade/glass-composer-4c06a9a3", color: "purple"),
+    lane(id: "preview-lane-usage", name: "Usage panel", type: "worktree", branch: "ade/usage-panel-19ab22", color: "green"),
+  ]
+
+  /// The gateway-routed model the chip fixture starts on: OpenCode Go fronts
+  /// DeepSeek, so the route names the gateway and the maker is the model.
+  static let gatewayModelId = "opencode/opencode-go/deepseek-v4.1-flash"
+
+  /// The host's `chat.modelCatalog` row for `gatewayModelId`, decoded from the
+  /// same JSON shape the wire carries so the fixture cannot drift from the
+  /// contract.
+  static func gatewayCatalog() -> AgentChatModelCatalog? {
+    let raw = """
+    {"fetchedAt":"2026-10-02T00:00:00.000Z","groups":[{"key":"opencode","displayName":"OpenCode","providers":[{"key":"opencode-go","displayName":"OpenCode Go","badgeColor":"#4D6BFE","modelCount":1,"subsections":[{"key":"opencode-go","label":"OpenCode Go","models":[{"id":"opencode/opencode-go/deepseek-v4.1-flash","runtimeModelId":"deepseek-v4.1-flash","provider":"opencode","providerKey":"opencode-go","groupKey":"opencode","displayName":"DeepSeek V4.1 Flash","description":"DeepSeek V4.1 Flash (OpenCode)","isDefault":false,"family":"opencode","supportsReasoning":true,"supportsTools":true,"isAvailable":true}]}]}]}]}
+    """
+    return try? JSONDecoder().decode(AgentChatModelCatalog.self, from: Data(raw.utf8))
+  }
+
+  private static func lane(id: String, name: String, type: String, branch: String, color: String) -> LaneSummary {
+    LaneSummary(
+      id: id,
+      name: name,
+      description: nil,
+      laneType: type,
+      baseRef: "main",
+      branchRef: branch,
+      worktreePath: "/Users/preview/Projects/ADE/.ade/worktrees/\(id)",
+      attachedRootPath: nil,
+      parentLaneId: nil,
+      childCount: 0,
+      stackDepth: 0,
+      parentStatus: nil,
+      isEditProtected: false,
+      status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+      color: color,
+      icon: .bolt,
+      tags: [],
+      folder: nil,
+      createdAt: iso(Date().addingTimeInterval(-86_400)),
+      archivedAt: nil,
+      devicesOpen: []
+    )
+  }
+
+  private static func iso(_ date: Date) -> String {
+    ISO8601DateFormatter().string(from: date)
+  }
+
+  private static func window(
+    _ provider: String,
+    _ type: String,
+    used: Double,
+    resetsIn seconds: TimeInterval,
+    duration: TimeInterval,
+    account: String
+  ) -> MobileUsageQuotaWindow {
+    MobileUsageQuotaWindow(
+      provider: provider,
+      windowType: type,
+      percentUsed: used,
+      resetsAt: iso(Date().addingTimeInterval(seconds)),
+      resetsInMs: seconds * 1000,
+      windowDurationMs: duration * 1000,
+      accountId: account
+    )
+  }
+
+  static func quotaSnapshot() -> MobileUsageQuotaSnapshot {
+    let fiveHours: TimeInterval = 5 * 3_600
+    let week: TimeInterval = 7 * 86_400
+    let machine = [MobileUsageAccountMachine(machineKey: "mac", label: "Arul's MacBook Pro", checkedAt: iso(Date()))]
+    return MobileUsageQuotaSnapshot(
+      windows: [
+        window("claude", "five_hour", used: 54, resetsIn: 1 * 3_600 + 49 * 60, duration: fiveHours, account: "claude-personal"),
+        window("claude", "weekly", used: 31, resetsIn: 3 * 86_400 + 5 * 3_600, duration: week, account: "claude-personal"),
+        window("claude", "five_hour", used: 12, resetsIn: 3 * 3_600 + 10 * 60, duration: fiveHours, account: "claude-work"),
+        window("claude", "weekly", used: 78, resetsIn: 1 * 86_400 + 2 * 3_600, duration: week, account: "claude-work"),
+        window("codex", "five_hour", used: 22, resetsIn: 4 * 3_600 + 2 * 60, duration: fiveHours, account: "codex-personal"),
+        window("codex", "weekly", used: 93, resetsIn: 2 * 86_400 + 7 * 3_600, duration: week, account: "codex-personal"),
+      ],
+      accounts: [
+        MobileUsageAccount(id: "claude-personal", provider: "claude", email: "arul@example.com", plan: "Claude Max", machines: machine, url: "https://claude.ai/settings/usage"),
+        MobileUsageAccount(id: "claude-work", provider: "claude", email: "arul@versic.dev", plan: "Claude Team", machines: machine, url: "https://claude.ai/settings/usage"),
+        MobileUsageAccount(id: "codex-personal", provider: "codex", email: "arul@example.com", plan: "ChatGPT Pro", machines: machine, url: "https://chatgpt.com/codex/settings/usage"),
+      ],
+      providerStatus: [
+        "claude": MobileUsageProviderStatus(state: "ok", lastSuccessAt: iso(Date()), source: "oauth", updatedAt: iso(Date()), accountUrl: "https://claude.ai/settings/usage"),
+        "codex": MobileUsageProviderStatus(state: "ok", lastSuccessAt: iso(Date()), source: "oauth", updatedAt: iso(Date()), accountUrl: "https://chatgpt.com/codex/settings/usage"),
+      ],
+      lastPolledAt: iso(Date().addingTimeInterval(-40)),
+      errors: [],
+      spendControlReached: false
+    )
+  }
+
+  static func stats() -> MobileAdeUsageStats? {
+    let calendar = Calendar(identifier: .gregorian)
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy-MM-dd"
+    var daily: [[String: Any]] = []
+    for offset in stride(from: 69, through: 0, by: -1) {
+      guard let day = calendar.date(byAdding: .day, value: -offset, to: Date()) else { continue }
+      let seed = (offset * 37 + 11) % 100
+      let quiet = seed < 18
+      let input = quiet ? 0 : 40_000 + seed * 5_200
+      let output = quiet ? 0 : 12_000 + seed * 1_700
+      let cached = quiet ? 0 : 180_000 + seed * 21_000
+      daily.append([
+        "date": formatter.string(from: day),
+        "inputTokens": input,
+        "outputTokens": output,
+        "cachedTokens": cached,
+        "totalTokens": input + output + cached,
+        "sessions": quiet ? 0 : 1 + seed % 6,
+        "interactions": quiet ? 0 : 4 + seed % 30,
+        "commits": quiet ? 0 : seed % 5,
+        "insertions": quiet ? 0 : 60 + seed * 9,
+        "deletions": quiet ? 0 : 20 + seed * 4,
+        "filesChanged": quiet ? 0 : 2 + seed % 12,
+      ])
+    }
+    let payload: [String: Any] = [
+      "generatedAt": iso(Date()),
+      "summary": [
+        "totalTokens": 48_200_000,
+        "chatSessions": 212,
+        "terminalSessions": 41,
+        "activeDays": 57,
+        "totalInteractions": 1_930,
+      ],
+      "clients": [
+        ["client": "desktop", "interactions": 1_240, "activeDays": 55, "sessions": 180],
+        ["client": "mobile", "interactions": 410, "activeDays": 31, "sessions": 52],
+        ["client": "tui", "interactions": 280, "activeDays": 18, "sessions": 21],
+      ],
+      "daily": daily,
+    ]
+    guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
+    return try? JSONDecoder().decode(MobileAdeUsageStats.self, from: data)
+  }
+}
+
+/// The Hub composer floating over a list, for `-adePreviewScreen hub-composer`.
+struct HubComposerPreviewHost: View {
+  @State private var expanded = ProcessInfo.processInfo.arguments.contains("-adePreviewFocusComposer")
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        LazyVStack(alignment: .leading, spacing: 10) {
+          ForEach(0..<14, id: \.self) { index in
+            VStack(alignment: .leading, spacing: 4) {
+              Text(["Glass composer", "Usage panel port", "Lane picker bubble", "Hub drawer"][index % 4])
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+              Text("Claude Opus 5 · \(index + 2)m ago")
+                .font(.caption)
+                .foregroundStyle(ADEColor.textSecondary)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ADEColor.cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+          }
+        }
+        .padding(16)
+      }
+      .adeScreenBackground()
+      .navigationTitle("Hub")
+      .safeAreaInset(edge: .bottom, spacing: 0) {
+        HubInlineComposer(expanded: $expanded, onCreated: { _ in })
+      }
+    }
+  }
+}
+#endif
+
+/// A machine's Primary lane, else its first lane.
+func workNewChatPrimaryLane(_ lanes: [LaneSummary]) -> LaneSummary? {
+  lanes.first { $0.laneType == "primary" }
+    ?? lanes.first { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "primary" }
+    ?? lanes.first
 }

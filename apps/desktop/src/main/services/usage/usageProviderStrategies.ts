@@ -19,6 +19,16 @@ export type UsageProviderPollContext = {
 export type FreshUsageProviderPollResult = {
   disposition?: "fresh";
   windows: UsageWindow[];
+  /**
+   * How many of `windows` came from a live read in this pass.
+   *
+   * Multi-account providers merge carried-forward windows into `windows` so a
+   * transient failure does not blank the display, which means a non-empty list
+   * no longer says the poll succeeded. The scheduler resets its failure and
+   * backoff state on this count, never on `windows.length`. Optional so a
+   * single-account or injected poller keeps the old reading of its result.
+   */
+  freshWindowCount?: number;
   /** Provider-level Codex spend control state, not tied to an individual quota window. */
   spendControlReached?: boolean;
   source?: UsageProviderSource;

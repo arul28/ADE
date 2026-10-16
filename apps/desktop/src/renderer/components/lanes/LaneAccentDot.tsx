@@ -1,6 +1,7 @@
 import React from "react";
 import type { LaneSummary } from "../../../shared/types";
 import { getLaneAccent } from "./laneColorPalette";
+import { fgTint } from "./laneDesignTokens";
 
 type Props = {
   lane?: Pick<LaneSummary, "color"> | null;
@@ -24,7 +25,7 @@ export function LaneAccentDot({ lane, color, fallbackIndex = 0, size = 8, classN
         height: size,
         borderRadius: 9999,
         background: resolved,
-        boxShadow: ringed ? "inset 0 0 0 1px rgba(255,255,255,0.12)" : undefined,
+        boxShadow: ringed ? `inset 0 0 0 1px ${fgTint(12)}` : undefined,
         flexShrink: 0,
         ...style,
       }}

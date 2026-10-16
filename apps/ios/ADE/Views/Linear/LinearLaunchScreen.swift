@@ -122,6 +122,7 @@ struct LinearLaunchScreen: View {
       .padding(16)
     }
     .scrollContentBackground(.hidden)
+    .background(ADEColor.pageBackground.ignoresSafeArea())
     .navigationTitle(laneOnly ? "New lane · \(issue.identifier)" : "Launch \(issue.identifier)")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
@@ -171,7 +172,7 @@ struct LinearLaunchScreen: View {
       Spacer(minLength: 0)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .adeGlassCard()
+    .adeKitCard(padding: 16)
   }
 
   private var sessionTypePicker: some View {
@@ -190,8 +191,8 @@ struct LinearLaunchScreen: View {
             .foregroundStyle(isSelected ? .white : ADEColor.textSecondary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 9)
-            .background(isSelected ? LinearBrand.primary : ADEColor.surfaceBackground.opacity(0.6), in: Capsule())
-            .overlay(Capsule().stroke(isSelected ? Color.clear : ADEColor.glassBorder, lineWidth: 1))
+            .background(isSelected ? LinearBrand.primary : ADEKit.track, in: Capsule())
+            .overlay(Capsule().stroke(isSelected ? Color.clear : ADEKit.edge, lineWidth: 1))
           }
           .buttonStyle(.plain)
         }
@@ -206,7 +207,7 @@ struct LinearLaunchScreen: View {
       }
       .buttonStyle(.plain)
 
-      Divider().overlay(ADEColor.glassBorder.opacity(0.5))
+      Divider().overlay(ADEKit.edge.opacity(0.5))
 
       Menu {
         ForEach(workRuntimeModeOptions(provider: provider)) { option in
@@ -222,7 +223,7 @@ struct LinearLaunchScreen: View {
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 4)
-    .adeGlassCard()
+    .adeKitCard(padding: 16)
   }
 
   private var kickoffEditor: some View {
@@ -237,8 +238,8 @@ struct LinearLaunchScreen: View {
         .frame(minHeight: 120)
         .scrollContentBackground(.hidden)
         .padding(10)
-        .background(ADEColor.surfaceBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 1))
+        .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(ADEKit.edge, lineWidth: 1))
     }
   }
 
@@ -303,6 +304,7 @@ struct LinearLaunchScreen: View {
           codexConfigSource: wire.codexConfigSource,
           opencodePermissionMode: wire.opencodePermissionMode,
           droidPermissionMode: wire.droidPermissionMode,
+          musePermissionMode: wire.musePermissionMode,
           cursorModeId: wire.cursorModeId,
           pendingDisplayName: cfg.kickoff
         )
@@ -393,20 +395,12 @@ struct LinearConfigRow: View {
 
 // MARK: - Model name prettifier
 
-/// Human label for a model id, reusing the Work catalog's known-name table with
-/// a Claude-family fallback (mirrors the composer's `prettyNewChatModelName`).
+/// Human label for a model id, reusing the Work catalog's known-name table and
+/// its canonical route-aware prettifier (`workPrettyModelNameFromId`), so a
+/// gateway id reads as its model rather than as a path.
 func linearPrettyModelName(_ modelId: String) -> String {
   let trimmed = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !trimmed.isEmpty else { return "Choose model" }
   if let known = workKnownModelDisplayName(trimmed) { return known }
-  if trimmed.lowercased().hasPrefix("claude-") {
-    let tail = trimmed.dropFirst("claude-".count)
-    let joined = tail.split(separator: "-").map { part -> String in
-      let s = String(part)
-      if s.range(of: #"^\d+$"#, options: .regularExpression) != nil { return s }
-      return s.prefix(1).uppercased() + s.dropFirst()
-    }.joined(separator: " ")
-    return "Claude " + joined.replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
-  }
-  return trimmed
+  return workPrettyModelNameFromId(trimmed) ?? trimmed
 }

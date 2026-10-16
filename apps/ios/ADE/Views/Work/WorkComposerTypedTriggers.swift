@@ -3,7 +3,7 @@ import UIKit
 
 // MARK: - Smart links
 
-private func workSmartLinkPathParts(_ components: URLComponents) -> [String] {
+func workSmartLinkPathParts(_ components: URLComponents) -> [String] {
   components.path.split(separator: "/").map(String.init)
 }
 
@@ -95,6 +95,14 @@ struct WorkSmartLink: Equatable {
     case folder
     case artifact
     case webPage
+    /// A model with a thinking level and a permission mode (`@model:<id>?…`).
+    case model
+    /// A provider permission mode an agent named, e.g. `bypassPermissions`.
+    case permission
+    /// A slash command or skill this chat can run, e.g. `/quality`.
+    case skill
+    /// A browser tab attached to a chat message.
+    case browserTab
     /// An `ade://` URL this build cannot parse — a newer ADE minted it.
     case adeLink
     /// An `@mac:<machineKey>` mention: one of the account's machines.
@@ -119,6 +127,10 @@ struct WorkSmartLink: Equatable {
       case .folder: return "📁"
       case .artifact: return "◈"
       case .webPage: return "↗"
+      case .model: return "✦"
+      case .permission: return "⛨"
+      case .skill: return "/"
+      case .browserTab: return "🌐"
       case .adeLink: return "A"
       case .machine: return "▢"
       case .image: return "🖼"
@@ -143,6 +155,10 @@ struct WorkSmartLink: Equatable {
       case .folder: return "folder"
       case .artifact: return "shippingbox"
       case .webPage: return "globe"
+      case .model: return "sparkles"
+      case .permission: return "lock.shield"
+      case .skill: return "slash.circle"
+      case .browserTab: return "safari"
       case .adeLink: return "link"
       case .machine: return "desktopcomputer"
       case .image: return "photo"
@@ -491,6 +507,460 @@ enum WorkChatMentionDetector {
   }
 }
 
+// MARK: - Model mentions
+
+/// Swift twin of the `@model:` grammar in
+/// `apps/desktop/src/shared/modelMentions.ts`.
+///
+/// A model chip names a model, a thinking level, and a permission mode in one
+/// token: `@model:<registry-id>?effort=<level>&perm=<mode>`. `effort` and
+/// `perm` are optional. The token is the canonical text; the label is display
+/// only, and the brain expands the token into exact CLI flags at send time.
+struct WorkModelMention: Equatable {
+  let modelId: String
+  let effort: String?
+  let permission: String?
+  /// The matched token text.
+  let token: String
+  let range: NSRange
+
+  /// `modelMentionChipLabel`: `DeepSeek V4.1 Flash · High · Full auto`.
+  func chipLabel(displayName: String) -> String {
+    var parts = [displayName]
+    if let effort, !effort.isEmpty { parts.append(WorkModelMentionDetector.effortLabel(effort)) }
+    let provider = WorkModelMentionDirectory.shared.entry(for: modelId)?.provider
+    parts.append(WorkModelMentionDetector.permissionLabel(permission, provider: provider))
+    return parts.joined(separator: " · ")
+  }
+
+  /// The catalog name when this device has seen the model, else the last
+  /// segment of the id, like `chipFromModelMention` on the desktop.
+  var displayName: String {
+    WorkModelMentionDirectory.shared.entry(for: modelId)?.title
+      ?? modelId.split(separator: "/").last.map(String.init)
+      ?? modelId
+  }
+}
+
+enum WorkModelMentionDetector {
+  /// `MODEL_MENTION_PERMISSION_MODES`, in menu order. Kept for callers that
+  /// have no provider; new UI uses `permissionOptions(provider:)`.
+  static let permissionModes = ["default", "auto", "plan", "edit", "full-auto"]
+  static let defaultPermission = "default"
+
+  /// A provider's own permission modes, mirroring `shared/modelPermissions.ts`
+  /// and the desktop footer's option lists.
+  struct PermissionOption: Equatable {
+    let value: String
+    let label: String
+  }
+
+  static func permissionOptions(provider: String?) -> [PermissionOption] {
+    switch (provider ?? "").lowercased() {
+    case "claude":
+      return [
+        PermissionOption(value: "default", label: "Manual"),
+        PermissionOption(value: "auto", label: "Auto"),
+        PermissionOption(value: "acceptEdits", label: "Accept edits"),
+        PermissionOption(value: "plan", label: "Plan mode"),
+        PermissionOption(value: "bypassPermissions", label: "Bypass"),
+      ]
+    case "codex":
+      return [
+        PermissionOption(value: "default", label: "Default"),
+        PermissionOption(value: "edit", label: "Edit"),
+        PermissionOption(value: "plan", label: "Plan"),
+        PermissionOption(value: "full-auto", label: "Full auto"),
+        PermissionOption(value: "config-toml", label: "Config"),
+      ]
+    case "cursor":
+      return [
+        PermissionOption(value: "agent", label: "Agent"),
+        PermissionOption(value: "ask", label: "Ask"),
+        PermissionOption(value: "plan", label: "Plan"),
+        PermissionOption(value: "full-auto", label: "Full auto"),
+      ]
+    case "droid", "factory":
+      return [
+        PermissionOption(value: "read-only", label: "Read-only"),
+        PermissionOption(value: "auto-low", label: "Auto low"),
+        PermissionOption(value: "auto-medium", label: "Auto medium"),
+        PermissionOption(value: "auto-high", label: "Auto high"),
+        PermissionOption(value: "agi", label: "AGI (orchestrator)"),
+      ]
+    // Muse's own approval modes, as shared/modelPermissions.ts lists them.
+    case "muse":
+      return [
+        PermissionOption(value: "denyUnmatched", label: "Read-only"),
+        PermissionOption(value: "promptUnmatched", label: "Ask"),
+        PermissionOption(value: "onRequest", label: "Auto"),
+        PermissionOption(value: "allowAll", label: "Full access"),
+      ]
+    default:
+      return [
+        PermissionOption(value: "plan", label: "Plan"),
+        PermissionOption(value: "edit", label: "Edit"),
+        PermissionOption(value: "full-auto", label: "Full auto"),
+        PermissionOption(value: "config-toml", label: "Config"),
+      ]
+    }
+  }
+
+  /// The mode a fresh chip starts on, matching the desktop per provider.
+  static func defaultPermission(provider: String?) -> String {
+    switch (provider ?? "").lowercased() {
+    case "claude", "codex": return "default"
+    case "cursor": return "agent"
+    case "droid", "factory": return "auto-low"
+    case "muse": return "onRequest"
+    default: return "edit"
+    }
+  }
+
+  /// The label for a stored mode in a provider's vocabulary. Falls back to the
+  /// legacy generic labels when the provider is unknown.
+  static func permissionLabel(_ mode: String?, provider: String?) -> String {
+    guard let mode, !mode.isEmpty else { return defaultPermission(provider: provider) }
+    if let option = permissionOptions(provider: provider).first(where: { $0.value == mode }) {
+      return option.label
+    }
+    return permissionLabels[mode] ?? mode
+  }
+
+  private static let permissionLabels: [String: String] = [
+    "default": "Default",
+    "auto": "Auto",
+    "plan": "Plan",
+    "edit": "Edit",
+    "full-auto": "Full access",
+  ]
+
+  private static let effortLabels: [String: String] = [
+    "none": "None",
+    "minimal": "Minimal",
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "xhigh": "Extra high",
+    "max": "Max",
+    "ultra": "Ultra",
+    "ultracode": "Ultracode",
+  ]
+
+  static func permissionLabel(_ mode: String?) -> String {
+    guard let mode, !mode.isEmpty else { return "Default" }
+    return permissionLabels[mode] ?? mode
+  }
+
+  static func effortLabel(_ effort: String?) -> String {
+    guard let effort, !effort.isEmpty else { return "Default" }
+    return effortLabels[effort] ?? effort
+  }
+
+  /// Serialize one model mention into its chip/draft token form.
+  static func formatToken(modelId: String, effort: String?, permission: String?) -> String {
+    var params: [String] = []
+    if let effort, !effort.isEmpty { params.append("effort=\(effort)") }
+    if let permission, !permission.isEmpty { params.append("perm=\(permission)") }
+    return "@model:\(modelId)\(params.isEmpty ? "" : "?" + params.joined(separator: "&"))"
+  }
+
+  // Character-for-character the desktop's `MODEL_TOKEN_SOURCE`: registry ids
+  // take letters, digits, `.`, `_`, `/`, `:`, `%` and `-` (an OpenCode id
+  // encodes its provider model id, e.g. `anthropic%2Fclaude-opus-4.7`); the
+  // query only simple `key=value` pairs. The word boundary keeps emails and URLs
+  // out.
+  private static let regex = try! NSRegularExpression(
+    pattern: "(?:^|[\\s(\\[{,])@model:([A-Za-z0-9._/:%+-]+)(?:\\?([A-Za-z0-9=&._-]+))?",
+    options: []
+  )
+  /// A sentence can end right after a chip; trailing dots, colons and dashes
+  /// belong to the prose (`TRAILING_PROSE_RE`).
+  private static let trailingProse = try! NSRegularExpression(pattern: "[.:-]+$", options: [])
+
+  private static func trimProse(_ value: String) -> String {
+    let ns = value as NSString
+    guard let match = trailingProse.firstMatch(in: value, range: NSRange(location: 0, length: ns.length)) else {
+      return value
+    }
+    return ns.substring(to: match.range.location)
+  }
+
+  /// Every model token in `text`, in document order.
+  static func mentions(in text: NSString) -> [WorkModelMention] {
+    guard text.length > 0, text.range(of: "@model:").location != NSNotFound else { return [] }
+    let full = NSRange(location: 0, length: text.length)
+    return regex.matches(in: text as String, range: full).compactMap { match in
+      guard match.numberOfRanges == 3 else { return nil }
+      var modelId = text.substring(with: match.range(at: 1))
+      let queryRange = match.range(at: 2)
+      var query: String? = queryRange.location == NSNotFound ? nil : text.substring(with: queryRange)
+      if let rawQuery = query {
+        query = trimProse(rawQuery)
+      } else {
+        modelId = trimProse(modelId)
+        guard !modelId.isEmpty else { return nil }
+      }
+      var effort: String?
+      var permission: String?
+      for pair in (query ?? "").split(separator: "&") {
+        let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
+        guard parts.count == 2, !parts[1].isEmpty else { continue }
+        if parts[0] == "effort" { effort = parts[1] } else if parts[0] == "perm" { permission = parts[1] }
+      }
+      let token = "@model:\(modelId)\(query.map { $0.isEmpty ? "" : "?\($0)" } ?? "")"
+      let atLocation = text.range(of: "@model:", options: [], range: match.range).location
+      guard atLocation != NSNotFound else { return nil }
+      return WorkModelMention(
+        modelId: modelId,
+        effort: effort,
+        permission: permission,
+        token: token,
+        range: NSRange(location: atLocation, length: (token as NSString).length)
+      )
+    }
+  }
+
+  /// `selectSupportedReasoningEffort` without a preference: the advertised
+  /// default when the model accepts it, else medium, else the first level.
+  static func defaultEffort(tiers: [String], advertised: String?) -> String? {
+    guard !tiers.isEmpty else { return nil }
+    if let advertised, tiers.contains(advertised) { return advertised }
+    return tiers.contains("medium") ? "medium" : tiers.first
+  }
+
+  private static let harnessLabels: [String: String] = [
+    "claude": "Claude Code",
+    "codex": "Codex",
+    "opencode": "OpenCode",
+    "cursor": "Cursor",
+    "droid": "Droid",
+    "pi": "Pi",
+    "muse": "Muse Code",
+    "qwen": "Qwen Code",
+    "kimi": "Kimi",
+    "grok": "Grok",
+    "copilot": "Copilot",
+    "devin": "Devin",
+  ]
+
+  /// "Harness · route", e.g. "OpenCode · OpenCode Go" (`modelMentionSubtitle`).
+  static func subtitle(groupKey: String, route: String?) -> String {
+    let harness = harnessLabels[groupKey] ?? groupKey
+    let trimmed = route?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty || trimmed == harness ? harness : "\(harness) · \(trimmed)"
+  }
+
+  private static func score(_ haystack: String, _ query: String, allowTrailingProse: Bool) -> (score: Int, prefix: Int)? {
+    let target = haystack.lowercased()
+    if target == query { return (0, 0) }
+    if allowTrailingProse, query.hasPrefix(target + " ") { return (1, target.count) }
+    if target.hasPrefix(query) { return (1, 0) }
+    if target.contains(query) { return (2, 0) }
+    var index = target.startIndex
+    for character in query {
+      guard let found = target[index...].firstIndex(of: character) else { return nil }
+      index = target.index(after: found)
+    }
+    return (3, 0)
+  }
+
+  /// `scoreChatMentionCandidate`: a subtitle hit is weaker than any title hit.
+  private static func score(title: String, subtitle: String?, query: String) -> (score: Int, prefix: Int)? {
+    let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if trimmed.isEmpty { return (0, 0) }
+    if let hit = score(title, trimmed, allowTrailingProse: true) { return hit }
+    guard let subtitle, let hit = score(subtitle, trimmed, allowTrailingProse: false) else { return nil }
+    return (hit.score + 4, 0)
+  }
+
+  private static let modelKeyword = try! NSRegularExpression(pattern: "^models?(?:[:\\s]+|$)", options: [.caseInsensitive])
+  private static let minQueryLength = 2
+  private static let maxMatchScore = 2
+  static let maxResults = 6
+
+  /// `rankComposerModelSuggestions`: a model shows only when the query names
+  /// it (word-prefix, prefix, or substring of the name, 2+ characters). A
+  /// query starting with "model" lists every model and filters by the rest.
+  /// Among equally good matches, models in `recentModelIds` (the picker's
+  /// synced recents, newest first) lead; a better match still wins.
+  static func rank(
+    _ models: [WorkModelMentionDirectory.Entry],
+    query rawQuery: String,
+    recentModelIds: [String] = []
+  ) -> (rows: [WorkModelMentionDirectory.Entry], bestScore: Int?) {
+    let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    let ns = query as NSString
+    let keyword = modelKeyword.firstMatch(in: query, range: NSRange(location: 0, length: ns.length))
+    let effective = keyword.map {
+      ns.substring(from: NSMaxRange($0.range)).trimmingCharacters(in: .whitespacesAndNewlines)
+    } ?? query
+    if keyword == nil && effective.count < minQueryLength { return ([], nil) }
+    let lowered = effective.lowercased()
+    var scored: [(entry: WorkModelMentionDirectory.Entry, score: Int, prefix: Int)] = []
+    for model in models {
+      // "opus" names "Claude Opus 5" as surely as "claude" does.
+      let wordPrefix = !lowered.isEmpty && model.title.lowercased()
+        .split(whereSeparator: { " /._-".contains($0) || $0.isWhitespace })
+        .contains { $0.hasPrefix(lowered) }
+      let match: (score: Int, prefix: Int)?
+      if wordPrefix {
+        match = (score: 1, prefix: 0)
+      } else {
+        match = score(title: model.title, subtitle: model.subtitle, query: effective)
+          ?? score(title: model.modelId, subtitle: nil, query: effective)
+      }
+      guard let match else { continue }
+      if keyword == nil && match.score > maxMatchScore { continue }
+      scored.append((model, match.score, match.prefix))
+    }
+    var recentRank: [String: Int] = [:]
+    for (index, id) in recentModelIds.enumerated() where recentRank[id] == nil { recentRank[id] = index }
+    scored.sort { lhs, rhs in
+      if lhs.score != rhs.score { return lhs.score < rhs.score }
+      let lhsRecent = recentRank[lhs.entry.modelId] ?? recentRank.count
+      let rhsRecent = recentRank[rhs.entry.modelId] ?? recentRank.count
+      if lhsRecent != rhsRecent { return lhsRecent < rhsRecent }
+      if lhs.prefix != rhs.prefix { return lhs.prefix > rhs.prefix }
+      return lhs.entry.modelId < rhs.entry.modelId
+    }
+    return (scored.prefix(maxResults).map { $0.entry }, scored.first?.score)
+  }
+}
+
+/// The models this device has seen in the host's catalog (`chat.modelCatalog`,
+/// the list the model picker shows). The `@` menu lists them, and chips read
+/// their names from here. Filled whenever the catalog is fetched; a chip for a
+/// model it has not seen falls back to the id's last segment.
+final class WorkModelMentionDirectory: @unchecked Sendable {
+  struct Entry: Equatable {
+    let modelId: String
+    let title: String
+    /// Harness and route, e.g. "OpenCode · OpenCode Go".
+    let subtitle: String
+    /// Chat runtime provider (harness group key), so the chip's permission menu
+    /// offers this provider's own modes.
+    let provider: String
+    /// The upstream maker's key for the row/chip mark — "deepseek" for
+    /// `opencode/opencode-go/deepseek-v4.1-flash`, where `provider` alone is the
+    /// gateway.
+    let brandKey: String
+    let reasoningTiers: [String]
+    let defaultEffort: String?
+    let isAvailable: Bool
+  }
+
+  static let shared = WorkModelMentionDirectory()
+
+  private let lock = NSLock()
+  private var entries: [Entry] = []
+  private var byId: [String: Entry] = [:]
+  private var recents: [String] = []
+  /// Bumped by every local pick, so a host answer requested before that pick
+  /// cannot replace the newer order when it lands late.
+  private var recentsRevision = 0
+
+  var recentsRevisionSnapshot: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return recentsRevision
+  }
+
+  /// The picker's synced recents (desktop, TUI and iOS share them), newest
+  /// first. The `@` menu ranks recent models first among equal matches.
+  var recentModelIds: [String] {
+    lock.lock()
+    defer { lock.unlock() }
+    return recents
+  }
+
+  /// Records the host's recents unless a local pick happened after
+  /// `revision` was read (pass nil to record unconditionally).
+  func record(recents next: [String], ifRevision revision: Int? = nil) {
+    lock.lock()
+    defer { lock.unlock() }
+    if let revision, revision != recentsRevision { return }
+    recents = next
+  }
+
+  /// A model picked from the `@` menu becomes the newest recent, as on desktop.
+  func noteRecent(_ modelId: String) {
+    lock.lock()
+    recents = [modelId] + recents.filter { $0 != modelId }
+    if recents.count > 10 { recents = Array(recents.prefix(10)) }
+    recentsRevision += 1
+    lock.unlock()
+  }
+
+  func entry(for modelId: String) -> Entry? {
+    lock.lock()
+    defer { lock.unlock() }
+    return byId[modelId]
+  }
+
+  /// Models a chip can start, once each, in catalog order.
+  var availableEntries: [Entry] {
+    lock.lock()
+    defer { lock.unlock() }
+    return entries.filter(\.isAvailable)
+  }
+
+  func record(catalog: AgentChatModelCatalog) {
+    var next: [Entry] = []
+    var seen: [String: Entry] = [:]
+    for group in catalog.groups {
+      // The desktop names the route only where one harness fronts many services.
+      let routed = group.key == "opencode" || group.key == "pi"
+      for provider in group.providers {
+        for subsection in provider.subsections {
+          for model in subsection.models {
+            let existing = seen[model.id]
+            // A model can appear once per key; an available row wins.
+            if let existing, existing.isAvailable || !model.isAvailable { continue }
+            let tiers = (model.reasoningEfforts ?? []).map(\.effort)
+            let name = model.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let entry = Entry(
+              modelId: model.id,
+              title: name.isEmpty ? model.id : name,
+              subtitle: WorkModelMentionDetector.subtitle(
+                groupKey: group.key,
+                route: routed ? provider.displayName : nil
+              ),
+              provider: group.key,
+              // The mark the chip should wear. Only the OpenCode gateway fronts
+              // many makers; every direct harness keeps its own mark.
+              brandKey: group.key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "opencode"
+                ? workModelBrandKey(
+                  topLevelProvider: group.key,
+                  providerKey: provider.key,
+                  family: model.family,
+                  modelId: model.id
+                )
+                : group.key,
+              reasoningTiers: tiers,
+              defaultEffort: WorkModelMentionDetector.defaultEffort(
+                tiers: tiers,
+                advertised: model.defaultReasoningEffort
+              ),
+              isAvailable: model.isAvailable
+            )
+            if existing != nil {
+              next.removeAll { $0.modelId == model.id }
+            }
+            seen[model.id] = entry
+            next.append(entry)
+          }
+        }
+      }
+    }
+    guard !next.isEmpty else { return }
+    lock.lock()
+    entries = next
+    byId = seen
+    lock.unlock()
+  }
+}
+
 // MARK: - `@`-prefixed repo paths
 
 /// One `@`-prefixed file or folder path in a message body — the token the
@@ -712,6 +1182,12 @@ struct WorkChip: Equatable {
     case path(WorkChipPath)
     /// A resolved `[Image #k]` / `[File #k: …]` token and the ref it names.
     case attachment(WorkAttachmentToken, AgentChatFileRef)
+    case model(WorkModelMention)
+    /// A permission mode an agent named in its reply (`bypassPermissions`).
+    case permission(provider: String, value: String)
+    /// A slash command or skill this chat can run (`/quality`).
+    case skill(name: String)
+    case browserTab(WorkBrowserTabMention)
   }
 
   let kind: WorkSmartLink.Kind
@@ -756,6 +1232,33 @@ struct WorkChip: Equatable {
     origin = .attachment(attachment, ref)
   }
 
+  init(model: WorkModelMention) {
+    kind = .model
+    token = model.token
+    label = model.chipLabel(displayName: model.displayName)
+    range = model.range
+    origin = .model(model)
+  }
+
+  init(browserTab: WorkBrowserTabMention) {
+    kind = .browserTab
+    token = browserTab.token
+    label = browserTab.label
+    range = browserTab.range
+    origin = .browserTab(browserTab)
+  }
+
+  /// A chip whose kind and label were decided by the thread-entity rules
+  /// rather than read off a token's own grammar (`#123` is a PR, a lane id
+  /// shows the lane's name).
+  init(kind: WorkSmartLink.Kind, token: String, label: String, range: NSRange, origin: Origin) {
+    self.kind = kind
+    self.token = token
+    self.label = label
+    self.range = range
+    self.origin = origin
+  }
+
   /// The plain text this chip serializes back to. Mention and link tokens are
   /// already the literal source text; a path token deliberately is NOT — it
   /// omits the `@` the grammar needs, exactly as `chipFromPath().token` does on
@@ -796,7 +1299,10 @@ enum WorkChipDetector {
   ) -> [WorkChip] {
     guard text.length > 0, limit > 0 else { return [] }
 
-    var candidates: [WorkChip] = WorkChatMentionDetector.mentions(in: text).map(WorkChip.init(mention:))
+    var candidates: [WorkChip] = WorkBrowserTabMentionDetector.mentions(in: text).map(WorkChip.init(browserTab:))
+    candidates.append(contentsOf: WorkChatMentionDetector.mentions(in: text).map(WorkChip.init(mention:)))
+    // Model tokens follow chat mentions, the desktop's `parseChips` push order.
+    candidates.append(contentsOf: WorkModelMentionDetector.mentions(in: text).map(WorkChip.init(model:)))
     if let attachments, !attachments.isEmpty {
       for token in WorkAttachmentTokenGrammar.tokens(in: text) {
         guard let index = WorkAttachmentTokenGrammar.resolve(
@@ -884,6 +1390,59 @@ enum WorkChipDetector {
     }
     if cursor < ns.length { out += ns.substring(from: cursor) }
     return out
+  }
+}
+
+// MARK: - Browser tab mentions
+
+/// Swift twin of `apps/desktop/src/shared/browserTabMention.ts`. The attached
+/// block is deliberately one line: titles and URLs are display data, while the
+/// tab id is the stable pointer an agent can claim.
+struct WorkBrowserTabMention: Equatable {
+  let tabId: String
+  let title: String?
+  let url: String?
+  let token: String
+  let range: NSRange
+
+  var label: String {
+    if let title, !title.isEmpty { return title }
+    if let url, let host = URL(string: url)?.host, !host.isEmpty { return host }
+    return url ?? "Browser tab"
+  }
+}
+
+enum WorkBrowserTabMentionDetector {
+  private static let regex = try! NSRegularExpression(
+    pattern: #"<ade-browser-tab id="([^"\n]*)" title="([^"\n]*)" url="([^"\n]*)">[^\n]*?</ade-browser-tab>"#,
+    options: []
+  )
+
+  private static func unescape(_ value: String) -> String {
+    value
+      .replacingOccurrences(of: "&quot;", with: "\"")
+      .replacingOccurrences(of: "&lt;", with: "<")
+      .replacingOccurrences(of: "&gt;", with: ">")
+      .replacingOccurrences(of: "&amp;", with: "&")
+  }
+
+  static func mentions(in text: NSString) -> [WorkBrowserTabMention] {
+    guard text.length > 0 else { return [] }
+    let full = NSRange(location: 0, length: text.length)
+    return regex.matches(in: text as String, range: full).compactMap { match in
+      guard match.numberOfRanges == 4 else { return nil }
+      let tabId = unescape(text.substring(with: match.range(at: 1)))
+      guard !tabId.isEmpty else { return nil }
+      let title = unescape(text.substring(with: match.range(at: 2)))
+      let url = unescape(text.substring(with: match.range(at: 3)))
+      return WorkBrowserTabMention(
+        tabId: tabId,
+        title: title.isEmpty ? nil : title,
+        url: url.isEmpty ? nil : url,
+        token: text.substring(with: match.range),
+        range: match.range
+      )
+    }
   }
 }
 
@@ -1026,7 +1585,8 @@ enum WorkComposerTriggerDetector {
     suggestion: WorkComposerSuggestion
   ) -> WorkComposerTriggerMatch {
     guard match.kind == .at else { return match }
-    let rawLabel = suggestion.insertText.hasPrefix("@")
+    // A model row's token is not what the user typed; its name is.
+    let rawLabel = suggestion.modelId == nil && suggestion.insertText.hasPrefix("@")
       ? String(suggestion.insertText.dropFirst())
       : suggestion.title
     let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1095,6 +1655,8 @@ struct WorkComposerSuggestion: Identifiable, Equatable {
   var isDirectory: Bool = false
   /// Set on `@` entity rows (`chat.listMentionSuggestions`). Nil for files.
   var mentionKind: WorkChatMention.Kind? = nil
+  /// Set on `@` model rows: the registry id the inserted `@model:` token names.
+  var modelId: String? = nil
 
   /// Which group of the `@` menu this row belongs to.
   var section: WorkComposerSuggestionSection {
@@ -1120,6 +1682,7 @@ struct WorkComposerSuggestion: Identifiable, Equatable {
     case .hash: return .pullRequest
     case .at:
       if let mentionKind { return mentionKind.chipKind }
+      if modelId != nil { return .model }
       return isDirectory ? .folder : .file
     }
   }
@@ -1216,9 +1779,11 @@ enum WorkComposerMentionTitleCache {
   static func title(for token: String) -> String? { titles[token] }
 }
 
-/// Curated per-provider slash commands, ported from the retired
-/// `WorkSlashCommandsSheet`. iOS keeps a tight, recognizable set per provider;
-/// the desktop registry is richer but not yet exposed to mobile over sync.
+/// Minimal static fallback for the `/` trigger, ported from the retired
+/// `WorkSlashCommandsSheet`. The host's discovered registry
+/// (`chat.getSlashCommands`, rendered through `WorkComposerSlashRegistry`) is
+/// the real source; this set only covers an older host that omits the command,
+/// or the moment before the fetch lands.
 enum WorkComposerSlashCatalog {
   static func commands(provider: String) -> [(command: String, description: String)] {
     switch provider.lowercased() {
@@ -1249,6 +1814,12 @@ enum WorkComposerSlashCatalog {
         ("/explain", "Explain a file or change."),
         ("/review", "Review the current diff."),
       ]
+    case "muse":
+      return [
+        ("/compact", "Summarize the visible conversation to free tokens."),
+        ("/goal", "Set, clear, or inspect the chat goal."),
+        ("/review", "Review the current diff."),
+      ]
     default:
       return [
         ("/help", "Show available commands."),
@@ -1273,6 +1844,119 @@ enum WorkComposerSlashCatalog {
   }
 }
 
+/// The host's discovered slash-command registry, mapped to suggestion rows.
+///
+/// The desktop brain discovers each provider's real commands
+/// (`claudeSlashCommandDiscovery`, `codexSlashCommandDiscovery`,
+/// `cursorSlashCommandDiscovery`) and answers `chat.getSlashCommands`. iOS
+/// renders that list instead of the hand-maintained `WorkComposerSlashCatalog`,
+/// which drifts. When the host does not advertise the command (an older brain)
+/// or the fetch has not landed yet, the minimal static catalog is the fallback,
+/// so the typed `/` trigger always has something to show.
+enum WorkComposerSlashRegistry {
+  /// Upper bound on rows rendered from the host registry. A pathological host
+  /// listing must not push an unbounded strip at the composer.
+  static let maxCommands = 200
+
+  /// Map a host command to a row, or nil when its name is unusable.
+  static func suggestion(for command: HostSlashCommand) -> WorkComposerSuggestion? {
+    let token = normalizedName(command.name)
+    guard !token.isEmpty else { return nil }
+    return WorkComposerSuggestion(
+      id: "slash:\(token)",
+      kind: .slash,
+      title: token,
+      subtitle: subtitle(for: command),
+      insertText: token
+    )
+  }
+
+  /// Filter and rank rows with the same tiers as `@` and the desktop:
+  /// exact > prefix > word-prefix > substring > scattered letters, and scattered
+  /// letters only when nothing better matched. This is what makes `/test` rank
+  /// `test` first instead of drowning in long names that merely contain those
+  /// letters.
+  static func suggestions(from commands: [HostSlashCommand], query: String) -> [WorkComposerSuggestion] {
+    let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !trimmed.isEmpty else {
+      return commands.prefix(maxCommands).compactMap { suggestion(for: $0) }
+    }
+    var scored: [(suggestion: WorkComposerSuggestion, score: Int)] = []
+    for command in commands {
+      guard let suggestion = suggestion(for: command) else { continue }
+      guard let score = slashScore(suggestion.title, trimmed) else { continue }
+      scored.append((suggestion, score))
+    }
+    let best = scored.map(\.score).min()
+    let keepScattered = (best ?? 0) >= 3
+    let kept = scored.filter { keepScattered || $0.score < 3 }
+      .sorted { lhs, rhs in
+        if lhs.score != rhs.score { return lhs.score < rhs.score }
+        return lhs.suggestion.title < rhs.suggestion.title
+      }
+    return kept.prefix(maxCommands).map(\.suggestion)
+  }
+
+  /// Tier score for one `/` token against a lowercased query, or nil for no match.
+  private static func slashScore(_ name: String, _ query: String) -> Int? {
+    let base = name.hasPrefix("/") ? String(name.dropFirst()) : name
+    let target = base.lowercased()
+    if target == query { return 0 }
+    if target.hasPrefix(query) { return 1 }
+    if wordPrefixHit(target, query) { return 1 }
+    if target.contains(query) { return 2 }
+    return subsequenceHit(target, query) ? 3 : nil
+  }
+
+  private static func wordPrefixHit(_ target: String, _ query: String) -> Bool {
+    guard !query.isEmpty else { return false }
+    return target
+      .split(whereSeparator: { "-:/_ ".contains($0) })
+      .contains { $0.hasPrefix(query) }
+  }
+
+  private static func subsequenceHit(_ target: String, _ query: String) -> Bool {
+    var cursor = target.startIndex
+    for character in query {
+      guard let index = target[cursor...].firstIndex(of: character) else { return false }
+      cursor = target.index(after: index)
+    }
+    return true
+  }
+
+  /// The host list when it has anything usable, else the minimal static set.
+  static func suggestions(
+    host: [HostSlashCommand]?,
+    provider: String,
+    query: String
+  ) -> [WorkComposerSuggestion] {
+    guard let host, !host.isEmpty else {
+      return WorkComposerSlashCatalog.suggestions(provider: provider, query: query)
+    }
+    return suggestions(from: host, query: query)
+  }
+
+  /// A slash command token always starts with `/`; the host may omit it.
+  static func normalizedName(_ raw: String) -> String {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "" }
+    return trimmed.hasPrefix("/") ? trimmed : "/\(trimmed)"
+  }
+
+  /// Name + description + whether it takes arguments, in one line. The
+  /// argument hint is the host's own cue that the command accepts input.
+  static func subtitle(for command: HostSlashCommand) -> String? {
+    let description = command.description?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let hint = command.argumentHint?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    switch (description.isEmpty, hint.isEmpty) {
+    case (false, false): return "\(description) · \(hint)"
+    case (false, true): return description
+    case (true, false): return hint
+    case (true, true): return nil
+    }
+  }
+}
+
 /// Drives the inline suggestion strip: consumes trigger matches from the text
 /// view, resolves suggestions (curated slash list locally, file quick-open over
 /// sync), and hands committed selections back to the text view for splicing.
@@ -1285,7 +1969,13 @@ final class WorkComposerSuggestionController: ObservableObject {
   @Published private(set) var suggestions: [WorkComposerSuggestion] = []
   @Published private(set) var isLoading = false
 
-  var provider: String = ""
+  var provider: String = "" {
+    didSet {
+      guard oldValue != provider else { return }
+      // A different provider advertises a completely different command set.
+      resetSlashRegistry()
+    }
+  }
   var laneId: String? {
     didSet {
       // The cached workspace belongs to the previous lane; a stale entry
@@ -1300,6 +1990,9 @@ final class WorkComposerSuggestionController: ObservableObject {
         cachedWorkspaceId = nil
         fileCache.removeAll()
         fileCacheOrder.removeAll()
+        // Slash commands are discovered per lane worktree, so a lane change
+        // drops the previous lane's registry rather than showing its commands.
+        resetSlashRegistry()
         if let match = activeMatch, match.kind == .at {
           // An @ trigger typed against the previous lane re-fetches against
           // the new one instead of keeping the superseded results.
@@ -1333,11 +2026,32 @@ final class WorkComposerSuggestionController: ObservableObject {
   /// first-responder state and selection survive the insertion.
   var onCommit: ((WorkComposerSuggestion, NSRange) -> Void)?
 
+  /// The model chip the caret sits on (or just after, as right after it was
+  /// inserted). Drives the thinking/permission menu above the field.
+  @Published private(set) var editingModelChip: WorkModelMention?
+  /// Wired by the text view: replaces one model token in the live draft.
+  var onRewriteModelChip: ((NSRange, String) -> Void)?
+  /// The last file rows, so model rows can be re-merged when the catalog lands.
+  private var lastFileRows: [WorkComposerSuggestion] = []
+  private var modelCatalogRequested = false
+  private var modelCatalogTask: Task<Void, Never>?
+
   private var fetchTask: Task<Void, Never>?
   private var cachedWorkspaceId: String?
   /// Bumped on every lane change; every post-await write in a fetch compares
   /// its captured value so a superseded task cannot touch the new lane's state.
   private var laneGeneration = 0
+
+  /// The host-discovered slash registry for the current provider, or nil until
+  /// it lands. Nil (and an unsupported host) renders the minimal static
+  /// fallback, so the `/` trigger is never empty.
+  private var hostSlashCommands: [HostSlashCommand]?
+  private var slashFetchTask: Task<Void, Never>?
+  /// True once the registry cannot be fetched for this provider/lane — an older
+  /// host that does not advertise it, or a failed/offline attempt. One attempt
+  /// per provider/lane keeps an offline composer from re-asking on every
+  /// keystroke; the static fallback covers the gap.
+  private var slashRegistryUnavailable = false
 
   /// Per-lane quick-open results keyed by lowercased query (`""` is the browse
   /// list). Backspacing through a path is the common case on mobile and every
@@ -1368,6 +2082,63 @@ final class WorkComposerSuggestionController: ObservableObject {
     }
   }
 
+  /// Rows for the active `/` trigger: the host registry once fetched, else the
+  /// minimal static catalog. Also kicks off the one-shot host fetch.
+  private func refreshSlashSuggestions(query: String) {
+    suggestions = WorkComposerSlashRegistry.suggestions(
+      host: hostSlashCommands,
+      provider: provider,
+      query: query
+    )
+    fetchSlashRegistryIfNeeded()
+  }
+
+  /// Drop the cached registry and any in-flight fetch. Called when the provider
+  /// or the lane changes, because the host discovers commands per worktree.
+  private func resetSlashRegistry() {
+    hostSlashCommands = nil
+    slashFetchTask?.cancel()
+    slashFetchTask = nil
+    slashRegistryUnavailable = false
+    // The previous chat's commands must not chip as runnable in this one.
+    WorkThreadEntityDirectory.shared.record(skillNames: [])
+  }
+
+  /// Fetch `chat.getSlashCommands` once per provider/lane. A host that does not
+  /// advertise the command, or a fetch that fails (offline), leaves the static
+  /// fallback in place and does not retry until the provider or lane changes.
+  private func fetchSlashRegistryIfNeeded() {
+    guard hostSlashCommands == nil, slashFetchTask == nil, !slashRegistryUnavailable else { return }
+    guard let syncService, syncService.supportsSlashCommandRegistry else {
+      slashRegistryUnavailable = true
+      return
+    }
+    let provider = provider
+    let laneId = laneId
+    let generation = laneGeneration
+    slashFetchTask = Task { [weak self] in
+      defer { self?.slashFetchTask = nil }
+      do {
+        let commands = try await syncService.getSlashCommands(provider: provider, laneId: laneId)
+        guard let self, !Task.isCancelled else { return }
+        guard self.laneGeneration == generation, self.provider == provider else { return }
+        self.hostSlashCommands = commands
+        // The transcript chips `/name` only for commands this chat can run.
+        WorkThreadEntityDirectory.shared.record(skillNames: commands.map(\.name))
+        if let match = self.activeMatch, match.kind == .slash {
+          self.suggestions = WorkComposerSlashRegistry.suggestions(
+            host: commands,
+            provider: provider,
+            query: match.query
+          )
+        }
+      } catch {
+        guard let self, !Task.isCancelled else { return }
+        self.slashRegistryUnavailable = true
+      }
+    }
+  }
+
   var isVisible: Bool {
     activeMatch != nil && (isLoading || !suggestions.isEmpty)
   }
@@ -1387,8 +2158,11 @@ final class WorkComposerSuggestionController: ObservableObject {
       fetchTask?.cancel()
       mentionTask?.cancel()
       isLoading = false
-      suggestions = WorkComposerSlashCatalog.suggestions(provider: provider, query: match.query)
+      refreshSlashSuggestions(query: match.query)
     case .at:
+      // Load the model catalog alongside the files/entities, so the menu can
+      // offer models before the picker was ever opened.
+      fetchModelCatalogIfNeeded()
       scheduleAtFetch(query: match.query)
     case .hash:
       mentionTask?.cancel()
@@ -1396,8 +2170,98 @@ final class WorkComposerSuggestionController: ObservableObject {
     }
   }
 
+  func setEditingModelChip(_ chip: WorkModelMention?) {
+    if editingModelChip != chip { editingModelChip = chip }
+  }
+
+  /// Rewrite the chip being edited with a new thinking level or permission mode.
+  func rewriteEditingModelChip(effort: String?, permission: String?) {
+    guard let chip = editingModelChip else { return }
+    let token = WorkModelMentionDetector.formatToken(modelId: chip.modelId, effort: effort, permission: permission)
+    guard token != chip.token else { return }
+    onRewriteModelChip?(chip.range, token)
+  }
+
+  /// `@` rows for models the query names, from the catalog the model picker
+  /// uses. Pure over the directory so the ranking stays the shared one.
+  static func modelSuggestions(query: String) -> (rows: [WorkComposerSuggestion], bestScore: Int?) {
+    let directory = WorkModelMentionDirectory.shared
+    let ranked = WorkModelMentionDetector.rank(
+      directory.availableEntries,
+      query: query,
+      recentModelIds: directory.recentModelIds
+    )
+    let rows = ranked.rows.map { entry in
+      WorkComposerSuggestion(
+        id: "model:\(entry.modelId)",
+        kind: .at,
+        title: entry.title,
+        subtitle: entry.subtitle,
+        insertText: WorkModelMentionDetector.formatToken(
+          modelId: entry.modelId,
+          effort: entry.defaultEffort,
+          permission: WorkModelMentionDetector.defaultPermission(provider: entry.provider)
+        ),
+        modelId: entry.modelId
+      )
+    }
+    return (rows, ranked.bestScore)
+  }
+
+  /// File rows plus model rows. A name hit on a model (exact or prefix) leads,
+  /// so `@deep` offers the model first; weaker model hits follow the files.
+  private func mergedAtRows(files: [WorkComposerSuggestion]) -> [WorkComposerSuggestion] {
+    guard let query = activeMatch?.query else { return files }
+    let models = Self.modelSuggestions(query: query)
+    guard !models.rows.isEmpty else { return files }
+    return (models.bestScore ?? 99) <= 1 ? models.rows + files : files + models.rows
+  }
+
+  /// Load the host model catalog once, the same call the model picker makes,
+  /// so the `@` menu can offer models before the picker was ever opened.
+  private func fetchModelCatalogIfNeeded() {
+    guard !modelCatalogRequested, let syncService else { return }
+    modelCatalogRequested = true
+    // The `@` menu can open before the picker ever loaded recents.
+    let revision = WorkModelMentionDirectory.shared.recentsRevisionSnapshot
+    Task {
+      if let recents = try? await syncService.getModelRecents() {
+        WorkModelMentionDirectory.shared.record(recents: recents, ifRevision: revision)
+      }
+    }
+    if let cached = syncService.cachedChatModelCatalog() {
+      WorkModelMentionDirectory.shared.record(catalog: cached)
+      return
+    }
+    modelCatalogTask = Task { [weak self] in
+      let catalog = try? await syncService.getChatModelCatalog()
+      guard let self, !Task.isCancelled else { return }
+      // A failed fetch must not latch the guard: the next `@` trigger retries.
+      guard catalog != nil else {
+        self.modelCatalogRequested = false
+        return
+      }
+      guard self.activeMatch?.kind == .at, !self.isLoading else { return }
+      // Route through the sectioned rebuild so the model rows land in the
+      // Files section next to the file rows rather than flattening the menu.
+      self.recombineAt()
+    }
+  }
+
   func commit(_ suggestion: WorkComposerSuggestion) {
     guard let match = activeMatch else { return }
+    if let modelId = suggestion.modelId {
+      // Shared with the picker's Recents, so the next `@` leads with it.
+      WorkModelMentionDirectory.shared.noteRecent(modelId)
+      let revision = WorkModelMentionDirectory.shared.recentsRevisionSnapshot
+      if let syncService {
+        Task {
+          if let recents = try? await syncService.pushModelRecent(modelId) {
+            WorkModelMentionDirectory.shared.record(recents: recents, ifRevision: revision)
+          }
+        }
+      }
+    }
     let commitMatch = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
     if suggestion.mentionKind != nil || suggestion.kind == .hash {
       WorkComposerMentionTitleCache.remember(token: suggestion.insertText, title: suggestion.title)
@@ -1518,7 +2382,9 @@ final class WorkComposerSuggestionController: ObservableObject {
     var rows: [WorkComposerSuggestion] = []
     for section in sections {
       if section == .files {
-        rows.append(contentsOf: atFiles.prefix(fileCap))
+        // Model rows the query names lead or follow the file rows, exactly as
+        // the desktop's flat `@` list orders them.
+        rows.append(contentsOf: mergedAtRows(files: Array(atFiles.prefix(fileCap))))
       } else {
         rows.append(contentsOf: atMentions.filter { $0.section == section }.prefix(mentionCap))
       }
@@ -1613,6 +2479,9 @@ final class WorkComposerSuggestionController: ObservableObject {
     // Only apply while an `@` trigger is still active — a later slash/no trigger
     // may have superseded this fetch.
     guard activeMatch?.kind == .at else { return }
+    // Record the file rows (a late model-catalog fetch re-merges through
+    // `recombineAt`), then rebuild the sectioned list.
+    lastFileRows = items
     atFiles = items
     atFilesPending = false
     recombineAt()
@@ -2166,7 +3035,7 @@ final class WorkComposerPillEngine {
       label = WorkComposerMentionTitleCache.title(for: chip.canonicalText) ?? chip.label
     case .link(let link):
       label = WorkComposerMentionTitleCache.title(for: link.url) ?? link.pillLabel
-    case .path, .attachment:
+    case .path, .attachment, .model, .permission, .skill, .browserTab:
       label = chip.label
     }
     return pillString(
@@ -3152,6 +4021,9 @@ struct WorkComposerTextView: UIViewRepresentable {
     controller.onCommit = { [weak coordinator = context.coordinator] suggestion, range in
       coordinator?.commit(suggestion, replacing: range)
     }
+    controller.onRewriteModelChip = { [weak coordinator = context.coordinator] range, token in
+      coordinator?.rewriteModelChip(range: range, with: token)
+    }
 
     context.coordinator.engine.load(draftState.text)
     context.coordinator.applyPlaceholder(placeholder)
@@ -3353,6 +4225,7 @@ struct WorkComposerTextView: UIViewRepresentable {
 
     func detectTrigger() {
       guard let textView else { return }
+      defer { updateModelChipEditing() }
       guard textView.isFirstResponder else {
         applyPromptInputTraits(protectingTrigger: false)
         parent.controller.clear()
@@ -3371,6 +4244,8 @@ struct WorkComposerTextView: UIViewRepresentable {
         in: engine.scanningString(),
         cursor: selection.location
       )
+      // Pills read as spaces, so a committed chip already closes the trigger;
+      // there is no text-chip span left to confirm.
       applyPromptInputTraits(protectingTrigger: match != nil)
       parent.controller.update(match: match)
     }
@@ -3385,6 +4260,73 @@ struct WorkComposerTextView: UIViewRepresentable {
       engine.publishNow()
       updatePlaceholderVisibility()
       updateHeight()
+      updateModelChipEditing()
+    }
+
+    // MARK: Model chips
+
+    /// The model chip the caret is on, or just past (one space after it, where
+    /// the caret lands right after a model row is picked). Typing on moves the
+    /// caret away and the menu goes with it.
+    ///
+    /// A model token is a pill — one storage character — so the mention's range
+    /// is re-anchored onto that character before it reaches the editor menu.
+    private func updateModelChipEditing() {
+      guard let textView, textView.selectedRange.length == 0, textView.markedTextRange == nil else {
+        parent.controller.setEditingModelChip(nil)
+        return
+      }
+      let storage = textView.textStorage
+      let ns = storage.string as NSString
+      let caret = textView.selectedRange.location
+      func modelMention(at index: Int) -> WorkModelMention? {
+        guard index >= 0, index < storage.length,
+              let token = storage.attribute(
+                .workComposerPillToken,
+                at: index,
+                effectiveRange: nil
+              ) as? String,
+              token.hasPrefix("@model:"),
+              let mention = WorkModelMentionDetector.mentions(in: token as NSString).first
+        else { return nil }
+        return WorkModelMention(
+          modelId: mention.modelId,
+          effort: mention.effort,
+          permission: mention.permission,
+          token: mention.token,
+          range: NSRange(location: index, length: 1)
+        )
+      }
+      var hit: WorkModelMention?
+      if let onPill = modelMention(at: caret) {
+        hit = onPill
+      } else if caret > 0, let justAfter = modelMention(at: caret - 1) {
+        hit = justAfter
+      } else if caret >= 2,
+                ns.character(at: caret - 1) == 0x20,
+                let afterSpace = modelMention(at: caret - 2) {
+        hit = afterSpace
+      }
+      parent.controller.setEditingModelChip(hit)
+    }
+
+    /// Replace one model token (new thinking level or permission mode). The
+    /// pill is rebuilt through the engine, so every other pill and attachment
+    /// in the draft is left alone and the caret stays put.
+    func rewriteModelChip(range: NSRange, with token: String) {
+      guard let textView,
+            NSMaxRange(range) <= textView.textStorage.length,
+            let existing = textView.textStorage.attribute(
+              .workComposerPillToken,
+              at: range.location,
+              effectiveRange: nil
+            ) as? String,
+            existing.hasPrefix("@model:") else { return }
+      engine.replace(range, with: engine.hydrate(token))
+      engine.publishNow()
+      updatePlaceholderVisibility()
+      updateHeight()
+      updateModelChipEditing()
     }
 
     // MARK: Placeholder + height
@@ -3499,6 +4441,9 @@ struct WorkComposerSuggestionStrip: View {
       .shadow(color: Color.black.opacity(0.10), radius: 12, y: 4)
       .transition(.opacity.combined(with: .move(edge: .bottom)))
       .accessibilityIdentifier("Work.Chat.Composer.SuggestionStrip")
+    } else if let chip = controller.editingModelChip {
+      WorkModelChipEditorBar(controller: controller, chip: chip)
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
     }
   }
 
@@ -3512,7 +4457,10 @@ struct WorkComposerSuggestionStrip: View {
 
   private var fallbackTitle: String {
     switch controller.activeMatch?.kind {
-    case .at: return "Mention"
+    case .at:
+      return controller.suggestions.contains { $0.modelId != nil }
+        ? "Files & models"
+        : WorkComposerSuggestionSection.files.title
     case .hash: return WorkComposerSuggestionSection.pullRequests.title
     default: return WorkComposerSuggestionSection.commands.title
     }
@@ -3614,5 +4562,108 @@ struct WorkComposerSuggestionStrip: View {
     }
     let subtitle = suggestion.subtitle.map { ", \($0)" } ?? ""
     return "\(kind): \(suggestion.title)\(subtitle)"
+  }
+}
+
+/// The menu for the model chip the caret is on: its thinking level and its
+/// permission mode, the two parts a desktop chip edits in place. Picking one
+/// rewrites the chip's token in the draft.
+struct WorkModelChipEditorBar: View {
+  @ObservedObject var controller: WorkComposerSuggestionController
+  let chip: WorkModelMention
+
+  private var tiers: [String] {
+    WorkModelMentionDirectory.shared.entry(for: chip.modelId)?.reasoningTiers ?? []
+  }
+
+  private var provider: String {
+    WorkModelMentionDirectory.shared.entry(for: chip.modelId)?.provider ?? ""
+  }
+
+  private var permissionOptions: [WorkModelMentionDetector.PermissionOption] {
+    WorkModelMentionDetector.permissionOptions(provider: provider)
+  }
+
+  private var currentPermission: String {
+    chip.permission ?? WorkModelMentionDetector.defaultPermission(provider: provider)
+  }
+
+  private var summary: String {
+    var parts: [String] = []
+    if let effort = chip.effort, !effort.isEmpty { parts.append(WorkModelMentionDetector.effortLabel(effort)) }
+    parts.append(WorkModelMentionDetector.permissionLabel(chip.permission, provider: provider))
+    return parts.joined(separator: " · ")
+  }
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "sparkles")
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(ADEColor.warning)
+        .accessibilityHidden(true)
+      Text(chip.displayName)
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .truncationMode(.middle)
+      Spacer(minLength: 4)
+      Menu {
+        if !tiers.isEmpty {
+          Section("Thinking") {
+            ForEach(tiers, id: \.self) { tier in
+              Button {
+                controller.rewriteEditingModelChip(effort: tier, permission: chip.permission)
+              } label: {
+                if tier == chip.effort {
+                  Label(WorkModelMentionDetector.effortLabel(tier), systemImage: "checkmark")
+                } else {
+                  Text(WorkModelMentionDetector.effortLabel(tier))
+                }
+              }
+            }
+          }
+        }
+        Section("Permissions") {
+          ForEach(permissionOptions, id: \.value) { option in
+            Button {
+              controller.rewriteEditingModelChip(effort: chip.effort, permission: option.value)
+            } label: {
+              if option.value == currentPermission {
+                Label(option.label, systemImage: "checkmark")
+              } else {
+                Text(option.label)
+              }
+            }
+          }
+        }
+      } label: {
+        HStack(spacing: 4) {
+          Text(summary)
+            .font(.footnote.weight(.semibold))
+            .lineLimit(1)
+          Image(systemName: "chevron.up.chevron.down")
+            .font(.caption2.weight(.semibold))
+            .accessibilityHidden(true)
+        }
+        .foregroundStyle(ADEColor.warning)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(ADEColor.warning.opacity(0.12), in: Capsule(style: .continuous))
+      }
+      .accessibilityLabel("Model chip settings: \(summary)")
+      .accessibilityIdentifier("Work.Chat.Composer.ModelChipMenu")
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 6)
+    .frame(minHeight: 44)
+    .background(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .fill(.ultraThinMaterial)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.75)
+    )
+    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
   }
 }

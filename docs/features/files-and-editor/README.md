@@ -2,7 +2,7 @@
 
 An IDE-style file explorer and Monaco editor surface integrated into
 ADE. Shared workspace selection, atomic writes, file watching with
-reference-counted chokidar subscriptions, Monaco model reuse, streaming
+reference-counted watcher subscriptions, Monaco model reuse, streaming
 large-file previews, and specialized view modes (diff, conflict, and the
 flagged v2 workbench shell).
 
@@ -13,7 +13,7 @@ back to it for "open this file", and lanes surface files by worktree.
 ## Where this runs
 
 File listing, atomic writes, the file-name index and content search, and the
-chokidar-backed file watcher all run inside the **active runtime**
+file watcher all run inside the **active runtime**
 for the window's project binding — the local ADE daemon for
 local-bound windows and the SSH-attached remote runtime for
 remote-bound windows. The Monaco editor in the renderer is purely
@@ -68,8 +68,15 @@ targets for the legacy IPC path.
 - `apps/desktop/src/main/services/files/externalFilesWorkspaceRegistry.ts`
   — local-only registry for files or folders opened from outside the active
   project through Finder / OS open-file events or renderer drag-and-drop.
+- `apps/desktop/src/main/services/shared/treeWatcher.ts` — `watchTree`,
+  the tree watcher under the file watcher and the automation file trigger.
+  One recursive native watch per root on macOS and Windows; chokidar on
+  Linux (see "File watching").
+- `apps/desktop/src/main/services/files/fileWatchLedger.ts` — the watches a
+  client still holds, so the stops a vanished page never sent can be sent
+  for it.
 - `apps/desktop/src/main/services/files/fileWatcherService.ts` —
-  chokidar wrapper with per-sender ref counting, debounced events,
+  `watchTree` wrapper with per-sender ref counting, debounced events,
   idle watcher close, plus `stopAllForWorkspace(workspaceId)` and
   `countActiveForWorkspace(workspaceId)` helpers used by the lane
   delete pipeline to tear down watchers as a discrete teardown step
@@ -221,19 +228,48 @@ Renderer:
   the search panel, the create prompt (`overlays.tsx`, which now holds
   `CreatePromptModal` and the shared modal chrome only), and
   viewers for code, markdown, sandboxed HTML, image, audio/video playback, CSV/TSV,
-  PDF, Office-document fallback, large text, binary, and diffs.
+  PDF, spreadsheets (`.xlsx`), presentations (`.pptx`), the Office-document
+  fallback, large text, binary, and diffs.
   `v2/viewerRegistry.ts` decides both which viewer renders a file and
   whether a tab is editable (`tabIsTextEditable` = editable viewer kind
   AND a full, non-binary text payload). The markdown Preview↔Source and
   HTML Preview↔Source and CSV Table↔Source viewers share
   `viewers/ViewerModeToggle.tsx` for the
   toggle pill and `viewers/viewerModeMemory.ts` to remember each tab's
-  last mode across viewer remounts (e.g. the reload after a save).
+  last mode across viewer remounts (e.g. the reload after a save). The
+  presentation viewer uses both for its Slides↔Outline toggle, so a
+  `.pptx` remembers its mode the same way a `.csv` does.
+- `apps/desktop/src/renderer/components/files/v2/viewers/office/` — the
+  OOXML readers behind those two viewers: `ooxmlZip.ts` (lazy fflate,
+  entry-scoped reads, a streaming byte cap), `ooxmlXml.ts` (namespace-aware
+  lookups, entity decoding, event-loop yields), `xlsx.ts` and `pptx.ts`
+  (the display models), and `ooxmlError.ts` (a typed failure reason each
+  viewer turns into copy). See [Office previews](#office-previews).
+- `apps/desktop/src/renderer/components/files/v2/viewers/OoxmlPreviewShell.tsx`
+  — the shell both office viewers share: size pre-check, capped byte stream,
+  parse through a dynamic import, cancellation, and the one failure card (with
+  a retry only where retrying can help). `load` is held in a ref, so a caller
+  passing an inline arrow cannot restart the read on a re-render.
+- `apps/desktop/src/renderer/components/files/v2/viewers/DocumentSurface.tsx`
+  — the one "no in-app preview" card (icon, name, mime · size, an honest
+  notice, Copy full path, Open externally). `DocumentViewer` renders it for
+  documents with no renderer, and the spreadsheet/presentation viewers reuse it
+  when the bytes turn out to be something their parser refuses.
 - `apps/desktop/src/renderer/components/shared/AdeDiffViewer.tsx` —
   shared read-only diff chrome (`@pierre/diffs` `MultiFileDiff` /
-  `PatchDiff` with split/unified, wrap, line numbers); editable working-tree
-  diffs delegate to `MonacoDiffView`. Also used from `LaneDiffPane`,
-  `ChatFileChangesPanel`, and `PrDetailPane`.
+  `PatchDiff` with split/unified, wrap, line numbers, and an
+  **Ignore whitespace** toggle); editable working-tree diffs delegate to
+  `MonacoDiffView`. ⌘F opens its find bar (`useDiffFind.ts`, see
+  [editor surfaces](./editor-surfaces.md#find-in-a-diff)). Also used from `LaneDiffPane`,
+  `ChatFileChangesPanel`, and `PrDetailPane`. The toggle is persisted per
+  view under `ade:diff:ignoreWhitespace:<persistKey>` (the PR code tab and
+  chat turn diff panel pass one; default off). `diffWhitespace.ts` owns the
+  pure rule: full-contents diffs set `parseDiffOptions.ignoreWhitespace`,
+  and pre-parsed patches turn a `-`/`+` pair equal after `trim()` back into a
+  context line (the new-side text, as `git diff -w` prints it) rather than
+  deleting it, so the hunk keeps its order and its own `@@` start and counts
+  stay exact. A file left with no change lines shows a
+  "whitespace-only changes hidden" state instead of an empty diff.
 - `apps/desktop/src/renderer/components/files/v2/*.test.ts(x)` and
   `apps/desktop/src/renderer/components/files/monacoModelRegistry.test.ts`
   — renderer workbench state and model-lifetime tests, including
@@ -292,7 +328,8 @@ positional argument**, a machine pin (`OpenProjectBinding | null`):
 Reads and writes both honour it. A file belonging to a chat on another machine
 opens **fully editable** without rebinding the window: `writeText`,
 `writeTextAtomic`, `createFile`, `createDirectory`, `rename`, `delete`,
-`watchChanges`, and `stopWatching` all land on the machine that owns the bytes.
+`watchChanges`, `stopWatching`, and the `onChange` change feed all land on the
+machine that owns the bytes.
 
 Two deliberate exceptions:
 
@@ -302,7 +339,10 @@ Two deliberate exceptions:
 - `external-local:*` workspaces **drop** a supplied pin. They are registered
   only in this process's file service and their root path is meaningful only on
   this disk, so a caller that pins every file call uniformly still gets the
-  correct local behaviour.
+  correct local behaviour. A pinned `onChange` follows the same rule: it
+  subscribes to the lane's machine's `file_change` feed, but still forwards this
+  process's local loose-folder events, since those watchers run here whatever
+  the pin says.
 
 Coverage is the whole point, not a nicety: a Files workspace id **is** a lane
 id, and lane rows sync across machines, so the same id resolves on both. An
@@ -313,15 +353,14 @@ rather than threading a `pin` argument through a dozen call sites: the object's
 identity changes exactly when the machine does, so effects that hold it (the
 file watcher above all) unsubscribe from the machine they subscribed to before
 subscribing to the new one. A ref would have lied — a callback built before the
-pin arrived would read the current value, and a chokidar watcher could be left
+pin arrived would read the current value, and a file watcher could be left
 running on a remote host with nothing left to stop it.
 
-In the UI a pin is entered by clicking a file in a chat on another machine, not
-by choosing a machine. The workbench shows the amber machine chip
-(`LaneMachineMarker`) with "Files on this machine. Edits save there." — or, if
-that machine has gone offline, why the tree stopped answering — plus one
-obvious way out, **Back to this computer**. Picking any workspace from the
-bound machine clears the pin too.
+The workspace picker groups lanes by machine and labels each group. Choosing a
+lane on another machine pins the workbench to that lane's owner without
+rebinding the project tab. The workbench keeps the machine chip and an explicit
+way back to the tab's machine; an offline owner remains identifiable while its
+file actions are unavailable.
 
 ## Workspace model
 
@@ -391,8 +430,44 @@ mode concept):
   which surface as errors instead of silent no-ops.
 - **Diff** — `AdeDiffViewer` backed by `diffService`. Read-only views
   use `@pierre/diffs`; editable working-tree views use `MonacoDiffView`.
-  Sources: staged vs working tree, HEAD vs working tree, or
-  commit-to-commit.
+  Scopes: **Branch** (the default where the host supports it), staged vs
+  working tree (**Uncommitted**), HEAD vs index (**Staged**), or a commit.
+
+### Branch scope
+
+`DiffMode` `branch` is everything a lane changed since its base: the file at
+merge-base(base, HEAD) against the file on disk now, so commits, uncommitted
+edits and untracked files read as one diff per file. `diffService.getBranchChanges`
+lists the files with line counts by diffing `--cached` against a throwaway
+index (`GIT_INDEX_FILE` in the OS temp directory: a copy of the real index,
+or `read-tree HEAD` when there is none, then `add -A`, which honours
+`.gitignore`), so the user's own index is never touched. Starting from the
+real index means `add` re-hashes only files whose stat changed, and a sparse
+checkout's skip-worktree entries stay present instead of reading as deleted.
+An ask for a lane shares an in-flight read that has not started reading the
+working tree yet (opening a lane asks twice); once it has, a later ask starts
+a fresh read, so an edit made after that read's snapshot is never missed.
+A single-file patch looks up the file's rename first, so a renamed file
+shows as a rename rather than a new file. The temp file is removed whatever
+happens. `getFileDiff` /
+`getFilePatch` take `mode: "branch"` the same way.
+
+The base is the lane's `base_ref`; a lane that is its own base (the primary
+lane on `main`) compares with that branch's upstream, else `origin/<base>`, so
+unpushed work shows. A base that does not resolve, or a lane with no history in
+common with it, is an error ("The base branch "x" was not found."), never an
+empty diff that reads as "nothing changed".
+
+An older host reads an unknown mode as `unstaged` without complaint, so clients
+offer Branch only once `git.getBranchChanges` answered (remote command, the
+`diff` action domain, `diff.getBranchChanges` in the web adapter): the Files
+viewer asks once per lane; iOS checks the advertised command. The Git pane
+(`LaneGitActionsPane`) shows **Branch | Uncommitted**: it opens on Uncommitted
+while there is something to commit and on Branch when the tree is clean, which
+is when Uncommitted would read "nothing to commit" for a lane full of
+committed work, and the user's pick sticks for the lane. Branch rows are
+read-only; staging and discarding stay in Uncommitted. The CLI form is
+`ade diff changes --lane <id> --mode branch --text`.
 - **Conflict** — 3-way merge. Base / Ours / Theirs / Result panes.
   Interactive "Accept Ours", "Accept Theirs", "Accept Both". Resolves
   via `conflictService`.
@@ -414,17 +489,50 @@ outside the workspace root and refuse any path that traverses `.git`.
 
 ## File watching
 
-`fileWatcherService` wraps a single `chokidar` instance per
+`fileWatcherService` wraps a single tree watcher (`watchTree`) per
 `workspaceId + senderId` key. It supports two ignore profiles:
 
 - **default** — ignores `.git/`, `node_modules/`, `.ade/`
 - **include ignored** — ignores only `.git/`
 
-Both profiles share the same chokidar instance when possible. The
+Both profiles share the same watcher when possible. The
 watcher tracks `defaultRefCount` and `includeIgnoredRefCount`; adding a
 subscription in `include ignored` mode will tear down and restart the
 watcher if the mode changed. When all ref counts hit zero, an idle
 timer (`IDLE_WATCHER_CLOSE_MS = 15_000`) schedules a soft close.
+
+`watchTree` (`services/shared/treeWatcher.ts`) reports chokidar's events
+(`add`, `change`, `unlink`, `addDir`, `unlinkDir`) on every platform. On
+Linux it is chokidar. On macOS and Windows it is one recursive native watch per root: the
+native event says where to look, and the path is read again and compared with
+a snapshot of the tree to decide what happened, so a new directory is walked
+and a removed one is reported entry by entry, as chokidar reports them.
+chokidar's own native mode opens one watch per directory, and closing a few
+thousand of those blocks the event loop (13 s measured on this repository),
+which is why the watcher polled on macOS before; polling checked every path
+once a second (about 11% of a core for this repository's root). One known
+difference from the poller: a file replaced by a directory of the same name
+is reported as a delete and creates, where the poller reported one `change`.
+(A file written in pieces may get a `change` after its `add` from either
+watcher, depending on timing.)
+`scripts/perf/service/tree-watcher-parity.mts` compares the two.
+
+Windows adds two rules of its own. When Windows drops events it sends one
+event with no file name, and the watcher re-reads the whole tree, so a burst
+that changed thousands of files is not reported as one. A Windows watch
+follows a moved folder and cannot see its root deleted or recreated, so the
+root's parent is watched too and the root's watch is reopened when the root
+comes back. On this repository the watcher is ready in about 90 ms, where
+chokidar's one-watch-per-directory mode took 2.5-3.4 s and blocked the event
+loop for about 200 ms (`docs/perf/windows-baseline.md`).
+
+A watch is one reference and a stop releases one. A page that goes away
+without its cleanup (a reload, a dead renderer, a closed window, the app
+quitting) never sends its stops, so two places keep a ledger of outstanding
+references (`fileWatchLedger.ts`): the desktop's runtime bridge sends the
+missing stops when a page starts a new document, loses its renderer or is
+destroyed, and the brain releases a connection's watches when the connection
+closes.
 
 Events are debounced per file key for 140 ms, so a build tool writing
 hundreds of files gets coalesced. Volatile `.ade/` paths (transcripts,
@@ -619,6 +727,10 @@ reported missing forever. Such a path is opened anyway and a real read error is
 allowed to speak for itself. Only a bare name, where the index is the only thing
 that can turn it into a path, gets the "can't find that file" toast.
 
+Whichever surface receives the click, the viewer is chosen by extension: a
+spreadsheet or a presentation path an agent writes into a reply opens on the
+native preview rather than a metadata card (see [Office previews](#office-previews)).
+
 See [../chat/README.md](../chat/README.md#source-file-map) for the parsing and
 resolution contract.
 
@@ -631,8 +743,9 @@ the renderer only names a target from `EDITOR_TARGETS`.
 | Piece | Role |
 |-------|------|
 | `shared/editorTargets.ts` | Catalog (`vscode`, `cursor`, `zed`, JetBrains, Xcode, …), `OpenPathTarget` (`default` / `finder` / editor id), `OpenInTarget`, `resolveOpenInTarget` / `canOfferOpenIn` / `isRemoteEditorOpenRequest`, and `buildRemoteEditorUrl`. |
-| `services/editors/editorDetection.ts` | `detectInstalledEditorTargets`: macOS `open -Ra <macAppName>`, else `which` / `where.exe`, PATH augmented by `editorProcessEnv`. Duplicate macOS apps that share `macAppName` (`zed` / `zeditor`) collapse to one. |
-| `services/editors/openPathInEditor.ts` | Local: `open -a` then CLI spawn; `default` uses `shell.openPath`; `finder` uses `shell.showItemInFolder`. Remote SSH: mint a URL and `openEditorExternalUrl`. |
+| `services/editors/editorDetection.ts` | `detectInstalledEditorTargets`: macOS `open -Ra <macAppName>`, else `which` / `where.exe`, PATH augmented by `editorProcessEnv`. Every target is probed in parallel. Targets that share one app (`zed` / `zeditor`) collapse to a single entry on every platform — on Windows both resolve to the same executable. On Windows a miss off PATH falls through to `editorWindowsInstall.ts` and records the resolved absolute executable for the open action. |
+| `services/editors/editorWindowsInstall.ts` | Windows-only, read-only resolution beyond PATH: `%ProgramFiles%` / `%ProgramFiles(x86)%` / `%LOCALAPPDATA%\Programs` install folders, `<ProgramFiles>\JetBrains\<Product>*\bin`, `%LOCALAPPDATA%\JetBrains\Toolbox\apps\<Product>\ch-*\`, and the `HKLM`/`HKCU` uninstall registry keys (`DisplayName` + `InstallLocation` / `DisplayIcon`). `reg.exe` is resolved through `resolveTrustedWindowsTool` (never a bare name), and a host that refuses the lookup just skips registry discovery. Registry `DisplayName` matching prefers an exact name and never claims an entry a more specific editor names more fully (so vscode does not match "Visual Studio Code - Insiders"). Every path is verified to exist; the executable and registry rows each cache for five minutes, and it never launches a GUI or asks for elevation. |
+| `services/editors/openPathInEditor.ts` | Local: `open -a` then CLI spawn; on Windows uses the executable `editorDetection` resolved (falling back to the bare command); `default` uses `shell.openPath`; `finder` uses `shell.showItemInFolder`. Remote SSH: mint a URL and `openEditorExternalUrl`. |
 | `ade.app.getInstalledEditors` / `ade.app.openPathInEditor` | Direct IPC (not a runtime action). Local `rootPath` must sit under a known workspace root. |
 | `OpenInSubmenu` | Shared UI on `LaneContextMenu`, `LaneActionsSubmenu`, `SessionContextMenu`, and `ForeignLaneContextMenu`. |
 
@@ -720,6 +833,53 @@ can be concatenated without corrupting text. Binary/image/PDF range
 responses, plus audio/video and Office-document ranges, are base64-encoded
 per range; consumers must treat each range as independently decodable bytes
 and advance only by `nextOffset`.
+
+## Office previews
+
+A `.xlsx` opened from the Files tab, the Work tools-pane Files panel, or a chat
+attachment previews natively: a virtualized grid with the sheet's own column
+letters, row numbers, column widths, and date/number formats, with sheet tabs
+and a row × column count. A `.pptx` gets a slide rail and a canvas drawn from the
+deck's real geometry, pictures and tables, plus an Outline view and arrow-key
+navigation scoped to the viewer itself.
+
+The readers are ADE's own (`viewers/office/`) on top of a bounded zip reader,
+which is what keeps "native preview" from costing anything until someone asks
+for one:
+
+- **Nothing loads until a file is opened.** `fflate` is imported dynamically
+  from `ooxmlZip.ts` and is the only zip dependency; `openXlsx` / `openPptx`
+  load the same way. Neither the parser nor the zip library is on the Files
+  route's startup path.
+- **Reads are scoped and capped.** Only the archive's central directory is held;
+  each part is inflated on demand, and the cap is enforced on the bytes as they
+  arrive (a declared-size check rejects the obvious case first, but the arriving
+  bytes are the guarantee — a deflate stream can expand past any header). One
+  budget spans the whole package, so 300 slide parts cannot add up to gigabytes.
+  A file over 25 MB, an entry over 24 MB, 64 MB of parts, or an embedded image
+  over 12 MB reports "too large" and falls back to the open-externally card.
+- **The model is bounded, not the file.** A sheet materializes at most
+  2,000 rows × 64 columns and says "showing the first 2,000 of 5,000 rows"
+  instead of growing; a deck parses at most 300 slides, 120 shapes per slide,
+  50 table rows × 20 columns per table, and 200 outline lines per slide.
+  The grid virtualizes rows (`@tanstack/react-virtual`), so the DOM stays one
+  screenful however long the sheet is.
+- **Parsing yields.** A worksheet body is scanned in row chunks that yield to
+  the event loop, so a very long sheet cannot freeze a frame, and the
+  decompression runs in fflate's worker wherever the runtime has one.
+
+Legacy binary formats are a different format, not a different extension: `.xls`
+and `.ppt` are OLE2 compound files, so they stay on the fallback card, which
+says so plainly. The same OLE2 signature is also how an encrypted
+(password-protected) OOXML package is recognized. `.xlsm` and `.pptm` are not
+routed to the previews yet. What a preview deliberately does not draw is counted
+rather than dropped — a slide reads "Not shown in this preview: 2 charts, 1
+picture" — and a formula with no cached result shows the formula text instead of
+a blank cell.
+
+This is a desktop and hosted-web decision: the classification lives in the
+renderer (`v2/viewerRegistry.ts`), so iOS keeps its own handling of these
+formats and is unaffected.
 
 ## Trust boundary
 

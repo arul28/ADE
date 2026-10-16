@@ -11,7 +11,9 @@ import {
 import type {
   AgentChatGetTurnFileDiffArgs,
   AgentChatRewindFilesResult,
+  AgentChatRewindSkippedFile,
   FileDiff,
+  OpenProjectBinding,
   TurnDiffFile,
 } from "../../../shared/types";
 import { AdeDiffViewer } from "../shared/AdeDiffViewer";
@@ -73,6 +75,12 @@ function statusLabel(status: TurnDiffFile["status"]): string {
   return "modified";
 }
 
+function skippedReasonLabel(reason: AgentChatRewindSkippedFile["reason"]): string {
+  if (reason === "dirty_before_turn") return "Had uncommitted changes before this turn";
+  if (reason === "other_chat") return "Another chat in this worktree changed it since";
+  return "ADE did not record this file's state before this turn";
+}
+
 function getDiffCacheKey(args: AgentChatGetTurnFileDiffArgs): string {
   return [args.sessionId, args.beforeSha, args.afterSha, args.filePath].join("\u0000");
 }
@@ -98,7 +106,7 @@ function DiffPreview({
 }) {
   if (!selectedFile.diffAvailable) {
     return (
-      <div className="flex min-h-[170px] items-center justify-center border-t border-white/[0.05] bg-black/15 px-4 py-5 text-center">
+      <div className="flex min-h-[170px] items-center justify-center border-t border-fg/[0.05] bg-black/15 px-4 py-5 text-center">
         <div className="max-w-[420px] text-[12px] leading-5 text-fg/45">
           ADE can restore this file from the checkpoint, but no turn-level diff summary was captured for a preview.
         </div>
@@ -108,7 +116,7 @@ function DiffPreview({
 
   if (loadState === "loading" || loadState === "idle") {
     return (
-      <div className="flex min-h-[170px] items-center justify-center border-t border-white/[0.05] bg-black/15">
+      <div className="flex min-h-[170px] items-center justify-center border-t border-fg/[0.05] bg-black/15">
         <span className="animate-pulse text-[12px] text-fg/35">Loading diff...</span>
       </div>
     );
@@ -116,14 +124,14 @@ function DiffPreview({
 
   if (activeDiff) {
     return (
-      <div className="min-h-[210px] border-t border-white/[0.05] bg-black/15" style={{ maxHeight: 360 }}>
+      <div className="min-h-[210px] border-t border-fg/[0.05] bg-black/15" style={{ maxHeight: 360 }}>
         <AdeDiffViewer diff={activeDiff} editable={false} theme="dark" compact showToolbar={false} className="h-full rounded-none border-0" />
       </div>
     );
   }
 
   return (
-    <div className="flex min-h-[170px] items-center justify-center border-t border-white/[0.05] bg-black/15 px-4 py-5 text-center">
+    <div className="flex min-h-[170px] items-center justify-center border-t border-fg/[0.05] bg-black/15 px-4 py-5 text-center">
       <div className="max-w-[420px] text-[12px] leading-5 text-fg/45">
         {loadState === "missing" ? "No diff was available for this file." : "Failed to load this diff preview."}
       </div>
@@ -134,11 +142,14 @@ function DiffPreview({
 export function RewindFilesConfirmDialog({
   state,
   sessionId,
+  runtimePin = null,
   onCancel,
   onConfirm,
 }: {
   state: RewindFilesConfirmDialogState | null;
   sessionId: string | null;
+  /** The chat's machine; its checkpoints hold the diffs this dialog previews. */
+  runtimePin?: OpenProjectBinding | null;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -182,7 +193,7 @@ export function RewindFilesConfirmDialog({
     setActiveDiffLoadState("loading");
 
     try {
-      const diff = await window.ade.agentChat.getTurnFileDiff(args);
+      const diff = await window.ade.agentChat.getTurnFileDiff(args, runtimePin);
       if (latestDiffRequestKey.current !== cacheKey) return;
       if (!diff) {
         setActiveDiffLoadState("missing");
@@ -196,7 +207,7 @@ export function RewindFilesConfirmDialog({
       console.error("[RewindFilesConfirmDialog] Failed to load diff", file.path, error);
       setActiveDiffLoadState("error");
     }
-  }, [sessionId, state]);
+  }, [runtimePin, sessionId, state]);
 
   useEffect(() => {
     if (!state) return;
@@ -257,7 +268,7 @@ export function RewindFilesConfirmDialog({
         { label: confirmLabel, onClick: onConfirm, variant: "solid", autoFocus: true },
       ]}
     >
-          <div className="rounded-md border border-white/[0.06] bg-black/18 px-4 py-3">
+          <div className="rounded-md border border-fg/[0.06] bg-black/18 px-4 py-3">
             <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-fg/35">Revert to before</div>
             <div className="mt-2 text-[13px] leading-5 text-fg/86">"{messagePreview || "User message"}"</div>
             <div className="mt-1 font-mono text-[11px] text-fg/38">{formatSentAt(request.timestamp)}</div>
@@ -273,16 +284,16 @@ export function RewindFilesConfirmDialog({
               </div>
             </div>
 
-            <div className="overflow-hidden rounded-md border border-white/[0.07] bg-white/[0.018]">
+            <div className="overflow-hidden rounded-md border border-fg/[0.07] bg-fg/[0.018]">
               {files.length ? files.map((file) => {
                 const expanded = expandedPath === file.path;
                 return (
-                  <div key={file.path} className="border-b border-white/[0.045] last:border-b-0">
+                  <div key={file.path} className="border-b border-fg/[0.045] last:border-b-0">
                     <button
                       type="button"
                       className={cn(
                         "grid w-full grid-cols-[18px_18px_minmax(0,1fr)_auto] items-center gap-2 px-3 py-2.5 text-left transition-colors",
-                        expanded ? "bg-white/[0.045]" : "hover:bg-white/[0.028]",
+                        expanded ? "bg-fg/[0.045]" : "hover:bg-fg/[0.028]",
                       )}
                       onClick={() => toggleFile(file)}
                     >
@@ -321,7 +332,32 @@ export function RewindFilesConfirmDialog({
             </div>
           </div>
 
-          <div className="mt-4 rounded-md border border-white/[0.055] bg-black/14 px-3 py-2 text-[12px] text-fg/48">
+          {preview.skippedFiles?.length ? (
+            <div className="mt-4">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="text-[12px] font-medium text-fg/70">Left as they are</div>
+                <div className="font-mono text-[11px] text-fg/42">
+                  {preview.skippedFiles.length} file{preview.skippedFiles.length === 1 ? "" : "s"}
+                </div>
+              </div>
+              <div className="overflow-hidden rounded-md border border-fg/[0.07] bg-fg/[0.018]">
+                {preview.skippedFiles.map((file) => (
+                  <div
+                    key={file.path}
+                    className="grid grid-cols-[18px_minmax(0,1fr)] items-center gap-2 border-b border-fg/[0.045] px-3 py-2.5 last:border-b-0"
+                  >
+                    <WarningCircle size={13} className="text-amber-200/55" />
+                    <div className="min-w-0">
+                      <div className="truncate text-[12px] text-fg/78" title={file.path}>{file.path}</div>
+                      <div className="mt-0.5 text-[11px] text-fg/42">{skippedReasonLabel(file.reason)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mt-4 rounded-md border border-fg/[0.055] bg-black/14 px-3 py-2 text-[12px] text-fg/48">
             {contextRollback
               ? "Codex conversation context will roll back. Saved ADE transcript stays visible."
               : "Conversation history is not affected."}

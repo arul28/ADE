@@ -8,7 +8,6 @@
  * 1800 lines with six different vocabularies for "connected".
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import type {
   AiConfig,
   AiApiKeyVerificationResult,
@@ -21,44 +20,55 @@ import type {
   AcpProviderDiagnostics,
   OpenCodeProviderAuthMethods,
 } from "../../../shared/types/config";
+import { openCodeProviderDisplayName } from "../../../shared/opencodeProviders";
 import { toggleDisabledProvider } from "../../../shared/providerEnablement";
 import {
   getLocalProviderDefaultEndpoint,
   LOCAL_PROVIDER_LABELS,
   type LocalProviderFamily,
 } from "../../../shared/modelRegistry";
-import { CaretRight } from "@phosphor-icons/react";
-import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import { CaretDown, CaretRight } from "@phosphor-icons/react";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 import { showToast } from "../app/toast/toastStore";
-import { revealTerminalSessionInWork } from "../work/ClaudeLoginPromptButton";
 import {
   OpenCodeProviderDetailModal,
+  useOpenCodeProviderDetail,
   type ApiKeySource,
   type OpenCodeProviderDetail,
 } from "./OpenCodeProviderDetailModal";
-import {
-  SettingsManagerPage,
-  SettingsManagerRow,
-  SettingsManagerTable,
-} from "./primitives/SettingsManagerPage";
-import { HarnessesPage } from "./harnesses/HarnessesPage";
-import { useHarnessPresets } from "./harnesses/useHarnessPresets";
-import { CustomToolMark } from "../shared/CustomToolMark";
-import { HelpHint } from "./primitives/HelpHint";
-
-/** The one sentence behind the "?" on the Custom section. */
-const CUSTOM_ENTRY_HELP = "An agent and the model it runs on, saved together — pick one in any model picker to start a chat with that whole setup.";
+import { ModernSection, SettingsToggle } from "./primitives";
+import "./ProvidersSection.css";
+import { CustomProvidersSection } from "./harnesses/CustomProvidersSection";
+import { setUsageHeaderVisible, useUsageHeaderPreferences } from "../usage/usageHeaderPreferences";
 import { availableProviderDescriptors, providerDescriptor, providerStatusFor } from "./providers/descriptors";
 import { useProviderAccountCounts } from "./providers/accounts/useProviderInstances";
 import { ProviderDetailPage } from "./providers/ProviderDetailPage";
 import { ProviderSignInModal } from "./providers/ProviderSignInModal";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { acpLoginCommand, acpProviderLabel } from "./providers/acpProviders";
+import type { TerminalToolType } from "../../../shared/types";
+import type { AiProviderConnections } from "../../../shared/types/config";
+import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
+
+/**
+ * The terminal sign-in for a provider: the ACP CLIs' own login commands, and
+ * Muse's `muse login`. Muse's runs as a `muse` terminal so the PTY host swaps
+ * in that machine's pinned binary (ADE never runs a `muse` from PATH).
+ */
+function providerSignIn(id: SettingsProviderId): { command: string; label: string; toolType: TerminalToolType } | null {
+  if (id === "muse") return { command: MUSE_LOGIN_COMMAND, label: PROVIDER_DISPLAY_NAME.muse, toolType: "muse" };
+  const command = acpLoginCommand(id);
+  return command ? { command, label: acpProviderLabel(id) ?? id, toolType: "shell" } : null;
+}
+
+/** The connection row a provider's sign-in writes. OpenCode has none of its own; its providers are inside it. */
+function connectionKeyFor(id: SettingsProviderId): keyof AiProviderConnections | null {
+  return id === "opencode" ? null : id;
+}
 import {
   AlertBanner,
   PreviewChip,
-  ProviderStatusChip,
   normalizeProviderVersion,
   prettifyProviderId,
 } from "./providers/providerUi";
@@ -74,7 +84,10 @@ import type {
 export { openCodeInstallCommands } from "./providers/cliTools";
 
 const KIMI_PROVIDER_ID = "kimi-for-coding";
-const OPENCODE_CATALOG_EXCLUDED_IDS = new Set(["cursor", "ollama", "lmstudio"]);
+// Providers that have a tile of their own on this page. OpenCode's inventory
+// also reports them, and listing them again under OpenCode read as a second,
+// half-empty copy ("devin · Connected · 0 models").
+const OPENCODE_CATALOG_EXCLUDED_IDS = new Set(["cursor", "ollama", "lmstudio", "devin"]);
 
 const LOCAL_PROVIDER_SPECS: Array<{
   provider: LocalProviderFamily;
@@ -104,208 +117,208 @@ const API_KEY_PROVIDERS: Array<{
 ];
 
 /**
- * The provider list is a manager page: a table you scan, with one row per
- * provider and its own page behind each row. The columns are the three facts
- * the old tile stacked vertically — who it is, what state it is in, and what
- * ADE knows about it — which is why ten providers now read as a list instead
- * of as ten little dashboards.
+ * The provider list is a grid of tiles: who it is, what state it is in, and
+ * what ADE knows about it, with its own page behind each tile. The grid takes
+ * as many columns as the page is wide, so a wide window shows the whole roster
+ * without scrolling and a narrow one stacks it.
  */
-const PROVIDER_COLUMNS = [
-  { label: "Provider", width: "minmax(180px, 1.1fr)" },
-  { label: "Status", width: "minmax(130px, 0.7fr)" },
-  { label: "Details", width: "minmax(200px, 1.5fr)" },
-  { label: "", width: "20px", align: "right" as const },
-];
 
 /**
- * One provider row.
+ * One provider card.
  *
- * The whole row is the button, spanning every column on the table's own track
- * template, so the accessible name ("Open Claude Code settings") still covers
- * the status and the message — a screen reader that lands on the control hears
- * the same three facts a sighted reader sees, and nothing is stranded in a
- * sibling cell the label does not reach.
+ * The whole card is the open button, so its accessible name ("Open Claude Code
+ * settings") covers the status tag and the message — a screen reader that lands
+ * on it hears the same facts a sighted reader sees. The one quick action
+ * (Sign in, Install, Review) is a sibling button laid over the card's corner,
+ * never nested inside it.
  */
-function ProviderManagerRow({
+function ProviderCard({
   descriptor,
   ctx,
   accountCount,
+  hidden = false,
   onOpen,
 }: {
   descriptor: ProviderDescriptor;
   ctx: ProvidersViewContext;
   /** Local logins for this provider. Only Claude and Codex can exceed one. */
   accountCount?: number;
+  /** Folded away with its group. */
+  hidden?: boolean;
   onOpen: () => void;
 }) {
   const status = providerStatusFor(descriptor, ctx);
   const models = descriptor.models(ctx);
   const version = normalizeProviderVersion(descriptor.version?.(ctx));
   // A count of zero while the probe is still out is a claim we cannot make.
-  // A disabled provider's count is real but beside the point — the row's job
-  // is to say it is off and to be clickable.
+  // A disabled provider's count is real but beside the point.
   const showModelCount = status.state !== "checking" && status.state !== "disabled";
 
-  // The detail line says one of two things. A provider in trouble gets the real
-  // status sentence; a healthy one gets where its credential came from, which
-  // is the only question a working provider still raises.
+  // A provider in trouble gets the real status sentence; a healthy one gets
+  // where its credential came from — the only question a working one raises.
   const healthy = status.state === "connected";
   const problem = status.errorLine ?? (healthy ? null : status.message);
   const message = healthy ? descriptor.credentialLine?.(ctx) ?? null : problem;
 
   const metaParts = [
-    // Only when there is more than one: "1 account" is the state every other
-    // provider is permanently in, so saying it is noise on nine rows.
+    // Only when there is more than one: "1 account" is noise on every card.
     ...(accountCount && accountCount > 1 ? [`${accountCount} accounts`] : []),
     ...(showModelCount ? [`${models.length} model${models.length === 1 ? "" : "s"}`] : []),
     ...(version ? [version] : []),
   ];
 
+  const signInCommand = providerSignIn(descriptor.id)?.command ?? null;
+  const action = status.state === "sign-in"
+    ? {
+      label: "Sign in",
+      aria: `Sign in to ${descriptor.label}`,
+      run: () => (signInCommand ? ctx.actions.openSignInTerminal(descriptor.id) : onOpen()),
+    }
+    : status.state === "not-installed"
+      ? { label: "Install", aria: `Install ${descriptor.label}`, run: onOpen }
+      : status.state === "attention"
+        ? { label: "Review", aria: `Review ${descriptor.label}`, run: onOpen }
+        : null;
+
   return (
-    <SettingsManagerRow>
+    <div className="ade-pv-card" data-state={status.state} hidden={hidden}>
       <button
         type="button"
         onClick={onOpen}
         aria-label={`Open ${descriptor.label} settings`}
-        style={{
-          gridColumn: "1 / -1",
-          display: "grid",
-          gridTemplateColumns: "var(--settings-manager-columns)",
-          gap: 12,
-          alignItems: "center",
-          width: "100%",
-          margin: 0,
-          padding: 0,
-          border: "none",
-          background: "transparent",
-          textAlign: "left",
-          cursor: "pointer",
-          font: "inherit",
-          color: "inherit",
-        }}
+        className="ade-pv-open"
       >
-        <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-          {descriptor.logo(22)}
-          <span
-            data-testid={`provider-tile-name-${descriptor.id}`}
-            style={{
-              fontSize: 12,
-              fontFamily: SANS_FONT,
-              color: COLORS.textPrimary,
-              minWidth: 0,
-              // Never clipped: the name is the row's identity, and
-              // "GitHub Co…" is a worse row than a two-line title.
-              overflowWrap: "anywhere",
-              lineHeight: 1.3,
-            }}
-          >
-            {descriptor.label}
+        <span className="ade-pv-top">
+          <span className="ade-pv-logo" aria-hidden>{descriptor.logo(22)}</span>
+          <span className="ade-pv-id">
+            <span className="ade-pv-name-row">
+              <span className="ade-pv-name" data-testid={`provider-tile-name-${descriptor.id}`}>
+                {descriptor.label}
+              </span>
+              {descriptor.preview ? <PreviewChip /> : null}
+            </span>
+            {metaParts.length > 0 ? (
+              <span className="ade-pv-meta">{metaParts.join(" · ")}</span>
+            ) : null}
           </span>
-          {descriptor.preview ? <PreviewChip /> : null}
+          <CaretRight size={12} className="ade-pv-caret" aria-hidden />
         </span>
-
-        <span style={{ minWidth: 0 }}>
-          <ProviderStatusChip state={status.state} label={status.label} />
-        </span>
-
-        <span style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
-          <span
-            style={{
-              fontSize: 10,
-              fontFamily: SANS_FONT,
-              color: COLORS.textMuted,
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-            }}
-          >
-            {metaParts.join(" · ")}
+        {message ? (
+          <span className="ade-pv-line" title={message}>{message}</span>
+        ) : null}
+        <span className="ade-pv-foot">
+          <span className="kit-tag" data-tone={PROVIDER_TAG_TONE[status.state]}>
+            {status.label}
           </span>
-          <span
-            style={{
-              fontSize: 10,
-              fontFamily: SANS_FONT,
-              // The dot already carries the state; red here is reserved for a
-              // real probe failure so it still means something.
-              color: status.errorLine ? COLORS.danger : COLORS.textDim,
-              lineHeight: 1.4,
-              display: "-webkit-box",
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: "vertical",
-              overflow: "hidden",
-              overflowWrap: "anywhere",
-            }}
-            {...(message ? { title: message } : {})}
-          >
-            {message}
-          </span>
-        </span>
-
-        <span aria-hidden style={{ display: "flex", justifyContent: "flex-end", color: COLORS.textDim }}>
-          <CaretRight size={13} />
         </span>
       </button>
-    </SettingsManagerRow>
+      {action ? (
+        <button type="button" className="ade-pv-action" aria-label={action.aria} onClick={action.run}>
+          {action.label}
+        </button>
+      ) : null}
+    </div>
   );
 }
 
+const PROVIDER_TAG_TONE: Record<ProviderDescriptorState, string | undefined> = {
+  checking: undefined,
+  connected: "ok",
+  "sign-in": "warn",
+  attention: "crit",
+  "not-installed": undefined,
+  disabled: undefined,
+};
+
+type ProviderDescriptorState = ReturnType<typeof providerStatusFor>["state"];
+
 /**
- * Custom — its own section, under the provider list.
- *
- * It sat as a last row inside the providers table, where it read as an eleventh
- * provider: a thing you sign in to. It is not. It is the combinations *you*
- * saved of the ten above, which is a different kind of thing and belongs below
- * them with its own heading and its own mark — a purple gear and wrench, so the one
- * entry that is yours is not wearing a vendor's logo or the app's own.
- *
- * The count is the whole status: a saved setup has no connection to probe.
+ * Ready first, then the ones asking for something, then the ones that are not
+ * set up — folded away while anything above them exists, so the grid opens on
+ * what works. Until the first status lands every card says Checking, and the
+ * grid stays one flat list rather than shuffling as answers arrive.
  */
-function CustomPresetsCard({ count, onOpen }: { count: number; onOpen: () => void }) {
-  return (
-    <SettingsManagerPage
-      anchor="ai-harnesses-entry"
-      title="Custom"
-      leading={<CustomToolMark size={18} />}
-      titleAdornment={<HelpHint text={CUSTOM_ENTRY_HELP} />}
-      toolbar={
-        <button type="button" style={outlineButton()} onClick={onOpen}>
-          {count === 0 ? "Add new" : "Manage"}
-        </button>
-      }
-    >
-      <button
-        type="button"
-        onClick={onOpen}
-        data-custom-presets-entry="true"
-        aria-label="Open custom setups"
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
-          width: "100%",
-          padding: "10px 12px",
-          borderRadius: 8,
-          border: `1px solid ${COLORS.outlineBorder}`,
-          background: "var(--color-card)",
-          textAlign: "left",
-          cursor: "pointer",
-          font: "inherit",
-          color: COLORS.textPrimary,
-        }}
-      >
-        <span style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-          <CustomToolMark size={20} />
-          <span style={{ fontFamily: SANS_FONT, fontSize: 12 }}>
-            {count === 0 ? "Nothing custom yet" : `${count} saved`}
-          </span>
-        </span>
-        <span aria-hidden style={{ display: "flex", color: COLORS.textDim }}>
-          <CaretRight size={13} />
-        </span>
-      </button>
-    </SettingsManagerPage>
+const PROVIDER_GROUPS: Array<{ id: string; label: string; states: ProviderDescriptorState[] }> = [
+  { id: "ready", label: "Ready", states: ["connected"] },
+  { id: "action", label: "Action needed", states: ["sign-in", "attention", "checking"] },
+  { id: "unset", label: "Not set up", states: ["not-installed", "disabled"] },
+];
+
+function ProviderGrid({
+  descriptors,
+  ctx,
+  accountCounts,
+  onOpen,
+}: {
+  descriptors: ProviderDescriptor[];
+  ctx: ProvidersViewContext;
+  accountCounts: Partial<Record<string, number>>;
+  onOpen: (id: string) => void;
+}) {
+  const [unsetOpen, setUnsetOpen] = useState(false);
+  const card = (descriptor: ProviderDescriptor, hidden = false) => (
+    <ProviderCard
+      key={descriptor.id}
+      descriptor={descriptor}
+      ctx={ctx}
+      hidden={hidden}
+      {...(accountCounts[descriptor.id] != null ? { accountCount: accountCounts[descriptor.id] } : {})}
+      onOpen={() => onOpen(descriptor.id)}
+    />
   );
+  // One flat, keyed list in one parent — headings included — so a card that
+  // changes group when its status lands is moved, not remounted, and keeps
+  // keyboard focus.
+  if (ctx.status == null) {
+    return <div className="ade-pv-grid">{descriptors.map((descriptor) => card(descriptor))}</div>;
+  }
+  const grouped = PROVIDER_GROUPS.map((group) => ({
+    ...group,
+    items: descriptors.filter((descriptor) => group.states.includes(providerStatusFor(descriptor, ctx).state)),
+  })).filter((group) => group.items.length > 0);
+  const foldable = grouped.length > 1;
+  const children: React.ReactNode[] = [];
+  grouped.forEach((group, index) => {
+    const collapsible = foldable && group.id === "unset";
+    const open = !collapsible || unsetOpen;
+    children.push(
+      <div key={`head-${group.id}`} className="ade-pv-group-head" data-first={index === 0 ? "true" : undefined}>
+        <span className="kit-eyebrow">{group.label}</span>
+        <span className="ade-pv-count kit-num">{group.items.length}</span>
+        {collapsible ? (
+          <button
+            type="button"
+            className="ade-pv-fold"
+            aria-expanded={open}
+            onClick={() => setUnsetOpen((value) => !value)}
+          >
+            {open ? "Hide" : "Show"}
+            <CaretDown size={11} weight="bold" style={{ transform: open ? "rotate(180deg)" : undefined }} />
+          </button>
+        ) : null}
+      </div>,
+    );
+    if (collapsible && !open) {
+      children.push(
+        <button
+          key={`folded-${group.id}`}
+          type="button"
+          className="ade-pv-folded"
+          onClick={() => setUnsetOpen(true)}
+          aria-label={`Show ${group.items.length} providers that are not set up`}
+        >
+          <span className="ade-pv-folded-logos" aria-hidden>
+            {group.items.slice(0, 8).map((descriptor) => (
+              <span key={descriptor.id}>{descriptor.logo(16)}</span>
+            ))}
+          </span>
+          <span>{group.items.map((descriptor) => descriptor.label).join(", ")}</span>
+        </button>,
+      );
+    }
+    for (const descriptor of group.items) children.push(card(descriptor, !open));
+  });
+  return <div className="ade-pv-grid">{children}</div>;
 }
 
 function buildLocalProviderDrafts(
@@ -336,18 +349,20 @@ export function ProvidersSection({
   providerParam = null,
   onProviderChange,
   harnessesParam = false,
-  onHarnessesChange,
 }: {
   forceRefreshOnMount?: boolean;
   /** `?provider=<id>` — which provider's page to show, if any. */
   providerParam?: string | null;
   /** Lets the settings shell keep the URL in step with the sub-view. */
   onProviderChange?: (providerId: string | null) => void;
-  /** `#ai-harnesses` — whether the harnesses page is the open sub-view. */
+  /** `#ai-harnesses` — scroll the Custom section into view on mount. */
   harnessesParam?: boolean;
-  onHarnessesChange?: (open: boolean) => void;
 } = {}) {
-  const navigate = useNavigate();
+  const usageHeaderPreferences = useUsageHeaderPreferences();
+  // The machine whose providers this page shows. Every runtime call below
+  // carries `pin` (null = the tab's binding); the page is
+  // remounted per machine, so a pin never changes under a live closure.
+  const { pin } = useSettingsMachineScope();
   // Claude and Codex can hold several local logins; the row says how many so
   // the count is visible without opening the page.
   const accountCounts = useProviderAccountCounts();
@@ -382,17 +397,13 @@ export function ProvidersSection({
   const [acpDiagnostics, setAcpDiagnostics] = useState<Partial<Record<AcpSettingsProviderId, AcpProviderDiagnostics>>>({});
   const [acpDiagnosticsBusy, setAcpDiagnosticsBusy] = useState<AcpSettingsProviderId | null>(null);
   const [acpDoctorBusy, setAcpDoctorBusy] = useState<AcpSettingsProviderId | null>(null);
+  const [acpUpdateBusy, setAcpUpdateBusy] = useState<AcpSettingsProviderId | null>(null);
   const [acpDiagnosticsError, setAcpDiagnosticsError] = useState<Partial<Record<AcpSettingsProviderId, string>>>({});
   const [signInProvider, setSignInProvider] = useState<SettingsProviderId | null>(null);
   // Which provider's page is open. Seeded and re-seeded from `?provider=`, but
   // owned here so the section works standalone (and in tests) without a router
   // that writes search params.
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(providerParam);
-  // The harnesses page is the second sub-view of this tab. Same ownership rule
-  // as the provider page: seeded from the URL, owned here so the section still
-  // works standalone and in tests.
-  const [harnessesOpen, setHarnessesOpen] = useState<boolean>(harnessesParam);
-  const { presets: harnessPresets } = useHarnessPresets();
   const statusKnownRef = useRef(false);
   const pendingRefreshTimerRef = useRef<number | null>(null);
   // Seed the slugs field from config exactly once — saves send the full list
@@ -404,23 +415,20 @@ export function ProvidersSection({
     setSelectedProviderId(providerParam);
   }, [providerParam]);
 
+  // Custom is a section of this page now, not a sub-view: the `#ai-harnesses`
+  // deeplink (and `?harnesses=1`) scroll to it instead of replacing the page.
   useEffect(() => {
-    setHarnessesOpen(harnessesParam);
+    if (!harnessesParam) return;
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById("ai-harnesses")?.scrollIntoView?.({ block: "start" });
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [harnessesParam]);
-
-  const openHarnesses = useCallback((next: boolean) => {
-    setHarnessesOpen(next);
-    onHarnessesChange?.(next);
-  }, [onHarnessesChange]);
 
   const selectProvider = useCallback((next: string | null) => {
     setSelectedProviderId(next);
     onProviderChange?.(next);
   }, [onProviderChange]);
-
-  const revealClaudeLoginTerminalInWork = useCallback((terminal: { terminalId: string; laneId: string }) => {
-    revealTerminalSessionInWork(navigate, terminal);
-  }, [navigate]);
 
   const refreshStatus = useCallback(async (options?: { force?: boolean; silent?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiSettingsStatus | null> => {
     if (!options?.silent) {
@@ -433,10 +441,10 @@ export function ProvidersSection({
         window.ade.ai.getStatus({
           force: options?.force === true,
           refreshOpenCodeInventory: options?.refreshOpenCodeInventory === true,
-        }),
-        window.ade.ai.listApiKeys(),
-        window.ade.projectConfig.get(),
-        window.ade.ai.cursorAuthStatus().catch(() => null),
+        }, pin),
+        window.ade.ai.listApiKeys(pin),
+        window.ade.projectConfig.get(pin),
+        window.ade.ai.cursorAuthStatus(pin).catch(() => null),
       ]);
       statusKnownRef.current = true;
       setStatusLoadError(null);
@@ -464,11 +472,11 @@ export function ProvidersSection({
         setLoading(false);
       }
     }
-  }, [editingLocalProvider, savingLocalProvider]);
+  }, [editingLocalProvider, pin, savingLocalProvider]);
 
   const loadAuthMethods = useCallback(async () => {
     try {
-      const result = await window.ade.ai.opencodeAuthMethods();
+      const result = await window.ade.ai.opencodeAuthMethods(pin);
       setAuthMethods(result.methods ?? {});
       setAuthMethodsError(null);
     } catch (err) {
@@ -476,14 +484,21 @@ export function ProvidersSection({
       // wipe SuperGrok / ChatGPT OAuth rows mid-session.
       setAuthMethodsError(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [pin]);
 
   useEffect(() => {
     // Cold paint is disk auth only. OpenCode inventory is a spawn and shares
     // the 30s runtime budget; OpenCode's Re-check still refreshes it.
     void (async () => {
-      await refreshStatus({ force: forceRefreshOnMount });
+      const next = await refreshStatus({ force: forceRefreshOnMount });
       void loadAuthMethods();
+      // No cached OpenCode catalog (first run, or a cache from an older
+      // layout): without one probe the provider list is only the fallback
+      // names, and providers such as OpenCode Console cannot be found.
+      if (next?.opencodeBinaryInstalled && !next.opencodeProviders?.length) {
+        await refreshStatus({ force: true, refreshOpenCodeInventory: true, silent: true });
+        void loadAuthMethods();
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [forceRefreshOnMount]);
@@ -497,6 +512,11 @@ export function ProvidersSection({
     setCustomModelSlugs((current) => (current === "" && persisted.length ? persisted.join(", ") : current));
   }, [status?.customModelSlugs]);
 
+  // The Cursor status feed re-subscribes only when the machine changes.
+  // Re-subscribing when `refreshStatus` changes identity would re-anchor a
+  // pinned feed at its live head and drop a "success" emitted in between.
+  const refreshStatusRef = useRef(refreshStatus);
+  refreshStatusRef.current = refreshStatus;
   useEffect(() => {
     const unsubscribe = window.ade.ai.onCursorAuthStatus((event: CursorSdkAuthEvent) => {
       if (event.url) setCursorLoginUrl(event.url);
@@ -506,17 +526,21 @@ export function ProvidersSection({
         if (event.state === "success" || event.state === "logged-out" || event.state === "cancelled") {
           setCursorLoginUrl(null);
         }
-        void refreshStatus({ force: true, refreshOpenCodeInventory: true, silent: true });
+        void refreshStatusRef.current({ force: true, refreshOpenCodeInventory: true, silent: true });
       }
       if (event.state === "error" && event.error) setError(event.error);
       if (event.state === "success") {
         setNotice(event.email ? `Signed in as ${event.email}.` : "Signed in with Cursor.");
       }
-    });
+    }, pin);
     return unsubscribe;
-  }, [refreshStatus]);
+  }, [pin]);
 
   useEffect(() => {
+    // A convenience refresh when this machine's chats change model state.
+    // Another machine's chat feed is not subscribed here; its status refreshes
+    // on open and on every action instead.
+    if (pin) return undefined;
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
       if (!shouldRefreshAiStatusForChatEvent(envelope)) return;
       if (pendingRefreshTimerRef.current != null) return;
@@ -532,7 +556,7 @@ export function ProvidersSection({
         pendingRefreshTimerRef.current = null;
       }
     };
-  }, [refreshStatus]);
+  }, [pin, refreshStatus]);
 
   const detectedAuth = useMemo(() => status?.detectedAuth ?? [], [status?.detectedAuth]);
   // Keep provider tiles neutral while the status payload is unavailable. A
@@ -627,6 +651,7 @@ export function ProvidersSection({
         name: patch.name ?? prev?.name ?? inventory?.name ?? apiSpec?.label ?? prettifyProviderId(id),
         methods,
         connected: patch.connected ?? prev?.connected ?? inventory?.connected === true,
+        signedIn: patch.signedIn ?? prev?.signedIn ?? inventory?.signedIn === true,
         hasKey: hasKeyFor(id) || Boolean(patch.credentialSource ?? prev?.credentialSource ?? inventory?.credentialSource),
         modelCount: patch.modelCount ?? prev?.modelCount ?? inventory?.modelCount,
         envVars: patch.envVars
@@ -649,9 +674,12 @@ export function ProvidersSection({
 
     for (const p of opencodeProviders) {
       upsert(p.id, {
-        name: p.name,
+        // The host names OpenCode's own services; a summary from an older
+        // host still carries OpenCode's name for them.
+        name: openCodeProviderDisplayName(p.id, p.name),
         modelCount: p.modelCount,
         connected: p.connected,
+        signedIn: p.signedIn === true,
         envVars: p.envVars,
       });
     }
@@ -684,15 +712,17 @@ export function ProvidersSection({
     [openCodeCatalog],
   );
 
+  // A provider OpenCode reports as connected stays visible even when it has no
+  // models yet, so the user can inspect its status. A stored key also stays visible.
   const connectedOpenCodeProviders = useMemo(
-    () => openCodeCatalog.filter((p) => p.connected || p.hasKey),
+    () => openCodeCatalog.filter((p) => p.hasKey || p.connected),
     [openCodeCatalog],
   );
 
   const popularOpenCodeProviders = useMemo(() => {
     const popularIds = [
       ...API_KEY_PROVIDERS.map((p) => p.provider),
-      ...Object.keys(authMethods ?? {}).filter((id) => authMethods?.[id]?.some((m) => m.type === "oauth")),
+      ...Object.keys(authMethods ?? {}).filter((id) => authMethods?.[id]?.some((m) => m.type !== "api")),
       KIMI_PROVIDER_ID,
     ];
     const connectedIds = new Set(
@@ -716,9 +746,9 @@ export function ProvidersSection({
       .sort((a, b) => (b.modelCount ?? 0) - (a.modelCount ?? 0));
   }, [openCodeCatalog, providerSearch]);
 
-  const detailProvider = useMemo(
-    () => (detailProviderId ? openCodeCatalog.find((p) => p.id === detailProviderId) ?? null : null),
-    [detailProviderId, openCodeCatalog],
+  const { provider: detailProvider, signInVia: detailSignInVia } = useOpenCodeProviderDetail(
+    detailProviderId,
+    openCodeCatalog,
   );
   const openProviderDetail = useCallback((id: string) => {
     // Always use the unified provider modal (OAuth + API key), including Kimi.
@@ -730,12 +760,12 @@ export function ProvidersSection({
     setNotice(null);
     try {
       if (options?.alsoOpenCode) {
-        const result = await window.ade.ai.clearOpencodeProviderKey({ providerId: provider });
+        const result = await window.ade.ai.clearOpencodeProviderKey({ providerId: provider }, pin);
         if (!result.ok) {
           throw new Error(result.error || "OpenCode could not remove the provider key.");
         }
       }
-      await window.ade.ai.deleteApiKey(provider);
+      await window.ade.ai.deleteApiKey(provider, pin);
       invalidateAiDiscoveryCache();
       const label =
         API_KEY_PROVIDERS.find((row) => row.provider === provider)?.label
@@ -752,7 +782,7 @@ export function ProvidersSection({
       // Re-throw so nested modals (detail overlay) can show the failure in-dialog.
       throw err instanceof Error ? err : new Error(String(err));
     }
-  }, [refreshStatus]);
+  }, [pin, refreshStatus]);
 
   const verifyApiKey = useCallback(async (provider: string) => {
     setError(null);
@@ -765,7 +795,7 @@ export function ProvidersSection({
     });
     try {
       invalidateAiDiscoveryCache();
-      const result = await window.ade.ai.verifyApiKey(provider);
+      const result = await window.ade.ai.verifyApiKey(provider, pin);
       invalidateAiDiscoveryCache();
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
       setVerificationByProvider((prev) => ({ ...prev, [provider]: result }));
@@ -779,21 +809,21 @@ export function ProvidersSection({
     } finally {
       setVerifyingProvider(null);
     }
-  }, [refreshStatus]);
+  }, [pin, refreshStatus]);
 
   const loginWithCursor = useCallback(async () => {
     setError(null);
     setNotice(null);
     setCursorLoginBusy(true);
     try {
-      const result = await window.ade.ai.cursorAuthLogin();
+      const result = await window.ade.ai.cursorAuthLogin(pin);
       if (!result.ok) {
         setError(result.error || "Cursor sign-in failed.");
         return;
       }
       setVerifyingProvider("cursor");
       invalidateAiDiscoveryCache();
-      const verification = await window.ade.ai.verifyApiKey("cursor");
+      const verification = await window.ade.ai.verifyApiKey("cursor", pin);
       invalidateAiDiscoveryCache();
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
       setVerificationByProvider((prev) => ({ ...prev, cursor: verification }));
@@ -809,13 +839,13 @@ export function ProvidersSection({
       setCursorLoginBusy(false);
       setVerifyingProvider(null);
     }
-  }, [refreshStatus]);
+  }, [pin, refreshStatus]);
 
   const logoutCursor = useCallback(async () => {
     setError(null);
     setNotice(null);
     try {
-      const result = await window.ade.ai.cursorAuthLogout();
+      const result = await window.ade.ai.cursorAuthLogout(pin);
       if (!result.ok) {
         setError(result.error || "Cursor sign-out failed.");
         return;
@@ -831,29 +861,29 @@ export function ProvidersSection({
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [refreshStatus]);
+  }, [pin, refreshStatus]);
 
   const cancelCursorLogin = useCallback(async () => {
     try {
-      await window.ade.ai.cursorAuthCancel();
+      await window.ade.ai.cursorAuthCancel(pin);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setCursorLoginBusy(false);
     }
-  }, []);
+  }, [pin]);
 
   const handleRefreshCatalog = useCallback(async () => {
     setRefreshingCatalog(true);
     try {
-      await window.ade.ai.refreshModelsDev();
+      await window.ade.ai.refreshModelsDev(pin);
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setRefreshingCatalog(false);
     }
-  }, [refreshStatus]);
+  }, [pin, refreshStatus]);
 
   const handleSubscriptionConnected = useCallback(async (providerId: string, providerName: string) => {
     const before = status?.availableModelIds?.length ?? 0;
@@ -878,7 +908,7 @@ export function ProvidersSection({
     try {
       await window.ade.ai.updateConfig({
         customModelSlugs: slugs,
-      });
+      }, pin);
       invalidateAiDiscoveryCache();
       setNotice("Custom model slugs saved.");
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
@@ -887,7 +917,7 @@ export function ProvidersSection({
     } finally {
       setSavingAdvanced(false);
     }
-  }, [customModelSlugs, refreshStatus]);
+  }, [pin, customModelSlugs, refreshStatus]);
 
   const updateLocalProviderDraft = useCallback((
     provider: LocalProviderFamily,
@@ -929,7 +959,7 @@ export function ProvidersSection({
             preferredModelId: draft.preferredModelId.trim() || null,
           },
         } as AiConfig["localProviders"],
-      });
+      }, pin);
       invalidateAiDiscoveryCache();
       setNotice(`${LOCAL_PROVIDER_LABELS[provider]} settings saved.`);
       setEditingLocalProvider(null);
@@ -939,7 +969,7 @@ export function ProvidersSection({
     } finally {
       setSavingLocalProvider(null);
     }
-  }, [localProviderDrafts, refreshStatus]);
+  }, [pin, localProviderDrafts, refreshStatus]);
 
   const disabledProviders = useMemo(
     () => new Set((projectConfigSnapshot?.effective.ai?.disabledProviders ?? []).map((id) => id.toLowerCase())),
@@ -964,7 +994,7 @@ export function ProvidersSection({
           provider,
           disabled,
         ),
-      } as Partial<AiConfig>);
+      } as Partial<AiConfig>, pin);
       invalidateAiDiscoveryCache();
       setNotice(`${descriptor?.label ?? provider} ${disabled ? "disabled" : "enabled"}.`);
       await refreshStatus({ force: false, silent: true });
@@ -973,14 +1003,14 @@ export function ProvidersSection({
     } finally {
       setSavingDisabledFor(null);
     }
-  }, [projectConfigSnapshot, refreshStatus]);
+  }, [pin, projectConfigSnapshot, refreshStatus]);
 
   const loadAcpDiagnostics = useCallback(async (provider: AcpSettingsProviderId) => {
     const read = window.ade.ai.acpProviderDiagnostics;
     if (!read) return;
     setAcpDiagnosticsBusy(provider);
     try {
-      const result = await read({ provider });
+      const result = await read({ provider }, pin);
       setAcpDiagnostics((prev) => ({ ...prev, [provider]: result }));
       setAcpDiagnosticsError((prev) => {
         const next = { ...prev };
@@ -995,7 +1025,7 @@ export function ProvidersSection({
     } finally {
       setAcpDiagnosticsBusy((current) => (current === provider ? null : current));
     }
-  }, []);
+  }, [pin]);
 
   const runAcpDoctor = useCallback(async (provider: AcpSettingsProviderId) => {
     const read = window.ade.ai.acpProviderDiagnostics;
@@ -1005,7 +1035,7 @@ export function ProvidersSection({
     }
     setAcpDoctorBusy(provider);
     try {
-      const result = await read({ provider, runDoctor: true });
+      const result = await read({ provider, runDoctor: true }, pin);
       setAcpDiagnostics((prev) => ({ ...prev, [provider]: result }));
       setAcpDiagnosticsError((prev) => {
         const next = { ...prev };
@@ -1020,11 +1050,47 @@ export function ProvidersSection({
     } finally {
       setAcpDoctorBusy((current) => (current === provider ? null : current));
     }
-  }, []);
+  }, [pin]);
+
+  const updateAcpProvider = useCallback(async (provider: AcpSettingsProviderId) => {
+    const run = window.ade.ai.acpProviderUpdate;
+    if (!run) {
+      setAcpDiagnosticsError((prev) => ({ ...prev, [provider]: "This window cannot update providers." }));
+      return;
+    }
+    setAcpUpdateBusy(provider);
+    setAcpDiagnosticsError((prev) => {
+      const next = { ...prev };
+      delete next[provider];
+      return next;
+    });
+    try {
+      const result = await run({ provider }, pin);
+      if (!result.ok) throw new Error(result.message);
+      setNotice(result.message);
+      // Re-read the diagnostics so the advisory reflects the version the
+      // updater just wrote, not the pre-update snapshot.
+      const read = window.ade.ai.acpProviderDiagnostics;
+      if (read) {
+        try {
+          const diagnostics = await read({ provider }, pin);
+          setAcpDiagnostics((prev) => ({ ...prev, [provider]: diagnostics }));
+        } catch {
+          // The update succeeded; a failed re-read does not undo it.
+        }
+      }
+    } catch (err) {
+      setAcpDiagnosticsError((prev) => ({
+        ...prev,
+        [provider]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setAcpUpdateBusy((current) => (current === provider ? null : current));
+    }
+  }, [pin]);
 
   const openSignInTerminal = useCallback((provider: SettingsProviderId) => {
-    const command = acpLoginCommand(provider);
-    if (!command) return;
+    if (!providerSignIn(provider)) return;
     setSignInProvider(provider);
   }, []);
 
@@ -1061,6 +1127,7 @@ export function ProvidersSection({
     acpDiagnostics,
     acpDiagnosticsBusy,
     acpDoctorBusy,
+    acpUpdateBusy,
     acpDiagnosticsError,
     actions: {
       refreshStatus,
@@ -1081,10 +1148,10 @@ export function ProvidersSection({
       saveLocalProvider,
       setCustomModelSlugs,
       saveCustomModelSlugs,
-      revealClaudeLoginTerminal: revealClaudeLoginTerminalInWork,
       setProviderDisabled,
       loadAcpDiagnostics,
       runAcpDoctor,
+      updateAcpProvider,
       openSignInTerminal,
     },
   }), [
@@ -1098,9 +1165,10 @@ export function ProvidersSection({
     saveCustomModelSlugs, saveLocalProvider, savingAdvanced,
     savingLocalProvider, searchableOpenCodeProviders,
     status, statusLoadError, storedProviders, updateLocalProviderDraft,
-    verificationByProvider, verifyApiKey, verifyingProvider, revealClaudeLoginTerminalInWork,
+    verificationByProvider, verifyApiKey, verifyingProvider,
     disabledProviders, savingDisabledFor, setProviderDisabled, acpDiagnostics, acpDiagnosticsBusy,
-    acpDoctorBusy, acpDiagnosticsError, loadAcpDiagnostics, runAcpDoctor, openSignInTerminal,
+    acpDoctorBusy, acpUpdateBusy, acpDiagnosticsError, loadAcpDiagnostics, runAcpDoctor,
+    updateAcpProvider, openSignInTerminal,
   ]);
 
   const descriptors = useMemo(() => availableProviderDescriptors(), []);
@@ -1119,14 +1187,12 @@ export function ProvidersSection({
     void loadAcpDiagnostics(selectedAcpProvider);
   }, [acpDiagnostics, loadAcpDiagnostics, selectedAcpProvider]);
 
-  const signInCommand = signInProvider ? acpLoginCommand(signInProvider) : null;
+  const signIn = signInProvider ? providerSignIn(signInProvider) : null;
 
   return (
-    // The `ai-providers` anchor moved onto the manager page below, so the
-    // template owns the id, the scope chip and the heading in one place. This
-    // wrapper is layout only — giving it the id too would put the same anchor
-    // in the DOM twice whenever the grid is on screen.
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+    // The `ai-providers` anchor lives on the section below. This wrapper is
+    // layout only — giving it the id too would put the anchor in the DOM twice.
+    <div className={selectedDescriptor ? "ade-pv-detail" : "ade-pv-page"}>
       {notice && (
         <AlertBanner tone="success" message={notice} onDismiss={() => setNotice(null)} />
       )}
@@ -1143,53 +1209,54 @@ export function ProvidersSection({
         />
       )}
 
-      {harnessesOpen ? (
-        <HarnessesPage onBack={() => openHarnesses(false)} />
-      ) : selectedDescriptor ? (
+      {selectedDescriptor ? (
         <div id={`ai-provider-${selectedDescriptor.id}`}>
           <ProviderDetailPage
             descriptor={selectedDescriptor}
             ctx={ctx}
-            onBack={() => selectProvider(null)}
           />
         </div>
       ) : (
-        <SettingsManagerPage
+        <ModernSection
+          group="Connections"
           anchor="ai-providers"
-          title="AI providers"
-          description="Every coding agent ADE can run. Open one to sign in, choose models, or turn it off."
-        >
-          <SettingsManagerTable columns={PROVIDER_COLUMNS} minWidth={620}>
-            {descriptors.map((descriptor) => (
-              <ProviderManagerRow
-                key={descriptor.id}
-                descriptor={descriptor}
-                ctx={ctx}
-                {...(accountCounts[descriptor.id as keyof typeof accountCounts] != null
-                  ? { accountCount: accountCounts[descriptor.id as keyof typeof accountCounts] }
-                  : {})}
-                onOpen={() => selectProvider(descriptor.id)}
+          title="Coding agents"
+          hint="Every agent ADE can run. Open one to sign in, choose models, or turn it off."
+          actions={(
+            <label className="ade-pv-usage-toggle">
+              Show usage in header
+              <SettingsToggle
+                label="Show usage in header"
+                checked={usageHeaderPreferences.showInHeader}
+                onChange={(next) => setUsageHeaderVisible(next)}
               />
-            ))}
-          </SettingsManagerTable>
-        </SettingsManagerPage>
+            </label>
+          )}
+        >
+          <ProviderGrid
+            descriptors={descriptors}
+            ctx={ctx}
+            accountCounts={accountCounts as Partial<Record<string, number>>}
+            onOpen={selectProvider}
+          />
+        </ModernSection>
       )}
 
-      {harnessesOpen || selectedDescriptor ? null : (
-        <CustomPresetsCard count={harnessPresets.length} onOpen={() => openHarnesses(true)} />
-      )}
+      {selectedDescriptor ? null : <CustomProvidersSection status={status} storedProviders={storedProviders} />}
 
-      {signInProvider && signInCommand ? (
+      {signInProvider && signIn ? (
         <ProviderSignInModal
+          runtimePin={pin}
           providerId={signInProvider}
-          providerLabel={acpProviderLabel(signInProvider) ?? signInProvider}
-          command={signInCommand}
+          providerLabel={signIn.label}
+          command={signIn.command}
+          toolType={signIn.toolType}
           onClose={() => {
             setSignInProvider(null);
             void refreshStatus({ force: true, silent: true });
           }}
           onSignedIn={() => {
-            setNotice(`Signed in to ${acpProviderLabel(signInProvider) ?? signInProvider}.`);
+            setNotice(`Signed in to ${signIn.label}.`);
             invalidateAiDiscoveryCache();
           }}
           checkSignedIn={async () => {
@@ -1198,7 +1265,8 @@ export function ProvidersSection({
             // that is the moment worth closing on. `runtimeAvailable` also
             // waits on the protocol probe, which is right for the tile and too
             // slow for a dialog someone is watching.
-            return next?.providerConnections?.[signInProvider as AcpSettingsProviderId]?.authAvailable === true;
+            const key = connectionKeyFor(signInProvider);
+            return key !== null && next?.providerConnections?.[key]?.authAvailable === true;
           }}
         />
       ) : null}
@@ -1206,6 +1274,7 @@ export function ProvidersSection({
       {detailProvider ? (
         <OpenCodeProviderDetailModal
           provider={detailProvider}
+          signInVia={detailSignInVia}
           keySource={apiKeySources.get(detailProvider.id)
             ?? (storedProviders.includes(detailProvider.id) ? "store" : detailProvider.credentialSource)}
           verification={verificationByProvider[detailProvider.id]}
@@ -1215,7 +1284,7 @@ export function ProvidersSection({
           onConnected={() => void handleSubscriptionConnected(detailProvider.id, detailProvider.name)}
           onRetryAuthMethods={() => void loadAuthMethods()}
           onSaveKey={async (key) => {
-            const result = await window.ade.ai.setOpencodeProviderKey({ providerId: detailProvider.id, key });
+            const result = await window.ade.ai.setOpencodeProviderKey({ providerId: detailProvider.id, key }, pin);
             if (!result.ok) throw new Error(result.error || "OpenCode rejected the provider key.");
             invalidateAiDiscoveryCache();
             setVerificationByProvider((prev) => {

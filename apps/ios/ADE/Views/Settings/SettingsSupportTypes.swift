@@ -96,30 +96,4 @@ enum SettingsConnectionPresentation {
       return "Not connected"
     }
   }
-
-  static func statusTint(for health: SyncConnectionHealth) -> Color {
-    switch health.transport {
-    case .connected:
-      return health.load == .strained ? ADEColor.warning : ADEColor.success
-    case .connecting:
-      return ADEColor.warning
-    case .unreachable:
-      return ADEColor.danger
-    case .disconnected:
-      return ADEColor.textMuted
-    }
-  }
-
-  static func glowTint(for health: SyncConnectionHealth) -> Color {
-    switch health.transport {
-    case .connected:
-      return health.load == .strained ? ADEColor.warning.opacity(0.22) : ADEColor.purpleGlow
-    case .connecting:
-      return ADEColor.warning.opacity(0.25)
-    case .unreachable:
-      return ADEColor.danger.opacity(0.22)
-    case .disconnected:
-      return .clear
-    }
-  }
 }

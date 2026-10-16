@@ -3,6 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkLiveCornerCard } from "./WorkLiveCornerCard";
+import { setFloatingPlayerSlot } from "../shared/floatingPlayerSlots";
 import { NativeToolFeedsProvider } from "../terminals/NativeToolFeedsContext";
 import { useAppStore } from "../../state/appStore";
 import type { BuiltInBrowserStatus, BuiltInBrowserTab, OpenProjectBinding } from "../../../shared/types";
@@ -30,7 +31,6 @@ import {
 } from "./macDesktopCardGrants";
 import {
   floatWorkLiveCardForChat,
-  markWorkLiveCardSeenForChat,
   readChatCompanionUiState,
   resetChatCompanionUiStateCacheForTests,
   setWorkLivePreviewEnabledForChat,
@@ -42,10 +42,10 @@ import {
  */
 const fakeDecoder = { playing: false };
 
-vi.mock("../chat/H264VideoCanvas", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../chat/H264VideoCanvas")>();
+vi.mock("../chat/H264StreamView", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../chat/H264StreamView")>();
   const { useEffect } = await import("react");
-  function FakeH264VideoCanvas(props: Parameters<typeof actual.H264VideoCanvas>[0]) {
+  function FakeH264StreamView(props: Parameters<typeof actual.H264StreamView>[0]) {
     useEffect(() => {
       props.onStatus?.("playing", null);
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -62,8 +62,8 @@ vi.mock("../chat/H264VideoCanvas", async (importOriginal) => {
   }
   return {
     ...actual,
-    H264VideoCanvas: (props: Parameters<typeof actual.H264VideoCanvas>[0]) => (
-      fakeDecoder.playing ? <FakeH264VideoCanvas {...props} /> : <actual.H264VideoCanvas {...props} />
+    H264StreamView: (props: Parameters<typeof actual.H264StreamView>[0]) => (
+      fakeDecoder.playing ? <FakeH264StreamView {...props} /> : <actual.H264StreamView {...props} />
     ),
   };
 });
@@ -121,8 +121,9 @@ const macDesktopStartStream = vi.fn(async () => makeStreamStatus({
 }));
 const macDesktopStopStream = vi.fn(async () => makeStreamStatus());
 const macDesktopGetStreamStatus = vi.fn(async () => makeStreamStatus());
-const macDesktopGetStatus = vi.fn(async (): Promise<Partial<MacDesktopStatus>> => ({
+const macDesktopGetStatus = vi.fn(async (): Promise<Partial<MacDesktopStatus> & Pick<MacDesktopStatus, "platform" | "supported">> => ({
   supported: true,
+  platform: "darwin",
   display: null,
   lease: null,
   windows: [],
@@ -159,19 +160,6 @@ function emitBrowserEvent(event: unknown): void {
   act(() => {
     for (const listener of browserListeners) listener(event);
   });
-}
-
-function emitAppControlEvent(event: unknown): void {
-  act(() => {
-    for (const listener of appControlListeners) listener(event);
-  });
-}
-
-const APP_CONTROL_SESSION = { id: "app-1", status: "connected", label: "Playground", chatSessionId: "chat-1" };
-
-/** One screencast frame, the 30fps feed that used to count as "activity". */
-function appControlFrame() {
-  return { type: "frame", frame: { mimeType: "image/jpeg", data: "AAAA", width: 288, height: 180 } };
 }
 
 /** jsdom does not decode images; report a natural size and fire `load`. */
@@ -310,6 +298,44 @@ describe("WorkLiveCornerCard", () => {
     await new Promise((resolve) => setTimeout(resolve, 80));
     expect(screen.queryByLabelText("Browser live preview")).toBeNull();
     expect(startPreviewStream).not.toHaveBeenCalled();
+  });
+
+  it("floats the chat's own background tab while another chat's tab is in front", async () => {
+    // The card follows the tab THIS chat owns, not whatever tab is active. An
+    // agent opens background tabs (they never take focus), so keying on the
+    // active tab floated nothing over the chat that was working.
+    const status = makeBuiltInBrowserStatus({
+      visible: true,
+      activeTabId: "tab-person",
+      tabs: [
+        makeBuiltInBrowserTab({
+          id: "tab-person",
+          url: "https://person.test/",
+          title: "Person",
+          ownerChatSessionId: "chat-2",
+          ownerClaimedAt: "2026-09-18T19:00:00.000Z",
+        }),
+        makeBuiltInBrowserTab({
+          id: "tab-agent",
+          url: "https://agent.test/a",
+          title: "Agent",
+          ownerChatSessionId: "chat-1",
+          ownerClaimedAt: "2026-09-18T19:05:00.000Z",
+        }),
+      ],
+    });
+    (window.ade.builtInBrowser.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(status);
+    renderCard({ chatSessionId: "chat-1" });
+    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
+    emitBrowserEvent({ type: "status", status });
+
+    expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
+    await waitFor(() => expect(startPreviewStream).toHaveBeenCalledWith(
+      expect.objectContaining({ tabId: "tab-agent" }),
+    ));
+    expect(startPreviewStream).not.toHaveBeenCalledWith(
+      expect.objectContaining({ tabId: "tab-person" }),
+    );
   });
 
   it("paints a preview frame that arrives through the provider's fan-out", async () => {
@@ -658,6 +684,32 @@ describe("WorkLiveCornerCard dismissal", () => {
     expect(readChatCompanionUiState("chat-1").workLiveCardFloating).toEqual([]);
   });
 
+  it("steps aside while the floated tab's page has failed to load, and comes back when it loads", async () => {
+    // A failed load is a plain white page; floating it is a white box. Even a
+    // tool the chat floated by hand steps aside, and nothing is lost: the
+    // float comes back the moment the tab loads again.
+    seedProject();
+    renderCard({ activeTool: "browser" });
+    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
+    emitBrowserEvent({ type: "status", status: BROWSER_STATUS });
+    act(() => { floatWorkLiveCardForChat("chat-1", "browser"); });
+    await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
+
+    const failed = makeBuiltInBrowserStatus({
+      ...BROWSER_STATUS,
+      tabs: [{
+        ...BROWSER_STATUS.tabs[0]!,
+        loadError: { code: -102, description: "ERR_CONNECTION_REFUSED", url: "https://example.test/login" },
+      }],
+    });
+    emitBrowserEvent({ type: "status", status: failed });
+    await waitFor(() => expect(screen.queryByLabelText("Browser live preview")).toBeNull());
+    expect(readChatCompanionUiState("chat-1").workLiveCardFloating).toEqual(["browser"]);
+
+    emitBrowserEvent({ type: "status", status: BROWSER_STATUS });
+    expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
+  });
+
   it("a disabled preview never shows even when the tool is live", async () => {
     seedProject();
     const { card } = await showCard();
@@ -707,6 +759,28 @@ describe("WorkLiveCornerCard dismissal", () => {
     expect(readChatCompanionUiState("chat-1").workLiveCardClosedByTool.browser).toBeUndefined();
   });
 
+  it("steps aside while a floating player is on screen, unless the chat floated the tool", async () => {
+    seedProject();
+    await showCard();
+    const playerFrame = { x: 600, y: 400, width: 280, height: 180 };
+    try {
+      act(() => { setFloatingPlayerSlot("test-floating-player", playerFrame); });
+      await waitFor(() => expect(screen.queryByLabelText("Browser live preview")).toBeNull());
+
+      // Stepping aside is not a dismissal: it comes back when the player goes.
+      act(() => { setFloatingPlayerSlot("test-floating-player", null); });
+      expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
+
+      // Floating it by hand is an explicit ask: it shows beside the player.
+      act(() => { floatWorkLiveCardForChat("chat-1", "browser"); });
+      act(() => { setFloatingPlayerSlot("test-floating-player", playerFrame); });
+      // Still in view: a card stepping aside is aria-hidden at once, before its exit animation ends.
+      expect(screen.getByLabelText("Browser live preview").closest('[aria-hidden="true"]')).toBeNull();
+    } finally {
+      act(() => { setFloatingPlayerSlot("test-floating-player", null); });
+    }
+  });
+
   it("reopens a closed card when the chat floats the tool", async () => {
     seedProject();
     await showCard();
@@ -715,67 +789,6 @@ describe("WorkLiveCornerCard dismissal", () => {
 
     act(() => { floatWorkLiveCardForChat("chat-1", "browser"); });
     expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
-  });
-});
-
-describe("WorkLiveCornerCard App Control dismissal", () => {
-  async function showAppControlCard() {
-    seedProject();
-    const view = renderCard({ activeTool: "browser" });
-    await waitFor(() => expect(appControlListeners.size).toBeGreaterThan(0));
-    emitAppControlEvent({ type: "session-started", session: APP_CONTROL_SESSION });
-    const card = await screen.findByLabelText("App Control live preview", {}, { timeout: 3_000 });
-    return { ...view, card };
-  }
-
-  it("stays dismissed while the screencast keeps painting", async () => {
-    await showAppControlCard();
-    fireEvent.click(screen.getByLabelText("Hide the App Control preview"));
-    await waitFor(() => expect(screen.queryByLabelText("App Control live preview")).toBeNull());
-
-    for (let i = 0; i < 20; i += 1) emitAppControlEvent(appControlFrame());
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    expect(screen.queryByLabelText("App Control live preview")).toBeNull();
-  });
-
-  it("stays dismissed when the same session reports activity", async () => {
-    await showAppControlCard();
-    fireEvent.click(screen.getByLabelText("Hide the App Control preview"));
-    await waitFor(() => expect(screen.queryByLabelText("App Control live preview")).toBeNull());
-
-    // A status refresh — even with a new trace id — is not a new session.
-    emitAppControlEvent({
-      type: "session-updated",
-      session: { ...APP_CONTROL_SESSION, lastTraceEntryId: "trace-9" },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    expect(screen.queryByLabelText("App Control live preview")).toBeNull();
-  });
-
-  it("stays off for a new App Control session id until the toggle is back on", async () => {
-    await showAppControlCard();
-    fireEvent.click(screen.getByLabelText("Hide the App Control preview"));
-    await waitFor(() => expect(screen.queryByLabelText("App Control live preview")).toBeNull());
-
-    emitAppControlEvent({
-      type: "session-started",
-      session: { ...APP_CONTROL_SESSION, id: "app-2", label: "Playground 2" },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    expect(screen.queryByLabelText("App Control live preview")).toBeNull();
-  });
-
-  it("shows an unowned session only in a chat whose pane has shown it", async () => {
-    seedProject();
-    const unowned = { ...APP_CONTROL_SESSION, id: "app-9", chatSessionId: null };
-    renderCard({ activeTool: "browser" });
-    await waitFor(() => expect(appControlListeners.size).toBeGreaterThan(0));
-    emitAppControlEvent({ type: "session-started", session: unowned });
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(screen.queryByLabelText("App Control live preview")).toBeNull();
-
-    act(() => { markWorkLiveCardSeenForChat("chat-1", "app-control", "app-9"); });
-    expect(await screen.findByLabelText("App Control live preview", {}, { timeout: 3_000 })).toBeTruthy();
   });
 });
 
@@ -938,55 +951,6 @@ describe("WorkLiveCornerCard chrome", () => {
     expect(restDot(card)?.title).toBe("Sign in to staging");
     const chip = card.querySelector("[data-live-card-pill] [title='Sign in to staging']");
     expect(chip?.textContent).toBe("Needs you");
-  });
-});
-
-describe("WorkLiveCornerCard tool switching", () => {
-  it("keeps painting frames after the card has swapped source tools once", async () => {
-    seedProject();
-    renderCard({ activeTool: "git" });
-    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
-    await waitFor(() => expect(appControlListeners.size).toBeGreaterThan(0));
-
-    emitBrowserEvent({ type: "status", status: BROWSER_STATUS });
-    const first = await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
-    const firstFrame = "data:image/jpeg;base64,Zmlyc3Q=";
-    emitBrowserEvent({
-      type: "preview-frame",
-      tabId: "tab-1",
-      dataUrl: firstFrame,
-      width: 480,
-      height: 300,
-      capturedAt: new Date().toISOString(),
-    });
-    await waitFor(() => expect(first.querySelector("img")?.getAttribute("src")).toBe(firstFrame));
-
-    emitAppControlEvent({ type: "session-started", session: APP_CONTROL_SESSION });
-    await screen.findByLabelText("App Control live preview", {}, { timeout: 3_000 });
-
-    emitBrowserEvent({
-      type: "status",
-      status: { ...BROWSER_STATUS, tabs: [{ ...BROWSER_STATUS.tabs[0]!, title: "Signed in" }] },
-    });
-    await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
-    await waitFor(
-      () => expect(screen.queryByLabelText("App Control live preview")).toBeNull(),
-      { timeout: 3_000 },
-    );
-
-    const secondFrame = "data:image/jpeg;base64,c2Vjb25k";
-    emitBrowserEvent({
-      type: "preview-frame",
-      tabId: "tab-1",
-      dataUrl: secondFrame,
-      width: 480,
-      height: 300,
-      capturedAt: new Date().toISOString(),
-    });
-    await waitFor(() => {
-      const live = screen.getByLabelText("Browser live preview").querySelector("img");
-      expect(live?.getAttribute("src")).toBe(secondFrame);
-    });
   });
 });
 
@@ -1208,6 +1172,7 @@ describe("Mac Desktop floating player", () => {
   it("keeps a closed player closed through a recreated display, until the toggle (M2)", async () => {
     macDesktopGetStatus.mockResolvedValue({
       supported: true,
+      platform: "darwin",
       display: macDesktopDisplay(),
       lease: null,
       windows: [],
@@ -1300,6 +1265,7 @@ describe("Mac Desktop floated by the chat's agent", () => {
     );
     macDesktopGetStatus.mockResolvedValue({
       supported: true,
+      platform: "darwin",
       display: macDesktopDisplay(),
       lease: null,
       windows: [],
@@ -1353,7 +1319,7 @@ describe("Mac Desktop floated by the chat's agent", () => {
     withLaneDisplay();
     grantMacDesktopCardForChat("lane-1", "chat-1");
     setMacDesktopFrame(macDesktopFrame());
-    const start = vi.fn(async () => ({ supported: true, display: macDesktopDisplay({ displayId: 57 }) }));
+    const start = vi.fn(async () => ({ supported: true, platform: "darwin", display: macDesktopDisplay({ displayId: 57 }) }));
     (window.ade.macDesktop as unknown as { start: unknown }).start = start;
     renderCard({ activeTool: "browser" });
     const player = await findMacPlayer();
@@ -1387,6 +1353,7 @@ describe("Mac Desktop floating preview on by default", () => {
     );
     macDesktopGetStatus.mockResolvedValue({
       supported: true,
+      platform: "darwin",
       display: macDesktopDisplay(),
       lease: null,
       windows: [],
@@ -1396,7 +1363,7 @@ describe("Mac Desktop floating preview on by default", () => {
 
   afterEach(() => {
     resetWorkToolOnScreenForTests();
-    macDesktopGetStatus.mockResolvedValue({ supported: true, display: null, lease: null, windows: [], recording: null });
+    macDesktopGetStatus.mockResolvedValue({ supported: true, platform: "darwin", display: null, lease: null, windows: [], recording: null });
   });
 
   it("floats for a chat of the lane while its display runs, like the Apple device", async () => {
@@ -1438,7 +1405,7 @@ describe("Mac Desktop floating preview on by default", () => {
     expect(macPlayer()).toBeNull();
     view.unmount();
 
-    macDesktopGetStatus.mockResolvedValue({ supported: true, display: null, lease: null, windows: [], recording: null });
+    macDesktopGetStatus.mockResolvedValue({ supported: true, platform: "darwin", display: null, lease: null, windows: [], recording: null });
     renderCard({ activeTool: "browser", sessionLaneId: "lane-1" });
     await waitFor(() => expect(macDesktopGetStatus).toHaveBeenCalled());
     await new Promise((resolve) => setTimeout(resolve, 120));
@@ -1537,6 +1504,7 @@ describe("Mac Desktop floating player: who drives, recording, picture in picture
     );
     macDesktopGetStatus.mockResolvedValue({
       supported: true,
+      platform: "darwin",
       display: macDesktopDisplay(),
       lease: null,
       windows: [],

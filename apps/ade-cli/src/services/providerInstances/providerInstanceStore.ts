@@ -1,3 +1,5 @@
+import { isClaudePromptCacheTtl, type ClaudePromptCacheTtl } from "../../../../desktop/src/shared/claudePromptCache";
+import { normalizeCompactionSettings, type ProviderCompactionSettings } from "../../../../desktop/src/shared/compactionSettings";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,6 +23,8 @@ import { providerInstanceLaunchEnv } from "../../../../desktop/src/shared/cliLau
 import { resolveClaudeCodeExecutable } from "../../../../desktop/src/main/services/ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../../../../desktop/src/main/services/ai/codexExecutable";
 import {
+  CLAUDE_MAIN_PROMPT_CACHE_TTL_ENV,
+  CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV,
   DEFAULT_PROVIDER_INSTANCE_SETTINGS,
   PROVIDER_INSTANCE_PROVIDERS,
   defaultProviderInstanceId,
@@ -31,7 +35,9 @@ import {
   type ProviderInstanceLoginCommand,
   type ProviderInstanceProvider,
   type ProviderInstanceRegistry,
+  type ProviderInstanceReplacedAccount,
   type ProviderInstanceSettings,
+  type ProviderInstanceSettingsPatch,
 } from "../../../../desktop/src/shared/types/providerInstances";
 
 /**
@@ -63,6 +69,10 @@ const MAX_LABEL_LENGTH = 60;
 const DEFAULT_INSTANCE_CREATED_AT = new Date(0).toISOString();
 
 type StoredInstance = {
+  compaction?: ProviderCompactionSettings;
+  subagentPromptCacheTtl?: "1h";
+  mainPromptCacheTtl?: ClaudePromptCacheTtl;
+  onExtraUsage?: "stop";
   id: string;
   provider: ProviderInstanceProvider;
   label: string;
@@ -70,6 +80,8 @@ type StoredInstance = {
   configHome: string;
   createdAt: string;
   account?: { email?: string; plan?: string };
+  /** The login this config home held before a different one replaced it. */
+  replacedAccount?: ProviderInstanceReplacedAccount;
 };
 
 type RegistryFile = {
@@ -90,7 +102,9 @@ export type ProviderInstanceStoreChange = {
     | "setDefault"
     | "setAccent"
     | "setSettings"
-    | "refresh";
+    | "refresh"
+    | "login"
+    | "dismissReplaced";
   provider?: ProviderInstanceProvider;
   instanceId?: string;
 };
@@ -174,15 +188,53 @@ function decodeStoredInstance(value: unknown): StoredInstance | null {
     }
     : undefined;
   const accentColor = normalizeProviderInstanceAccent(value.accentColor);
+  const replaced = isRecord(value.replacedAccount) ? value.replacedAccount : null;
+  const replacedEmail = trimmedString(replaced?.email);
+  const replacedPlan = trimmedString(replaced?.plan);
+  const replacedAccount: ProviderInstanceReplacedAccount | undefined = replaced && replacedEmail
+    ? {
+      email: replacedEmail,
+      ...(replacedPlan ? { plan: replacedPlan } : {}),
+      replacedAt: trimmedString(replaced.replacedAt) ?? DEFAULT_INSTANCE_CREATED_AT,
+    }
+    : undefined;
   return {
     id,
     provider,
     label,
     ...(accentColor ? { accentColor } : {}),
+    ...(isRecord(value.compaction) ? { compaction: normalizeCompactionSettings(value.compaction) } : {}),
+    ...(provider === "claude" && value.subagentPromptCacheTtl === "1h" ? { subagentPromptCacheTtl: "1h" as const } : {}),
+    ...(provider === "claude" && isClaudePromptCacheTtl(value.mainPromptCacheTtl) ? { mainPromptCacheTtl: value.mainPromptCacheTtl } : {}),
+    ...(provider === "claude" && value.onExtraUsage === "stop" ? { onExtraUsage: "stop" as const } : {}),
     configHome,
     createdAt: createdAt ?? DEFAULT_INSTANCE_CREATED_AT,
     ...(account && (account.email || account.plan) ? { account } : {}),
+    ...(replacedAccount ? { replacedAccount } : {}),
   };
+}
+
+function sameEmail(a: string | undefined, b: string | undefined): boolean {
+  return Boolean(a && b && a.trim().toLowerCase() === b.trim().toLowerCase());
+}
+
+/**
+ * Which of several accounts signed in to one login owns it; the rest are
+ * copies that add no quota and that smart balance skips.
+ *
+ * The default account owns it when it is one of them and its login works, else
+ * the first working login in `holders` order (the base identity, then creation
+ * order): a broken login has no quota to share. With no working login, the
+ * first holder owns it. The registry's `sameLoginAs` and the usage poller's
+ * duplicate filter both use this, so balance counts the account with numbers.
+ */
+export function sameLoginOwner<T extends { id: string }>(
+  holders: readonly T[],
+  defaultId: string,
+  isBroken: (id: string) => boolean,
+): T | undefined {
+  const working = holders.filter((holder) => !isBroken(holder.id));
+  return working.find((holder) => holder.id === defaultId) ?? working[0] ?? holders[0];
 }
 
 function emptyFile(): RegistryFile {
@@ -301,10 +353,48 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     return exists ? pointer : defaultProviderInstanceId(provider);
   }
 
+  /**
+   * Accounts whose saved login stopped working, by instance id, as the usage
+   * poller last read them. In memory only: the poller reads every account
+   * again on its next pass, so a restart re-learns it within one poll.
+   */
+  const brokenLogins = new Set<string>();
+
+  /**
+   * Records whether one account's saved login works. The config home keeps the
+   * account's email after the provider CLI clears a broken login, so the email
+   * alone said "signed in" for an account that could not run a chat.
+   */
+  function setLoginBroken(id: string, broken: boolean): void {
+    if (brokenLogins.has(id) === broken) return;
+    if (broken) brokenLogins.add(id);
+    else brokenLogins.delete(id);
+    const record = get(id);
+    if (record) emit({ reason: "login", provider: record.provider, instanceId: id });
+  }
+
   function toPublic(stored: StoredInstance, file: RegistryFile): ProviderInstance {
-    const signedIn = Boolean(stored.account?.email || stored.account?.plan);
+    const known = Boolean(stored.account?.email || stored.account?.plan);
+    const loginBroken = known && brokenLogins.has(stored.id);
+    const signedIn = known && !loginBroken;
+    const siblings = allRecords(file).filter((record) => record.provider === stored.provider);
+    // Two config homes signed in to one email are one login and one quota.
+    const holders = stored.account?.email
+      ? siblings.filter((record) => sameEmail(record.account?.email, stored.account?.email))
+      : [];
+    const owner = sameLoginOwner(holders, defaultIdFor(stored.provider, file), (id) => brokenLogins.has(id));
+    const sameLoginAs = owner && owner.id !== stored.id ? owner.id : undefined;
+    // A replaced login another account holds again is not lost.
+    const replacedAccount = stored.replacedAccount
+      && !siblings.some((record) => sameEmail(record.account?.email, stored.replacedAccount?.email))
+      ? stored.replacedAccount
+      : undefined;
     return {
       id: stored.id,
+      ...(stored.compaction ? { compaction: stored.compaction } : {}),
+      ...(stored.subagentPromptCacheTtl ? { subagentPromptCacheTtl: stored.subagentPromptCacheTtl } : {}),
+      ...(stored.mainPromptCacheTtl ? { mainPromptCacheTtl: stored.mainPromptCacheTtl } : {}),
+      ...(stored.onExtraUsage ? { onExtraUsage: stored.onExtraUsage } : {}),
       provider: stored.provider,
       label: stored.label,
       ...(stored.accentColor ? { accentColor: stored.accentColor } : {}),
@@ -313,6 +403,9 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       createdAt: stored.createdAt,
       ...(stored.account ? { account: stored.account } : {}),
       signedIn,
+      ...(loginBroken ? { loginBroken: true } : {}),
+      ...(sameLoginAs ? { sameLoginAs } : {}),
+      ...(replacedAccount ? { replacedAccount } : {}),
     };
   }
 
@@ -405,6 +498,15 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     };
   }
 
+  /** The provider CLI's own sign-out; the default is refused like `remove`. */
+  function logoutCommandFor(id: string): { instance: ProviderInstance; command: ProviderInstanceLoginCommand } {
+    const instance = get(id);
+    if (!instance) throw new Error(`No provider account with id ${JSON.stringify(id)}.`);
+    if (instance.isDefault) throw new Error("This account is the default. Make another account the default first.");
+    const args = instance.provider === "claude" ? ["auth", "logout"] : ["logout"];
+    return { instance, command: { ...loginCommandFor(instance), args } };
+  }
+
   function uniqueInstanceId(provider: ProviderInstanceProvider, label: string, file: RegistryFile): string {
     const taken = new Set<string>([
       ...PROVIDER_INSTANCE_PROVIDERS,
@@ -492,9 +594,16 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     });
   }
 
+  /**
+   * Accounts whose provider CLI logout is running. The logout takes seconds,
+   * and an account made the default meanwhile would come out signed out.
+   */
+  const signingOut = new Set<string>();
+
   function setDefault(id: string): ProviderInstance {
     const trimmed = typeof id === "string" ? id.trim() : "";
     if (!trimmed) throw new Error("A provider account id is required.");
+    if (signingOut.has(trimmed)) throw new Error("This account is being signed out. Try again in a moment.");
     const file = readFile();
     const record = allRecords(file).find((entry) => entry.id === trimmed);
     if (!record) throw new Error(`No provider account with id ${JSON.stringify(trimmed)}.`);
@@ -521,6 +630,8 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     const file = readFile();
     const record = allRecords(file).find((entry) => entry.id === trimmed);
     if (!record) throw new Error(`No provider account with id ${JSON.stringify(trimmed)}.`);
+    // A second removal racing the first one's sign-out must not report success.
+    if (signingOut.has(trimmed)) throw new Error("This account is already being signed out.");
     if (isDefaultProviderInstanceId(trimmed)) {
       throw new Error("The machine's own provider login cannot be removed; it is where the provider reads its config.");
     }
@@ -529,8 +640,21 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     }
     file.instances = file.instances.filter((entry) => entry.id !== trimmed);
     writeFile(file);
+    // An instance id is a label slug and can be reused: recreating an account
+    // with the same label mints the same id, so a stale entry here would report
+    // the fresh account as signed out until its next poll.
+    brokenLogins.delete(trimmed);
     emit({ reason: "remove", provider: record.provider, instanceId: trimmed });
     return { removed: true, configHome: record.configHome };
+  }
+
+  /** Forget the login an account held before a different sign-in replaced it. */
+  function dismissReplaced(id: string): ProviderInstance {
+    return mutateRecord(id, "dismissReplaced", (record) => {
+      const next = { ...record };
+      delete next.replacedAccount;
+      return next;
+    });
   }
 
   function getProviderSettings(provider: ProviderInstanceProvider): ProviderInstanceSettings {
@@ -540,9 +664,52 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
 
   function setProviderSettings(
     provider: ProviderInstanceProvider,
-    settings: Partial<ProviderInstanceSettings>,
+    settings: ProviderInstanceSettingsPatch,
+    instanceId?: string,
   ): ProviderInstanceSettings {
     const resolved = requireProvider(provider);
+    const patchesProvider = typeof settings?.smartBalance === "boolean" || typeof settings?.autoStartWindows === "boolean";
+    let accountCompaction: { compaction?: ProviderCompactionSettings } | null = null;
+    if (instanceId) {
+      const account = get(instanceId);
+      if (!account || account.provider !== resolved) throw new Error("Provider account does not match this setting.");
+      const updated = mutateRecord(instanceId, "setSettings", (record) => {
+        const next = { ...record };
+        // A patch that names one account setting must not clear the other.
+        if (Object.hasOwn(settings, "compaction")) {
+          if (settings.compaction == null) delete next.compaction;
+          else next.compaction = normalizeCompactionSettings(settings.compaction);
+        }
+        if (Object.hasOwn(settings, "subagentPromptCacheTtl")) {
+          if (resolved === "claude" && settings.subagentPromptCacheTtl === "1h") next.subagentPromptCacheTtl = "1h";
+          else delete next.subagentPromptCacheTtl;
+        }
+        if (Object.hasOwn(settings, "mainPromptCacheTtl")) {
+          if (resolved === "claude" && isClaudePromptCacheTtl(settings.mainPromptCacheTtl)) next.mainPromptCacheTtl = settings.mainPromptCacheTtl;
+          else delete next.mainPromptCacheTtl;
+        }
+        if (Object.hasOwn(settings, "onExtraUsage")) {
+          if (resolved === "claude" && settings.onExtraUsage === "stop") next.onExtraUsage = "stop";
+          else delete next.onExtraUsage;
+        }
+        return next;
+      });
+      // One patch can carry account settings and provider settings; the
+      // provider part is applied below, not dropped.
+      if (!patchesProvider) return { ...getProviderSettings(resolved), compaction: updated.compaction };
+      accountCompaction = { compaction: updated.compaction };
+    } else {
+      // An account setting with no account would be dropped and reported as saved.
+      if (Object.hasOwn(settings, "subagentPromptCacheTtl")) {
+        throw new Error("The subagent cache setting needs a provider account id.");
+      }
+      if (Object.hasOwn(settings, "onExtraUsage")) {
+        throw new Error("The extra usage setting needs a provider account id.");
+      }
+    }
+    if (Object.hasOwn(settings, "mainPromptCacheTtl")) {
+      throw new Error("The main chat cache setting needs a provider account id.");
+    }
     const file = readFile();
     const current = { ...DEFAULT_PROVIDER_INSTANCE_SETTINGS, ...(file.settings[resolved] ?? {}) };
     const next: ProviderInstanceSettings = {
@@ -553,7 +720,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     file.settings[resolved] = next;
     writeFile(file);
     emit({ reason: "setSettings", provider: resolved });
-    return next;
+    return accountCompaction ? { ...next, ...accountCompaction } : next;
   }
 
   /**
@@ -619,6 +786,17 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
         ...(hasAccount ? { account: next } : {}),
       };
       if (!hasAccount) delete updated.account;
+      // A different email in the same config home means a sign-in elsewhere
+      // (`claude /login` in a shell, for the base identity) replaced this
+      // login, and its credentials are gone. Remember it so the panel can offer
+      // to sign it back in instead of silently losing an account.
+      if (previous?.email && next.email && !sameEmail(previous.email, next.email)) {
+        updated.replacedAccount = {
+          email: previous.email,
+          ...(previous.plan ? { plan: previous.plan } : {}),
+          replacedAt: now().toISOString(),
+        };
+      }
       if (index >= 0) file.instances[index] = updated;
       else file.instances = [...file.instances, updated];
     }
@@ -665,6 +843,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     rename,
     setDefault,
     setAccent,
+    dismissReplaced,
     getProviderSettings,
     setProviderSettings,
     getPresetBindings,
@@ -674,7 +853,29 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       if (!instance) throw new Error(`No provider account with id ${JSON.stringify(id)}.`);
       return loginCommandFor(instance);
     },
+    /**
+     * The provider CLI's own sign-out for one account, run against that
+     * account's config home. The default is refused like `remove`: new chats
+     * go to it, so it has to stay signed in until another account is the
+     * default.
+     */
+    logoutCommand: (id: string): ProviderInstanceLoginCommand => logoutCommandFor(id).command,
+    /**
+     * Runs one account's logout with `setDefault` refused for it meanwhile.
+     * The default check and the mark happen together, before any await.
+     */
+    async whileSigningOut<T>(id: string, run: (command: ProviderInstanceLoginCommand) => Promise<T>): Promise<T> {
+      const { instance, command } = logoutCommandFor(id);
+      if (signingOut.has(instance.id)) throw new Error("This account is already being signed out.");
+      signingOut.add(instance.id);
+      try {
+        return await run(command);
+      } finally {
+        signingOut.delete(instance.id);
+      }
+    },
     refreshAccounts,
+    setLoginBroken,
     /** Every write emits; returns the unsubscribe. */
     onChange(listener: (change: ProviderInstanceStoreChange) => void): () => void {
       listeners.add(listener);
@@ -693,6 +894,45 @@ export type ProviderInstanceStore = ReturnType<typeof createProviderInstanceStor
  * would move every other tool's config at the same time; ADE moves exactly the
  * one directory the provider owns.
  */
+/**
+ * The env that carries one Claude account's prompt cache choices to a Claude
+ * process. Each of the two lifetimes (main conversation, subagents) is left
+ * out when the account made no choice for it or `env` already states it. Only
+ * for a launch that runs on the account's own login — a preset or a stored
+ * credential bills somewhere else and must not get it.
+ */
+export function claudeAccountPromptCacheEnv(
+  instanceId: string | null | undefined,
+  env: NodeJS.ProcessEnv,
+): Record<string, string> {
+  const statesSubagent = Boolean(env[CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV]?.trim());
+  const statesMain = Boolean(env[CLAUDE_MAIN_PROMPT_CACHE_TTL_ENV]?.trim());
+  if (statesSubagent && statesMain) return {};
+  try {
+    const { subagentPromptCacheTtl, mainPromptCacheTtl } = getMachineProviderInstanceStore().resolve("claude", instanceId).instance;
+    return {
+      ...(subagentPromptCacheTtl && !statesSubagent ? { [CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV]: subagentPromptCacheTtl } : {}),
+      ...(mainPromptCacheTtl && !statesMain ? { [CLAUDE_MAIN_PROMPT_CACHE_TTL_ENV]: mainPromptCacheTtl } : {}),
+    };
+  } catch {
+    // An unreadable registry must not stop a launch; Claude Code's default applies.
+    return {};
+  }
+}
+
+/**
+ * True when this Claude account's owner chose to stop a turn that draws on
+ * extra usage. An unreadable registry answers false: Claude Code's own
+ * behavior (continue) applies.
+ */
+export function claudeAccountStopsOnExtraUsage(instanceId: string | null | undefined): boolean {
+  try {
+    return getMachineProviderInstanceStore().resolve("claude", instanceId).instance.onExtraUsage === "stop";
+  } catch {
+    return false;
+  }
+}
+
 export function providerInstanceEnvPatch(
   instance: { id: string; provider: ProviderInstanceProvider; configHome: string } | null | undefined,
 ): Record<string, string> {

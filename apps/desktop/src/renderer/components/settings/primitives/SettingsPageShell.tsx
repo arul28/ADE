@@ -20,6 +20,7 @@ export function SettingsPageShell({
   title,
   description,
   leading,
+  icon,
   titleAdornment,
   sectionAttrs,
   sectionStyle,
@@ -35,6 +36,8 @@ export function SettingsPageShell({
   description?: React.ReactNode;
   /** Sits before the title — a back control, a section mark. */
   leading?: React.ReactNode;
+  /** A tile left of the whole title block (title and description). */
+  icon?: React.ReactNode;
   /** Sits after the title — a help hint, a count. */
   titleAdornment?: React.ReactNode;
   /** Extra data-* attributes for the `<section>`, e.g. `data-settings-manager`. */
@@ -58,10 +61,10 @@ export function SettingsPageShell({
       {...sectionAttrs}
       style={{
         scrollMarginTop: 16,
-        padding: 16,
-        background: "color-mix(in srgb, var(--color-card) 90%, var(--color-bg) 10%)",
-        border: `1px solid ${COLORS.borderMuted}`,
-        borderRadius: 12,
+        padding: "16px 18px",
+        background: "color-mix(in srgb, var(--color-card) 55%, var(--color-bg) 45%)",
+        border: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)",
+        borderRadius: 14,
         ...sectionStyle,
       }}
     >
@@ -75,36 +78,39 @@ export function SettingsPageShell({
           flexWrap: headerWrap ? "wrap" : "nowrap",
         }}
       >
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-            {leading}
-            <h3
-              style={{
-                margin: 0,
-                fontFamily: SANS_FONT,
-                fontSize: 13,
-                fontWeight: 600,
-                color: COLORS.textPrimary,
-                letterSpacing: "-0.01em",
-              }}
-            >
-              {title}
-            </h3>
-            {titleAdornment}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0, flex: 1, width: headerStacked ? "100%" : undefined }}>
+          {icon ?? null}
+          <div style={{ minWidth: 0, flex: 1, alignSelf: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              {leading}
+              <h3
+                style={{
+                  margin: 0,
+                  fontFamily: SANS_FONT,
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: COLORS.textPrimary,
+                  letterSpacing: "-0.005em",
+                }}
+              >
+                {title}
+              </h3>
+              {titleAdornment}
+            </div>
+            {description ? (
+              <p
+                style={{
+                  margin: "3px 0 0",
+                  fontFamily: SANS_FONT,
+                  fontSize: 12,
+                  lineHeight: 1.45,
+                  color: COLORS.textMuted,
+                }}
+              >
+                {description}
+              </p>
+            ) : null}
           </div>
-          {description ? (
-            <p
-              style={{
-                margin: "4px 0 0",
-                fontFamily: SANS_FONT,
-                fontSize: 11,
-                lineHeight: 1.55,
-                color: COLORS.textMuted,
-              }}
-            >
-              {description}
-            </p>
-          ) : null}
         </div>
         {aside ?? null}
       </div>

@@ -105,7 +105,7 @@ const MENU_TRIGGER = cn(
 
 /** The browser pane's field: a sunken well rather than a raised control. */
 const INPUT = cn(
-  "h-6 min-w-0 flex-1 rounded-[5px] border border-white/[0.08] bg-black/25 px-1.5",
+  "h-6 min-w-0 flex-1 rounded-[5px] border border-fg/[0.08] bg-black/25 px-1.5",
   "font-sans text-[10.5px] text-fg/85 placeholder:text-muted-fg/45 outline-none",
   "focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]",
   "disabled:cursor-not-allowed disabled:opacity-45",
@@ -229,7 +229,7 @@ function Toggle({
             "border-[color-mix(in_srgb,var(--color-accent)_45%,transparent)]",
             "bg-[color-mix(in_srgb,var(--color-accent)_40%,transparent)]",
           )
-          : "border-white/[0.1] bg-white/[0.06]",
+          : "border-fg/[0.1] bg-fg/[0.06]",
         "disabled:cursor-not-allowed disabled:opacity-45",
       )}
     >
@@ -253,7 +253,7 @@ function Section({
   right?: React.ReactNode;
 }) {
   return (
-    <div className="border-b border-white/[0.05] pb-1.5 last:border-b-0">
+    <div className="border-b border-fg/[0.05] pb-1.5 last:border-b-0">
       <div className="flex items-center justify-between">
         <div className={SECTION_LABEL}>{label}</div>
         {right}
@@ -351,7 +351,7 @@ export function IosSimToolsColumn({
   return (
     <div
       className={cn(
-        "flex w-[240px] shrink-0 flex-col gap-0 overflow-y-auto rounded border border-white/[0.08] bg-white/[0.02] p-1.5",
+        "flex w-[240px] shrink-0 flex-col gap-0 overflow-y-auto rounded border border-fg/[0.08] bg-fg/[0.02] p-1.5",
         className,
       )}
       data-testid="ios-tools-column"

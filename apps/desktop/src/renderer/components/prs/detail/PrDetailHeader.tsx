@@ -9,12 +9,15 @@ import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../lanes/laneDes
 import { BranchIcon } from "../../ui/vcsIcons";
 import { SmartTooltip } from "../../ui/SmartTooltip";
 import { LaneChip } from "../../terminals/LaneChip";
+import { MachineChip } from "../../shared/MachineChip";
+import type { MachineChipModel } from "../../../state/laneMachineRouting";
 import { getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
 import { PrUserAvatar } from "../shared/PrUserAvatar";
 import { PrActionsDropdown, type PrActionsContext } from "../shared/PrActionsMenu";
 import { chatLabel } from "../shared/prChatActions";
 import { isTerminalPrState } from "../../../lib/prState";
 import { relativeWhen } from "../../../lib/format";
+import { PrSwitcherMenu, PrSwitcherStepper, type PrSwitcher } from "../shared/PrSwitcher";
 import type { PrDetailRouteTab } from "../prsRouteState";
 import "./PrDetailHeader.css";
 
@@ -28,6 +31,18 @@ export type UnmappedAffordance = {
   /** Whether a local lane can be created from this PR's branch. */
   canCreateLane: boolean;
   onCreateLane: () => void;
+  /**
+   * Set when the PR's lane lives on another machine. The pane shows GitHub's
+   * view of the PR; everything that touches the lane happens on that machine.
+   */
+  foreignLane?: {
+    laneName: string;
+    laneColor: string | null;
+    machineName: string;
+    chip: MachineChipModel | null;
+    offlineMessage: string | null;
+    onOpenLane: () => void;
+  } | null;
 };
 
 /** Live note beside the Checks tab: counts while running, a dot once settled. */
@@ -92,6 +107,10 @@ export type PrDetailHeaderProps = {
   /** The ⋯ menu's context. Its `onRefresh` and `refreshing` also drive the refresh button. */
   actions: PrActionsContext;
   unmappedAffordance?: UnmappedAffordance | null;
+  /** The lane's machine. Shown beside the lane chip only when it is another machine. */
+  laneMachineChip?: MachineChipModel | null;
+  /** Set when the pane holds more than one pull request (a chat's PRs). */
+  switcher?: PrSwitcher | null;
 };
 
 /**
@@ -121,6 +140,8 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
   readyForReviewBusy,
   actions,
   unmappedAffordance = null,
+  laneMachineChip = null,
+  switcher = null,
 }: PrDetailHeaderProps) {
   const tabs: Array<{ id: DetailTab; label: string; icon: React.ElementType; count?: number; note?: React.ReactNode }> = [
     { id: "overview", label: "Overview", icon: Eye },
@@ -150,6 +171,7 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
   const hiddenChats = linkedChats.length - shownChats.length;
   const showOpenAsLane = !pr.laneId && unmappedAffordance?.canCreateLane && !isTerminalPrState(pr.state);
   const refreshing = Boolean(actions.refreshing);
+  const showSwitcher = Boolean(switcher && switcher.prs.length > 1);
 
   return (
     <div
@@ -171,6 +193,7 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
               <ArrowSquareOut size={11} />
             </button>
           </SmartTooltip>
+          {showSwitcher && switcher ? <PrSwitcherMenu switcher={switcher} /> : null}
           {author?.login ? (
             <span className="ade-pr-detail-header-author">
               <span aria-hidden style={{ color: COLORS.textDim }}>·</span>
@@ -195,6 +218,7 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
             <InlinePrBadge {...badge} />
           </span>
           <span style={{ flex: 1 }} />
+          {showSwitcher && switcher ? <PrSwitcherStepper switcher={switcher} /> : null}
           {showOpenAsLane ? (
             <SmartTooltip content={{ label: "Open as lane", description: "Check this pull request's branch out into a local lane so you can run and edit it here." }}>
               <button
@@ -258,6 +282,29 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
               data-testid="pr-header-lane-chip"
               className="ade-pr-detail-header-lane"
             />
+          ) : null}
+          {/* Only a lane on another machine says where it is: lane actions run
+              there. A chip that names this computer tells the reader nothing. */}
+          {lane && laneMachineChip && !laneMachineChip.isThisMachine ? <MachineChip machine={laneMachineChip} subject="This lane" /> : null}
+          {lane ? null : unmappedAffordance?.foreignLane ? (
+            <span
+              // Wraps rather than squeezing the lane name next to its machine.
+              style={{ display: "inline-flex", flexWrap: "wrap", alignItems: "center", gap: 6, minWidth: 0 }}
+              title={unmappedAffordance.foreignLane.offlineMessage
+                ?? `This lane lives on ${unmappedAffordance.foreignLane.machineName}. Lane actions run there.`}
+            >
+              <LaneChip
+                laneName={unmappedAffordance.foreignLane.laneName}
+                laneColor={unmappedAffordance.foreignLane.laneColor}
+                maxWidth="100%"
+                onClick={unmappedAffordance.foreignLane.onOpenLane}
+                data-testid="pr-header-foreign-lane-chip"
+                className="ade-pr-detail-header-lane"
+              />
+              {unmappedAffordance.foreignLane.chip ? (
+                <MachineChip machine={unmappedAffordance.foreignLane.chip} subject="This lane" />
+              ) : null}
+            </span>
           ) : null}
           {shownChats.map((session) => (
             <button

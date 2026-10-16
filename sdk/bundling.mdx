@@ -62,7 +62,25 @@ const ade = await createAdeChat({
 
 `allowDownload: false` is the important half. Without it a packaging mistake works on your machine through a silent download and fails on a locked-down user's. With it, the same mistake throws `runtime_unavailable` in QA with a message listing everything that was tried.
 
-Inside a packaged app the runtime is no longer under `node_modules`, so point at it explicitly:
+### Inside a packaged app
+
+Inside a packaged app the runtime is no longer under `node_modules`. `resolvePackagedRuntime` finds the copy under your resources directory, so the layout (`bin/ade`, `native/`, `native/node_modules`) is not hardcoded in your app:
+
+```ts
+import { createAdeChat, resolvePackagedRuntime } from "@ade-dev/sdk";
+
+const packaged = app.isPackaged ? resolvePackagedRuntime(process.resourcesPath) : null;
+
+const ade = await createAdeChat({
+  home: path.join(app.getPath("userData"), "ade"),
+  ...(packaged ?? {}),
+  allowDownload: false,
+});
+```
+
+`resolvePackagedRuntime(resourcesPath, { dir = "ade-runtime" })` returns `null` when the directory has no runtime binary, or when the binary is for a different CPU architecture than the running app. It throws `binary_not_found` when the binary is present but `native/node_modules` is not. A client created from it reports `doctor().runtime.source === "packaged"`.
+
+You can still pass the three paths by hand:
 
 ```ts
 const runtime = path.join(process.resourcesPath, "ade-runtime");
@@ -75,7 +93,7 @@ const ade = await createAdeChat({
 });
 ```
 
-`runtimeRoot` defaults to the parent of `runtimeNodeModules`, so you only pass it when you split the two halves. Both directories are validated at `createAdeChat`, not at spawn: a wrong path fails with `binary_not_found` naming the path, rather than with a dlopen error from inside a child process.
+That form reports `source: "explicit"`. `runtimeRoot` defaults to the parent of `runtimeNodeModules`, so you only pass it when you split the two halves. Both directories are validated at `createAdeChat`, not at spawn: a wrong path fails with `binary_not_found` naming the path, rather than with a dlopen error from inside a child process.
 
 **Paths with spaces are safe.** `/Applications/My App.app/Contents/Resources/…` needs no quoting anywhere: every path is composed with `path.join`, every spawn is argv-based, and no shell string is ever built.
 
@@ -149,7 +167,7 @@ Timestamp the signature. An expired certificate invalidates every signature it m
 
 ## electron-builder
 
-Copy the platform package into `Contents/Resources` (or the Windows `resources` directory) with `extraResources`:
+Copy the platform package into `Contents/Resources` (or the Windows `resources` directory) with `extraResources`, sign it in `afterPack`, and tell electron-builder not to sign it again:
 
 ```json
 {
@@ -165,19 +183,39 @@ Copy the platform package into `Contents/Resources` (or the Windows `resources` 
       "hardenedRuntime": true,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "signIgnore": ["/Contents/Resources/ade-runtime/"],
       "notarize": true
     },
-    "afterSign": "./scripts/sign-ade-runtime.cjs"
+    "afterPack": "./scripts/sign-ade-runtime.cjs"
   }
 }
 ```
 
-The `filter` matters: it keeps `package.json`, `README.md`, `LICENSE` and `RUNTIME-EMBEDDING-EXCEPTION.md` out of the bundle, so the only files inside are ones you sign. Those two license documents still have to reach your users. Put them wherever your application shows its third-party notices.
+The order is the whole point, so here it is in full:
 
-electron-builder does not sign files under `extraResources` on macOS, so do it in `afterSign`:
+1. `afterPack` runs after the app is assembled and **before** electron-builder signs it. The hook signs the runtime with its own entitlements.
+2. electron-builder signs the app. It walks every Mach-O file under `Contents`, including `extraResources`, and would give each one your `entitlementsInherit`. `signIgnore` stops it at the runtime, so the runtime keeps the signature and the entitlements from step 1.
+3. electron-builder seals the app and notarizes it. The seal covers the runtime as signed in step 1.
+
+<Warning>
+Do not sign the runtime in `afterSign`. electron-builder has already sealed **and notarized** the app when `afterSign` runs, so a signature changed there invalidates the seal and does not match the notarized bytes. Guides before SDK 0.3 said that electron-builder does not sign `extraResources`. That is not true for electron-builder 26: `@electron/osx-sign` walks all of `Contents`.
+</Warning>
+
+The `filter` matters: it keeps `package.json`, `README.md`, `LICENSE`, `RUNTIME-EMBEDDING-EXCEPTION.md` and `signing/` out of the bundle, so the only files inside are ones you sign. The two license documents still have to reach your users. Put them wherever your application shows its third-party notices.
+
+### The signing kit
+
+From runtime 1.2.81, each macOS platform package carries a `signing/` directory:
+
+| File | Contents |
+|---|---|
+| `signing/entitlements.runtime.plist` | The entitlements ADE signs its own runtime with: `com.apple.security.cs.allow-jit` and nothing else. |
+| `signing/manifest.json` | `{ schemaVersion: 1, entitlements, sign: [{ path, entitlements }] }`. Every Mach-O file under `native/` with `entitlements: false`, then `bin/ade` with `entitlements: true`, in the order to sign them. Paths are relative to the package root. |
+
+The hook reads the manifest, and walks the tree itself for an older package. For that fallback, save the one-key plist from [macOS: signing](#macos-signing) as `build/entitlements.runtime.plist` in your project.
 
 ```js
-// scripts/sign-ade-runtime.cjs
+// scripts/sign-ade-runtime.cjs — electron-builder `afterPack` hook
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -206,36 +244,70 @@ function* walk(dir) {
   }
 }
 
+// The files to sign, in order: every Mach-O under native/ first, bin/ade last.
+function signingPlan(runtimeDir, packageDir) {
+  const manifestPath = path.join(packageDir, "signing", "manifest.json");
+  if (fs.existsSync(manifestPath)) {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    return {
+      entitlements: path.join(packageDir, manifest.entitlements),
+      sign: manifest.sign.map((item) => ({ ...item, path: path.join(runtimeDir, item.path) })),
+    };
+  }
+  const nativeFiles = [...walk(path.join(runtimeDir, "native"))].filter(isMachO).sort();
+  return {
+    entitlements: path.join(__dirname, "..", "build", "entitlements.runtime.plist"),
+    sign: [
+      ...nativeFiles.map((file) => ({ path: file, entitlements: false })),
+      { path: path.join(runtimeDir, "bin", "ade"), entitlements: true },
+    ],
+  };
+}
+
 exports.default = async function signAdeRuntime(context) {
   if (context.electronPlatformName !== "darwin") return;
-  const identity = process.env.CSC_NAME;
-  const runtime = path.join(
+  // The full identity name, for example "Developer ID Application: Example Inc (TEAMID)".
+  const identity = process.env.ADE_RUNTIME_SIGN_IDENTITY;
+  if (!identity) throw new Error("Set ADE_RUNTIME_SIGN_IDENTITY.");
+  const runtimeDir = path.join(
     context.appOutDir,
     `${context.packager.appInfo.productFilename}.app`,
-    "Contents",
-    "Resources",
-    "ade-runtime",
+    "Contents", "Resources", "ade-runtime",
   );
-
-  // The native modules first: codesign seals a directory's contents, so a file
-  // signed after its container invalidates the container's signature.
-  for (const file of walk(path.join(runtime, "native"))) {
-    if (!isMachO(file)) continue;
+  // electron-builder's Arch enum: 1 = x64, 3 = arm64. Copy the matching
+  // package in `extraResources` for each architecture you build.
+  const archName = { 1: "x64", 3: "arm64" }[context.arch];
+  if (!archName) throw new Error(`No ADE runtime package for arch ${context.arch}.`);
+  const packageDir = path.dirname(require.resolve(`@ade-dev/runtime-darwin-${archName}/package.json`, {
+    paths: [context.packager.projectDir],
+  }));
+  const plan = signingPlan(runtimeDir, packageDir);
+  for (const item of plan.sign) {
     execFileSync("codesign", [
-      "--force", "--options", "runtime", "--timestamp", "--sign", identity, file,
+      "--force", "--options", "runtime", "--timestamp",
+      ...(item.entitlements ? ["--entitlements", plan.entitlements] : []),
+      "--sign", identity, item.path,
     ], { stdio: "inherit" });
   }
-
-  execFileSync("codesign", [
-    "--force", "--options", "runtime", "--timestamp",
-    "--entitlements", path.join(__dirname, "..", "build", "entitlements.runtime.plist"),
-    "--sign", identity,
-    path.join(runtime, "bin", "ade"),
-  ], { stdio: "inherit" });
 };
 ```
 
-Then point the client at the copied tree, as in [Resolve it with no configuration](#resolve-it-with-no-configuration) above.
+After the build, check the result:
+
+```bash
+APP="dist/mac-arm64/My App.app"
+codesign --verify --deep --strict --verbose=2 "$APP"
+spctl --assess --type execute --verbose=4 "$APP"
+codesign --display --entitlements - "$APP/Contents/Resources/ade-runtime/bin/ade"
+```
+
+The last command must show `com.apple.security.cs.allow-jit` and nothing else.
+
+Then point the client at the copied tree with `resolvePackagedRuntime`, as in [Inside a packaged app](#inside-a-packaged-app) above.
+
+### Intel Macs
+
+Each platform package carries one architecture. An app that ships one runtime (for example `darwin-arm64` only) must refuse to start chat on the other architecture, or ship a second build. A universal app needs both packages: copy `@ade-dev/runtime-darwin-arm64` and `@ade-dev/runtime-darwin-x64` to two directories and choose one at run time from `process.arch`. There is no universal runtime binary. On an Intel Mac, `resolvePackagedRuntime` returns `null` when only an arm64 tree is present, so `createAdeChat` fails at start with `runtime_unavailable` instead of at spawn.
 
 ## Confirm what shipped
 
@@ -243,13 +315,13 @@ Then point the client at the copied tree, as in [Resolve it with no configuratio
 
 ```ts
 const report = await ade.doctor();
-console.log(report.runtime.source);     // "explicit" in a packaged app
+console.log(report.runtime.source);     // "packaged" with resolvePackagedRuntime
 console.log(report.runtime.signature);  // { signed: true, authority: "…", accepted: true }
 ```
 
 | Field | Meaning |
 |---|---|
-| `source` | `explicit`, `bundled-package`, `cached-download`, `path`, `downloaded`, or `attached` |
+| `source` | `packaged`, `explicit`, `bundled-package`, `cached-download`, `path`, `downloaded`, or `attached` |
 | `binaryPath` | The binary that was spawned |
 | `runtimeRoot` / `nodeModulesPath` | `ADE_RUNTIME_ROOT` and `ADE_RUNTIME_NODE_MODULES` as spawned |
 | `signature` | macOS and Windows only. `null` on Linux and whenever the check could not run, which means "not known", never "not signed" |

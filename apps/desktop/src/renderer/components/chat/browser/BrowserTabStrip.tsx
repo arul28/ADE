@@ -9,13 +9,15 @@
  * strip that draws a lone chip above the address bar is 28px of furniture
  * restating what the tool header already says.
  */
-import type { Dispatch, KeyboardEvent, MutableRefObject, SetStateAction } from "react";
-import { Globe, Plus, Robot, X } from "@phosphor-icons/react";
+import { useCallback, useMemo, useState } from "react";
+import type { Dispatch, KeyboardEvent, MouseEvent, MutableRefObject, SetStateAction } from "react";
+import { ChatCircleText, Detective, Globe, Plus, Robot, X } from "@phosphor-icons/react";
 import { motion } from "motion/react";
 import type { BuiltInBrowserTab } from "../../../../shared/types/builtInBrowser";
 import { tunnelAwareUrl, type TabTunnelMap } from "../browserRemoteTunnels";
 import { browserTabLabel } from "./browserToolbarLabels";
 import { cn } from "../../ui/cn";
+import { ContextMenu, type ContextMenuEntry, type ContextMenuState } from "../../ui/ContextMenu";
 import { TOOLBAR_FOCUS } from "./browserChrome";
 import { browserTabGroupKey } from "./browserTabGroups";
 import type { BrowserTab } from "./browserPanelTypes";
@@ -64,6 +66,8 @@ export type BrowserTabStripProps = {
   onNewTab: () => void;
   /** Lane color for the group outline. Missing lanes draw no outline. */
   laneColorById?: ReadonlyMap<string, string>;
+  /** Right-click → "Attach to chat". Absent where there is no chat to attach to. */
+  onAttachTab?: (tabId: string) => void;
 };
 
 export function BrowserTabStrip({
@@ -82,7 +86,35 @@ export function BrowserTabStrip({
   onCloseTab,
   onNewTab,
   laneColorById,
+  onAttachTab,
 }: BrowserTabStripProps) {
+  const [tabMenu, setTabMenu] = useState<(NonNullable<ContextMenuState> & { tabId: string }) | null>(null);
+  const closeTabMenu = useCallback(() => setTabMenu(null), []);
+  const menuTabId = tabMenu?.tabId ?? null;
+  const tabMenuEntries = useMemo<ContextMenuEntry[]>(() => (
+    menuTabId && onAttachTab
+      ? [{
+          kind: "item",
+          key: "attach-to-chat",
+          label: "Attach to chat",
+          icon: ChatCircleText,
+          onSelect: () => onAttachTab(menuTabId),
+        }]
+      : []
+  ), [menuTabId, onAttachTab]);
+  const openTabMenu = (event: MouseEvent<HTMLDivElement>, tabId: string) => {
+    if (!onAttachTab) return;
+    event.preventDefault();
+    // The keyboard's menu key reports no pointer, so open under the tab.
+    const rect = event.currentTarget.getBoundingClientRect();
+    const fromKeyboard = event.clientX === 0 && event.clientY === 0;
+    setTabMenu({
+      x: fromKeyboard ? rect.left : event.clientX,
+      y: fromKeyboard ? rect.bottom : event.clientY,
+      tabId,
+    });
+  };
+
   /*
     Roving focus, so the strip costs one Tab stop instead of 2N.
 
@@ -161,26 +193,31 @@ export function BrowserTabStrip({
                 if (!active) onSwitchTab(tab.id);
               }}
               onKeyDown={(event) => handleTabKeyDown(event, index)}
+              onContextMenu={(event) => openTabMenu(event, tab.id)}
               className={cn(
                 "group/tab relative inline-flex h-6 max-w-[144px] min-w-[84px] shrink-0 items-center",
                 "gap-1.5 rounded-md px-2 text-[12px]",
                 "transition-colors duration-[120ms] ease-out",
-                active ? "text-fg/92" : "text-muted-fg/70 hover:bg-white/[0.04] hover:text-fg/85",
+                active ? "text-fg/92" : "text-muted-fg/70 hover:bg-fg/[0.04] hover:text-fg/85",
               )}
               style={groupColor ? { boxShadow: `inset 0 0 0 1px ${groupColor}` } : undefined}
-              title={[ownerTitle, tabUrl ?? label].filter(Boolean).join(" · ")}
+              title={[
+                ownerTitle,
+                tab.isolatedProfile ? `Separate sign-in "${tab.isolatedProfile}" · not your cookies` : null,
+                tabUrl ?? label,
+              ].filter(Boolean).join(" · ")}
             >
               {active ? (
                 reduceMotion ? (
                   <span
                     aria-hidden="true"
-                    className="absolute inset-0 rounded-md bg-white/[0.07]"
+                    className="absolute inset-0 rounded-md bg-fg/[0.07]"
                   />
                 ) : (
                   <motion.span
                     aria-hidden="true"
                     layoutId={TAB_INDICATOR_LAYOUT_ID}
-                    className="absolute inset-0 rounded-md bg-white/[0.07]"
+                    className="absolute inset-0 rounded-md bg-fg/[0.07]"
                     transition={TAB_INDICATOR_SPRING}
                   />
                 )
@@ -222,6 +259,14 @@ export function BrowserTabStrip({
                     className="h-[5px] w-[5px] shrink-0 rounded-full bg-rose-400 shadow-[0_0_0_2.5px_rgba(251,113,133,0.18)]"
                   />
                 ) : null}
+                {tab.isolatedProfile ? (
+                  <Detective
+                    size={11}
+                    weight="duotone"
+                    aria-label={`Separate sign-in "${tab.isolatedProfile}"`}
+                    className="shrink-0 text-violet-200/70"
+                  />
+                ) : null}
                 {ownerLabel ? (
                   <Robot
                     size={11}
@@ -238,7 +283,7 @@ export function BrowserTabStrip({
                 className={cn(
                   "relative -mr-1 inline-flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-[4px]",
                   "text-muted-fg/45 opacity-0 transition-colors duration-[120ms] ease-out",
-                  "hover:bg-white/[0.1] hover:text-fg/85 group-hover/tab:opacity-100 focus-visible:opacity-100",
+                  "hover:bg-fg/[0.1] hover:text-fg/85 group-hover/tab:opacity-100 focus-visible:opacity-100",
                   TOOLBAR_FOCUS,
                 )}
                 onClick={(event) => {
@@ -270,7 +315,7 @@ export function BrowserTabStrip({
         onClick={onNewTab}
         className={cn(
           "mr-2 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
-          "text-muted-fg/60 transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg/85",
+          "text-muted-fg/60 transition-colors duration-[120ms] ease-out hover:bg-fg/[0.06] hover:text-fg/85",
           "disabled:cursor-not-allowed disabled:opacity-45",
           TOOLBAR_FOCUS,
         )}
@@ -279,6 +324,15 @@ export function BrowserTabStrip({
       >
         <Plus size={12} />
       </button>
+      {/* Portaled: the strip sits over a native page view, and the menu has to
+          land under the pointer and be seen by the view's occlusion pass. */}
+      <ContextMenu
+        menu={tabMenu && tabMenuEntries.length > 0 ? tabMenu : null}
+        entries={tabMenuEntries}
+        onClose={closeTabMenu}
+        label="Browser tab actions"
+        portal
+      />
     </div>
   );
 }

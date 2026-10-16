@@ -147,6 +147,9 @@ export function createGitNamespaces(infra: AdapterInfra): GitNamespaces {
   const diff: Record<string, unknown> = {
     getChanges: (args: unknown, pin?: Pin) =>
       guardedAs("diff.getChanges", "git.getChanges", args, pin, { files: [] }),
+    // Null from a host that predates branch diffs; the panels then open on Uncommitted.
+    getBranchChanges: (args: unknown, pin?: Pin) =>
+      guardedAs("diff.getBranchChanges", "git.getBranchChanges", args, pin, null),
     getFile: (args: unknown, pin?: Pin) =>
       guardedAs("diff.getFile", "git.getFile", args, pin, null),
     getFilePatch: (args: unknown, pin?: Pin) =>

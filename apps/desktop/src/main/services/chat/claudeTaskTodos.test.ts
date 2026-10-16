@@ -155,6 +155,7 @@ function createHarness(messages: Array<Record<string, unknown>>) {
     setHeadShaEnd: vi.fn(),
     setLastOutputPreview: vi.fn(),
     clearTurnStartMarkers: vi.fn(),
+    clearAttentionRequest: vi.fn(() => true),
     clearSessionActivity: vi.fn(),
     markLastTurnFailed: vi.fn(),
     clearLastTurnFailed: vi.fn(),
@@ -186,6 +187,7 @@ function createHarness(messages: Array<Record<string, unknown>>) {
   fs.mkdirSync(transcriptsDir, { recursive: true });
 
   const service = createAgentChatService({
+    getAccountUsage: () => null,
     projectRoot: tempRoot,
     transcriptsDir,
     laneService: laneService as any,

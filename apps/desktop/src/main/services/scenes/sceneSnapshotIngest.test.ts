@@ -161,46 +161,6 @@ describe("ingesting a scene snapshot", () => {
   });
 
   /**
-   * The one caller that genuinely cannot name its chat: the voice HUD is
-   * mounted at the shell, outside every chat scope. This side owns the call,
-   * so it answers from the call itself rather than filing the picture unowned
-   * — which is what skipped both disk bounds and emptied the finished call's
-   * "Views drawn" section.
-   */
-  it("resolves a call still's owner from the live call when the caller named none", async () => {
-    const { projectRoot, artifactsRoot, filed, broker } = createFixture();
-    const shot = writePng(artifactsRoot, "scene-call.png");
-
-    const result = await ingestSceneSnapshot({
-      projectRoot,
-      broker,
-      agentChatService: null,
-      resolveVoiceCallSessionId: (callId) => (callId === "call-9" ? "cto-session-1" : null),
-      args: { path: shot, sceneScopeKey: "call-9", voiceCallId: "call-9" },
-    });
-
-    expect(result.ownerSessionId).toBe("cto-session-1");
-    expect(filed.at(-1)?.owners).toEqual([{ kind: "chat_session", id: "cto-session-1" }]);
-    expect(filed.at(-1)?.inputs[0]?.metadata).toMatchObject({
-      kind: "scene_still",
-      sceneScopeKey: "call-9",
-      voiceCallId: "call-9",
-    });
-
-    // A call that is not the one that is up gets nothing: the id comes from a
-    // renderer, and this is the check that makes it safe to read.
-    const stale = await ingestSceneSnapshot({
-      projectRoot,
-      broker,
-      agentChatService: null,
-      resolveVoiceCallSessionId: (callId) => (callId === "call-9" ? "cto-session-1" : null),
-      args: { path: shot, sceneScopeKey: "call-1", voiceCallId: "call-1" },
-    });
-    expect(stale.ownerSessionId).toBeNull();
-    expect(filed.at(-1)?.owners).toBeUndefined();
-  });
-
-  /**
    * The PRESENCE of a scope key is what tells a still from the Proof button on
    * this side, so a blank one is not an anonymous still — it is a still about
    * to be filed as evidence. The desktop refuses the same call before it
@@ -216,7 +176,7 @@ describe("ingesting a scene snapshot", () => {
       projectRoot,
       broker,
       agentChatService: null,
-      args: { path: shot, sceneScopeKey: "   ", voiceCallId: "call-9" },
+      args: { path: shot, sceneScopeKey: "   " },
     })).rejects.toThrow(SceneStillScopeKeyError);
     expect(filed).toHaveLength(0);
   });
@@ -243,47 +203,6 @@ describe("resolveSceneStillOwner", () => {
     })).resolves.toBeNull();
   });
 
-  /** The voice HUD draws outside every chat scope and can name no chat at all. */
-  it("falls back to the live call, and only after the claim has failed", async () => {
-    const resolveVoiceCallSessionId = (callId: string) =>
-      (callId === "call-9" ? "cto-session-1" : null);
-
-    await expect(resolveSceneStillOwner({
-      agentChatService,
-      claimedSessionId: null,
-      voiceCallId: "call-9",
-      resolveVoiceCallSessionId,
-    })).resolves.toBe("cto-session-1");
-
-    // A claim that DID resolve wins: the call is the fallback, not the answer.
-    await expect(resolveSceneStillOwner({
-      agentChatService,
-      claimedSessionId: "chat-known",
-      voiceCallId: "call-9",
-      resolveVoiceCallSessionId,
-    })).resolves.toBe("chat-known");
-
-    // A call that is not the one that is up gets nothing.
-    await expect(resolveSceneStillOwner({
-      agentChatService,
-      claimedSessionId: null,
-      voiceCallId: "call-1",
-      resolveVoiceCallSessionId,
-    })).resolves.toBeNull();
-  });
-
-  /**
-   * The Proof button's shape: no call id at all, so there is no call to
-   * resolve an owner from even while one is up.
-   */
-  it("resolves no owner from a call the caller did not name", async () => {
-    await expect(resolveSceneStillOwner({
-      agentChatService,
-      claimedSessionId: "chat-elsewhere",
-      resolveVoiceCallSessionId: () => "cto-session-1",
-    })).resolves.toBeNull();
-  });
-
   /** A runtime with no chat service can check nothing, so it believes nothing. */
   it("drops a claim it has no way to check", async () => {
     await expect(resolveSceneStillOwner({
@@ -292,7 +211,7 @@ describe("resolveSceneStillOwner", () => {
     })).resolves.toBeNull();
   });
 
-  /** A chat service that throws must not fail a hang-up. */
+  /** A chat service that throws must not fail the filing. */
   it("drops a claim the lookup threw on", async () => {
     await expect(resolveSceneStillOwner({
       agentChatService: { getSessionSummary: async () => { throw new Error("db is locked"); } },

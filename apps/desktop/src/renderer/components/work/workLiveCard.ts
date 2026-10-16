@@ -1,4 +1,5 @@
 import type { WorkSidebarTab } from "../../state/appStore";
+import { isDesktopWorkTool } from "../terminals/workTools";
 import {
   WORK_LIVE_SCREEN_TOOLS,
   isWorkLiveCardClosed,
@@ -197,10 +198,10 @@ export function selectWorkLiveCardTool(args: {
  * reads otherwise for a moment cannot put a second picture beside the pane.
  *
  * A player that holds the lane's decoder is in view too, before its first
- * frame. It used to mount hidden until a frame arrived, and a stream that sent
- * no frame kept an encoder and a reader running behind a player nobody could
- * see (the owner's 2026-09-24 report). Now the player shows the last frame, or
- * "Connecting video", or says the display sent no picture.
+ * frame: a player mounted hidden until a frame arrived would keep an encoder
+ * and a reader running behind a player nobody can see when the stream sends no
+ * frame. It shows the last frame, or "Connecting video", or says the display
+ * sent no picture.
  */
 export function macDesktopFloatState(args: {
   active: boolean;
@@ -231,7 +232,64 @@ export function macDesktopFloatState(args: {
   );
   return {
     present: wanted || args.decoding,
-    visible: wanted && args.paneTool !== "mac-desktop" && !args.paneMounted,
+    // Either desktop tool: a host offers exactly one, and both show this screen.
+    visible: wanted && !isDesktopWorkTool(args.paneTool) && !args.paneMounted,
+  };
+}
+
+/**
+ * Whether the floating App Control player is mounted, and whether it is in view.
+ *
+ * App Control floats in its own player (`AppControlMiniPlayer`, on the shared
+ * `FloatingPlayerShell`), not in the corner card. The rule is Mac Desktop's:
+ * it shows for the chat in front when the app is its own lane's and that chat
+ * may see it (its agent owns the session, its agent was granted the float, it
+ * floated the app by hand, or the session belongs to no chat),
+ * the chat has not turned the preview off, and a session is live.
+ *
+ * It is never in view while the tools pane shows App Control: a copy of the
+ * pane beside the pane is the duplicate the owner reported for Mac Desktop.
+ */
+export function appControlFloatState(args: {
+  active: boolean;
+  laneId: string | null;
+  chatSessionId: string | null;
+  /** The chat's own lane; null for a lane-less chat. */
+  sessionLaneId: string | null;
+  available: boolean;
+  /** The lane's session is live (not stopped or exited). */
+  live: boolean;
+  ownerChatSessionId: string | null;
+  granted: boolean;
+  floated: boolean;
+  dismissed: boolean;
+  paneTool: WorkSidebarTab | null;
+  paneMounted?: boolean;
+}): { present: boolean; visible: boolean } {
+  // The chat's own lane must be the lane whose app this is, whatever else
+  // holds: a grant, a hand float or ownership never shows another lane's app.
+  const ownLane = args.sessionLaneId != null && args.sessionLaneId === args.laneId;
+  const authorized = Boolean(
+    args.chatSessionId
+    && ownLane
+    && (
+      args.ownerChatSessionId === args.chatSessionId
+      || args.granted
+      || args.floated
+      || args.ownerChatSessionId == null
+    ),
+  );
+  const present = Boolean(
+    args.active
+    && args.laneId
+    && args.available
+    && args.live
+    && authorized
+    && !args.dismissed,
+  );
+  return {
+    present,
+    visible: present && args.paneTool !== "app-control" && !args.paneMounted,
   };
 }
 
@@ -592,6 +650,7 @@ const WORK_LIVE_ACTION_CAPTIONS: Readonly<Record<string, string>> = {
   screenshot: "Captured",
   findInPage: "Searched",
   stopFindInPage: "Closed find",
+  readText: "Read",
   setEmulation: "Changed device",
   setZoom: "Zoomed",
   setDevTools: "Toggled DevTools",
@@ -713,6 +772,10 @@ export function workLiveCardAspect(
   sourceAspect?: number | null,
 ): number {
   if (typeof sourceAspect === "number" && Number.isFinite(sourceAspect) && sourceAspect > 0) {
+    // The card takes the picture's own shape, browser included: parking lays
+    // a hidden tab out at a usable size, so a tall picture is a real page (a
+    // phone preset, a tall pane), and a landscape box would show it as a strip.
+    // `workLiveCardSize` keeps a tall card inside the column.
     return sourceAspect;
   }
   return tool ? WORK_LIVE_TOOL_ASPECT[tool] : WORK_LIVE_CARD_DEFAULT_ASPECT;
@@ -771,13 +834,20 @@ export function workLiveCardSize(args: {
     height = maxHeight;
     width = height * aspect;
   }
-  // The user's floor is a hard one: for a source taller than
-  // `minWidth / maxHeight` (~0.59) the two constraints cannot both hold, and a
-  // 200px card that is taller than the soft cap is better than a 136px card
-  // nobody can see. The exact aspect is kept either way.
+  // The width floor beats the soft height cap: for a source taller than
+  // `minWidth / maxHeight` (~0.59) the two cannot both hold, and a 200px card
+  // taller than the cap is better than a 136px card nobody can see. The exact
+  // aspect is kept either way.
   if (width < bounds.min) {
     width = bounds.min;
     height = width / aspect;
+    // The column's own height beats the floor: a card that cannot fit is not
+    // shown, so a phone preset (~430px tall at the floor) in a short window
+    // would vanish. Narrower than the floor but on screen beats gone.
+    if (height > availableHeight) {
+      height = Math.max(1, availableHeight);
+      width = height * aspect;
+    }
   }
   return { width: Math.round(width), height: Math.round(height) };
 }

@@ -112,6 +112,12 @@ protocol ProductAnalyticsSink: AnyObject {
   func resetIdentity()
   func setEnabled(_ enabled: Bool)
   func flush()
+  /// The id events are sent under right now, when the sink has one.
+  func currentDistinctId() -> String?
+}
+
+extension ProductAnalyticsSink {
+  func currentDistinctId() -> String? { nil }
 }
 
 protocol ProductAnalyticsHTTPTransport: AnyObject {
@@ -464,6 +470,11 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
     return value
   }
 
+  /// The distinct id PostHog would send for this install right now.
+  func currentDistinctId() -> String? {
+    lock.withLock { identifiedAccountHash() ?? installationID() }
+  }
+
   private func installationID() -> String {
     if let existing = defaults.string(forKey: Self.installationIDDefaultsKey),
        UUID(uuidString: existing) != nil {
@@ -574,11 +585,20 @@ final class ProductAnalytics {
   }
 
   var isEnabled: Bool {
-    true
+    !Self.isOptedOut(defaults: defaults)
   }
 
-  var shouldRequestConsent: Bool {
-    false
+  /// Analytics (and Sentry, which follows it) is always on in shipped builds.
+  /// Only `DO_NOT_TRACK=1` in the launch environment, a developer run from
+  /// Xcode, turns it off. An opt-out stored by an earlier build is ignored.
+  static func isOptedOut(defaults _: UserDefaults) -> Bool {
+    isTruthyFlag(ProcessInfo.processInfo.environment["DO_NOT_TRACK"])
+  }
+
+  /// `1`, `true` or `yes`, in any case: the same reading as desktop's `doNotTrack.ts`.
+  static func isTruthyFlag(_ value: String?) -> Bool {
+    guard let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }
+    return normalized == "1" || normalized == "true" || normalized == "yes"
   }
 
   func configure(bundle: Bundle = .main) {
@@ -586,7 +606,7 @@ final class ProductAnalytics {
     postHogSink.configure(
       projectToken: Self.configurationValue(for: "ADEPostHogProjectToken", in: bundle),
       host: Self.configurationValue(for: "ADEPostHogHost", in: bundle),
-      enabled: true
+      enabled: isEnabled
     )
   }
 
@@ -766,6 +786,13 @@ final class ProductAnalytics {
     sink.flush()
   }
 
+  /// The id PostHog already uses for this install: the account hash while
+  /// identified, else the anonymous installation id. Crash reports reuse it so
+  /// both tools name one install the same way.
+  func currentDistinctId() -> String? {
+    isEnabled ? sink.currentDistinctId() : nil
+  }
+
   private func capture(
     _ event: ADEAnalyticsEventName,
     properties: [String: Any],
@@ -902,7 +929,7 @@ final class ProductAnalytics {
     return value
   }
 
-  private static func accountHash(_ userId: String) -> String {
+  static func accountHash(_ userId: String) -> String {
     let digest = SHA256.hash(
       data: Data("ade-product-analytics-account-v1:\(userId)".utf8)
     )

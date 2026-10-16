@@ -53,6 +53,7 @@ const CODEX = "#F0F0F2";
 const CURSOR = "#0EA5E9";
 const OPENCODE = "#F0F0F2";
 const PI = "#F97316";
+const MUSE = "#4A9BFF";
 const DROID = "#06B6D4";
 const OLLAMA = "#F0F0F2";
 const LMSTUDIO = "#8B5CF6";
@@ -61,6 +62,7 @@ const COPILOT = "#A855F7";
 const QWEN = "#6D4AFF";
 const KIMI = "#F0F0F2";
 const GROK = "#DC2626";
+const DEVIN = "#2563EB";
 
 const TOOL = "cyan";
 const REASONING = T4;
@@ -95,6 +97,7 @@ type ProviderTheme = {
 // Anthropic's canonical sparkle; `◎` is OpenAI's mark for Codex; `⬢`/`✺` map to
 // Cursor/Droid. Keeping these in sync with the picker means a lane's runtime is
 // shown with the same brand glyph everywhere in the TUI.
+import { PROVIDER_DISPLAY_NAME } from "../../../desktop/src/shared/providers";
 const PROVIDER_THEME: Record<AdeCodeProvider, ProviderTheme> = {
   claude: { glyph: "✻", wordmark: "Claude", color: CLAUDE, label: "Claude" },
   codex: { glyph: "◎", wordmark: "Codex", color: CODEX, label: "Codex" },
@@ -102,10 +105,12 @@ const PROVIDER_THEME: Record<AdeCodeProvider, ProviderTheme> = {
   droid: { glyph: "✺", wordmark: "Droid", color: DROID, label: "Droid" },
   opencode: { glyph: "▣", wordmark: "OpenCode", color: OPENCODE, label: "OpenCode" },
   pi: { glyph: "◈", wordmark: "Pi", color: PI, label: "Pi" },
+  muse: { glyph: "◉", wordmark: "Muse", color: MUSE, label: PROVIDER_DISPLAY_NAME.muse },
   qwen: { glyph: "◇", wordmark: "Qwen", color: QWEN, label: "Qwen" },
   kimi: { glyph: "◐", wordmark: "Kimi", color: KIMI, label: "Kimi" },
   grok: { glyph: "✧", wordmark: "Grok", color: GROK, label: "Grok" },
   copilot: { glyph: "⌬", wordmark: "Copilot", color: COPILOT, label: "GitHub Copilot" },
+  devin: { glyph: "◆", wordmark: "Devin", color: DEVIN, label: "Devin" },
   ollama: { glyph: "◕", wordmark: "Ollama", color: OLLAMA, label: "Ollama" },
   lmstudio: { glyph: "≋", wordmark: "LM Studio", color: LMSTUDIO, label: "LM Studio" },
 };
@@ -208,11 +213,14 @@ export function sessionToneColor(tone: SessionStatusTone | null | undefined): st
 const SESSION_GLYPH_MARK: Record<Exclude<SessionStatusGlyph, null>, string> = {
   working: "◐",
   monitoring: "◇",
+  recording: "◉",
   planning: "◈",
+  exploring: "○",
   implementing: "✎",
   testing: "T",
   reviewing: "⌕",
   debugging: "⚙",
+  shipping: "↑",
   waiting: "⏳",
   "needs-you": "●",
   done: "✓",

@@ -9,34 +9,64 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
   AgentChatCliLaunchProvider,
+  AgentChatCrossMachineHandoffRecord,
   AgentChatDroidPermissionMode,
+  AgentChatMusePermissionMode,
   AgentChatModelHandoff,
   AgentChatSpawnKind,
   AgentChatUsageLimitResume,
   WorkBoardColumn,
   WorkBoardMoveTarget,
 } from "./chat";
+import type { ClaudePromptCache } from "../claudePromptCache";
 import type { ModelId } from "./core";
 import type { LaneLinearIssue } from "./lanes";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
 
-/** Fixed agent-reported activity labels. These never change the parent phase. */
+/**
+ * Fixed activity labels for a live turn. ADE detects them from the turn's tool
+ * calls (`source: "detected"`); an agent can also report one through
+ * `ade chat activity` (`source: "agent"`). They never change the parent phase.
+ */
 export const SESSION_ACTIVITY_VALUES = [
   "planning",
+  "exploring",
   "implementing",
   "testing",
-  "reviewing",
   "debugging",
+  "reviewing",
+  "shipping",
   "monitoring",
 ] as const;
 
-export type SessionActivityValue = (typeof SESSION_ACTIVITY_VALUES)[number];
+/**
+ * Activities only ADE sets, never an agent: `recording` shows while a
+ * recording the chat owns is running, in place of the detected activity, and
+ * the detected one comes back when it stops. `ade chat activity` does not
+ * accept these.
+ */
+export const SESSION_SYSTEM_ACTIVITY_VALUES = ["recording", "compacting", "compaction_failed"] as const;
 
-/** One atomically persisted agent report for the session-card substatus. */
+export type SessionActivityValue =
+  | (typeof SESSION_ACTIVITY_VALUES)[number]
+  | (typeof SESSION_SYSTEM_ACTIVITY_VALUES)[number];
+
+/** Who set the session-card substatus: the agent itself, or ADE's tool-call detector. */
+export type SessionActivitySource = "agent" | "detected";
+
+/**
+ * One atomically persisted activity for the session-card substatus.
+ * `updatedAt` is when the session ENTERED this activity, not when it was last
+ * confirmed, so the row's elapsed reads "Testing 3m" for three minutes of tests.
+ */
 export type SessionActivityReport = {
+  contextTokens?: number;
+  failDetail?: string;
   value: SessionActivityValue;
-  source: "agent";
+  source: SessionActivitySource;
   updatedAt: string;
+  /** When this value was reported in the current turn; `updatedAt` remains the entry-time anchor. */
+  reportedAt?: string;
 };
 
 /**
@@ -63,6 +93,7 @@ export type TerminalToolType =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   | "claude-orchestrated"
   | "codex-orchestrated"
   | "opencode-orchestrated"
@@ -72,15 +103,18 @@ export type TerminalToolType =
   | "cursor"
   | "droid-chat"
   | "pi-chat"
+  | "muse-chat"
   // ACP providers: tracked CLI terminal, then the ADE chat runtime.
   | "qwen"
   | "kimi"
   | "grok"
   | "copilot"
+  | "devin"
   | "qwen-chat"
   | "kimi-chat"
   | "grok-chat"
   | "copilot-chat"
+  | "devin-chat"
   | "aider"
   | "continue"
   | "other";
@@ -92,10 +126,12 @@ export type TrackedAgentCliToolType =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   | "qwen"
   | "kimi"
   | "grok"
   | "copilot"
+  | "devin"
   | "claude-orchestrated"
   | "codex-orchestrated"
   | "opencode-orchestrated";
@@ -114,12 +150,9 @@ export function isPtySendPreDeliveryError(
  * Is this terminal running an agent CLI ADE tracks?
  *
  * "Tracked" buys the session the whole agent-CLI apparatus: TUI turn markers,
- * resume-target capture, scheduled turns, spawn lineage — and two
- * safety behaviours that are easy to miss, because both are about what
- * *stops*. A tracked launch is refused when the disk is exhausted, and a
- * tracked session's built-in-browser actor token is revoked when it closes.
- * The token is issued unconditionally, so a tool type missing from this list
- * gets a capability that outlives its terminal.
+ * resume-target capture, scheduled turns, spawn lineage — and a safety
+ * behaviour that is easy to miss, because it is about what *stops*: a tracked
+ * launch is refused when the disk is exhausted.
  *
  * Must stay in step with `TrackedAgentCliToolType` above.
  */
@@ -132,10 +165,12 @@ export function isTrackedAgentCliToolType(
     || toolType === "droid"
     || toolType === "opencode"
     || toolType === "pi"
+    || toolType === "muse"
     || toolType === "qwen"
     || toolType === "kimi"
     || toolType === "grok"
     || toolType === "copilot"
+    || toolType === "devin"
     || toolType === "claude-orchestrated"
     || toolType === "codex-orchestrated"
     || toolType === "opencode-orchestrated";
@@ -198,19 +233,24 @@ export type TerminalResumeProvider =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 
 export type TerminalResumeTargetKind = "session" | "thread";
 
 export type TerminalResumeLaunchConfig = {
   permissionMode?: AgentChatPermissionMode | null;
   droidPermissionMode?: AgentChatDroidPermissionMode | null;
+  musePermissionMode?: AgentChatMusePermissionMode | null;
   model?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean | null;
+  /** "ultrafast" when a Codex CLI launched with Fast set to Ultrafast. */
+  fastTier?: "ultrafast" | null;
   /** @deprecated Use fastMode. Accepted for resume metadata written before the fast-mode rename. */
   codexFastMode?: boolean | null;
   claudePermissionMode?: AgentChatClaudePermissionMode | null;
@@ -253,6 +293,11 @@ export type TerminalResumeMetadata = {
   credentialId?: string | null;
   /** Chat that spawned this tracked CLI session, independent of terminal ownership. */
   orchestrationParentSessionId?: string;
+  /**
+   * Agent chat that launched this CLI session when there is no orchestration
+   * parent. Passive fact only: it does not nest, wake, or cap permissions.
+   */
+  launchedBySessionId?: string;
   /** Cosmetic/reporting relationship declared by the spawning chat. */
   spawnKind?: AgentChatSpawnKind;
   importedFrom?: {
@@ -269,6 +314,14 @@ export type TerminalResumeMetadata = {
 export type TrackedCliResumeProvider = TerminalResumeProvider;
 export type TrackedCliResumeMetadata = TerminalResumeMetadata;
 
+/** A chat's live goal, projected onto its row so lists can show it. */
+export type SessionActiveGoal = {
+  provider: "codex" | "claude";
+  objective: string;
+  /** Codex goal status; Claude goals are always `active` while they exist. */
+  status: string;
+};
+
 export type TerminalSessionSummary = {
   id: string;
   laneId: string;
@@ -280,9 +333,13 @@ export type TerminalSessionSummary = {
   pinned: boolean;
   manuallyNamed?: boolean;
   goal: string | null;
+  /** The chat's live goal (Codex `thread/goal`, Claude `/goal`); absent when none. */
+  activeGoal?: SessionActiveGoal | null;
   toolType: TerminalToolType | null;
   /** Completed model/provider transitions for an ADE chat, oldest first. */
   modelHandoffHistory?: AgentChatModelHandoff[];
+  /** The chat's latest move to another machine (banner, menu, Work-row chip). */
+  crossMachineHandoff?: AgentChatCrossMachineHandoffRecord | null;
   /**
    * The model this chat is currently running, projected from
    * `AgentChatSessionSummary` so a session ROW can name it without opening the
@@ -377,6 +434,8 @@ export type TerminalSessionSummary = {
   resumeCommand: string | null;
   resumeMetadata?: TerminalResumeMetadata | null;
   chatIdleSinceAt?: string | null;
+  /** Claude chats: the chat's prompt cache after its last turn. */
+  chatPromptCache?: ClaudePromptCache | null;
   /** Earliest armed, unpaused scheduled wake for chat-backed sessions. */
   nextWakeAt?: string | null;
   /**
@@ -393,6 +452,8 @@ export type TerminalSessionSummary = {
   usageLimitResume?: AgentChatUsageLimitResume | null;
   /** Current ADE-chat mode, projected for desktop Work-row presentation only. */
   chatActivityMode?: "planning" | null;
+  /** Live-turn open work, projected from the chat summary (`turnOpenWorkCount`). */
+  turnOpenWorkCount?: number;
   /** Authoritative provider-reported background tasks still running after the foreground turn. */
   activeBackgroundTaskCount?: number;
   /**
@@ -432,6 +493,11 @@ export type TerminalSessionSummary = {
    * for migration tolerance.
    */
   orchestrationParentSessionId?: string;
+  /**
+   * Agent chat that launched this session when it has no orchestration parent.
+   * A passive fact for attribution: it does not nest, wake, or cap permissions.
+   */
+  launchedBySessionId?: string;
   spawnKind?: AgentChatSpawnKind;
   /**
    * Identity key of the spawn parent, when the parent is an IDENTITY
@@ -453,7 +519,13 @@ export type TerminalSessionSummary = {
   cursorRuntime?: "local" | "cloud" | null;
 };
 
-export type SessionAttentionSource = "agent_explicit" | "provider_structured" | "user";
+/**
+ * `linear`: a Linear inbox item (mention, comment, assignment) about the lane's issue.
+ * `turn_end_question`: ADE read a question at the end of a turn the agent closed
+ * while background work kept running, and raised the hand the agent did not
+ * (`main/services/chat/turnEndAsk.ts`). It behaves exactly like `agent_explicit`.
+ */
+export type SessionAttentionSource = "agent_explicit" | "provider_structured" | "user" | "linear" | "turn_end_question";
 
 /**
  * Result of a Work-board drag.
@@ -537,6 +609,18 @@ export type PtyCreateArgs = {
   allowExternalCwd?: boolean;
   /** Session that owns this attached terminal, when launched from chat/CLI UI or App Control. */
   chatSessionId?: string | null;
+  /**
+   * Agent chat that launched this tracked agent CLI with no orchestration
+   * parent. Merged into whatever resume metadata the launch resolves (passed or
+   * parsed from the command); see `TerminalResumeMetadata.launchedBySessionId`.
+   */
+  launchedBySessionId?: string | null;
+  /**
+   * `"agent"` when an agent started this shell for its chat (App Control). Such
+   * a shell is archived once it is dead and nobody typed into it; see
+   * `agentShellCleanup`. Omitted means the user started it.
+   */
+  launchedBy?: "agent";
   /** Parent chat lineage to export to a spawned agent CLI process. */
   spawnLineage?: { parentChatSessionId: string; spawnKind: AgentChatSpawnKind | null } | null;
   laneId: string;
@@ -572,10 +656,13 @@ export type PtyCreateArgs = {
     provider: AgentChatCliLaunchProvider;
     permissionMode: AgentChatPermissionMode;
     droidPermissionMode?: AgentChatDroidPermissionMode | null;
+    musePermissionMode?: AgentChatMusePermissionMode | null;
     sessionId?: string;
     model?: string | null;
     reasoningEffort?: string | null;
     fastMode?: boolean | null;
+    /** Codex only: "ultrafast" asks for Ultrafast when Fast is on. */
+    fastTier?: "ultrafast" | null;
     initialPrompt?: string | null;
     /**
      * Provider account ("instance") to launch under, for `claude` and `codex`
@@ -694,6 +781,8 @@ export type ChatTerminalListArgs = {
   chatSessionId?: string | null;
   laneId?: string | null;
   limit?: number | null;
+  /** Archived shells are left out unless this is true. Read one by id any time. */
+  includeArchived?: boolean | null;
 };
 
 export type ChatTerminalReadArgs = {
@@ -715,6 +804,11 @@ export type ChatTerminalWriteArgs = {
   ptyId?: string | null;
   chatSessionId?: string | null;
   data: string;
+  /**
+   * The person typed this (ADE Code), not an agent. Claims an agent-started
+   * shell for the user so the dead-shell cleanup leaves it alone.
+   */
+  fromUser?: boolean;
 };
 
 export type ChatTerminalResizeArgs = {

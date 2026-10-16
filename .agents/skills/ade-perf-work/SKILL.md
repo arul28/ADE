@@ -522,3 +522,507 @@ chained and the thread jumped. Preserve all of these:
 Tests: `chatTranscriptRows.test.ts` "row keys are position-independent" and
 `AgentChatMessageList.test.tsx` "stable row keys, list anchoring, and scroll
 restore" (fake per-key layout, both render paths).
+
+### Chat thread scrolling and history (measured with `scripts/perf-chat-scroll.mjs`)
+
+Bench: launch the dev app with `ade app-control launch --command "NO_DEVTOOLS=1 node scripts/dev-desktop.mjs --auto"`
+(`dev.cjs` forwards `ADE_APP_CONTROL_DEBUG_FLAGS`; without them a window behind
+others stops painting and every frame metric reads 0), then
+`node scripts/perf-chat-scroll.mjs --port <cdp> --reload --park <small chat> --session <big chat> [--scenario wheel|top|idle]`.
+`--park` matters: Work reopens the last chat on reload, which pages its history
+in before the run starts. CDP `Input.dispatchMouseEvent` does not ack in the
+dev build, so the bench drives `scrollTop` in-page with a wheel event per frame.
+
+Measured on a 3.6 MB Claude chat (dev build, 3000 px/s):
+
+- A scroll event must not commit a render unless the mounted window or the
+  active minimap tick changes (`scrollCommitKey`), with one exact commit after
+  the scroll settles. Renderer JS 259→126 ms/s scrolling up, 281→161 down.
+- Cache row offsets on the `measuredHeights` version, not on `measurementTick`:
+  the tick trails measurements by a debounce, and offsets from stale heights
+  misplace the spacers (prepend jumps grew 568→1333 px until fixed).
+- The scroll memory is snapshotted in `handleScroll` too; a scroll that does not
+  render must still be what a chat switch restores.
+- Older history backfills in idle slots (immediately when the reader is in the
+  prefetch runway). Cold open → whole transcript resident in ~0.65 s with two
+  frames over 33 ms; jump-to-top waited 1.2 s at the top before, ~0.65 s after
+  (the rest is image and markdown work for rows mounting at the top).
+- Attachment image data URLs are cached per owner and path. Each uncached read
+  was a multi-MB base64 reply that held transcript pages queued behind it on the
+  runtime socket for ~370 ms.
+- Not wins (reverted): skipping selection reads on scroll, keying row
+  measurement by key. `measureNow` self time is the layout of newly mounted rows.
+- Open: `backdrop-filter` is ~half the GPU while scrolling (52→26% of a core with
+  it off): composer/banner ~10 pts, user bubbles (`ade-liquid-glass`) ~5, shell
+  header ~4. Changing it changes the look; it is a design decision.
+
+### Chat scenes (measured with `scripts/perf-chat-scenes.mjs`)
+
+Scenes (```` ```scene ```` frames) are live while on screen and a still
+elsewhere. Every scene frame of a window shares ONE extra renderer process
+(sandboxed opaque-origin frames are out of process); it exits when the last
+frame unmounts. Bench: launch the dev app with App Control, seed a chat with
+scene fences, then
+`node scripts/perf-chat-scenes.mjs --port <cdp> --session <scene chat> --park <small chat> --reload [--no-sampler] [--focus-scene N]`.
+It reads CPU per process from `ps` (CDP's browser-process cpuTime stops
+tracking across dev-app restarts) and A/Bs best in one app session by swapping
+files; see the header. Use `--no-sampler` for idle numbers: the bench's own
+rAF loop makes the host produce a frame every refresh, and every live frame
+then costs the host an intersection update per frame (+2–3 points that an
+idle app does not pay).
+
+Preserve all of these:
+
+- **Idle in the frame, not in the host.** Once settled and untouched, the SDK
+  pauses endless CSS/WAAPI animations and SVG SMIL (`pauseAnimations`), and
+  batches `requestAnimationFrame` to one flush per 250 ms. 240 Hz display, a
+  canvas particle loop + a blurred CSS shimmer + SMIL spinners on screen:
+  scene process 0.2% of a core, GPU 6.2% vs 6.4% for the same scenes as
+  stills (`--no-sampler`). The old freeze-without-still path left those loops
+  running at GPU 42%.
+- **Endless animations do not hold a settle back.** A loop never finishes, so
+  waiting on it only delayed the idle (and the still) to the 4 s cap.
+- **Mount only where the reader stops.** A frame mounts after a 120 ms dwell
+  AND 150 ms with no scroll of the scene's own scroll ancestors (not any
+  scroll: a streaming terminal scrolls constantly). Without the gate a steady
+  scroll through six scenes cost the scene process 12% of a core in mounts.
+  It still costs ~5–8% while scrolling past frames that stay mounted (they
+  linger 4 s off screen); GPU while scrolling is LOWER than with stills
+  (36–51% vs 39–58%), since big PNG stills cost more to raster.
+- **Remounts reuse the document and its prepared URL** (renderer cache of 24;
+  main's store is LRU on read). Per-document stamps (`readySrc`,
+  `settledSrc`, `revealedSrc`) are cleared when the frame unmounts, or a
+  remount on the same cached URL reads as ready and shows a blank frame.
+- **A scene with a still takes no new still.** Each capture is a window grab,
+  a PNG encode and a file; scenes now remount on every scroll back.
+- **One theme observer for the app** (`sceneTheme.ts`), and a theme change is
+  posted into frames, never a document rebuild.
+- **Live data is a child component** (`SceneDataFeed`) mounted only for a
+  scene that asked for data and only while its frame is up, so lane and
+  session store updates re-render nothing else; sends are deduped by content
+  and throttled to one a second.
+- Memory: the shared scene process is ~100–170 MB while any scene is live.
+  A parked chat or surface (`content-visibility: hidden`) reads as off screen
+  and unmounts its frames after the linger.
+
+### Composer floats over the thread
+
+The transcript scrolls behind the composer and its status chips
+(`ChatSurfaceShell overlayFooter`). The footer's height reaches the list
+through `chatComposerOverlayInset` and is written straight onto the scroll
+pane's `padding-bottom` and the Jump pill's `bottom`. Keep it that way: an
+inherited CSS variable on the shell would restyle every transcript node on
+each prompt line, and React state would re-render the list. The list re-pins
+itself when the inset grows while stuck to the bottom. A/B in one dev session
+(3.6 MB chat, interleaved): wheel scroll renderer 51.5 vs 52.4%, GPU 56.3 vs
+55.2% (noise); cold open to first rows median 172 vs 178 ms, same long frames.
+
+### Background cost with no visual change (measured, second pass)
+
+- An infinite animation over a `backdrop-filter` re-runs the blur and
+  composites the window every frame. The header live-activity dot (6px opacity
+  pulse, shown whenever an agent is live) cost ~32% of a GPU core and ~67% of
+  the main process at idle. Its keyframes now hold eased steps of 0.02 opacity
+  (`step-end`): GPU ~6.5%, main ~20%, pixel diff vs the smooth pulse ≤1/255.
+  Treat any new looping animation in blurred chrome the same way. Find running
+  ones with `document.getAnimations()`.
+- Props into the message list and its rows must keep identity across pane
+  renders (`useLatestCallback`, `useStableIdentity` in `lib/stableIdentity.ts`).
+  Inline closures, a fresh `Set`, a rebuilt turn-diff array or per-turn copy
+  objects re-rendered every mounted row: 1,105 row renders in 20 idle seconds
+  (now 0), ~5,100 row renders per 400 streamed events (now ~450).
+- `toLocaleTimeString(locales, options)` builds an `Intl.DateTimeFormat` per
+  call; every row renders a timestamp. Cached formatter: streaming JS
+  10.2 → 7.3 ms/event.
+- Minimap previews (`summarizeInlineText`) are cached per event object; they
+  were recomputed for the whole transcript on every streamed delta (~9%).
+- Streaming bench: `scripts/perf-chat-stream.mjs` replays a real transcript into
+  the browser-mock renderer (`window.__adeMockEmitChatEvent`) in Playwright's
+  Chromium. Pass `--render-hook` with a DevTools hook to count renders; count a
+  component only when its props or state object changed, because bailed-out
+  subtrees keep stale PerformedWork flags.
+- Not wins (reverted): gating the selection toolbar's scroll listener (its
+  self time is forced layout that moves), a `Date.parse` cache in
+  `chatHistoryMerge` (<1 ms per flush either way).
+- Machine state drifts between dev-app launches; compare A/B in one session.
+- Next candidate: `AgentChatComposer` is not memoized and gets ~100 props
+  (many inline), so it re-renders ~2x per streamed event with its tooltips.
+
+### Work list scaling and other third-pass results
+
+- `SessionCard` uses `memoWithLatestHandlers` (lib/stableIdentity.ts): the list
+  hands every card fresh `onSelect`/`onContextMenu`/PR handlers, so plain memo
+  never held. TerminalsPage passes the list stable handles (`useLatestCallback`)
+  and lanes without PRs share `NO_LANE_PRS`. In the real app at idle, 20 s:
+  card renders 1,092 → under 100 (only cards whose session changed), lane headers 870 → 440, idle renderer JS
+  270 → 184 ms per 10 s with 32 cards. Lane headers take JSX props, so they
+  still re-render with the list; the rest of those renders are real session data.
+- Measured and not kept: memoizing `AgentChatComposer` (renders halved, no
+  time change; median 5.97 vs 5.77 ms per streamed event), dropping the blur
+  on hidden (`opacity-0`) hover toolbars (Chromium already skips it).
+- Background chats are cheap: streaming into a chat that is not open costs
+  0.24 ms per event (`perf-chat-stream.mjs --background`).
+- Cold chat open measured 21–28 ms to first rows (history read 6 ms).
+
+### Looping animations and repeated background work (fourth pass, 240 Hz display)
+
+Measured on a 240 Hz display with per-process CPU sampling (`ps` cputime
+deltas) and CDP `Performance.getMetrics`. A smooth looping animation ticks at
+the display rate. On a 240 Hz display that is 240 style passes a second.
+
+- Hold any looping opacity animation at 0.02-opacity steps with `step-end`.
+  The Work sidebar `Working` breathe used a smooth curve. With three working
+  sessions the GPU process used ~19.5% of a core and the renderer ~7%. Stepped:
+  3.8% and 3.2%. Derive the stops from the same ease curve, as for
+  `activity-hdr-pulse`.
+- Do not animate an SVG element itself. Chromium repaints an animated SVG on
+  the main thread each frame. Rotate an HTML wrapper of the same size, and use
+  `steps(N)` so the rate is 60 a second. The Lanes working mark (five lanes)
+  went from a renderer at ~20% to 6.4%.
+- Do not let xterm's DOM renderer run its CSS cursor blink. A paused animation
+  that `lib/xtermCursorBlink.ts` flips every 500 ms gives the same blink. An
+  idle focused shell went from a renderer at 11.7% to 3.6%.
+- Do not re-tokenize a growing code block from the start. `CodeHighlighter`
+  keeps the HTML of the complete lines and Shiki's grammar state. While an
+  agent streamed code, highlighting fell from 14.6% to 0.5% of renderer
+  main-thread samples. The output is byte-identical to `codeToHtml`.
+- Keep periodic disk snapshots slow when live readers use memory. The PTY
+  snapshot (full 2,000-line scrollback, ~0.5 MB) wrote every 500 ms. At 5 s the
+  brain went from 6.3% to 2.2% with three busy shells.
+
+Open finding, not fixed: a switch into a long chat (four long replies, ~48k
+DOM nodes) blocks the main thread for 600–900 ms. The cost is two full style
+passes over ~60k elements, the markdown parse, and `ThreadCommentLayer`
+`getBoundingClientRect` reads (~150 ms). A fix needs virtualization or deferred
+row mount, so measure the visual effect before you change it.
+
+The WebGL terminal renderer was never active until the fifth pass:
+`loadAddonCtor` imported a variable specifier with `@vite-ignore`, so neither
+Vite nor the packaged `app.asar` resolved `@xterm/addon-webgl`. Keep the
+specifier a string literal (`loadWebglAddonCtor`). A streaming shell demo:
+renderer 23.7% (DOM) → 12.7% (WebGL).
+
+### Project and page switches (fifth pass)
+
+Measured with two warm projects, one holding a long chat (12,900 elements)
+and one with a printing shell. Use long tasks, the worst frame gap, a
+screencast filmstrip, and per-toggle style timings on the surface root.
+
+- Do not let recency set the DOM order of keep-alive surfaces. Moving a
+  node detaches and re-attaches its subtree: a full restyle and relayout,
+  and every scroll container in it starts at 0. `mountedProjects` picks warm
+  surfaces by recency and renders them in tab order. Before: a chat scrolled
+  up into history reopened at its first message.
+- Hide a parked surface with `content-visibility: hidden`
+  (`HIDDEN_PAGE_STYLE`), not with `inert`, `pointer-events: none` or a
+  `[attr] *` CSS rule. Each of those three restyled every element of the
+  surface (~200 ms apiece); `content-visibility` toggles in ~3 ms, keeps the
+  rendering state, stops animations and blocks hit-testing and focus. Code
+  that asks "is my surface parked?" checks `[data-ade-surface-hidden]`.
+  Result: switch long tasks 450–640 ms → 0, worst frame gap ~480 → ~120 ms.
+- Never use a Tailwind `selection:` variant on a large container. It compiles
+  to `.x *::selection`, matched against every element on every restyle (40% of
+  selector time). Chromium inherits `::selection`, so one rule on the root
+  (`.ade-app-selection::selection`) colors the same. Full restyle of the chat
+  surface: 205 → 39 ms. Measure selector cost with a trace that includes the
+  `disabled-by-default-blink.debug` category (SelectorStats events).
+- A project switch must not force a machine-wide AI re-probe. Forced
+  `ai.getStatus` re-reads the login shell's PATH with synchronous shells,
+  which blocks the brain's event loop and every call behind it (the terminal
+  stream resumed 323 ms after the click; now 83 ms). Use
+  `invalidateAiDiscoveryCache(root, { forceRefresh: false })` and
+  `getAiStatusCached({ revalidate: true })` for a cache bypass.
+- Do not rebuild the WebGL terminal renderer on reveal. Creating the DOM
+  renderer measures glyphs with a forced full-document layout (~157 ms).
+- `onRuntimeStatusChanged` is also a 15 s heartbeat. Use
+  `subscribeRuntimeIdentityChanges` for "the brain may have changed".
+
+Open findings: the return to a project with a long chat still costs ~100 ms
+of native layout and paint; `useWorkSessions` polls `session.list` every 5 s
+for a hidden project too (~6 ms of brain time each round); opening a long
+chat still forces layout in `ThreadCommentLayer` and re-parses markdown
+(~45 ms).
+
+### Focus grid and many live chats (sixth pass)
+
+Measured in the dev app on a real project, App Control detached, `ps`
+cputime over 15 s windows, one chat streaming throughout.
+
+- **Measure with App Control detached.** An attached `ade app-control` session
+  kept the Electron main process at ~86% of a core and the GPU near 60%,
+  independent of the UI on screen. Detach (`ade app-control stop`) before
+  sampling; toggle UI with a CDP `eval` click instead.
+- **The window backdrop must not wake on other elements' scrolls.** The top
+  bar's `WorkToolPickerBackdrop` listened to capture-phase `scroll` on the
+  window and treated every layout read as "someone is looking", so any
+  streaming chat (which scrolls itself) kept the gradient drawing at 12–30 fps
+  forever, and each frame re-layered the whole page. With six chat tiles that
+  was ~2.4 s of `Layerize` in 10 s. Now a scroll counts only when its target
+  contains the canvas, and only a canvas that actually moved restarts the
+  freeze clock. Six-tile grid: GPU 30% → 8%, renderer 44% → 7–8%; single
+  chat: GPU 46% → 9.5%, renderer 26% → 6.6%.
+- **Do not pulse an SVG element.** `ContextUsageDial` pulsed its `<circle>`
+  while a turn ran; the pulse now runs on an HTML wrapper (same look).
+- **Per-pane network reads multiply in a grid.** `useCursorCloudDraftState`
+  ran in every chat pane and called Cursor's repositories endpoint (5/min per
+  account) on mount; six tiles hit the limit. It now runs only for a chat that
+  can still launch to Cursor Cloud (no output yet), and the repo list is
+  shared in flight and cached for 5 minutes.
+
+### Idle re-render cascades and the brain (seventh pass)
+
+Measured with a render-counting `__REACT_DEVTOOLS_GLOBAL_HOOK__` that walks only
+fibers React processed in a commit (descend only where `prev.child !==
+next.child`; a walk over every fiber reads stale `PerformedWork` flags and
+over-counts by 10x), plus per-component prop-diff and hook-diff logging.
+
+- **A store write must change something.** `setWorkViewState` and
+  `setLaneWorkViewState` wrote a new per-project object on every sessions
+  refresh even when no field changed, re-rendering the whole chat pane about
+  once a second at idle. They now return the previous state when the merge is
+  shallow-equal.
+- **Re-read lists keep identity.** `useWorkSessions` reconciles each IPC read
+  against the previous rows (`reconcileSessionRows`: equal rows keep their
+  object, an unchanged list keeps its array), and `AgentChatPane` compares its
+  chat-session list by value before `setSessions`. Session cards went from
+  ~15 renders/s at idle to 0.
+- **Handlers into `WorkViewArea` are `useLatestCallback`.** `work` changes
+  identity on any session state, and every handler depended on it, breaking
+  the `useMemo` around `WorkViewArea` (30 → 2 renders per 12 idle seconds).
+- **The resource chip only re-renders the top bar when it would draw
+  differently** (`resourcePressureIndicatorKey`). Top bar own-updates 28 → 1
+  per 15 s.
+- **Closed dialogs are memo'd.** `CreateLaneDialogHost` rendered its whole
+  form on every streamed event while closed.
+- **Loops share one clock** (`lib/animationPhaseAlignment.ts`). Four stepped
+  spinners started at different moments drew 120 frames/s; aligned to the
+  document timeline they draw 30 (GPU swap 118 → 61 ms/s on the PR page).
+- **Chat markdown parses once per text** (`remarkCachedParse`): warm chat
+  switch settle 247 → 56 ms. Clone on hit; later plugins mutate the tree.
+- **The plain composer sizes with `field-sizing: content`.** Measuring with
+  `height = 0` + `scrollHeight` forced two layouts per keystroke.
+- **Streaming merge skips the full pass for non-tool events**
+  (`toolCallDedupedLists`) and the URL scan pre-checks `"://"`.
+
+Brain (installed-brain CPU profile, 8 min with agents working):
+
+- Per-message/per-tool `commandExists` spawned a login shell each time
+  (`commandExistsCached`, 60 s).
+- The shell PATH probe re-ran synchronously at TTL expiry (1.2 s blocked);
+  now stale-while-revalidate in the background.
+- `ProjectRegistry.read()` normalized every root (realpath/stat) per call and
+  hot paths call `get` per project: 360 ms → 0.4 ms with a stat-keyed 5 s cache.
+- The activity roster opened every recent project's DB (~450-table schema
+  parse) every few seconds; cached by db+wal file signature: 43 → 2.5 ms.
+- The JSON-RPC server reader concatenated each chunk onto the whole buffer
+  (quadratic); 10 MB request 240 → 11 ms.
+- The Files quick-open index walked the repo with one `git check-ignore`
+  per directory (~540 spawns, 17.5 s); `git ls-files` once: 0.12 s.
+
+### One streamed event must cost one event (eighth pass, ADE-175)
+
+Measured on a Mac Studio (M4 Max) with `scripts/perf-chat-stream.mjs` against a
+9,700-event Claude chat, and with `scripts/perf/service/chat-transcript.bench.mts`
+on the five largest local transcripts. Renderer busy time for 400 streamed
+events fell from 3,890 ms to 2,200 ms, and the row builder from 3.5 ms to
+0.08 ms per event.
+
+- **A provider resend is not a reason to rebuild the chat.** Claude sends each
+  `tool_call` twice (empty arguments, then the command), and the live merge
+  replaces the stored envelope in place. The row builder used to answer every
+  replacement with a full pass over the transcript: 1,314 full passes for
+  12,000 streamed events in real chats, up to 44 ms each. It now keeps the two
+  most recent checkpoints of its state (`CollapseCheckpoint`, one each 128
+  events) and replays from the newest one that ends before the replaced event.
+  The context is cloned field by field (`cloneCollapseTranscriptContext`), so a
+  new context field fails to compile until it is copied. Keep the parity rule:
+  a replay must give the rows that a full pass gives.
+- **A missing index entry must mean "no such row".** The first sighting of
+  every tool call scanned all rows for a row to merge into, and every subagent
+  progress tick scanned all rows for a background-job line that it never had.
+  A context made by a full pass sets `rowIndexesComplete`, and the lookups
+  (`findMatchingWorkLogEntryIndex`, `resolveKeyedRowIndex`) trust an absent
+  entry only then. A stale entry still falls back to the scan. Repair every
+  index map in `repairIndexedTranscriptRowsAfterSplice` when you add one.
+- **The live merge carries its indexes forward.** `mergeAgentChatLiveEvents`
+  rebuilt a `Set` of every identity key on each merge, and ran the full
+  tool-call pass for each tool event. The list it returns now owns that set and
+  a tool-call position map (`liveMergeIndexByList`); the next merge takes them.
+  A list that is merged twice rebuilds from the start, which is correct and slow.
+- **Folds over the transcript read the append, not the transcript.**
+  `agentChatLiveAppendOf(list)` names the list that an append extended, where
+  the new events start, and which tool calls a resend replaced. A fold that
+  keeps its answer per list (`deriveRuntimeState`, `deriveActiveTurnId`,
+  `deriveTurnStartedAt`, the turn-start map, `chatDisplayEvents`) looks at the
+  appended events only and falls back to the full fold when one of them can
+  change the answer. A derived list (the display filter) records its own
+  relation with `recordAgentChatLiveAppend`, or every fold after it loses the
+  shortcut. Do not build a new filtered array per event: `selectedEventsForDisplay`
+  did, and that hid the append from the whole list.
+- **A same-value `setState` is not free.** A locked pane wrote its own session
+  id to `selectedSessionId` on every event. React cannot drop that write early
+  while the component has other updates queued, so the 17,000-line pane ran
+  twice per event. The setter now skips a value that was already requested.
+- **Handlers that reach every row must be stable.** `onRetryCompaction` was a
+  `useCallback` on a value that changes each render, and it re-rendered every
+  mounted row on every event (24 row renders per event; now 0.1). The per-turn
+  model descriptor had the same effect after each resend. Check new list props
+  with the render counter before you merge them.
+- **Measure renders by cause.** `render-hook.js` counts renders; to find why the
+  pane renders, compare hooks that own a queue (`hook.queue`) and the context
+  dependencies, not `memoizedState` alone. A render with no visible cause is a
+  same-value write.
+
+Open: the pane's own chrome (header, composer, three closed dialogs) still
+renders once per event and once per keystroke, about 150 component renders
+each. A selected chat at its resident cap (60,000 events or 32 MB) trims one
+event from the front on every flush, which gives a new list each time and
+sends the merge and the row builder back to full passes; trim in steps instead.
+
+### The hosted client's sign-in stylesheet
+
+The entry stylesheet of the hosted client was the whole of `index.css`
+(672 KB). It is now `webclient/gate.css` (58 KB): Tailwind limited to the files
+in `tailwind.gate.config.cjs`, plus `styles/foundation.css` (theme values,
+tokens, base element rules) and the two component partials the sign-in screen
+draws (`toolPickerBackdrop.css`, `smartTooltip.css`). `index.css` imports the
+same partials and loads with the workspace (`loadAppStylesheet`), before the
+app's modules so that it keeps its place ahead of every chunk stylesheet.
+
+- Check a change to this split with computed styles, not screenshots: compare
+  `getComputedStyle` of every element (and `::before`/`::after`) between the old
+  and the new build, in the default, hover, focus-visible and active states and
+  in both themes. That check found the backdrop rules, the tooltip rules, a
+  theme value that Tailwind had dropped (`@theme static` keeps them), and an old
+  `.ade-glass-card` rule in `index.css` that changes the sign-in card on hover.
+- Do not move the desktop entry's `import "./index.css"` or make `main.tsx` a
+  dynamic import. Both change the chunk graph, and with it the order of the
+  stylesheets: `HomeWidgetGrid`, `music` and the primitives stylesheet then
+  load before `index.css` instead of after it, and they share `.kit-*` class
+  names with it. A top-level `await` in `browserMock.ts` has the same effect.
+- The dev Electron window must not load the browser-mock snapshot
+  (`browser-mock-ade-snapshot.generated.json`). `vite.config.ts` serves it an
+  empty module. It finds the app window by the `ADEDevShell` mark that
+  `main.ts` adds to the user agent in dev; a page in the built-in browser has
+  the plain Electron user agent and must still get the snapshot. With a 60 MB snapshot the renderer heap was 477 MB after GC and
+  the launch stalled for 6 s; it is 129 MB without.
+
+### Parked surfaces and the router (ninth pass, four projects open)
+
+Measure switches with more than one project open. With one project every
+number below looked fine.
+
+- **A parked surface must not see the router move.** Every mounted project
+  sits under the one router, and `useLocation`, `useNavigate` and each nested
+  `<Routes>` read its contexts. One project switch rendered the Work surface
+  of all four mounted projects several times: 12,950 component renders and a
+  170 ms first frame. `ProjectSurfaceRouterScope` (App.tsx) holds the
+  location and route-match contexts at their last on-screen value for a parked
+  project, and for the parked Work surface of the visible project. The Work
+  element is also the same object while parked (`useMemo`). Project switch:
+  173-180 ms to 53-55 ms; tab switch 59-63 ms to 28-32 ms. Routes, the selected
+  chat and its scroll position survive (checked by driving the app).
+- **A switch must not hand out new objects for the same project.** The
+  binding and the `ProjectInfo` of each open project were rebuilt on every
+  switch (`projectEntries`, `setProject`). Reuse the stored object when its
+  fields are the same.
+- **The top bar is memoized in the shell** (`ShellTopBar`,
+  `memoWithLatestHandlers`): the shell renders several times per switch.
+- Count renders per interaction with a `__REACT_DEVTOOLS_GLOBAL_HOOK__` that
+  is installed before load, and read the roots (components that rendered while
+  their parent did not) and the causes. Import the store through the URL the
+  page loaded (`performance.getEntriesByType("resource")`): after an HMR edit
+  the page uses `appStore.ts?t=...`, and a plain import is a second store.
+
+### Switches from the press (tenth pass)
+
+Measure a switch from the press, with real input: `scripts/perf/ui/press-to-paint.mjs`
+(CDP mouse move, press, a held button, release). `interaction.mjs` starts in
+the click handler and misses the 60 to 120 ms a button is held, which was two
+thirds of every switch. Four projects open, five chats, interleaved A/B:
+chat 136 to 47-51 ms, page tab 118 to 24-26 ms, project 137 to 44-51 ms.
+
+- **A switch control acts on the press** (`lib/pressActivation.ts`): chat
+  rows, the page tabs of the project sidebar, the machine tabs and the project
+  tabs of the top bar.
+  Keep its rules: only a plain mouse press (primary button, no modifier, on
+  the control and not on a nested control or a portal of it) acts early;
+  touch, pen, keyboard and modified clicks keep the click; the click of an
+  acted press is dropped.
+- **A press must be able to undo itself, or it keeps the click** (project
+  tabs are the one approved exception; see the end of this item). A chat row
+  is draggable, so `onSelect` returns an undo (`selectionRestorer` in
+  `useWorkSessions`) and the native `dragstart` runs it. Restore everything
+  the press wrote, not only what shows: the first version left the dragged
+  chat in the open list. The board, the Focus grid and rows that are members
+  of a grid keep the click for this reason. A project tab cannot undo (a
+  project switch writes main-process state), so the product rule changed
+  instead: a drag of a background tab brings its project to the front, as a
+  browser tab does. Do not add a switch back. Only a loaded local tab acts on
+  the press; a remote or unloaded tab switches through a transition, which
+  would stop a tear-off, so it keeps the click. A React portal sends its events to the
+  component that rendered it: a press on a menu backdrop reached the row
+  under it until the press checked that its target is inside its own element.
+- **An unchanged transcript must reconcile to the same list.** The history
+  read after a switch gave back a new list every time, so the transcript
+  rendered twice per switch. `mergeAgentChatHistorySnapshot` now maps a
+  rebuilt tool-call envelope back to the held one. Check a change there by
+  comparing `merged === existing` for idle chats across several switches.
+- **Decode a byte stream with a `StringDecoder`.** `RuntimeRpcClient` decoded
+  each socket read alone; a multi-byte character at a read boundary became
+  U+FFFD at a different place on each read. That is wrong text on screen, and
+  it also made the same history differ on every read. Other readers in the
+  main process still decode per read (child-process output in `prService`,
+  `agentChatService`, the SDK pools, `localRuntimeConnectionPool`).
+- **The view cache is bound by bytes only** (128 MB), not by a number of
+  chats. Heap after a visit to 16 chats: 246 MB (235 MB when only eight
+  chats were kept).
+- Profile of a warm switch (dev build): one synchronous task of about 35 ms,
+  of which about 24 ms is React (the pane renders about 11 times per switch;
+  about 350 components mount for the new rows) and about 10 ms is the style
+  and layout that `measureNow` forces. Count it with the render hook and a
+  CDP trace before you change it.
+- Not wins: reading a chat's history when the pointer rests on its row (the
+  read takes 4 to 19 ms; a cold open waits for its first render, not for
+  data). A pool of mounted chat panes is not built: showing a pane that
+  stayed mounted (the return to the Work tab) costs 24-34 ms, close to a full
+  switch, until the pane renders fewer times.
+
+### File watchers in the brain
+
+- Watch a directory tree with `watchTree` (`services/shared/treeWatcher.ts`),
+  not with chokidar directly. On macOS chokidar must poll (its native mode
+  opens one watch per directory, and closing thousands of them blocked the
+  event loop for 13 s on this repo), and a poll checks every path each second:
+  16,000 paths and about 11% of a core for this repo's root. `watchTree` uses
+  one recursive native watch per root on macOS and decides what happened by
+  reading the path again and comparing with a snapshot, so the events are
+  chokidar's. Check a change to it with
+  `scripts/perf/service/tree-watcher-parity.mts` and
+  `tree-watcher.bench.mts`. `withMacosSafeChokidarOptions` is still right for
+  a handful of named files (`configReloadService`).
+- Count polled paths in the brain with `process.getActiveResourcesInfo()`
+  (`StatWatcher`; `FSEventWrap` is a native watch), after
+  `process._debugProcess(<pid>)`. Poll CPU is on the libuv worker threads, so
+  a JS profile of the brain shows nothing; `sample <pid>` shows `stat`.
+- A watch is one reference and a stop releases one. A page that goes away
+  without its cleanup never sends the stop. `fileWatchLedger.ts` keeps the
+  outstanding references in two places: the desktop main process sends the
+  missing stops when a page commits a new document, loses its renderer or is
+  destroyed (`trackPageFileWatch`), and the brain releases a connection's
+  watches when the connection closes (`adeRpcServer` `handler.dispose`). Keep
+  both: the first covers a reload, the second covers the app quitting.
+  The second also releases the watches of a page that only lost its
+  connection, so the bridge opens them again when the page subscribes to
+  events on the new connection (`restorePageFileWatches`). Do not remove
+  that step, or an open Files tab stops its updates after a reconnect.
+
+### The appearance store
+
+`state/appearanceStore.ts` holds the theme, scene, font, motion and tooltip
+values and their parsing. `appStore` imports the parsing and registers itself;
+`useAppearanceStore` reads the project store in context, then the root store,
+then a stand-in. Components that the hosted sign-in screen draws must use
+`useAppearanceStore`, not `useAppStore`, or `appStore` (257 KB) returns to the
+signed-out download. `pinKey` is in its own file for the same reason.
+

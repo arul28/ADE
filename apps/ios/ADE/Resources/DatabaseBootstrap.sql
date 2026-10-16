@@ -132,6 +132,29 @@ create index if not exists idx_session_github_issues_lane on session_github_issu
 
 create index if not exists idx_session_github_issues_issue on session_github_issues(project_id, issue_id);
 
+create table if not exists session_jira_issues (
+      id text primary key,
+      project_id text not null,
+      session_id text not null,
+      lane_id text,
+      issue_id text not null,
+      issue_json text not null,
+      role text not null,
+      source text not null,
+      include_in_pr integer not null default 1,
+      close_on_merge integer not null default 1,
+      evidence_json text,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id) on delete cascade
+    );
+
+create index if not exists idx_session_jira_issues_session on session_jira_issues(project_id, session_id);
+
+create index if not exists idx_session_jira_issues_lane on session_jira_issues(project_id, lane_id);
+
+create index if not exists idx_session_jira_issues_issue on session_jira_issues(project_id, issue_id);
+
 create index if not exists idx_lane_linear_issue_links_lane on lane_linear_issue_links(project_id, lane_id);
 
 create index if not exists idx_lane_linear_issue_links_issue on lane_linear_issue_links(project_id, issue_id);
@@ -510,6 +533,20 @@ create index if not exists idx_pull_request_chat_sessions_pr on pull_request_cha
 create index if not exists idx_pull_request_chat_sessions_session on pull_request_chat_sessions(project_id, session_id);
 
 create index if not exists idx_pull_request_chat_sessions_lane on pull_request_chat_sessions(project_id, lane_id);
+
+create table if not exists pull_request_chat_session_dismissals (
+      id text primary key,
+      project_id text not null,
+      pr_id text not null,
+      session_id text not null,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id) on delete cascade
+    );
+
+create index if not exists idx_pull_request_chat_session_dismissals_pr on pull_request_chat_session_dismissals(project_id, pr_id);
+
+create index if not exists idx_pull_request_chat_session_dismissals_session on pull_request_chat_session_dismissals(project_id, session_id);
 
 alter table pull_requests add column last_polled_at text;
 

@@ -201,9 +201,9 @@ const OPUS: ModelDescriptor = {
 };
 
 const GPT: ModelDescriptor = {
-  id: "openai/gpt-5.4",
-  shortId: "gpt-5.4",
-  displayName: "GPT-5.4",
+  id: "openai/gpt-5.5",
+  shortId: "gpt-5.5",
+  displayName: "GPT-5.5",
   family: "openai",
   authTypes: ["cli-subscription"],
   contextWindow: 1_000_000,
@@ -212,7 +212,7 @@ const GPT: ModelDescriptor = {
   reasoningTiers: ["low", "medium", "high"],
   color: "#10A37F",
   providerRoute: "codex-cli",
-  providerModelId: "gpt-5.4",
+  providerModelId: "gpt-5.5",
   cliCommand: "codex",
   isCliWrapped: true,
 };
@@ -616,32 +616,48 @@ describe("ModelPicker", () => {
     expect(favoriteStore.has(OPUS.id)).toBe(true);
   });
 
-  it("gives every row one line of detail under the name", async () => {
+  // The detail line says what the panel does not: inside a provider's own rail
+  // that provider is the panel title, so rows drop it and keep the route and
+  // the context size; a mixed list (Recents) names the provider on each row.
+  it.each([
+    {
+      name: "a provider's own rail",
+      models: () => [SONNET, OPUS],
+      value: SONNET.id,
+      recent: null as string | null,
+      rowId: SONNET.id,
+      shows: "200K context",
+      hides: "Anthropic",
+    },
+    {
+      name: "a routed provider's rail, which keeps the route",
+      models: () => [OPENCODE_MODEL],
+      value: OPENCODE_MODEL.id,
+      recent: null as string | null,
+      rowId: OPENCODE_MODEL.id,
+      shows: "Anthropic · 200K context",
+      hides: "OpenCode ·",
+    },
+    {
+      name: "Recents, which mixes providers",
+      models: () => [SONNET, OPUS],
+      value: SONNET.id,
+      recent: OPUS.id as string | null,
+      rowId: OPUS.id,
+      shows: "Anthropic · 1M context",
+      hides: null as string | null,
+    },
+  ])("names only what the panel does not in $name", async ({ models, value, recent, rowId, shows, hides }) => {
+    if (recent) recentStore.unshift(recent);
     const user = userEvent.setup();
-    render(
-      <ModelPicker value={SONNET.id} onChange={vi.fn()} models={[SONNET, OPUS]} />,
-    );
+    render(<ModelPicker value={value} onChange={vi.fn()} models={models()} />);
     await user.click(screen.getByRole("button", { name: /Select model/i }));
 
-    // The complaint this answers: rows were a name and nothing else, so two
-    // models that differ only in what they can hold looked identical.
-    expect((await findModelRow(SONNET.id)).textContent).toContain("Anthropic · 200K context · reasoning");
-    expect((await findModelRow(OPUS.id)).textContent).toContain("Anthropic · 1M context · reasoning");
-  });
-
-  it("names the route a model actually takes on its detail line", async () => {
-    const user = userEvent.setup();
-    render(
-      <ModelPicker
-        value={OPENCODE_MODEL.id}
-        onChange={vi.fn()}
-        models={[OPENCODE_MODEL]}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: /Select model/i }));
-
-    expect((await findModelRow(OPENCODE_MODEL.id)).textContent)
-      .toContain("OpenCode · Anthropic · 200K context · reasoning");
+    const row = await findModelRow(rowId);
+    expect(row.textContent).toContain(shows);
+    if (hides) expect(row.textContent).not.toContain(hides);
+    // Reasoning and image input are the capability pill's job, not the line's.
+    expect(row.textContent).not.toContain("reasoning");
   });
 
   it("names the Pi provider on a pi/ row whose descriptor carries no pi-sdk route", async () => {
@@ -663,11 +679,6 @@ describe("ModelPicker", () => {
     expect(screen.queryByRole("listbox", { name: /models/i })).toBeNull();
   });
 
-  // Reference act/fireEvent to satisfy "no-unused" linters in the future.
-  it("imports act and fireEvent without using them at runtime", () => {
-    expect(typeof act).toBe("function");
-    expect(typeof fireEvent.click).toBe("function");
-  });
 
   it("shows the model name on the trigger even when compact", () => {
     renderPicker({ compact: true });
@@ -830,6 +841,98 @@ describe("ModelPicker", () => {
       .findByRole("button", { name: /Fast mode for/i });
     expect(selectedChip.getAttribute("aria-pressed")).toBe("true");
     expect(otherChip.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  describe("the tier the server reported", () => {
+    // Fast is a request. Codex can answer with a different tier than ADE asked
+    // for, and the session records what came back as `codexServiceTier`. The
+    // picker used to ignore it, so a declined tier hid behind a chip still
+    // reading `Ultra`.
+    const ULTRA_GPT: ModelDescriptor = {
+      ...GPT,
+      id: "openai/gpt-5.6-ultra",
+      shortId: "gpt-5.6-ultra",
+      displayName: "GPT-5.6 Ultra",
+      providerModelId: "gpt-5.6-ultra",
+      serviceTiers: ["fast", "ultrafast"],
+    };
+    const effectiveBadge = (row: HTMLElement) =>
+      row.querySelector<HTMLElement>("[data-model-picker-effective-tier]");
+
+    const renderUltrafastChat = async (effectiveFastTier?: string) => {
+      const user = userEvent.setup();
+      render(
+        <ModelPicker
+          value={ULTRA_GPT.id}
+          onChange={vi.fn()}
+          models={[ULTRA_GPT, FAST_GPT_ALT]}
+          fastMode
+          fastTier="ultrafast"
+          onFastModeChange={vi.fn()}
+          {...(effectiveFastTier === undefined ? {} : { effectiveFastTier })}
+        />,
+      );
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+      return await findModelRow(ULTRA_GPT.id);
+    };
+
+    it("draws nothing until the server has reported one", async () => {
+      const row = await renderUltrafastChat();
+      expect(effectiveBadge(row)).toBeNull();
+    });
+
+    it("draws nothing while Fast is off, because nothing was asked", async () => {
+      // With Fast off ADE sends no tier at all, so the server resolves one from
+      // the user's own config.toml and can still report `priority`. The badge
+      // answers a request; with no request there is nothing to answer, and the
+      // "as asked" wording would be a lie.
+      const user = userEvent.setup();
+      render(
+        <ModelPicker
+          value={ULTRA_GPT.id}
+          onChange={vi.fn()}
+          models={[ULTRA_GPT]}
+          fastMode={false}
+          fastTier="ultrafast"
+          onFastModeChange={vi.fn()}
+          effectiveFastTier="priority"
+        />,
+      );
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+      expect(effectiveBadge(await findModelRow(ULTRA_GPT.id))).toBeNull();
+    });
+
+    it("names the tier that matches the ask, unmarked", async () => {
+      const row = await renderUltrafastChat("ultrafast");
+      const badge = effectiveBadge(row);
+      expect(badge?.textContent).toBe("Ultrafast");
+      expect(badge?.getAttribute("data-model-picker-effective-tier")).toBe("matched");
+    });
+
+    it("marks a tier the server gave instead of the one ADE asked for", async () => {
+      const row = await renderUltrafastChat("fast");
+      const badge = effectiveBadge(row);
+      expect(badge?.textContent).toBe("Fast");
+      expect(badge?.getAttribute("data-model-picker-effective-tier")).toBe("declined");
+    });
+
+    it("shows an inherited tier it has no name for rather than dropping it", async () => {
+      // The server also answers `default` and `priority` when it inherits the
+      // user's own config.toml — the same declined case under another word.
+      const row = await renderUltrafastChat("priority");
+      const badge = effectiveBadge(row);
+      expect(badge?.textContent).toBe("Priority");
+      expect(badge?.getAttribute("data-model-picker-effective-tier")).toBe("declined");
+    });
+
+    it("stays off a row that is not the chat's own", async () => {
+      // The report belongs to the session. Drawing it on every row would claim
+      // every model runs what this one does.
+      const selected = await renderUltrafastChat("fast");
+      const other = await findModelRow(FAST_GPT_ALT.id);
+      expect(effectiveBadge(selected)).not.toBeNull();
+      expect(effectiveBadge(other)).toBeNull();
+    });
   });
 
   it("selects the model and enables fast when the chip is clicked on a non-selected row", async () => {
@@ -2302,7 +2405,9 @@ describe("ModelPicker", () => {
         "recents",
         "provider:anthropic",
         "provider:openai",
+        "provider:muse",
         "provider:cursor",
+        "provider:devin",
         "provider:opencode",
         "provider:pi",
         "provider:github-copilot",

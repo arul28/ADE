@@ -1,3 +1,4 @@
+import { applySteerOrder } from "../../../desktop/src/shared/steerOrder";
 import {
   collapseActivityPhaseRows,
   mergeReasoningTextFragments,
@@ -6,10 +7,11 @@ import {
 import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
+  AgentChatFileRef,
   AgentChatSessionSummary,
 } from "../../../desktop/src/shared/types/chat";
 import { normalizeSubagentLifecycleEvent } from "../../../desktop/src/shared/chatSubagents";
-import { isSettledSteerDeliveryState } from "../../../desktop/src/shared/chatTranscript";
+import { isSettledSteerDeliveryState, userMessageStartsTurn } from "../../../desktop/src/shared/chatTranscript";
 import {
   formatLegacyProviderRetryActivityDetail,
   formatProviderRetryActivityDetail,
@@ -29,7 +31,6 @@ import {
 } from "./format";
 import { terminalReasonLabel } from "./terminalReason";
 import { workEventItemId, workEventParentItemId } from "./workEventIds";
-import { voiceCallLineId, voiceCallRunsByStartIndex } from "./voiceCallRuns";
 import { appendStreamingText, shouldMergeAssistantText } from "./assistantTextIdentity";
 
 export type WorkToolStatus = "running" | "ok" | "failed";
@@ -88,6 +89,9 @@ export type PlanStep = {
 export type PendingSteer = {
   steerId: string;
   text: string;
+  /** What the staged message carries, so `/steer send` can refuse what the live turn cannot take. */
+  attachments?: AgentChatFileRef[];
+  contextAttachmentCount?: number;
 };
 
 export type AggregatedBlock =
@@ -100,7 +104,8 @@ export type AggregatedBlock =
   | { kind: "activity-bundle"; id: string; turnId: string | null; entries: ActivityBundleEntry[]; live: boolean }
   | { kind: "compaction"; id: string; turnId: string | null; trigger: "manual" | "auto" | "ade_fallback"; live: boolean; preTokens?: number; postTokens?: number; durationMs?: number; sessionCompactionCount?: number }
   | { kind: "conversation-reset"; id: string }
-  | { kind: "queued-steer"; id: string; turnId: string | null; steerId: string; text: string }
+  /** `sendsNext`: first in the queue. */
+  | { kind: "queued-steer"; id: string; turnId: string | null; steerId: string; text: string; sendsNext: boolean }
   | { kind: "plan"; id: string; turnId: string | null; steps: PlanStep[]; current: number; total: number; live: boolean }
   | { kind: "turn-end"; id: string; turnId: string | null; timestamp: string; status: string; terminalReasonLabel?: string; durationMs?: number; entries: ToolCallEntry[]; fileEntries: FileChangeEntry[] }
   | { kind: "approval"; id: string; line: RenderedChatLine }
@@ -190,6 +195,16 @@ function safeMs(value: string): number {
 
 function validDurationMs(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/** The turn tagged on the newest block of the open tool-activity segment, if any. */
+function openSegmentTurnId(blocks: AggregatedBlock[], segmentStart: number): string | null {
+  for (let index = blocks.length - 1; index >= segmentStart; index -= 1) {
+    const block = blocks[index]!;
+    const turnId = "turnId" in block ? block.turnId : null;
+    if (turnId) return turnId;
+  }
+  return null;
 }
 
 function workItemKey(turnId: string | null, itemId: string): string {
@@ -886,7 +901,12 @@ export function derivePendingSteers(events: AgentChatEventEnvelope[]): PendingSt
     if (event.type === "user_message" && event.steerId) {
       if (event.deliveryState === "queued") {
         if (!resolvedSteerIds.has(event.steerId)) {
-          steerMap.set(event.steerId, { steerId: event.steerId, text: event.displayText ?? event.text });
+          steerMap.set(event.steerId, {
+            steerId: event.steerId,
+            text: event.displayText ?? event.text,
+            ...(event.attachments?.length ? { attachments: event.attachments } : {}),
+            ...(event.contextAttachments?.length ? { contextAttachmentCount: event.contextAttachments.length } : {}),
+          });
         }
       } else {
         steerMap.delete(event.steerId);
@@ -904,6 +924,13 @@ export function derivePendingSteers(events: AgentChatEventEnvelope[]): PendingSt
     if (event.type === "command_lifecycle" && event.steerId && event.status !== "queued") {
       steerMap.delete(event.steerId);
       resolvedSteerIds.add(event.steerId);
+      continue;
+    }
+    if (event.type === "queue_reordered") {
+      // The host's order after a reorder; ids it does not name stay after it.
+      const ordered = applySteerOrder([...steerMap.entries()], ([id]) => id, event.steerIds);
+      steerMap.clear();
+      for (const [id, entry] of ordered) steerMap.set(id, entry);
     }
   }
   return Array.from(steerMap.values());
@@ -928,7 +955,7 @@ export function aggregateChatBlocks(args: {
   for (const line of lines) linesById.set(line.id, line);
 
   const blocks: AggregatedBlock[] = [];
-  const pendingSteerIds = new Set((args.pendingSteers ?? derivePendingSteers(args.events)).map((steer) => steer.steerId));
+  const pendingSteerPositions = new Map((args.pendingSteers ?? derivePendingSteers(args.events)).map((steer, index) => [steer.steerId, index] as const));
   const resolvedSubagentKeysByParent = buildResolvedSubagentKeysByParent(args.events);
   const subagentParentItemIds = new Set<string>();
   for (const envelope of args.events) {
@@ -977,10 +1004,6 @@ export function aggregateChatBlocks(args: {
     }
   }
 
-  // Mirrors `renderChatLines`: keyed by the index of each voice call run's
-  // first envelope, empty for every chat that has never been on a call.
-  const voiceCallRuns = voiceCallRunsByStartIndex(args.events);
-
   const passthrough = (id: string, kind: "user-bubble" | "assistant-text" | "approval" | "error" | "notice"): void => {
     const line = linesById.get(id);
     if (!line) return;
@@ -1026,11 +1049,6 @@ export function aggregateChatBlocks(args: {
     }
     const { envelope, index } = entry;
     const event = envelope.event;
-    // The voice-call marker `renderChatLines` puts at the head of a call's run.
-    // Emitted here as well because a line nothing passes through is a line the
-    // transcript never shows: blocks are what ChatView renders.
-    const voiceRun = voiceCallRuns.get(index);
-    if (voiceRun) passthrough(voiceCallLineId(voiceRun.callId), "notice");
     const id = chatEventLineId(envelope, index);
     const turnId = turnIdOf(event);
     const turnKey = turnId ?? "__turn_without_id__";
@@ -1063,15 +1081,24 @@ export function aggregateChatBlocks(args: {
         continue;
       }
       if (event.steerId && event.deliveryState === "queued") {
-        if (pendingSteerIds.has(event.steerId)) {
+        const position = pendingSteerPositions.get(event.steerId);
+        if (position != null) {
           blocks.push({
             kind: "queued-steer",
             id,
             turnId,
             steerId: event.steerId,
             text: event.displayText ?? event.text,
+            sendsNext: position === 0,
           });
         }
+        continue;
+      }
+      // A message that stays inside the live turn keeps its tool activity, live
+      // state, and turn start; it still shows as a bubble and its delivery line.
+      if (!userMessageStartsTurn(event, openSegmentTurnId(blocks, toolActivitySegmentStart))) {
+        passthrough(id, "user-bubble");
+        passthrough(`${id}:delivery`, "notice");
         continue;
       }
       for (const block of blocks.slice(toolActivitySegmentStart)) {

@@ -52,6 +52,30 @@ describe("closeWorkToolForReal", () => {
     expect(closeTab).toHaveBeenCalledWith({ tabId: "tab-2" }, undefined);
   });
 
+  it("closes only the browser collection selected by the session pin", async () => {
+    const pin = {
+      kind: "remote" as const,
+      key: "remote:studio",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-2",
+      rootPath: "/remote/repo",
+      displayName: "Repo",
+    };
+    const closeTab = vi.fn(async () => ({}));
+    const getStatus = vi.fn(async () => ({ tabs: [{ id: "tab-remote" }] }));
+    (window as unknown as { ade: unknown }).ade = {
+      builtInBrowser: { getStatus, closeTab },
+    };
+
+    closeWorkToolForReal("browser", { laneId: "lane-1", runtimePin: pin });
+    await flush();
+
+    expect(getStatus).toHaveBeenCalledWith({ projectRoot: "/remote/repo" }, pin);
+    expect(closeTab).toHaveBeenCalledTimes(1);
+    expect(closeTab).toHaveBeenCalledWith({ projectRoot: "/remote/repo", tabId: "tab-remote" }, pin);
+  });
+
   it("closing the mac-desktop tab stops the lane display", async () => {
     const stop = vi.fn(async () => ({ stopped: true, releasedWindows: 0 }));
     (window as unknown as { ade: unknown }).ade = { macDesktop: { stop } };

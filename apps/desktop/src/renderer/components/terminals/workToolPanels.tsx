@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import type { LaneDiffMode } from "../../../shared/types";
+import type { BrowserTabMentionTarget } from "../../../shared/browserTabMention";
 import { useWorkSurfaceMountRef, workSurfaceKey } from "../../lib/workToolOnScreen";
 import { useNavigate } from "react-router-dom";
 import { Play } from "@phosphor-icons/react";
 import type { ComponentType, ReactNode } from "react";
 import type {
+  AgentChatContextAttachment,
   AgentChatFileRef,
   AppControlContextItem,
   GitCommitSummary,
@@ -17,6 +20,7 @@ import { formatToolTypeLabel } from "../../lib/sessions";
 import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatPrPane } from "../chat/ChatPrPane";
+import { IssuesToolPanel } from "../issues/IssuesToolPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatMacDesktopPanel } from "../chat/ChatMacDesktopPanel";
 import { AppleDevicePane } from "../apple/AppleDevicePane";
@@ -33,7 +37,6 @@ import { FilesTab } from "../files/FilesTab";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { cn } from "../ui/cn";
-import { Banner } from "../ui/notice";
 import { isReadOnlyWorkTool, type WorkToolContext } from "./workTools";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
@@ -66,26 +69,22 @@ export type WorkToolPanelProps = {
   toolContext: WorkToolContext;
   pinnedMachineOffline: boolean;
   pinnedMachineName: string | null;
-  /**
-   * Lane attribution: this tool is attached to a DIFFERENT lane than the one on
-   * screen. A real state warning, not an explanation of a capability — the
-   * panels drop their controls when a capability is absent rather than
-   * narrating it in a banner.
-   */
-  warningReason: string | null;
   canInsertContext: boolean;
   shouldPersistPanelAttachment: boolean;
   resumingSession: boolean;
   selectedPath: string | null;
-  selectedMode: "staged" | "unstaged" | null;
+  selectedMode: LaneDiffMode | null;
   selectedCommit: GitCommitSummary | null;
-  onSelectFile: (path: string, mode: "staged" | "unstaged") => void;
+  onSelectFile: (path: string, mode: LaneDiffMode) => void;
   onSelectCommit: (commit: GitCommitSummary | null) => void;
   onClearDiffSelection: () => void;
   onAddAttachment: ((attachment: AgentChatFileRef) => void) | undefined;
   onAddBuiltInBrowserContext: ((item: unknown) => void) | undefined;
+  onAttachBrowserTab: ((tab: BrowserTabMentionTarget) => void) | undefined;
   onAddAppControlContext: ((item: AppControlContextItem) => void) | undefined;
   onAddIosContext: ((item: IosElementContextItem) => void) | undefined;
+  /** Attaches an issue to the chat the pane serves; throws with the reason when it cannot. */
+  onAddContextAttachment: ((attachment: AgentChatContextAttachment) => void) | undefined;
   onInsertDraft: ((text: string) => void) | undefined;
   onResumeEndedSession: () => void;
   onToolChange: (tool: WorkSidebarTab | null) => void;
@@ -98,16 +97,6 @@ function useWorkToolMountScope(runtimePin: OpenProjectBinding | null): string {
 }
 
 /* ── Shared chrome ────────────────────────────────────────────────────────── */
-
-export function WarningBanner({ message }: { message: string }) {
-  return (
-    <Banner
-      layout="inline"
-      model={{ id: "work-tool-lane-warning", tone: "warning", title: message }}
-      style={{ margin: "6px 8px", flexShrink: 0 }}
-    />
-  );
-}
 
 /**
  * The pane's empty state: one line, and at most one thing to press.
@@ -128,18 +117,19 @@ export function WorkToolEmptyState({
 }
 
 /** Every tool below the terminal and the browser needs a lane to talk about. */
-function NoLaneNotice() {
+function NoLaneEmptyLine() {
   return <WorkToolEmptyLine title="Select a lane to use this tool" />;
 }
 
-/** The native panels share one frame: optional warning bar, then the panel. */
+/**
+ * The native panels share one frame. It has no lane warning: a pane only ever
+ * shows its own lane's tool, so there is no other lane's session to warn about.
+ */
 function NativePanelFrame({
-  warningReason,
   padded,
   frameRef,
   children,
 }: {
-  warningReason: string | null;
   padded?: boolean;
   /** Registers the tool as mounted, for `ade ui show`. */
   frameRef?: (element: HTMLDivElement | null) => void;
@@ -147,7 +137,6 @@ function NativePanelFrame({
 }) {
   return (
     <div ref={frameRef} className="flex h-full min-h-0 flex-col">
-      {warningReason ? <WarningBanner message={warningReason} /> : null}
       <div className={cn("min-h-0 flex-1", padded ? "overflow-auto px-3 py-3" : "overflow-hidden")}>
         {children}
       </div>
@@ -234,11 +223,11 @@ function WorkBrowserTool(props: WorkToolPanelProps) {
     toolContext,
     runtimePin,
     panelSessionId,
-    warningReason,
     canInsertContext,
     shouldPersistPanelAttachment,
     onAddAttachment,
     onAddBuiltInBrowserContext,
+    onAttachBrowserTab,
     onInsertDraft,
   } = props;
   const mountScope = useWorkToolMountScope(runtimePin);
@@ -255,7 +244,7 @@ function WorkBrowserTool(props: WorkToolPanelProps) {
     );
   }
   return (
-    <NativePanelFrame warningReason={warningReason} frameRef={mountRef}>
+    <NativePanelFrame frameRef={mountRef}>
       <ChatBuiltInBrowserPanel
         key={`work-browser:${mountScope}`}
         sessionId={panelSessionId}
@@ -263,6 +252,10 @@ function WorkBrowserTool(props: WorkToolPanelProps) {
         runtimePin={runtimePin}
         onAddAttachment={shouldPersistPanelAttachment ? onAddAttachment : undefined}
         onAddContext={canInsertContext ? onAddBuiltInBrowserContext : undefined}
+        // A chat on another machine reaches this desktop's tabs through the
+        // desktop its last message came from (`remoteBrowserForwarder`), and
+        // the attached block tells its agent where the tab is.
+        onAttachTab={canInsertContext ? onAttachBrowserTab : undefined}
         onInsertDraft={canInsertContext ? onInsertDraft : undefined}
       />
     </NativePanelFrame>
@@ -283,7 +276,7 @@ function WorkGitTool({
 }: WorkToolPanelProps) {
   const navigate = useNavigate();
   const mountScope = useWorkToolMountScope(runtimePin);
-  if (!laneId) return <NoLaneNotice />;
+  if (!laneId) return <NoLaneEmptyLine />;
   if (pinnedMachineOffline) {
     return <WorkToolEmptyState title={`${pinnedMachineName} is offline`} />;
   }
@@ -313,7 +306,7 @@ function WorkGitTool({
 
 function WorkFilesTool({ laneId, runtimePin }: WorkToolPanelProps) {
   const mountScope = useWorkToolMountScope(runtimePin);
-  if (!laneId) return <NoLaneNotice />;
+  if (!laneId) return <NoLaneEmptyLine />;
   return (
     <FilesTab
       key={`work-files:${mountScope}`}
@@ -326,7 +319,7 @@ function WorkFilesTool({ laneId, runtimePin }: WorkToolPanelProps) {
 
 /**
  * A canvas that has never been handed a frame is 300×150 — the HTML default —
- * and `IosSimH264Video` only sizes it on the first decode. Drawn with
+ * and `H264StreamView` only sizes it on the first decode. Drawn with
  * `alpha: false`, that placeholder reads as solid black.
  *
  * It matters because the poster below is painted full-bleed over the floating
@@ -348,19 +341,18 @@ function WorkIosTool({
   laneRoot,
   panelSessionId,
   runtimePin,
-  warningReason,
   canInsertContext,
   onAddIosContext,
   onInsertDraft,
 }: WorkToolPanelProps) {
   const mountScope = useWorkToolMountScope(runtimePin);
   /**
-   * The device follows the pane out of the door (round 3, A4).
+   * The device follows the pane out of the door.
    *
-   * Closing the tools pane, or switching to another tool, used to leave a
+   * Closing the tools pane, or switching to another tool, must not leave a
    * running simulator with nothing on screen at all — no picture, no control,
-   * no hint that a device was still up. Unmounting this panel now floats it
-   * over the chat instead, unless the user has closed the player for that
+   * no hint that a device is still up. Unmounting this panel floats it over
+   * the chat instead, unless the user has closed the player for that
    * device. Mounting takes it back: two live views of one device is the
    * handoff failing, not succeeding.
    */
@@ -384,7 +376,7 @@ function WorkIosTool({
   }, []);
 
   /*
-   * Keep the handover's cache warm while the tool is open (round 4 §B4).
+   * Keep the handover's cache warm while the tool is open.
    *
    * One read on mount and one per device-state event — no poll. The handover
    * itself is synchronous and must stay that way, so the name and family it
@@ -431,8 +423,8 @@ function WorkIosTool({
    *  3. open the player, so its mount is flushed in this same commit rather
    *     than a round trip later.
    *
-   * Round 3 did all three in a passive cleanup behind a `deviceList` await,
-   * which is the "visible moment" §B4 describes.
+   * Doing all three in a passive cleanup behind a `deviceList` await leaves a
+   * visible moment with no picture anywhere.
    */
   /*
    * The other half of the retake: give the hold back now that the pane holds a
@@ -475,12 +467,12 @@ function WorkIosTool({
       });
     };
   }, [laneId]);
-  if (!laneId) return <NoLaneNotice />;
+  if (!laneId) return <NoLaneEmptyLine />;
   // Deliberately NOT `padded`. The Apple pane fills its host: the tools pane's
   // 12px gutter and scroll container turned the device back into the drawer
   // this rebuild replaced.
   return (
-    <NativePanelFrame warningReason={warningReason} frameRef={mountRef}>
+    <NativePanelFrame frameRef={mountRef}>
       {/* `contents`, so this ref holder generates no box at all and the pane
           stays the flex child it was — the node exists only to be queried for
           the decoder canvas during the unmount above. */}
@@ -503,10 +495,10 @@ function WorkIosTool({
 function WorkAppControlTool({
   laneId,
   laneRoot,
+  activeLane,
   toolContext,
   panelSessionId,
   runtimePin,
-  warningReason,
   canInsertContext,
   shouldPersistPanelAttachment,
   onAddAttachment,
@@ -514,19 +506,28 @@ function WorkAppControlTool({
   onInsertDraft,
 }: WorkToolPanelProps) {
   const mountScope = useWorkToolMountScope(runtimePin);
+  // `ade app-control show` answers "shown" only once this is on screen, and
+  // the floating App Control player stays hidden while it is.
+  const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey("app-control", mountScope, laneId) : null);
   // Before the lane gate, and before the panel: a read-only surface has
   // something to say whether or not a lane is selected, and must not mount a
   // stubbed namespace.
   if (isReadOnlyWorkTool("app-control", toolContext)) {
-    return <WorkToolReadOnlyView tool="app-control" laneId={laneId} />;
+    return (
+      <div ref={mountRef} className="contents">
+        <WorkToolReadOnlyView tool="app-control" laneId={laneId} />
+      </div>
+    );
   }
-  if (!laneId) return <NoLaneNotice />;
+  if (!laneId) return <NoLaneEmptyLine />;
   return (
-    <NativePanelFrame warningReason={warningReason} padded>
+    <NativePanelFrame padded frameRef={mountRef}>
       <ChatAppControlPanel
-        key={`work-appcontrol:${mountScope}`}
+        // One session per lane: another lane is another session, read afresh.
+        key={`work-appcontrol:${mountScope}:${laneId}`}
         sessionId={panelSessionId}
         laneId={laneId}
+        laneName={activeLane?.name ?? null}
         runtimePin={runtimePin}
         projectRoot={laneRoot}
         controlDisabledReason={null}
@@ -555,7 +556,6 @@ function WorkMacDesktopTool({
   toolContext,
   panelSessionId,
   runtimePin,
-  warningReason,
 }: WorkToolPanelProps) {
   const mountScope = useWorkToolMountScope(runtimePin);
   // `ade mac-desktop show` answers "shown" only once this is on screen.
@@ -567,11 +567,42 @@ function WorkMacDesktopTool({
       </div>
     );
   }
-  if (!laneId) return <NoLaneNotice />;
+  if (!laneId) return <NoLaneEmptyLine />;
   return (
-    <NativePanelFrame warningReason={warningReason} padded frameRef={mountRef}>
+    <NativePanelFrame padded frameRef={mountRef}>
       <ChatMacDesktopPanel
         key={`work-mac-desktop:${mountScope}`}
+        laneId={laneId}
+        laneName={activeLane?.name ?? null}
+        sessionId={panelSessionId}
+        runtimePin={runtimePin}
+      />
+    </NativePanelFrame>
+  );
+}
+
+function WorkWindowsDesktopTool(props: WorkToolPanelProps) {
+  const { laneId, activeLane, toolContext, panelSessionId, runtimePin } = props;
+  const mountScope = useWorkToolMountScope(runtimePin);
+  const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(
+    laneId ? workSurfaceKey("windows-desktop", mountScope, laneId) : null,
+  );
+  if (isReadOnlyWorkTool("windows-desktop", toolContext)) {
+    return (
+      <div ref={mountRef} className="contents">
+        <WorkToolReadOnlyView tool="windows-desktop" laneId={laneId} />
+      </div>
+    );
+  }
+  if (!laneId) return <NoLaneEmptyLine />;
+  // Reuses the Mac Desktop pane: it reads the lane's seat from the runtime and
+  // renders the Windows cards when `status.windowsDesktop` is present. Only one
+  // of the two panes is ever available, because the host platform picks one.
+  return (
+    <NativePanelFrame padded frameRef={mountRef}>
+      <ChatMacDesktopPanel
+        key={`work-windows-desktop:${mountScope}`}
+        desktopTool="windows-desktop"
         laneId={laneId}
         laneName={activeLane?.name ?? null}
         sessionId={panelSessionId}
@@ -588,7 +619,7 @@ function WorkPrTool({
   runtimePin,
   panelSessionId,
 }: WorkToolPanelProps) {
-  if (!laneId) return <NoLaneNotice />;
+  if (!laneId) return <NoLaneEmptyLine />;
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">
       <ChatPrPane
@@ -603,6 +634,20 @@ function WorkPrTool({
   );
 }
 
+/**
+ * Issues opened from this lane's chats. Needs no lane: an issue read from a
+ * projectless chat still has somewhere to open. "Attach to chat" appears only
+ * when the pane serves a chat or draft it can attach to.
+ */
+function WorkIssuesTool({ laneId, canInsertContext, onAddContextAttachment }: WorkToolPanelProps) {
+  return (
+    <IssuesToolPanel
+      laneId={laneId}
+      onAttachToChat={canInsertContext ? onAddContextAttachment : undefined}
+    />
+  );
+}
+
 export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkToolPanelProps>> = {
   terminal: WorkTerminalTool,
   browser: WorkBrowserTool,
@@ -611,5 +656,7 @@ export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkTool
   ios: WorkIosTool,
   "app-control": WorkAppControlTool,
   "mac-desktop": WorkMacDesktopTool,
+  "windows-desktop": WorkWindowsDesktopTool,
   pr: WorkPrTool,
+  issues: WorkIssuesTool,
 };

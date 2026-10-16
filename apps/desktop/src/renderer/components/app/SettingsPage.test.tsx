@@ -30,7 +30,6 @@ function stubSection(anchors: string[]) {
 }
 
 vi.mock("../settings/ProjectSection", () => ({ ProjectSection: stubSection(["project"]) }));
-vi.mock("../settings/ProductAnalyticsSection", () => ({ ProductAnalyticsSection: stubSection(["product-analytics"]) }));
 vi.mock("../settings/DiagnosticsSharingSection", () => ({ DiagnosticsSharingSection: stubSection(["diagnostics-sharing"]) }));
 vi.mock("../settings/AboutSection", () => ({
   AboutSection: () => (
@@ -42,7 +41,6 @@ vi.mock("../settings/AboutSection", () => ({
 vi.mock("../settings/AppearanceSection", () => ({ AppearanceSection: stubSection(["theme", "chat-font-size"]) }));
 vi.mock("../settings/ProvidersSection", () => ({ ProvidersSection: stubSection(["ai-providers"]) }));
 vi.mock("../settings/AiFeaturesSection", () => ({ AiFeaturesSection: stubSection(["background-jobs"]) }));
-vi.mock("../settings/OpenAiKeySection", () => ({ OpenAiKeySection: stubSection(["openai-api-key"]) }));
 vi.mock("../settings/DictationSection", () => ({ DictationSection: stubSection(["voice-input"]) }));
 vi.mock("../settings/LaneBehaviorSection", () => ({ LaneBehaviorSection: stubSection(["auto-rebase", "rebase-suggestions"]) }));
 vi.mock("../settings/LaneTemplatesSection", () => ({ LaneTemplatesSection: stubSection(["lane-templates"]) }));
@@ -50,6 +48,7 @@ vi.mock("../settings/PrChatTranscriptsSection", () => ({ PrChatTranscriptsSectio
 vi.mock("../settings/KeepAwakeSection", () => ({ KeepAwakeSection: stubSection(["keep-awake"]) }));
 vi.mock("../settings/CaptureGestureSection", () => ({ CaptureGestureSection: stubSection(["capture-gesture"]) }));
 vi.mock("../settings/BrowserLinksSection", () => ({ BrowserLinksSection: stubSection(["link-open-mode"]) }));
+vi.mock("../settings/BrowserAgentAccessSection", () => ({ BrowserAgentAccessSection: stubSection(["browser-agent-access"]) }));
 vi.mock("../settings/GitHubIntegrationSection", () => ({ GitHubIntegrationSection: stubSection(["github-connection"]) }));
 vi.mock("../settings/LinearIntegrationSection", () => ({ LinearIntegrationSection: stubSection(["linear-connection"]) }));
 vi.mock("../settings/AdeCliSection", () => ({ AdeCliSection: stubSection([]) }));
@@ -180,7 +179,11 @@ describe("SettingsPage", () => {
     expect(screen.getByText("account embedded")).toBeTruthy();
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     const rows = [...nav.querySelectorAll("button")].map((button) => button.textContent);
-    expect(rows.slice(0, 3)).toEqual(["Account", "Secrets", "Usage"]);
+    // Nav rows are grouped (Account/Project/Machines) now, so the first
+    // entries are the rest of the Account group, not a flat alphabetical or
+    // registration-order list. Appearance and Apple devices are per computer
+    // and live under Machines.
+    expect(rows.slice(0, 3)).toEqual(["Account", "Chat", "Notifications"]);
   });
 
   it("carries feedback, help, zoom, and the identity row above the sections", async () => {

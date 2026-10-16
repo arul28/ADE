@@ -34,15 +34,15 @@ import { BUNDLED_AGENT_SKILLS } from "./bundled-agent-skills.mjs";
  * Re-exported from bundled-agent-skills.mjs rather than declared here: the same
  * roster has to be readable from a TypeScript test that also checks it against
  * the on-disk resources/agent-skills tree and against the prompt-facing list in
- * src/shared/adeCliGuidance.ts. This copy had drifted three skills behind the
- * directory (ade-scene, ade-search and ade-mosaic were never checked to exist
- * in a packaged build) before that test existed.
+ * src/shared/adeCliGuidance.ts. This copy had drifted behind the directory
+ * (ade-scene and ade-search were never checked to exist in a packaged build)
+ * before that test existed.
  */
 export { BUNDLED_AGENT_SKILLS };
 
 /** The JS entry points that must survive the runtime-fetched exclusions. */
 const RUNTIME_TOOL_JS_ENTRY_POINTS = Object.freeze([
-  { segments: ["opencode-ai"], label: "bundled OpenCode JS launcher" },
+  { segments: ["@opencode", "cli"], label: "bundled OpenCode JS launcher" },
   { segments: ["@openai", "codex"], label: "bundled Codex JS launcher" },
   { segments: ["@anthropic-ai", "claude-agent-sdk"], label: "bundled Claude Agent SDK" },
 ]);
@@ -179,8 +179,8 @@ export function createPackagedTreeAssertions({ fail }) {
     const embedded = [];
     collectAsarEmbeddedFiles(header, "", embedded);
     // Exact package prefixes, never a wildcard: the JS entry points
-    // (@anthropic-ai/claude-agent-sdk, @openai/codex, opencode-ai,
-    // @opencode-ai/sdk) legitimately live in the archive and a prefix test on the
+    // (@anthropic-ai/claude-agent-sdk, @openai/codex, @opencode/cli)
+    // legitimately live in the archive and a prefix test on the
     // parent name would swallow them.
     const prefixes = runtimeFetchedToolPackageNames.map((name) => `/node_modules/${name}/`);
     const offenders = embedded.filter((entry) => prefixes.some((prefix) => entry.path.startsWith(prefix)));

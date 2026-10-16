@@ -479,27 +479,31 @@ private enum WorkPreviewData {
 }
 
 /// The fixture chat every chat preview renders. `laneTools`, when given, fills
-/// the badge row's lane tool chips instead of polling a brain.
+/// the badge row's lane tool chips instead of polling a brain. `compactFirst`
+/// turns it into an idle Claude chat whose 5-minute cache has expired, so the
+/// composer offers Compact first.
 @MainActor
 func workPreviewChatSessionView(
   laneTools: WorkLaneToolsPreview? = nil,
+  compactFirst: Bool = false,
   transcript: [WorkChatEnvelope] = WorkPreviewData.transcript
 ) -> WorkChatSessionView {
-  WorkChatSessionView(
+  var summary = WorkPreviewData.chatSummary
+  if compactFirst {
+    summary.compactionIdleMode = "ask"
+    summary.compactFirstMinTokens = 1_000
+    summary.promptCache = AgentChatPromptCache(ttl: "5m", since: nil)
+  }
+  return WorkChatSessionView(
     session: WorkChatSessionRenderContext(WorkPreviewData.terminalSession),
-    chatSummaryContext: WorkChatSummaryRenderContext(WorkPreviewData.chatSummary),
-    transcript: transcript,
-    transcriptRenderSignature: workChatEnvelopeListRenderSignature(transcript),
-    allowsIncrementalTranscriptUpdate: false,
-    transcriptIncrementalDelta: .constant([]),
-    fallbackEntries: [],
-    fallbackEntriesRenderSignature: workFallbackEntriesRenderSignature([]),
+    chatSummaryContext: WorkChatSummaryRenderContext(summary),
+    thread: workPreviewThreadModel(
+      sessionId: WorkPreviewData.terminalSession.id,
+      transcript: transcript,
+      artifacts: [WorkPreviewData.artifact],
+      provider: WorkPreviewData.chatSummary.provider
+    ),
     artifacts: [WorkPreviewData.artifact],
-    artifactsRenderSignature: workArtifactSummariesRenderSignature([WorkPreviewData.artifact]),
-    optimisticPendingSteers: [],
-    optimisticPendingSteersRenderSignature: workPendingSteersRenderSignature([]),
-    localEchoMessages: [],
-    localEchoMessagesRenderSignature: workLocalEchoMessagesRenderSignature([]),
     cardExpansionSnapshot: WorkCardExpansionState(expandedIds: ["cmd-1"]),
     cardExpansionRenderSignature: workCardExpansionRenderSignature(
       WorkCardExpansionState(expandedIds: ["cmd-1"])
@@ -529,6 +533,7 @@ func workPreviewChatSessionView(
     transitionNamespace: nil,
     onOpenLane: {},
     onSend: { _, _, _ in true },
+    onSendWithCompaction: compactFirst ? { _, _, _, _ in true } : nil,
     onInterrupt: { _ in },
     onRestoreCancelledQueue: nil,
     onApproveRequest: { _, _, _ in },
@@ -545,11 +550,12 @@ func workPreviewChatSessionView(
     onEditSteer: { _, _ in },
     onDispatchSteerInline: nil,
     onDispatchSteerInterrupt: nil,
+    onMoveSteer: nil,
     onSelectModel: { _ in },
     onSelectRuntimeMode: { _ in true },
     onSelectEffort: { _ in },
     onSelectCodexFastMode: { _ in true },
-    resolvedSessionStatus: normalizedWorkChatSessionStatus(
+    resolvedSessionStatus: compactFirst ? "idle" : normalizedWorkChatSessionStatus(
       session: WorkPreviewData.terminalSession,
       summary: WorkPreviewData.chatSummary
     ),
@@ -566,6 +572,72 @@ func workPreviewChatSessionView(
   }
   .environmentObject(WorkPreviewData.syncService)
   .environmentObject(WorkPreviewData.dictationController)
+}
+
+/// A thread model holding one frame folded from a fixed transcript, for
+/// previews that have no host to stream from.
+@MainActor
+func workPreviewThreadModel(
+  sessionId: String,
+  transcript: [WorkChatEnvelope],
+  artifacts: [ComputerUseArtifactSummary],
+  provider: String
+) -> ChatThreadModel {
+  let key = ChatThreadKey(machineKey: "preview", sessionId: sessionId, scope: .project("preview"))
+  let model = ChatThreadModel(key: key, engine: ChatThreadEngine(key: key, store: nil), registry: nil)
+  let snapshot = buildWorkChatTimelineSnapshot(
+    transcript: transcript,
+    fallbackEntries: [],
+    artifacts: artifacts,
+    localEchoMessages: [],
+    usageLimitTurnId: nil
+  )
+  let toolActivity = workTurnToolActivityIndex(from: snapshot.timeline)
+  let presentation = makeWorkTimelinePresentation(
+    timeline: workPresentedTimelineEntries(snapshot.timeline, provider: provider, toolActivity: toolActivity),
+    visibleCount: workTimelinePageSize,
+    assistantPreviewCache: WorkAssistantPreviewCache(),
+    streamingAssistantMessageId: nil,
+    toolActivity: toolActivity
+  )
+  let pending = snapshot.pendingInputQueue.resolved(hostPendingInputItemId: nil)
+  model.receive(ChatThreadFrame(
+    revision: 1,
+    snapshot: snapshot,
+    presentation: presentation,
+    turnToolActivity: toolActivity,
+    rowRevisions: Dictionary(
+      presentation.renderEntries.map { ($0.id, workChatTranscriptRowRevision($0)) },
+      uniquingKeysWith: { first, _ in first }
+    ),
+    changedRowIds: [],
+    canonicalPendingInputs: pending,
+    pendingInputs: pending,
+    pendingSteers: snapshot.pendingSteers,
+    isStreamingTurn: false,
+    streamingAssistantMessageId: nil,
+    activityPresentation: nil,
+    claudeGoal: nil,
+    latestReasoningCardId: nil,
+    isReasoningLive: false,
+    transcriptIndicatesActiveTurn: snapshot.transcriptIndicatesActiveTurn,
+    hostTurnActiveHint: nil,
+    hasOlderHistory: false,
+    olderHistoryState: .exhausted,
+    loadState: .idle,
+    cacheOrigin: .host,
+    sessionDeleted: false,
+    visibleTimelineCount: workTimelinePageSize,
+    prependedTimelineCount: 0,
+    didResetHistory: false,
+    isUrgent: true,
+    resumePoint: nil,
+    cardExpansionSignature: 0,
+    viewportWidth: 0,
+    usageRevision: 0,
+    transcript: transcript
+  ))
+  return model
 }
 
 /// A deliberately oversized AskUserQuestion payload: four paged questions, long
@@ -839,12 +911,10 @@ private struct WorkRootPreviewHarness: View {
             selectedLaneId: $selectedLaneId,
             selectedStatus: $selectedStatus,
             organization: $organization,
-            filterOpen: $filterOpen,
+            filterOpen: filterOpen,
+            activeFilterCount: (selectedStatus != .all ? 1 : 0) + (selectedLaneId != "all" ? 1 : 0),
             lanes: WorkPreviewData.rootLanes,
-            isLive: true,
-            onClear: clearFilters,
-            onNewChat: {},
-            onAddLane: {}
+            onClear: clearFilters
           )
           .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 8, trailing: 16))
           .listRowBackground(Color.clear)
@@ -1115,6 +1185,48 @@ enum WorkProofPreviewData {
     ),
   ]
 
+  /// Proof tagged with the turn that filed it, for the grouped sheet and the
+  /// answer fixture.
+  static let turnArtifacts: [ComputerUseArtifactSummary] = artifacts.map { artifact in
+    var tagged = artifact
+    let turn = ["proof-1", "proof-2", "proof-3"].contains(artifact.id) ? "turn-2" : "turn-1"
+    tagged.metadataJson = "{\"turnId\":\"\(turn)\",\"proofSource\":\"ade-capture\"}"
+    return tagged
+  }
+
+  /// The second turn's answer, citing proof the way an agent writes it.
+  static let answerMarkdown = """
+  The dashboard loads, and the empty inbox now explains itself.
+
+  ![The dashboard after sign-in](ade-proof://proof-1)
+
+  ```proof-compare
+  before: proof-3 Profile page before the change
+  after: proof-2 Inbox with every filter cleared
+  caption: The empty state now names the filters to clear. The preview data has no messages.
+  ```
+  """
+
+  @MainActor static let transcript: [WorkChatEnvelope] = {
+    let sessionId = WorkPreviewData.chatSummary.sessionId
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    func at(_ minutesAgo: Int, _ sequence: Int, _ event: WorkChatEvent) -> WorkChatEnvelope {
+      WorkChatEnvelope(
+        sessionId: sessionId,
+        timestamp: formatter.string(from: Date().addingTimeInterval(TimeInterval(-minutesAgo * 60))),
+        sequence: sequence,
+        event: event
+      )
+    }
+    return [
+      at(50, 1, .userMessage(text: "Record the sign-in flow on docs.example.com", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: true)),
+      at(46, 2, .assistantText(text: "I recorded the sign-in flow.", turnId: "turn-1", itemId: "a1")),
+      at(20, 3, .userMessage(text: "Check the dashboard and the empty inbox", attachments: nil, turnId: "turn-2", steerId: nil, deliveryState: nil, processed: true)),
+      at(1, 4, .assistantText(text: answerMarkdown, turnId: "turn-2", itemId: "a2")),
+    ]
+  }()
+
   static let toolsFrame = pageImage(
     host: "app.example.com/dashboard",
     heading: "Dashboard",
@@ -1209,6 +1321,9 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// The real chat with the lane tool chips (simulator, browser, App Control)
   /// in its floating badge row.
   case toolChips = "tool-chips"
+  /// The real chat, idle past its prompt cache, with the Compact first chip
+  /// floating above the composer.
+  case compactFirst = "compact-first"
   /// Scroll benchmark over a real transcript file. See `WorkChatScrollBench.swift`.
   case chatScroll = "chat-scroll"
   case queuedSteerDetail = "queued-steer"
@@ -1220,6 +1335,65 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// link pills in the composer, and a sent bubble naming `[Image #1]`. See
   /// `WorkComposerPillsPreviewHost`.
   case composerPills = "composer-pills"
+  /// An answer that cites proof inline and as a before/after pair.
+  case proofAnswer = "proof-answer"
+  /// The real Work tab list seeded with lanes, subagents, CLI rows and PR
+  /// badges. See `WorkListPreviewHost`.
+  case workList = "work-list"
+  /// The New Chat page with fixture lanes and Claude/Codex limits. See
+  /// `WorkNewChatPreviewHost` in `WorkNewChatScreen.swift`.
+  case newChat = "new-chat"
+  /// The New Chat page started on a gateway-routed model
+  /// (`opencode/opencode-go/deepseek-v4.1-flash`) and the long-branch lane, so
+  /// the model chip's name/mark and the lane-selector layout are screenshotable
+  /// with no pairing.
+  case newChatDeepSeek = "new-chat-deepseek"
+  /// The real model picker with fixture Custom harnesses. See
+  /// `WorkModelPickerPreviewHost`.
+  case modelPicker = "model-picker"
+  /// The Hub's glass composer over a scrolling list; `-adePreviewFocusComposer`
+  /// opens it. See `HubComposerPreviewHost` in `WorkNewChatScreen.swift`.
+  case hubComposer = "hub-composer"
+  /// The Chat Info sheet built from a real transcript file
+  /// (`-adeBenchTranscript <path>`). See `WorkChatInfoPreviewHost`.
+  case chatInfo = "chat-info"
+  /// The Lanes list across machines. See `LanesAcrossMachinesPreviewHost`.
+  case lanesMachines = "lanes-machines"
+  /// The connected-machines card and MACHINES rows. See
+  /// `SettingsMachinesPreviewHost`.
+  case settingsMachines = "settings-machines"
+  /// One machine's page. See `SettingsMachinesPreviewHost`.
+  case settingsMachinePage = "settings-machine-page"
+  /// The Files workspace sheet. See `FilesWorkspacePickerPreviewHost`.
+  case filesPicker = "files-picker"
+  /// The flat PR list, detail tabs and diff page. See `PrFlatPreviews.swift`.
+  case prsList = "prs-list"
+  case prDetail = "pr-detail"
+  case prFiles = "pr-files"
+  case prDiff = "pr-diff"
+  /// A PR description with a before/after pair, a picture and a video.
+  case prMedia = "pr-media"
+  case prChecks = "pr-checks"
+  /// The Activity surfaces on the four board columns. See
+  /// `ActivityDrawerSheet.swift` (fixture screens).
+  case activityHub = "activity-hub"
+  case activityDrawer = "activity-drawer"
+  case chatConnecting = "chat-connecting"
+  case liveActivity = "live-activity"
+  /// AI accounts. See `SettingsProviderAccountsPreviews.swift`.
+  case accounts = "accounts"
+  case accountsOtherMachine = "accounts-other-machine"
+  case accountDetail = "account-detail"
+  case accountAdd = "account-add"
+  case accountSignInClaude = "account-signin-claude"
+  case accountSignInCodex = "account-signin-codex"
+  case accountSignInDone = "account-signin-done"
+  /// "Continue on another machine" with fixture machines and blockers. See
+  /// `WorkCrossMachineHandoffPreviewHost`.
+  case handoffSheet = "handoff-sheet"
+  /// Every in-chat handoff card state stacked, plus the send gate's prompt
+  /// (where new messages go).
+  case handoffCard = "handoff-card"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1245,7 +1419,8 @@ struct ADEPreviewScreenHost: View {
     switch screen {
     case .proofList:
       WorkProofSheet(
-        artifacts: WorkProofPreviewData.artifacts,
+        artifacts: WorkProofPreviewData.turnArtifacts,
+        transcript: WorkProofPreviewData.transcript,
         artifactContent: $content,
         isRefreshing: false,
         refreshError: nil,
@@ -1261,6 +1436,17 @@ struct ADEPreviewScreenHost: View {
         onRefresh: {},
         onLoadArtifact: { _, _ in }
       )
+    case .proofAnswer:
+      ScrollView {
+        WorkMarkdownRenderer(markdown: WorkProofPreviewData.answerMarkdown)
+          .padding(16)
+      }
+      .background(ADEColor.pageBackground.ignoresSafeArea())
+      .environment(\.workProofCitations, WorkProofCitationContext(
+        artifactsById: Dictionary(uniqueKeysWithValues: WorkProofPreviewData.turnArtifacts.map { ($0.id, $0) }),
+        content: content,
+        load: { _, _ in }
+      ))
     case .proofViewer:
       WorkProofViewer(
         artifacts: WorkProofPreviewData.artifacts.reversed(),
@@ -1268,14 +1454,63 @@ struct ADEPreviewScreenHost: View {
         initialArtifactId: "proof-1",
         onLoadArtifact: { _, _ in }
       )
+    case .lanesMachines:
+      LanesAcrossMachinesPreviewHost()
+    case .settingsMachines:
+      SettingsMachinesPreviewHost()
+    case .settingsMachinePage:
+      SettingsMachinesPreviewHost(showsPage: true)
+    case .filesPicker:
+      FilesWorkspacePickerPreviewHost()
+    case .prsList:
+      PrsListPreviewHost()
+    case .prDetail:
+      PrDetailPreviewHost(tab: .overview)
+    case .prFiles:
+      PrDetailPreviewHost(tab: .files)
+    case .prMedia:
+      PrDescriptionMediaPreviewHost()
+    case .prDiff:
+      PrDiffPreviewHost()
+    case .prChecks:
+      PrDetailPreviewHost(tab: .checks, state: "open")
+    case .activityHub:
+      ActivityHubPreviewHost()
+    case .activityDrawer:
+      ActivityDrawerPreviewHost()
+    case .chatConnecting:
+      ChatConnectingPreviewHost()
+    case .liveActivity:
+      LiveActivityPreviewHost()
+    case .accounts:
+      ProviderAccountsPreviewHost(screen: .list)
+    case .accountsOtherMachine:
+      ProviderAccountsPreviewHost(screen: .otherMachine)
+    case .accountDetail:
+      ProviderAccountsPreviewHost(screen: .detail)
+    case .accountAdd:
+      ProviderAccountsPreviewHost(screen: .add)
+    case .accountSignInClaude:
+      ProviderAccountsPreviewHost(screen: .signInClaude)
+    case .accountSignInCodex:
+      ProviderAccountsPreviewHost(screen: .signInCodex)
+    case .accountSignInDone:
+      ProviderAccountsPreviewHost(screen: .signInDone)
     case .chatScroll:
       WorkChatScrollBenchScreen(options: .fromLaunchArguments())
+    case .chatInfo:
+      WorkChatInfoPreviewHost()
     case .tools:
       WorkToolsSheet(
         laneId: WorkProofPreviewData.laneId,
+        tool: .browser,
         previewState: WorkProofPreviewData.toolsState,
         previewFrame: WorkProofPreviewData.toolsFrame
       )
+    case .compactFirst:
+      NavigationStack {
+        workPreviewChatSessionView(compactFirst: true)
+      }
     case .toolChips:
       NavigationStack {
         workPreviewChatSessionView(
@@ -1294,6 +1529,24 @@ struct ADEPreviewScreenHost: View {
       WorkConnectivityBannerPreviewHost()
     case .composerPills:
       WorkComposerPillsPreviewHost()
+    case .workList:
+      WorkListPreviewHost()
+    case .newChat:
+      WorkNewChatPreviewHost()
+    case .newChatDeepSeek:
+      WorkNewChatPreviewHost(usesGatewayModelFixture: true)
+    case .modelPicker:
+      WorkModelPickerPreviewHost()
+    case .hubComposer:
+      HubComposerPreviewHost()
+    case .handoffSheet:
+      WorkCrossMachineHandoffSheet(
+        target: WorkCrossMachineHandoffPreviewData.target,
+        previewOptions: WorkCrossMachineHandoffPreviewData.options
+      )
+      .environmentObject(WorkPreviewData.syncService)
+    case .handoffCard:
+      WorkCrossMachineHandoffCardsPreviewHost()
     }
   }
 }
@@ -1319,6 +1572,125 @@ private struct WorkComposerPillsPreviewHost: View {
     .task {
       WorkComposerPillsPreviewData.seedDraft()
       seeded = true
+    }
+  }
+}
+
+@MainActor
+enum WorkCrossMachineHandoffPreviewData {
+  static let target = WorkCrossMachineHandoffTarget(
+    sessionId: "preview-chat",
+    laneId: "preview-lane",
+    title: "Fix the sync reconnect",
+    provider: "claude",
+    modelId: "anthropic/claude-sonnet-5",
+    reasoningEffort: "high",
+    runtimeMode: "edit",
+    busy: true
+  )
+
+  static let options = AgentChatCrossMachineHandoffOptions(
+    machines: [
+      AgentChatCrossMachineHandoffMachineOption(machineKey: "studio", name: "Mac Studio", online: true, unavailableReason: nil, hasRepository: true),
+      AgentChatCrossMachineHandoffMachineOption(machineKey: "air", name: "MacBook Air", online: true, unavailableReason: nil, hasRepository: false),
+      AgentChatCrossMachineHandoffMachineOption(machineKey: "mini", name: "Mac mini", online: false, unavailableReason: "Offline since yesterday", hasRepository: true),
+    ],
+    blockers: [
+      AgentChatCrossMachineHandoffBlocker(id: "dirty", title: "Uncommitted changes", detail: "4 files changed in this lane are not committed.", clearedByIncludeChanges: true, fixHint: nil),
+      AgentChatCrossMachineHandoffBlocker(id: "no_upstream", title: "Branch not published", detail: "ade/sync-reconnect has no upstream on origin.", clearedByIncludeChanges: true, fixHint: "ade git push --lane preview-lane"),
+      AgentChatCrossMachineHandoffBlocker(id: "merging", title: "A merge is in progress", detail: "Finish or abort it before moving this chat.", clearedByIncludeChanges: false, fixHint: nil),
+    ],
+    changes: AgentChatCrossMachineHandoffChanges(unpushedCommits: 2, changedFiles: 4)
+  )
+
+  static func record(_ state: AgentChatCrossMachineHandoffState, checkpoint: String? = nil, reason: String? = nil) -> AgentChatCrossMachineHandoffRecord {
+    AgentChatCrossMachineHandoffRecord(
+      handoffId: "h-\(state.wire)",
+      state: state,
+      checkpoint: checkpoint,
+      targetMachineKey: "studio",
+      targetMachineName: "Mac Studio",
+      mode: "brief",
+      reason: reason,
+      targetSessionId: state == .continued || state == .unknown ? "remote-chat" : nil
+    )
+  }
+
+  static let records: [AgentChatCrossMachineHandoffRecord] = [
+    record(.pending),
+    record(.awaitingApproval, reason: "The agent asked to move to the machine with the GPU."),
+    record(.sending, checkpoint: "destination_ready"),
+    record(.continued),
+    record(.failed, reason: "Mac Studio does not have Claude signed in."),
+    record(.unknown, reason: "The connection dropped after Mac Studio accepted."),
+  ]
+}
+
+private struct WorkCrossMachineHandoffCardsPreviewHost: View {
+  @StateObject private var gate = WorkHandoffSendGate()
+
+  private var actions: WorkCrossMachineHandoffActions {
+    WorkCrossMachineHandoffActions(
+      keepHere: {},
+      dismiss: {},
+      resolveApproval: { _ in },
+      acknowledge: { true },
+      retry: {},
+      open: {}
+    )
+  }
+
+  var body: some View {
+    ScrollView {
+      VStack(spacing: 10) {
+        ForEach(WorkCrossMachineHandoffPreviewData.records, id: \.handoffId) { record in
+          if let model = workCrossMachineHandoffCardModel(record) {
+            WorkCrossMachineHandoffCard(record: record, model: model, actions: actions)
+          }
+        }
+        Button("Send on a continued chat") {
+          Task { _ = await gate.ask(machine: "Mac Studio", branch: "ade/sync-reconnect") }
+        }
+        .padding(.top, 12)
+      }
+      .padding(16)
+    }
+    .background(ADEColor.pageBackground.ignoresSafeArea())
+    .confirmationDialog(
+      "This chat continues on \(gate.prompt?.machine ?? "another machine")",
+      isPresented: Binding(get: { gate.prompt != nil }, set: { if !$0 { gate.answer(.cancel) } }),
+      titleVisibility: .visible
+    ) {
+      Button("Continue on \(gate.prompt?.machine ?? "the other machine")") { gate.answer(.continueThere) }
+      Button("Work here instead") { gate.answer(.workHere) }
+      Button("Cancel", role: .cancel) { gate.answer(.cancel) }
+    } message: {
+      // Same copy as the chat's own dialog (`WorkChatSessionView`).
+      Text(
+        "Continue there takes your message to that chat (it's copied, paste it there). "
+          + (gate.prompt?.branch.map { "Working here instead means both machines may change \($0)." }
+            ?? "Working here instead means both machines may change the same branch.")
+      )
+    }
+  }
+}
+
+/// The real model picker with fixture Custom harnesses, presented as the sheet
+/// the phone shows. The host has no catalog, so the Custom rail and pane are
+/// what this fixture proves.
+private struct WorkModelPickerPreviewHost: View {
+  var body: some View {
+    NavigationStack {
+      WorkModelPickerSheet(
+        currentModelId: WorkModelPickerPreviewData.currentModelId,
+        currentProvider: "opencode",
+        cursorAvailabilityMode: .chat,
+        harnessPresets: WorkModelPickerPreviewData.presets,
+        isBusy: false,
+        onSelectPreset: { _ in },
+        onSelect: { _, _, _, _ in }
+      )
+      .environmentObject(WorkPreviewData.syncService)
     }
   }
 }
@@ -1381,6 +1753,41 @@ private enum WorkComposerPillsPreviewData {
   }()
 }
 
+@MainActor
+private enum WorkModelPickerPreviewData {
+  static let currentModelId = "opencode/opencode-go/deepseek-v4.1-flash"
+
+  static let presets: [SyncMachineInventoryPreset] = [
+    SyncMachineInventoryPreset(
+      id: "hp_deepseek_flash",
+      name: "DeepSeek Flash",
+      harness: "opencode",
+      model: "opencode/opencode-go/deepseek-v4.1-flash",
+      logo: SyncMachineInventoryPresetLogo(kind: "provider", providerId: "deepseek"),
+      accentColor: "#4d6bfe",
+      bound: true
+    ),
+    SyncMachineInventoryPreset(
+      id: "hp_opus_work",
+      name: "Opus on work",
+      harness: "claude",
+      model: "claude-opus-5-5",
+      logo: SyncMachineInventoryPresetLogo(kind: "ade", providerId: nil),
+      accentColor: "#7c5ce0",
+      bound: true
+    ),
+    SyncMachineInventoryPreset(
+      id: "hp_haiku_sweeps",
+      name: "Haiku sweeps",
+      harness: "claude",
+      model: "claude-haiku-5-5",
+      logo: SyncMachineInventoryPresetLogo(kind: "provider", providerId: "claude"),
+      accentColor: nil,
+      bound: false
+    ),
+  ]
+}
+
 /// Backdrop that opens `WorkQueuedSteerDetailSheet` on appear, so the fixture
 /// screenshot shows the sheet as the phone presents it.
 private struct WorkQueuedSteerPreviewHost: View {
@@ -1432,7 +1839,8 @@ private enum WorkQueuedSteerPreviewData {
 
   static let capability = workChatActiveSendCapability(
     provider: "claude",
-    liveRedirectOnly: false
+    liveRedirectOnly: false,
+    hostSupportsOpenCodeSteer: true
   )
 }
 
@@ -1542,5 +1950,390 @@ struct WorkConnectivityBannerPreviewHost: View {
     .environmentObject(WorkPreviewData.syncService)
     .environmentObject(WorkPreviewData.dictationController)
     .preferredColorScheme(.light)
+}
+// MARK: - Work list fixture (`-adePreviewScreen work-list`)
+
+/// DEBUG-only rows for the Work list, installed by `WorkRootScreen` in place of
+/// the replicated database (see `installPreviewFixtureIfActive`). A simulator
+/// has no machine to replicate from, so without this the list is empty.
+@MainActor
+final class WorkRootPreviewFixture {
+  static var active: WorkRootPreviewFixture?
+
+  let sessions: [TerminalSessionSummary]
+  let lanes: [LaneSummary]
+  let pullRequests: [PullRequestListItem]
+  let chatSummaries: [String: AgentChatSessionSummary]
+  /// Shows the list as attached to a live machine, so the header's create
+  /// affordance renders enabled.
+  let forcesLive = true
+  /// `-adeWorkFixturePushChatAfter <s>`: opens the first chat after a delay,
+  /// to measure the list while it is hidden behind a thread.
+  var pushChatSessionId: String?
+  var pushChatAfter: TimeInterval?
+
+  init(
+    sessions: [TerminalSessionSummary],
+    lanes: [LaneSummary],
+    pullRequests: [PullRequestListItem],
+    chatSummaries: [String: AgentChatSessionSummary]
+  ) {
+    self.sessions = sessions
+    self.lanes = lanes
+    self.pullRequests = pullRequests
+    self.chatSummaries = chatSummaries
+  }
+}
+
+/// Mounts the real `WorkRootScreen` over `WorkListPreviewData`. Launch flags:
+///
+///     -adeWorkFixtureBurst <hz>          fake SyncService publishes (objectWillChange)
+///     -adeWorkFixturePushChatAfter <s>   push the first chat after <s> seconds
+///     -adeWorkFixtureUnread 0            no unread Activity item (badge off)
+struct WorkListPreviewHost: View {
+  @EnvironmentObject private var syncService: SyncService
+  @StateObject private var drawer = ActivityDrawerModel()
+  @State private var seeded = false
+  @State private var burstTimer: Timer?
+
+  var body: some View {
+    Group {
+      if seeded {
+        WorkRootScreen(isTabActive: true)
+      } else {
+        Color.clear
+      }
+    }
+    .environmentObject(drawer)
+    .onAppear(perform: seed)
+  }
+
+  private func seed() {
+    guard !seeded else { return }
+    let defaults = UserDefaults.standard
+    syncService.setActiveProjectForTesting(projectId: WorkListPreviewData.projectId, rootPath: nil)
+    let fixture = WorkListPreviewData.fixture()
+    let pushAfter = defaults.double(forKey: "adeWorkFixturePushChatAfter")
+    if pushAfter > 0 {
+      fixture.pushChatSessionId = WorkListPreviewData.parentChatId
+      fixture.pushChatAfter = pushAfter
+    }
+    WorkRootPreviewFixture.active = fixture
+    // `-adeWorkFixtureMenuActions 1`: advertise every session-menu command, so
+    // the long-press menu renders whole (desktop parity screenshots).
+    if defaults.string(forKey: "adeWorkFixtureMenuActions") == "1" {
+      syncService.seedRemoteCommandActionsForPreview([
+        "chat.updateSession", "chat.regenerateSessionMetadata", "chat.restartSession", "chat.setSpawnKind",
+        "chat.handoff", "chat.getCrossMachineHandoffOptions", "chat.startCrossMachineHandoff",
+        "chat.cancelCrossMachineHandoff", "chat.retryCrossMachineHandoff", "automations.list", "automations.saveDraft", "automations.deleteRule",
+        "session.settleSessions", "session.unsettleSessions", "session.setSettleOverride",
+        "session.snoozeSession", "session.wakeSession", "work.deleteSession", "lanes.rename", "lanes.updateAppearance",
+      ])
+    }
+    WorkSeenStore.stamp(WorkListPreviewData.seenSessionIds)
+    if defaults.object(forKey: "adeWorkFixtureUnread") as? String != "0" {
+      seedUnreadActivity()
+    }
+    seeded = true
+    let hz = defaults.double(forKey: "adeWorkFixtureBurst")
+    if hz > 0 {
+      let service = syncService
+      burstTimer = Timer.scheduledTimer(withTimeInterval: 1 / hz, repeats: true) { _ in
+        MainActor.assumeIsolated { service.objectWillChange.send() }
+      }
+    }
+  }
+
+  private func seedUnreadActivity() {
+    let now = Date()
+    let machine = AccountAttentionMachine(
+      machineKey: "preview-mac",
+      name: "Arul’s MacBook Pro",
+      online: true,
+      lastSeenAt: now
+    )
+    let item = AccountAttentionItem(
+      id: "preview-needs-you",
+      revision: 1,
+      fingerprint: "preview-needs-you:1",
+      kind: .agent,
+      eventKind: .agentNeedsYou,
+      phase: .needsYou,
+      activityTier: nil,
+      machine: machine,
+      project: AccountAttentionProject(projectId: WorkListPreviewData.projectId, name: "ADE"),
+      title: "Approve the migration plan",
+      preview: "Waiting for your answer",
+      privacyPreview: "Agent needs you",
+      destination: .session(sessionId: WorkListPreviewData.needsYouChatId, itemId: nil, eventId: nil),
+      occurredAt: now,
+      updatedAt: now,
+      seenAt: nil,
+      dismissedAt: nil,
+      expiresAt: nil
+    )
+    drawer.rebuild(from: AccountAttentionSnapshot(
+      revision: 1,
+      generatedAt: now,
+      machines: nil,
+      items: [item],
+      tombstones: nil,
+      itemsTruncated: false
+    ))
+  }
+}
+
+@MainActor
+enum WorkListPreviewData {
+  static let projectId = "ade-work-list-preview"
+  static let parentChatId = "wl-parent-chat"
+  static let needsYouChatId = "wl-needs-you"
+
+  private static func iso(_ minutesAgo: Int) -> String { WorkPreviewData.iso(minutesAgo: minutesAgo) }
+
+  private static func lane(
+    id: String,
+    name: String,
+    type: String = "worktree",
+    branch: String,
+    color: String?,
+    icon: LaneIcon? = nil,
+    dirty: Bool = false,
+    ahead: Int = 0
+  ) -> LaneSummary {
+    LaneSummary(
+      id: id,
+      name: name,
+      description: nil,
+      laneType: type,
+      baseRef: "main",
+      branchRef: branch,
+      worktreePath: "/Users/admin/Projects/ADE/.ade/worktrees/\(branch)",
+      attachedRootPath: nil,
+      parentLaneId: nil,
+      childCount: 0,
+      stackDepth: 0,
+      parentStatus: nil,
+      isEditProtected: false,
+      status: LaneStatus(dirty: dirty, ahead: ahead, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+      color: color,
+      icon: icon,
+      tags: [],
+      folder: nil,
+      createdAt: iso(60 * 24 * 3),
+      archivedAt: nil,
+      devicesOpen: nil
+    )
+  }
+
+  static let primary = lane(id: "wl-lane-primary", name: "Primary", type: "primary", branch: "main", color: "#60a5fa", icon: .star, dirty: true, ahead: 2)
+  static let hub = lane(id: "wl-lane-hub", name: "mobile work hub", branch: "ade/mobile-work-hub", color: "#a78bfa")
+  static let perf = lane(id: "wl-lane-perf", name: "sync perf", branch: "ade/sync-perf", color: "#34d399", icon: .bolt)
+  static let sim = lane(id: "wl-lane-sim", name: "ios sim editor", branch: "ade/ios-sim-editor", color: "#fb923c")
+  static let docs = lane(id: "wl-lane-docs", name: "docs refresh", branch: "ade/docs-refresh", color: "#f472b6")
+
+  private struct Row {
+    var id: String
+    var lane: LaneSummary
+    var title: String
+    var provider: String = "claude"
+    var model: String = "claude-opus-5"
+    /// "running" | "needs-you" | "done" | "snoozed" | "cli-running" | "cli-done"
+    var state: String
+    var minutesAgo: Int
+    var preview: String
+    var parentId: String? = nil
+  }
+
+  private static let rows: [Row] = [
+    Row(id: needsYouChatId, lane: primary, title: "Approve the migration plan", state: "needs-you", minutesAgo: 2,
+        preview: "Should I drop the legacy lane_events table or keep it read-only?"),
+    Row(id: "wl-primary-running", lane: primary, title: "Bump mobile build and publish TestFlight", provider: "codex", model: "gpt-6",
+        state: "running", minutesAgo: 1, preview: "Archiving ADE and waiting for App Store Connect processing."),
+    Row(id: "wl-primary-cli", lane: primary, title: "npm run test:desktop", state: "cli-done", minutesAgo: 95,
+        preview: "Test Files  412 passed (412) · Duration 3m 41s"),
+    Row(id: parentChatId, lane: hub, title: "Condense the Work header into one row", state: "running", minutesAgo: 1,
+        preview: "Moving Linear, Cursor Cloud and Settings into the overflow menu."),
+    Row(id: "wl-sub-1", lane: hub, title: "Find the desktop Cursor logo", state: "done", minutesAgo: 6,
+        preview: "Desktop uses the lobehub Cursor mono glyph.", parentId: parentChatId),
+    Row(id: "wl-sub-2", lane: hub, title: "Audit Work list observation", provider: "codex", model: "gpt-6", state: "running", minutesAgo: 1,
+        preview: "WorkRootScreen reads 14 SyncService values in body.", parentId: parentChatId),
+    Row(id: "wl-sub-3", lane: hub, title: "Screenshot light and dark headers", state: "needs-you", minutesAgo: 3,
+        preview: "Which simulator should I boot?", parentId: parentChatId),
+    Row(id: "wl-hub-cli", lane: hub, title: "codex", provider: "codex", model: "gpt-6", state: "cli-running", minutesAgo: 4,
+        preview: "Running xcodebuild test-without-building…"),
+    Row(id: "wl-perf-chat", lane: perf, title: "Coalesce roster publishes", state: "done", minutesAgo: 40,
+        preview: "Roster deltas now batch at 60 ms; p95 publish 16 ms."),
+    Row(id: "wl-sim-1", lane: sim, title: "Simulator inspector polish", provider: "cursor", model: "composer-2", state: "running", minutesAgo: 8,
+        preview: "Tightening the element outline hit test."),
+    Row(id: "wl-sim-2", lane: sim, title: "Preview target wiring", state: "done", minutesAgo: 180,
+        preview: "Preview targets now resolve per lane."),
+    // Only running work: folds into the Working shelf when "Fold busy lanes" is on.
+    Row(id: "wl-docs-1", lane: docs, title: "Rewrite the lanes guide", state: "running", minutesAgo: 3,
+        preview: "Updating the screenshots for the new lane header."),
+    Row(id: "wl-docs-2", lane: docs, title: "Check every docs link", provider: "codex", model: "gpt-6", state: "running", minutesAgo: 5,
+        preview: "41 of 120 links checked."),
+    // Snoozed for three hours: lands on the Snoozed shelf with "back <time>".
+    Row(id: "wl-perf-snoozed", lane: perf, title: "Flaky sync test triage", state: "snoozed", minutesAgo: 30,
+        preview: "Parked until the CI runner is upgraded."),
+  ]
+
+  /// Rows the fixture marks as left since they finished, so a lane
+  /// whose only finished row was read still folds (`workIsRowSeen`).
+  static let seenSessionIds = ["wl-sim-2"]
+
+  static func fixture() -> WorkRootPreviewFixture {
+    var sessions: [TerminalSessionSummary] = []
+    var summaries: [String: AgentChatSessionSummary] = [:]
+    for row in rows {
+      let isCli = row.state.hasPrefix("cli")
+      let running = row.state == "running" || row.state == "cli-running"
+      let needsYou = row.state == "needs-you"
+      let snoozed = row.state == "snoozed"
+      let at = iso(row.minutesAgo)
+      var session = WorkPreviewData.sessionFixture(
+        id: row.id,
+        lane: row.lane,
+        title: row.title,
+        toolType: isCli ? row.provider : "\(row.provider)-chat",
+        status: running || needsYou ? "running" : "ended",
+        runtimeState: needsYou ? "waiting-input" : (running ? "active" : "exited"),
+        startedAt: at,
+        endedAt: running || needsYou ? nil : at,
+        preview: row.preview,
+        summary: row.preview
+      )
+      session.lastActivityAt = at
+      if snoozed {
+        session.snoozedAt = at
+        session.snoozedUntil = iso(-180)
+      }
+      if let parentId = row.parentId {
+        session.spawnKind = .subagent
+        session.orchestrationParentSessionId = parentId
+      }
+      sessions.append(session)
+      guard !isCli else { continue }
+      var summary = WorkPreviewData.chatSummaryFixture(
+        sessionId: row.id,
+        lane: row.lane,
+        title: row.title,
+        goal: row.title,
+        status: running || needsYou ? "active" : "ended",
+        startedAt: at,
+        endedAt: running || needsYou ? nil : at,
+        lastActivityAt: at,
+        preview: row.preview
+      )
+      summary.provider = row.provider
+      summary.model = row.model
+      summary.awaitingInput = needsYou
+      if let parentId = row.parentId {
+        summary.spawnKind = .subagent
+        summary.orchestrationParentSessionId = parentId
+      }
+      summaries[row.id] = summary
+    }
+    return WorkRootPreviewFixture(
+      sessions: sessions,
+      lanes: [primary, hub, perf, sim, docs],
+      pullRequests: [
+        pullRequest(id: "wl-pr-hub", lane: hub, number: 1304, title: "Work tab header in one row", state: "open", checks: "success"),
+        pullRequest(id: "wl-pr-perf", lane: perf, number: 1298, title: "Coalesce roster publishes", state: "merged", checks: "success"),
+        pullRequest(id: "wl-pr-sim", lane: sim, number: 1240, title: "iOS sim editor polish", state: "open", checks: "pending"),
+      ],
+      chatSummaries: summaries
+    )
+  }
+
+  private static func pullRequest(
+    id: String,
+    lane: LaneSummary,
+    number: Int,
+    title: String,
+    state: String,
+    checks: String
+  ) -> PullRequestListItem {
+    PullRequestListItem(
+      id: id,
+      laneId: lane.id,
+      laneName: lane.name,
+      projectId: projectId,
+      repoOwner: "arul",
+      repoName: "ade",
+      githubPrNumber: number,
+      githubUrl: "https://github.com/arul/ade/pull/\(number)",
+      title: title,
+      state: state,
+      baseBranch: lane.baseRef,
+      headBranch: lane.branchRef,
+      checksStatus: checks,
+      reviewStatus: "none",
+      additions: 212,
+      deletions: 64,
+      lastSyncedAt: nil,
+      createdAt: iso(60 * 24),
+      updatedAt: iso(10),
+      adeKind: "single",
+      linkedGroupId: nil,
+      linkedGroupType: nil,
+      linkedGroupName: nil,
+      linkedGroupPosition: nil,
+      linkedGroupCount: 0,
+      workflowDisplayState: nil,
+      cleanupState: nil
+    )
+  }
+}
+
+/// Chat Info over a real transcript, derived with the app's own builders, so a
+/// simulator screenshot shows the sheet as a real chat fills it.
+struct WorkChatInfoPreviewHost: View {
+  @State private var expanded: Set<String> = []
+
+  private struct Derived {
+    var sessionId = "preview"
+    var subagents: [WorkSubagentSnapshot] = []
+    var scheduled: [WorkScheduledWorkSnapshot] = []
+    var taskList: WorkChatTaskListSnapshot?
+    var sources: WorkChatSourceList?
+  }
+
+  private static let derived: Derived = {
+    let options = WorkChatScrollBenchOptions.fromLaunchArguments()
+    guard let path = options.transcriptPath else { return Derived() }
+    let events = WorkChatScrollBenchLoader.load(path: path, limit: options.limit)
+    var filter = WorkSubagentTranscriptFilter()
+    let admitted = filter.admit(events.map(\.envelope)) ?? []
+    let transcript = admitted.map(makeWorkChatEnvelope(from:)).sorted(by: workChatEnvelopeOrderedBefore)
+    return Derived(
+      sessionId: transcript.first?.sessionId ?? "preview",
+      subagents: buildWorkSubagentSnapshots(from: transcript),
+      scheduled: buildWorkScheduledWorkSnapshots(from: transcript),
+      taskList: buildWorkChatTaskListSnapshot(from: transcript),
+      sources: buildWorkChatSourceList(from: transcript)
+    )
+  }()
+
+  var body: some View {
+    let data = Self.derived
+    WorkChatInfoDetailsSheet(
+      sessionId: data.sessionId,
+      subagentSnapshots: data.subagents,
+      scheduledWorkSnapshots: data.scheduled,
+      scheduledWorkPaused: false,
+      nextWakeAt: nil,
+      provider: "claude",
+      expandedTaskIds: $expanded,
+      sessionModel: "claude-opus-5",
+      sourceRefs: data.sources?.refs ?? [],
+      omittedSourceRefCount: data.sources?.omittedCount ?? 0,
+      taskList: data.taskList,
+      onSelect: { _ in },
+      onCancelScheduledWork: { _ in },
+      onSetScheduledWorkPaused: { _ in },
+      onStopTask: { _ in }
+    )
+  }
 }
 #endif

@@ -1,0 +1,1006 @@
+/*
+ * Welcome / New Tab surface.
+ *
+ * The window gradient (or the wallpaper image) is the page. Everything else is
+ * a surface-kit card on one grid: the recent projects on the left, a column of
+ * status cards on the right, every card with the same header. Colour is for
+ * status only; every value is a theme token, so all themes follow.
+ *
+ * The page never scrolls. It is a size container: the header compacts on short
+ * windows, and the lists scroll inside their cards.
+ */
+
+.ade-welcome {
+  --welcome-grid-max: 1120px;
+  --welcome-gap: 12px;
+
+  container: welcome / size;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  isolation: isolate;
+  font-family: var(--font-sans);
+}
+
+/* ── home layout ──────────────────────────────────────────────────
+ * A dashboard that fits the window and never scrolls: a one-row greeting,
+ * then a grid of cards that fills the rest. Lists scroll inside their card
+ * when the window is short; nothing else does.
+ *
+ *   projects | activity  activity
+ *   projects | limits    prs
+ *
+ * While chats run, "Working now" takes the bottom of the projects column.
+ */
+
+/* 1% of the page's width, resolved once on the page. Each widget is a size
+   container of its own, which would otherwise turn a card's `cqw` into a
+   share of the widget; the cards were sized against the page. */
+@property --home-cqw {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 12px;
+}
+
+.ade-home {
+  --home-cqw: 1cqw;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  padding: clamp(14px, 3.2cqh, 36px) max(20px, calc((100% - var(--welcome-grid-max)) / 2)) clamp(14px, 2.6cqh, 28px);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+/* Greeting row */
+.ade-home-hero {
+  flex: none;
+  /* Held to the packed grid's width, centred, so the actions end where the cards end. */
+  width: 100%;
+  max-width: var(--welcome-hero-max, none);
+  margin-inline: auto;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+}
+.ade-home-hero-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ade-home-title {
+  margin: 0;
+  font-size: clamp(22px, 2.6cqw, 30px);
+  line-height: 1.15;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  color: var(--color-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ade-home-line { margin: 0; font-size: 13px; color: var(--kit-text-2); }
+.ade-home-line[data-tone="attention"] { color: var(--color-fg); }
+.ade-home-eyebrow { color: var(--kit-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Over a picture the greeting sits on a soft scrim: a feathered pool of the
+   theme's background behind the text block (static, no backdrop-filter), plus
+   a tight shadow on the glyphs. It keeps the line readable over clouds, snow
+   or blossom without drawing a box. */
+html[data-scene="image"] .ade-home-hero-text { position: relative; isolation: isolate; text-shadow: 0 1px 2px rgb(0 0 0 / 55%), 0 0 18px rgb(0 0 0 / 40%); }
+html[data-scene="image"] .ade-home-hero-text::before {
+  content: "";
+  position: absolute;
+  inset: -28px -110px -26px -64px;
+  z-index: -1;
+  background: color-mix(in srgb, var(--color-bg) 50%, transparent);
+  -webkit-mask-image:
+    linear-gradient(to right, transparent, #000 64px, #000 calc(100% - 150px), transparent),
+    linear-gradient(to bottom, transparent, #000 28px, #000 calc(100% - 26px), transparent);
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to right, transparent, #000 64px, #000 calc(100% - 150px), transparent),
+    linear-gradient(to bottom, transparent, #000 28px, #000 calc(100% - 26px), transparent);
+  mask-composite: intersect;
+  pointer-events: none;
+}
+html[data-scene="image"][data-theme="light"] .ade-home-hero-text { text-shadow: 0 1px 1px rgb(255 255 255 / 70%), 0 0 16px rgb(255 255 255 / 60%); }
+html[data-scene="image"][data-theme="light"] .ade-home-hero-text::before { background: color-mix(in srgb, var(--color-bg) 66%, transparent); }
+html[data-scene="image"] .ade-home-eyebrow,
+html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-fg) 94%, transparent); }
+html[data-scene="image"] .ade-home-line { font-weight: 500; }
+
+.ade-home-actions { display: flex; gap: 8px; flex: none; }
+.ade-home-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--kit-card-edge);
+  background: var(--kit-card-bg);
+  backdrop-filter: var(--kit-card-blur);
+  -webkit-backdrop-filter: var(--kit-card-blur);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.ade-home-action > svg { color: var(--kit-text-2); flex: none; }
+.ade-home-action:not(:disabled):hover { border-color: color-mix(in srgb, var(--color-fg) 24%, transparent); }
+.ade-home-action:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.ade-home-action:disabled { opacity: 0.5; cursor: default; }
+/* Browser and Apple Music: square, logo-only, the same height as the text
+   actions. Apple Music is its app icon (its own rounded square), so the
+   button is the icon with no frame of its own. */
+.ade-home-icon-action { width: 34px; padding: 0; justify-content: center; }
+.ade-home-icon-action > svg { color: var(--color-fg); }
+.ade-home-app-button {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+  transition: transform 120ms, filter 120ms;
+}
+.ade-home-app-button[data-app="appleMusic"] { box-shadow: 0 6px 16px -8px rgb(250 35 59 / 55%); }
+.ade-home-app-button[data-app="spotify"] { box-shadow: 0 6px 16px -8px rgb(30 215 96 / 50%); }
+.ade-home-app-button > svg { display: block; border-radius: 8px; }
+.ade-home-app-button:hover { filter: brightness(1.08); }
+.ade-home-app-button:active { transform: scale(0.95); }
+.ade-home-app-button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+/* Spotify's mark on its own black, as an app tile; the radius scales with the tile like Apple's icon. */
+.ade-spotify-app-tile { display: inline-grid; place-items: center; flex: none; border-radius: 23%; background: #121212; }
+.ade-home-action[data-primary] {
+  background: var(--color-accent);
+  border-color: transparent;
+  color: var(--color-accent-fg);
+  backdrop-filter: none;
+  box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--color-accent) 70%, transparent);
+}
+.ade-home-action[data-primary] > svg { color: inherit; }
+.ade-home-action[data-primary]:not(:disabled):hover { background: color-mix(in srgb, var(--color-accent) 88%, var(--color-fg) 12%); }
+
+/* Grid of widgets. The page never scrolls: the grid's columns and rows come
+   from the space it has (homeGridPack.ts), every cell is placed explicitly,
+   and what does not fit is hidden behind a quiet note. Three columns keep
+   the shipped proportions (projects a touch wider). */
+.ade-home-grid-host { position: relative; flex: 1 1 auto; min-height: 0; display: flex; justify-content: center; }
+.ade-home-grid {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 0.9fr);
+  gap: var(--welcome-gap);
+  overflow: hidden;
+}
+.ade-home-grid[data-single="true"] { width: 100%; grid-template-columns: minmax(0, 1fr); grid-auto-rows: minmax(0, 1fr); max-width: 680px; }
+
+.ade-home-hidden-note {
+  position: absolute;
+  right: 0;
+  /* In the page's bottom padding (the same clamp as .ade-home), under the
+     grid's last row: a small frosted pill, so it reads over any picture. */
+  --home-pad-bottom: clamp(14px, 2.6cqh, 28px);
+  bottom: calc(2px - var(--home-pad-bottom));
+  height: min(20px, calc(var(--home-pad-bottom) - 3px));
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 70%;
+  padding: 0 10px;
+  border: 1px solid var(--kit-card-edge);
+  border-radius: 999px;
+  background: var(--kit-card-bg);
+  backdrop-filter: var(--kit-card-blur);
+  -webkit-backdrop-filter: var(--kit-card-blur);
+  color: var(--kit-text-2);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ade-home-hidden-note:hover { color: var(--color-fg); }
+.ade-home-hidden-note > span { overflow: hidden; text-overflow: ellipsis; }
+/* Edit mode: the hidden widgets by name, each with its own remove. */
+.ade-home-hidden-note[data-editing] { cursor: default; padding-right: 4px; }
+.ade-home-hidden-note[data-editing]:hover { color: var(--kit-text-2); }
+.ade-home-hidden-note .ade-home-hidden-chip { display: inline-flex; align-items: center; gap: 2px; overflow: visible; color: var(--color-fg); }
+.ade-home-hidden-chip .ade-home-edit-btn { width: 16px; height: 16px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .ade-home-grid[data-editing="true"] .ade-home-cell { transition: opacity 0.15s ease; }
+}
+
+/* A cell is one widget plus whatever is stacked under it: the host takes
+   what the stack leaves, and a stacked card never grows past its rows. A cell
+   with one row per card (data-row-aligned) splits evenly on the row lines
+   instead. */
+.ade-home-cell { position: relative; display: flex; flex-direction: column; gap: var(--welcome-gap); min-height: 0; min-width: 0; }
+.ade-home-widget { position: relative; flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+.ade-home-widget[data-stacked] { flex: 0 1 auto; max-height: 46%; }
+/* One row per card: equal shares, and the cell's gap is the grid's, so each
+   card ends on the same row line as the cards beside it. */
+.ade-home-cell[data-row-aligned] > .ade-home-widget { flex: 1 1 0; max-height: none; }
+.ade-home-widget:has(> .ade-home-widget-content:empty) { display: none; }
+.ade-home-widget-content { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+.ade-home-widget-content > .kit-card { flex: 1 1 auto; }
+/* A widget with its own cell is a size container, so a card can drop its
+   least important part when a layout makes it short. (Not stacked ones:
+   those size to their content.) */
+.ade-home-widget:not([data-stacked]) > .ade-home-widget-content { container: widget / size; }
+@container widget (max-height: 250px) {
+  .ade-home-limits .ade-home-machine-fit { display: none; }
+}
+/* Activity & usage: a short card drops the second row of facts; a narrow one
+   (Compact) puts the figure over the bars and keeps one fact. */
+@container widget (max-height: 236px) {
+  .ade-home-activity .ade-home-facts > div:nth-child(n+3) { display: none; }
+}
+@container widget (max-width: 560px) {
+  .ade-home-activity-body { flex-direction: column !important; gap: 10px; }
+  .ade-home-activity-side { width: auto; flex-direction: row; align-items: flex-end; justify-content: space-between; gap: 16px; }
+  .ade-home-activity-figure { margin-top: 2px; }
+  .ade-home-facts { grid-template-columns: auto; text-align: right; }
+  .ade-home-facts > div:nth-child(n+2) { display: none; }
+  .ade-home-activity .ade-home-card-scope { display: none; }
+}
+
+/* Edit mode: tiles you can pick up. Content goes inert and dims a little;
+   each tile wears its controls in a frosted pill. */
+.ade-home-grid[data-editing="true"] .ade-home-cell { cursor: grab; }
+.ade-home-grid[data-editing="true"] .ade-home-widget-content > .kit-card > :not(.kit-card-head) { opacity: 0.55; }
+.ade-home-grid[data-editing="true"] .ade-home-widget-content > .kit-card {
+  outline: 1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent);
+  outline-offset: -1px;
+}
+.ade-home-cell[data-dragged], .ade-home-widget[data-dragged] { opacity: 0.4; }
+.ade-home-cell[data-drop]::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--color-accent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--color-accent) 60%, transparent);
+  z-index: 2;
+}
+.ade-home-cell[data-drop="before"]::before { left: calc(var(--welcome-gap) / -2 - 1.5px); }
+.ade-home-cell[data-drop="after"]::before { right: calc(var(--welcome-gap) / -2 - 1.5px); }
+
+.ade-home-edit-chrome {
+  /* Sits over the card's 40px head and replaces it while editing. */
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  left: 1px;
+  height: 39px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 0 7px 0 8px;
+  border-radius: calc(var(--radius-lg) - 1px) calc(var(--radius-lg) - 1px) 0 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent);
+  background: color-mix(in srgb, var(--color-bg) 90%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+.ade-home-edit-chrome > * { pointer-events: auto; }
+.ade-home-edit-name {
+  margin-right: auto;
+  padding: 0 4px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.ade-home-edit-btn,
+.ade-home-edit-sizes {
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+}
+.ade-home-edit-btn {
+  flex: none;
+  width: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: var(--kit-text-2);
+  cursor: pointer;
+}
+.ade-home-edit-btn:hover { color: var(--color-fg); border-color: color-mix(in srgb, var(--color-fg) 26%, transparent); }
+.ade-home-edit-btn[aria-pressed="true"] { color: var(--color-accent-fg); background: var(--color-accent); border-color: transparent; }
+.ade-home-edit-btn[data-danger="true"]:hover { color: var(--color-error); border-color: color-mix(in srgb, var(--color-error) 45%, transparent); }
+.ade-home-edit-btn:focus-visible,
+.ade-home-edit-sizes > button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.ade-home-edit-handle { cursor: grab; }
+.ade-home-edit-handle { order: -2; }
+.ade-home-edit-name { order: -1; }
+.ade-home-edit-sizes { display: inline-flex; align-items: center; padding: 2px; gap: 1px; }
+.ade-home-edit-sizes > button {
+  height: 20px;
+  min-width: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--kit-text-3);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.ade-home-edit-sizes > button:hover { color: var(--color-fg); background: var(--kit-hover); }
+.ade-home-edit-sizes > button[aria-checked="true"] { color: var(--color-accent-fg); background: var(--color-accent); }
+.ade-home-edit-sizes > button[data-squeezed] { box-shadow: inset 0 0 0 1px var(--kit-warn); }
+/* Size class names in full on a wide tile, S / M / L on a narrow one. */
+.ade-home-widget:not([data-stacked]) { container: tile / inline-size; }
+.ade-home-edit-size-short { display: none; }
+@container tile (max-width: 520px) {
+  .ade-home-edit-size-long { display: none; }
+  .ade-home-edit-size-short { display: inline; }
+}
+.ade-home-grid-empty {
+  grid-column: 1 / -1;
+  display: grid;
+  place-items: center;
+  border: 1px dashed color-mix(in srgb, var(--color-fg) 22%, transparent);
+  border-radius: var(--radius-lg);
+  color: var(--kit-text-2);
+  font-size: 13px;
+}
+
+/* The customize button: an icon-only action beside the others. */
+.ade-home-customize { width: 34px; padding: 0; justify-content: center; }
+.ade-home-line-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-home-line-link:hover { color: var(--color-fg); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
+.ade-home-line-link:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 3px; }
+
+.ade-home-card { min-height: 0; }
+.ade-home-card > .kit-card-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+/* A list shows the rows that fit and a "N more" line (HomeFitList.tsx); it never scrolls. */
+.ade-fit { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.ade-fit-more {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 0 14px;
+  border: 0;
+  border-top: 1px solid var(--kit-rule);
+  background: transparent;
+  color: var(--kit-text-2);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.ade-fit-more:hover { color: var(--color-fg); }
+.ade-fit-more:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; border-radius: 6px; }
+.ade-fit-dialog { display: flex; flex-direction: column; margin: 0 -8px; }
+.ade-home-muted { color: var(--kit-text-3); font-size: 12px; }
+.ade-home-empty {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  font-size: 12px;
+  color: var(--kit-text-3);
+  text-align: center;
+}
+
+/* Activity & usage: stats on the left, 14 bars filling the rest */
+.ade-home-metric { margin-left: auto; }
+.ade-home-activity .kit-card-head-action { margin-left: 8px; }
+.ade-home-activity-body { flex-direction: row !important; gap: 20px; padding-top: 4px; }
+.ade-home-activity-side {
+  flex: 0 0 auto;
+  width: clamp(150px, 30%, 210px);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 0;
+}
+.ade-home-activity-figure { margin-top: 6px; }
+.ade-home-activity-figure .kit-stat { font-size: clamp(24px, calc(2.4 * var(--home-cqw)), 32px); }
+.ade-home-activity-unit { display: flex; align-items: center; gap: 8px; margin-top: 2px; font-size: 12px; color: var(--kit-text-3); }
+.ade-home-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; margin: 0; }
+.ade-home-facts > div { min-width: 0; }
+.ade-home-facts dt { margin-bottom: 3px; font-size: 9.5px; }
+.ade-home-facts dd { margin: 0; font-size: 12.5px; color: var(--color-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-home-facts dd span { color: var(--kit-text-3); font-size: 11px; }
+.ade-home-bars {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(14, minmax(0, 1fr));
+  gap: clamp(3px, calc(0.5 * var(--home-cqw)), 7px);
+}
+.ade-home-bar-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
+.ade-home-bar-track { flex: 1 1 auto; min-height: 0; display: flex; align-items: flex-end; }
+.ade-home-bar {
+  width: 100%;
+  border-radius: 3px 3px 1px 1px;
+  background: color-mix(in srgb, var(--color-fg) 15%, transparent);
+  transition: height 300ms ease;
+}
+.ade-home-bar-col:hover .ade-home-bar { background: color-mix(in srgb, var(--color-fg) 32%, transparent); }
+.ade-home-bar[data-peak] { background: color-mix(in srgb, var(--color-accent) 45%, color-mix(in srgb, var(--color-fg) 15%, transparent)); }
+.ade-home-bar[data-today] { background: var(--color-accent); }
+.ade-home-bar-label { text-align: center; font-family: var(--font-mono); font-size: 9.5px; color: var(--kit-text-3); line-height: 1; }
+
+/* Limits & machines */
+.ade-home-limits-body { gap: 10px; }
+.ade-home-rings {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  align-content: center;
+  gap: 2px;
+  overflow: hidden;
+}
+.ade-home-ring-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 6px 2px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  cursor: pointer;
+  min-width: 0;
+}
+.ade-home-ring-item:hover { background: var(--kit-hover); }
+.ade-home-ring-item:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.ade-home-ring-wrap { position: relative; width: clamp(34px, calc(3.4 * var(--home-cqw)), 46px); aspect-ratio: 1; margin-bottom: 3px; }
+.ade-home-ring { width: 100%; height: 100%; display: block; }
+.ade-home-ring-track { fill: none; stroke: var(--kit-track); stroke-width: 4; stroke-linecap: round; }
+.ade-home-ring-fill { fill: none; stroke-width: 4; stroke-linecap: round; transition: stroke-dasharray 300ms ease; }
+.ade-home-ring-logo { position: absolute; inset: 0; display: grid; place-items: center; }
+.ade-home-ring-value { font-size: 13px; font-weight: 600; }
+.ade-home-ring-value[data-level="warn"] { color: var(--kit-warn); }
+.ade-home-ring-value[data-level="crit"] { color: var(--kit-crit); }
+.ade-home-ring-name { max-width: 100%; font-size: 11px; color: var(--kit-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-home-ring-reset { font-size: 9.5px; color: var(--kit-text-3); white-space: nowrap; }
+
+.ade-home-machine-fit { flex: 0 1 auto; }
+.ade-home-machine-list {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--kit-rule);
+  padding-top: 6px;
+  margin: 0 -6px;
+}
+.ade-home-machine-row {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  height: 28px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-home-machine-row:hover { background: var(--kit-hover); }
+.ade-home-machine-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-home-machine-row[data-state="offline"] .ade-home-machine-name { color: var(--kit-text-3); }
+.ade-home-machine-detail { font-size: 11px; color: var(--kit-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-home-machine-state {
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--kit-text-3);
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+.ade-home-machine-state[data-state="online"] { color: var(--kit-ok); background: color-mix(in srgb, var(--kit-ok) 14%, transparent); }
+.ade-home-machine-state[data-state="busy"] { color: var(--kit-warn); background: color-mix(in srgb, var(--kit-warn) 14%, transparent); }
+
+/* Pull requests */
+.ade-home-prs-body { gap: 4px; }
+.ade-home-pr-summary { flex: none; display: flex; gap: 6px; padding: 0 8px 4px; }
+.ade-home-pr-row { gap: 10px; min-height: 40px; }
+.ade-home-pr-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+.ade-home-pr-title { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-home-pr-sub { font-size: 10.5px; color: var(--kit-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-home-pr-phase { flex: none; font-size: 11px; color: var(--kit-text-3); }
+.ade-home-pr-phase[data-tone="crit"] { color: var(--kit-crit); }
+.ade-home-pr-phase[data-tone="warn"] { color: var(--kit-warn); }
+.ade-home-pr-phase[data-tone="ok"] { color: var(--kit-ok); }
+
+.ade-home-card-scope { font-size: 11px; color: var(--kit-text-3); font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ade-home-pr-divider { padding: 10px 8px 4px; font-size: 9.5px; }
+
+.ade-home-pr-summary { flex-wrap: wrap; }
+
+/* Narrow: the hero stacks. */
+.ade-home[data-narrow="true"] .ade-home-hero { flex-direction: column; align-items: flex-start; gap: 10px; }
+
+/* Short windows: drop the eyebrow and tighten. */
+@container welcome (max-height: 640px) {
+  .ade-home-eyebrow, .ade-home-line { display: none; }
+  .ade-home { gap: 10px; }
+}
+
+/* ── card header + shared bits ────────────────────────────────────── */
+
+.ade-welcome-head-title { white-space: nowrap; }
+.kit-card-head-action:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+
+.ade-welcome-empty {
+  padding: 2px 8px 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--kit-text-3);
+}
+.ade-welcome-empty strong {
+  display: block;
+  margin-bottom: 2px;
+  font-weight: 500;
+  color: var(--kit-text-2);
+}
+.ade-home-projects > .ade-welcome-empty { padding: 2px 14px 14px; }
+
+.ade-welcome-list { min-height: 0; }
+
+/* ── project row ──────────────────────────────────────────────────── */
+
+.ade-welcome-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background-color 100ms ease;
+}
+.ade-welcome-row:hover { background: var(--kit-hover); }
+.ade-welcome-row[data-active="true"] { background: var(--kit-active); }
+.ade-welcome-row:has(.ade-welcome-row-main:focus-visible) {
+  background: var(--kit-active);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 70%, transparent);
+}
+.ade-welcome-row[data-open="true"] { background: var(--kit-active); }
+.ade-welcome-row[data-dim="true"] > * { opacity: 0.6; }
+.ade-welcome-row[data-busy="true"] { cursor: default; }
+.ade-welcome-row[data-busy="true"] > * { opacity: 0.45; }
+
+.ade-welcome-row-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  text-align: left;
+  cursor: inherit;
+}
+.ade-welcome-row-main:focus-visible { outline: none; }
+
+.ade-welcome-row-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+}
+.ade-welcome-row-icon img { width: 24px !important; height: 24px !important; border-radius: 5px !important; }
+.ade-welcome-row-icon[data-fallback="true"] {
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  color: var(--kit-text-3);
+}
+
+.ade-welcome-row-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+
+.ade-welcome-row-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  line-height: 17px;
+}
+.ade-welcome-row-name > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-fg);
+}
+.ade-welcome-row-pin { flex-shrink: 0; color: var(--kit-text-3); }
+
+.ade-welcome-row-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  line-height: 15px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--kit-text-3);
+}
+.ade-welcome-row-sub[data-tone="busy"] { font-family: var(--font-sans); color: var(--color-warning); }
+
+/* The parent path gives way long before the folder name does. */
+.ade-welcome-path { display: flex; min-width: 0; white-space: nowrap; }
+.ade-welcome-path > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ade-welcome-path > span:first-child { flex: 0 1000 auto; }
+.ade-welcome-path > span:last-child { flex: 0 1 auto; }
+
+.ade-welcome-row-aside {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 10px 0 0;
+}
+
+.ade-welcome-row-top {
+  display: grid;
+  justify-items: end;
+  align-items: center;
+  min-width: 52px;
+  min-height: 22px;
+}
+.ade-welcome-row-top > * { grid-area: 1 / 1; }
+
+.ade-welcome-row-time {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--kit-text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ade-welcome-row-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--color-fg);
+  white-space: nowrap;
+}
+.ade-welcome-row-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--kit-text-3);
+  white-space: nowrap;
+}
+
+.ade-welcome-row-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 100ms ease;
+}
+.ade-welcome-row:hover .ade-welcome-row-actions,
+.ade-welcome-row:focus-within .ade-welcome-row-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ade-welcome-row[data-has-actions="true"]:hover .ade-welcome-row-top > :not(.ade-welcome-row-actions),
+.ade-welcome-row[data-has-actions="true"]:focus-within .ade-welcome-row-top > :not(.ade-welcome-row-actions) {
+  visibility: hidden;
+}
+
+.ade-welcome-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--kit-text-3);
+  cursor: pointer;
+}
+.ade-welcome-icon-button:hover { background: var(--kit-active); color: var(--color-fg); }
+.ade-welcome-icon-button[aria-pressed="true"] { color: var(--color-fg); }
+.ade-welcome-icon-button[data-danger="true"]:hover {
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 12%, transparent);
+}
+.ade-welcome-icon-button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -1px; }
+.ade-welcome-icon-button:disabled { opacity: 0.5; cursor: default; }
+
+/* ── machines chip ────────────────────────────────────────────────── */
+
+.ade-welcome-machines { position: relative; flex: none; }
+.ade-welcome-machines-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--kit-card-edge);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  color: var(--kit-text-2);
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ade-welcome-machines-chip:hover,
+.ade-welcome-machines-chip[aria-expanded="true"] { color: var(--color-fg); border-color: color-mix(in srgb, var(--color-fg) 20%, transparent); }
+.ade-welcome-machines-chip .kit-dot { width: 5px; height: 5px; }
+.ade-welcome-machines-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  min-width: 220px;
+  padding: 4px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--kit-card-edge);
+  background: color-mix(in srgb, var(--color-bg) 92%, transparent);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 16px 40px -18px rgb(0 0 0 / 60%);
+}
+.ade-welcome-machines-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: calc(var(--radius-md) - 2px);
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-welcome-machines-item:not(:disabled):hover { background: var(--kit-hover); }
+.ade-welcome-machines-item:disabled { cursor: default; }
+.ade-welcome-machines-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-welcome-machines-state { font-size: 11px; color: var(--kit-text-3); }
+
+/* ── side cards ───────────────────────────────────────────────────── */
+
+.ade-welcome-item { gap: 10px; min-width: 0; }
+.ade-welcome-item:focus-visible {
+  outline: none;
+  background: var(--kit-active);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 70%, transparent);
+}
+
+.ade-welcome-item-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+.ade-welcome-item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--color-fg);
+}
+.ade-welcome-item-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--kit-text-3);
+}
+.ade-welcome-item-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 14px;
+  color: var(--tone-color, var(--kit-text-3));
+}
+.ade-welcome-item-state {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--tone-color, var(--kit-text-3));
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── motion and touch ─────────────────────────────────────────────── */
+
+@keyframes ade-recent-spin { to { transform: rotate(360deg); } }
+@keyframes ade-recent-shimmer {
+  from { transform: translateX(-60%); }
+  to { transform: translateX(160%); }
+}
+/* A cached row says so by shimmering until live data replaces it. */
+.ade-welcome [data-ade-stale="true"] { overflow: hidden; }
+.ade-welcome [data-ade-stale="true"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 45%;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-accent) 9%, transparent),
+    transparent
+  );
+  /* steps = 2.4s x 30; see `ade-launch-rail-sheen` in index.css. */
+  animation: ade-recent-shimmer 2.4s steps(72) infinite;
+}
+.ade-welcome-spin { animation: ade-recent-spin 0.9s steps(27) infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-welcome [data-ade-stale="true"]::after { animation: none; opacity: 0.35; }
+  .ade-welcome-spin { animation: none; }
+  .ade-welcome * { transition: none !important; }
+}
+
+@media (prefers-contrast: more) {
+  .ade-welcome .kit-card {
+    background: color-mix(in srgb, var(--color-bg) 92%, transparent);
+    border-color: var(--color-border);
+  }
+}
+
+@media (pointer: coarse) {
+  .ade-welcome-row-main,
+  .ade-welcome .kit-row { min-height: 44px; }
+  .ade-welcome-row-actions { opacity: 1; pointer-events: auto; }
+  .ade-welcome-row[data-has-actions="true"] .ade-welcome-row-top > :not(.ade-welcome-row-actions) { visibility: hidden; }
+}
+
+.ade-home-pr-stats {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0 6px 6px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+}
+.ade-home-pr-stats > div { padding: 7px 10px; min-width: 0; }
+.ade-home-pr-stats > div + div { border-left: 1px solid var(--kit-rule); }
+.ade-home-pr-stats dd { margin: 0; font-size: 17px; font-weight: 600; line-height: 1.2; color: var(--color-fg); }
+.ade-home-pr-stats dt { font-size: 10.5px; color: var(--kit-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-home-pr-stats > [data-tone="crit"] dd { color: var(--kit-crit); }
+.ade-home-pr-stats > [data-tone="warn"] dd { color: var(--kit-warn); }
+.ade-home-pr-stats > [data-tone="ok"] dd { color: var(--kit-ok); }
+
+/* PR rows use GitHub's state colours, `--pr-*` in surfaceKit.css. */
+.ade-home-pr-icon {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--pr-open);
+  background: color-mix(in srgb, var(--pr-open) 15%, transparent);
+}
+.ade-home-pr-icon[data-state="merged"] { color: var(--pr-merged); background: color-mix(in srgb, var(--pr-merged) 16%, transparent); }
+.ade-home-pr-icon[data-state="closed"] { color: var(--pr-closed); background: color-mix(in srgb, var(--pr-closed) 15%, transparent); }
+.ade-home-pr-icon[data-state="draft"] { color: var(--pr-draft); background: color-mix(in srgb, var(--color-fg) 7%, transparent); }
+.ade-home-pr-sub { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ade-home-pr-sub > .kit-num { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-home-pr-avatar {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  object-fit: cover;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-fg) 12%, transparent);
+}
+.ade-home-pr-avatar[data-fallback] {
+  display: inline-grid;
+  place-items: center;
+  font-size: 8px;
+  font-weight: 600;
+  color: var(--kit-text-2);
+  background: color-mix(in srgb, var(--color-fg) 10%, transparent);
+}
+.ade-home-pr-diff { flex: none; font-size: 10.5px; }
+.ade-home-pr-diff i { font-style: normal; color: var(--pr-open); }
+.ade-home-pr-diff b { font-weight: 400; color: var(--pr-closed); }
+.ade-home-pr-pill {
+  flex: none;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--pr-open);
+  background: color-mix(in srgb, var(--pr-open) 13%, transparent);
+}
+.ade-home-pr-pill[data-tone="merged"] { color: var(--pr-merged); background: color-mix(in srgb, var(--pr-merged) 14%, transparent); }
+.ade-home-pr-pill[data-tone="closed"], .ade-home-pr-pill[data-tone="crit"] { color: var(--kit-crit); background: color-mix(in srgb, var(--kit-crit) 14%, transparent); }
+.ade-home-pr-pill[data-tone="warn"] { color: var(--kit-warn); background: color-mix(in srgb, var(--kit-warn) 14%, transparent); }
+.ade-home-pr-pill[data-tone="ok"] { color: var(--kit-ok); background: color-mix(in srgb, var(--kit-ok) 14%, transparent); }
+.ade-home-pr-pill[data-tone="draft"] { color: var(--kit-text-2); background: color-mix(in srgb, var(--color-fg) 7%, transparent); }
+.ade-home-pr-row { gap: 11px; }
+.ade-home-pr-row[data-settled] .ade-home-pr-title { color: var(--color-fg); }
+/* The stat strip: merged in GitHub purple. */
+.ade-home-pr-stats > div:last-child dd { color: var(--pr-merged); }
+
+/* Empty grid cells: quiet in use (only the first says "Add a widget" on
+   hover), plain dashed slots in edit mode. */
+.ade-home-free {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+  border: 1px dashed transparent;
+  border-radius: var(--radius-lg);
+  background: none;
+  color: var(--kit-text-3);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+.ade-home-free > span { display: inline-flex; align-items: center; gap: 6px; opacity: 0; transition: opacity 0.15s ease; }
+.ade-home-free:hover, .ade-home-free:focus-visible, .ade-home-free[data-editing] {
+  border-color: color-mix(in srgb, var(--color-fg) 22%, transparent);
+  background: color-mix(in srgb, var(--color-bg) 22%, transparent);
+  color: var(--kit-text-2);
+}
+.ade-home-free:hover > span, .ade-home-free:focus-visible > span, .ade-home-free[data-editing] > span { opacity: 1; }
+.ade-home-free:not([data-editing]):not([data-first]) { pointer-events: none; }

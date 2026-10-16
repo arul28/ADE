@@ -27,6 +27,10 @@ export const WORK_TOOL_SHOW_SURFACES = [
   "mac-desktop",
   /** The floating Mac Desktop card over the chat. */
   "floating-mac-desktop",
+  /** The lane's App Control tool in the Work tools pane. */
+  "app-control",
+  /** The floating App Control card over the chat. */
+  "floating-app-control",
 ] as const;
 
 export type WorkToolShowSurface = (typeof WORK_TOOL_SHOW_SURFACES)[number];
@@ -44,12 +48,18 @@ export type WorkToolShowRequest = {
   chatSessionId: string;
   laneId: string | null;
   /**
-   * True when nobody asked: an agent drove the chat's Apple device or Mac
-   * Desktop, and the floating player or card may come up by itself. An auto request is never acked or
+   * True when nobody asked: an agent drove the chat's Apple device, Mac
+   * Desktop or App Control app, and the floating player or card may come up by itself. An auto request is never acked or
    * held, and the per-chat "Show preview when minimized" choice can refuse it.
    */
   auto: boolean;
   requestedAt: string;
+  /**
+   * The desktop that sent this chat its last message. Only that desktop acts
+   * on the request; null means every desktop does. See
+   * `shared/sessionInputOrigin.ts`.
+   */
+  targetClientId?: string | null;
 };
 
 export type WorkToolShowRequestEvent = {
@@ -77,12 +87,28 @@ export type WorkToolShowAck = {
    * replayed later.
    */
   opened?: boolean;
+  /**
+   * With `shown`: the surface that is actually on screen, when it is not the
+   * one the request named.
+   *
+   * A screen or app show whose tools pane the person has CLOSED is answered by
+   * the lane's floating player instead (see `useWorkShowRequests`), and
+   * "Showing the Mac Desktop in the tools pane" would then name a container the
+   * agent can check and find empty. Null and absent both mean the requested
+   * surface itself, which is every other case.
+   */
+  shownAs?: WorkToolShowSurface | null;
 };
 
 export type WorkToolShowStatus = WorkToolShowAckStatus | "no_desktop";
 
 export type WorkToolShowResult = {
   status: WorkToolShowStatus;
+  /**
+   * The surface that is actually on screen: the request's own, unless a desktop
+   * answered with `shownAs` because it floated a different one. `message` is
+   * written from this, so what the agent reads is what it can find.
+   */
   surface: WorkToolShowSurface;
   chatSessionId: string;
   requestId: string;

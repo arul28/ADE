@@ -169,12 +169,14 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
   output so the renderer-less surfaces (TUI `TerminalPane`, mobile
   Work tab, `ade terminal preview`) can render a real xterm buffer
   snapshot without subscribing to the live data stream. Writes are
-  debounced (`TERMINAL_SNAPSHOT_DEBOUNCE_MS = 500`) and flushed to
+  debounced (`TERMINAL_SNAPSHOT_DEBOUNCE_MS = 5_000`, because each write
+  serializes the whole scrollback) and flushed to
   `.ade/cache/terminal-snapshots/<sessionId>.json` as a
   `TerminalSerializedSnapshot` (version 1: cols / rows / cursor /
   viewport / buffer-type / serialized scrollback + per-cell visible
-  rows). Flushed on PTY exit, on resize, and on every
-  `terminal.preview` call.
+  rows). Flushed on PTY exit, on dispose, on resize, and on every
+  `terminal.preview` call, so the debounce only bounds how stale the
+  file is when the brain dies.
 - initial input: `initialInputTimer` — deferred initial-input write for
   callers that pass `args.initialInput` with an `initialInputDelayMs`;
   `userInputGeneration` advances on every user write so a deferred launch
@@ -309,8 +311,7 @@ line that fails to parse is returned unchanged.
 
 The launch env is built layer by layer: `process.env`, the lane
 runtime env (from `getLaneRuntimeEnv`), the caller's `args.env`, then
-`withAdeTerminalContextEnv` (project / lane / chat ids plus the opaque,
-chat-bound `ADE_BROWSER_ACTOR_TOKEN` when the terminal has an owner), then
+`withAdeTerminalContextEnv` (project / lane / chat ids), then
 `withInteractiveTerminalColorEnv`. The color helper sets a sensible
 `TERM` (`xterm-256color`) and `COLORTERM` (`truecolor`) when missing
 and unsets `NO_COLOR` so TUIs render in color by default. If the
@@ -380,13 +381,20 @@ Planning. For tracked CLIs, an explicit ADE request such as `ade chat ask`
 sets waiting-input; structured provider input is handled by the provider
 adapter, with its own provenance.
 
-Agent activity detail is a separate typed report (`planning`, `implementing`,
-`testing`, `reviewing`, `debugging`, or `monitoring`), set through
-`ade chat activity` only when session guidance confirms that provider can
-invoke the runtime-resolved ADE CLI against this runtime's exact RPC socket; an
-executable path alone is not enough, and embedded runtimes omit the guidance.
+Activity detail is a separate typed value (`planning`, `exploring`,
+`implementing`, `testing`, `debugging`, `reviewing`, `shipping`, or
+`monitoring`) with a source. For ADE chats the host **detects** it from the
+turn's own tool calls (`source: "detected"`, see
+`apps/desktop/src/main/services/chat/sessionActivityDetector.ts`); an agent can
+also report one through `ade chat activity` (`source: "agent"`) when session
+guidance confirms that provider can invoke the runtime-resolved ADE CLI against
+this runtime's exact RPC socket; an executable path alone is not enough, and
+embedded runtimes omit the guidance. Tracked CLI terminals have no normalized
+tool stream, so their detail comes from agent reports only.
 It refines a running card's single status label, never changes the parent
-lifecycle phase, and clears when a new user turn is accepted.
+lifecycle phase, and clears when a new user turn is accepted. See
+[Activity detection](#activity-detection) for how detection and agent reports
+combine.
 Tracked CLI guidance is enabled for Codex and OpenCode outside Plan
 and external `config-toml`, write-capable non-AGI Droid, Pi full-auto, and
 Cursor launches with an initial prompt. It calls the host-resolved
@@ -406,7 +414,12 @@ these labels.
 `terminatePtyProcessTree(entry, signal, logger)` replaces the older
 single-process `entry.pty.kill(signal)` call. On POSIX, node-pty's
 `forkpty(3)` child is normally its own session and process-group leader, so
-the service first signals that process group directly. In parallel it runs a
+the service first signals that process group directly. Every `kill(-pid)` in
+ADE goes through `signalProcessGroup` (`services/shared/utils.ts`), which
+refuses a pid below 2 with the same `ESRCH` an exited group throws:
+`kill(-1, …)` would signal every process the user owns and `-0` is ADE's own
+group, and a test fake, a stale ledger or a parse bug is all it takes to reach
+one. In parallel it runs a
 bounded asynchronous `ps` scan (PID, parent PID, process group, and foreground
 process group) to include descendants and groups that a shell or foreground job
 created after launch. The initial signal is never held behind that scan: a
@@ -695,7 +708,7 @@ command argument whenever structured resume metadata is available.
 ### AI-driven titles
 
 CLI sessions are always ADE-named. The cheap helper for the ADE
-provider (Haiku 4.5 / GPT-5.6 Luna / Composer 2.5) runs first, then
+provider (Haiku 5.5 / GPT-5.6 Luna / Composer 2.5) runs first, then
 `resumeMetadata.launch.model`, then the deterministic title already on
 the row. ADE does not prefer Claude JSONL `ai-title` or Codex thread
 names over that chain.
@@ -1067,3 +1080,37 @@ PTY exit         →  sessionService.end
   [runtime-isolation.md](./runtime-isolation.md)
 - Session deltas and end-of-session summaries:
   `apps/desktop/src/main/services/sessions/sessionDeltaService.ts`
+
+## Activity detection
+
+`sessionActivityDetector.ts` reads every normalized chat event (`tool_call`,
+`command`, `file_change`, `subagent_started`) from every chat provider —
+Claude, Codex, OpenCode, Cursor, Droid, Pi, and the ACP providers (which also
+carry the protocol's `toolKind`) — and keeps one detected activity per chat:
+
+- Reads and searches never move a turn out of a real activity; only a long
+  unbroken run of reads returns it to **Exploring**. The first evidence of a
+  turn sets the state directly.
+- Test runners, review/test/implementation subagents, and watch loops are
+  strong signals (one call switches). Edits, typechecks, one-off CI status
+  reads, and git commit/push/PR commands are weak (two within five minutes), so
+  a single push does not flash **Shipping**.
+- An edit within two minutes of a test run is a fix-and-rerun loop and stays
+  **Testing**. Tool calls inside a subagent (`parentItemId`) are ignored.
+- **Debugging** is never detected; tool calls cannot tell it from testing.
+
+The chat service writes the detected value only when it changes, through
+`sessionService.setDetectedSessionActivity`. Precedence lives in
+`nextDetectedActivityReport` (`shared/sessionActivity.ts`): detection is the
+primary source; an agent report from the current turn stands while it still
+covers what the detector sees (debugging covers testing and implementing,
+planning covers exploring) and is replaced when the evidence moves somewhere it
+does not. A detected value may carry across continuation turns (a subagent
+finishing, a background wake); the detector and the row both reset when the
+user engages (a message, a steer, an answer).
+
+`updatedAt` on the stored activity is when the session **entered** it, and the
+row's elapsed counts from there (`sessionElapsedAnchor`), so "Testing 3m" means
+three minutes of tests. The turn's total stays on the chat's own "Working…"
+timer. An agent re-reporting the activity already shown keeps its entry time.
+

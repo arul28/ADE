@@ -381,3 +381,6 @@ export function residueCountBucket(count: number): "1" | "2_5" | "6_plus" {
   if (count <= 1) return "1";
   return count <= 5 ? "2_5" : "6_plus";
 }
+
+/** A subagent and the parent that spawned it, for the settle cascade. */
+export type SubagentLink = { sessionId: string; parentSessionId: string };

@@ -119,6 +119,9 @@ describe("deriveWorkBoardColumn", () => {
     expect(deriveWorkBoardColumn(row({ attentionRequestedAt: "2026-09-11T10:00:00.000Z" })))
       .toBe("needs_you");
     expect(deriveWorkBoardColumn(row({ settledAt: "2026-09-11T10:00:00.000Z" }))).toBe("done");
+    // A failed turn is the user's move, so it files with the raised hands.
+    expect(deriveWorkBoardColumn(row({ lastTurnFailedAt: "2026-09-11T10:00:00.000Z" })))
+      .toBe("needs_you");
   });
 
   it("files a chat that is merely resting under Done, never under Needs you", () => {
@@ -127,8 +130,6 @@ describe("deriveWorkBoardColumn", () => {
     // bucket "needs_you", so this row derived as a raised hand and a drag off it
     // produced a host-authored "you moved this chat from Needs you" naming a
     // column the user never saw. Only a real pending input earns that column.
-    // Fresh activity on purpose: the shared fixture's `lastActivityAt` is days
-    // old, which is `stale` (still Working), and stale is a different claim.
     const justNow = new Date().toISOString();
     expect(deriveWorkBoardColumn(row({ runtimeState: "idle", lastActivityAt: justNow })))
       .toBe("done");
@@ -350,7 +351,11 @@ describe("session.undoBoardMove", () => {
   it("refuses once the message has gone out, rather than reversing the write alone", async () => {
     vi.useFakeTimers();
     const sessions = makeSessionService(row({ settledAt: "2026-09-11T09:00:00.000Z" }));
-    const messageSession = vi.fn(async (_args: unknown) => ({ ok: true }));
+    // Delivering the message starts the agent's turn, as a real chat does.
+    const messageSession = vi.fn(async (_args: unknown) => {
+      sessions.current = { ...sessions.current, runtimeState: "running" };
+      return { ok: true };
+    });
     const actions = createSessionBoardMoveActions({
       sessionService: sessions.service,
       agentChatService: { messageSession },
@@ -389,7 +394,8 @@ describe("a board move that cannot deliver its message", () => {
       logger: { warn },
     });
     await actions.moveOnBoard({ sessionId: "chat-1", to: "working" });
-    expect(deriveWorkBoardColumn(sessions.current)).toBe("working");
+    // The move's own write: unsettled and held active until the turn starts.
+    expect(sessions.current).toMatchObject({ settledAt: null, settleOverride: "active" });
 
     await vi.advanceTimersByTimeAsync(BOARD_MOVE_STAGE_MS + 5);
     expect(deriveWorkBoardColumn(sessions.current)).toBe("done");
@@ -438,6 +444,80 @@ describe("the host's Waiting is narrower than the board's", () => {
     // pending check. The host already has it in Working.
     const result = await actions.moveOnBoard({ sessionId: "chat-1", to: "working" });
     expect(result).toMatchObject({ changed: false, from: "working", to: "working" });
+  });
+});
+
+describe("a resting chat that will run again, dragged to Done", () => {
+  beforeEach(() => {
+    __resetStagedBoardMovesForTest();
+    vi.useRealTimers();
+  });
+
+  const inMinutes = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
+  type ChatLink = { sessionId: string; status?: "active" | "idle" | "ended"; nextWakeAt?: string | null; orchestrationParentSessionId?: string; spawnKind?: string };
+
+  // The board files these in Waiting ("Wake scheduled" / "Subagent working"),
+  // so the host must start the move from Waiting too, or a drag to Done
+  // answers "already there" while the card visibly stays put.
+  it.each<[string, { wake?: string | null; parentStatus?: "active" | "idle"; parent?: Partial<Row>; chats: ChatLink[]; rows: Row[] }, { from: string; changed: boolean }]>([
+    // The stored row still reads running; the chat summary says idle with a wake.
+    ["its stored row reads running but its chat is idle with a wake ahead",
+      { wake: inMinutes(12), parentStatus: "idle", parent: { runtimeState: "running" }, chats: [], rows: [] },
+      { from: "waiting", changed: true }],
+    ["its subagent's stored row reads running but that chat is idle", {
+      parentStatus: "idle",
+      chats: [{ sessionId: "child", status: "idle", spawnKind: "subagent", orchestrationParentSessionId: "chat-1" }],
+      rows: [row({ id: "child", runtimeState: "running" })],
+    }, { from: "done", changed: false }],
+    ["its own wake is still to come", { wake: inMinutes(12), chats: [], rows: [] }, { from: "waiting", changed: true }],
+    ["a grandchild subagent is mid-turn", {
+      chats: [
+        { sessionId: "child", spawnKind: "subagent", orchestrationParentSessionId: "chat-1" },
+        { sessionId: "grandchild", spawnKind: "subagent", orchestrationParentSessionId: "child" },
+      ],
+      rows: [row({ id: "child" }), row({ id: "grandchild", runtimeState: "running" })],
+    }, { from: "waiting", changed: true }],
+    ["a tracked CLI subagent is mid-turn (lineage only on its row)", {
+      chats: [],
+      rows: [row({ id: "cli", toolType: "codex", runtimeState: "running", spawnKind: "subagent", orchestrationParentSessionId: "chat-1" } as Partial<Row>)],
+    }, { from: "waiting", changed: true }],
+    ["its subagent is parked on a wake", {
+      chats: [{ sessionId: "child", spawnKind: "subagent", orchestrationParentSessionId: "chat-1", nextWakeAt: inMinutes(12) }],
+      rows: [row({ id: "child" })],
+    }, { from: "waiting", changed: true }],
+    ["its child is settled, so the board does not count the child's busy subagent", {
+      chats: [
+        { sessionId: "child", spawnKind: "subagent", orchestrationParentSessionId: "chat-1" },
+        { sessionId: "grandchild", spawnKind: "subagent", orchestrationParentSessionId: "child" },
+      ],
+      rows: [row({ id: "child", settledAt: "2026-09-11T09:00:00.000Z" }), row({ id: "grandchild", runtimeState: "running" })],
+    }, { from: "done", changed: false }],
+    ["nothing will run again: its subagent finished and its wake is overdue", {
+      wake: inMinutes(-10),
+      chats: [{ sessionId: "child", spawnKind: "subagent", orchestrationParentSessionId: "chat-1" }],
+      rows: [row({ id: "child" })],
+    }, { from: "done", changed: false }],
+  ])("starts from the column the board shows when %s", async (_label, setup, expected) => {
+    const sessions = makeSessionService(row(setup.parent));
+    const actions = createSessionBoardMoveActions({
+      sessionService: {
+        ...sessions.service,
+        get: (id: string) => setup.rows.find((candidate) => candidate.id === id) ?? sessions.service.get(id),
+        list: () => [sessions.current, ...setup.rows],
+      },
+      agentChatService: {
+        getSessionSummary: async () => ({
+          awaitingInput: false,
+          nextWakeAt: setup.wake ?? null,
+          ...(setup.parentStatus ? { status: setup.parentStatus } : {}),
+        }),
+        listSessions: async () => setup.chats,
+      },
+      logger: silentLogger,
+    });
+    const result = await actions.moveOnBoard({ sessionId: "chat-1", to: "done" });
+    expect(result).toMatchObject({ from: expected.from, to: "done", changed: expected.changed });
+    expect(sessions.calls.includes("settle")).toBe(expected.changed);
   });
 });
 
@@ -632,7 +712,7 @@ describe("a project that closes with a move still staged", () => {
     const moved = await actionsA.moveOnBoard({ sessionId: "chat-1", to: "working" }) as {
       moveId: string;
     };
-    expect(deriveWorkBoardColumn(projectA.current)).toBe("working");
+    expect(projectA.current).toMatchObject({ settledAt: null, settleOverride: "active" });
 
     // The user switches projects and then hits undo, so the call lands on B.
     expect(await actionsB.undoBoardMove({ sessionId: "chat-1", moveId: moved.moveId }))

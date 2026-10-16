@@ -9,6 +9,7 @@ export {
   Dialog,
   type DialogAction,
   type DialogLayer,
+  type DialogPlacement,
   type DialogProps,
   type DialogSize,
 } from "./Dialog";

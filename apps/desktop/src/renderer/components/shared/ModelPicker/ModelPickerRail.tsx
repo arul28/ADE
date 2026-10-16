@@ -4,6 +4,7 @@ import type { ProviderFamily } from "../../../../shared/modelRegistry";
 import { ProviderLogo } from "../ProviderLogos";
 import { CustomToolMark } from "../CustomToolMark";
 import { cn } from "../../ui/cn";
+import { railNavIndex } from "./railNav";
 
 export type RailEntry =
   // Custom sits above Favorites: a saved setup is a whole launch configuration, so
@@ -43,15 +44,7 @@ export const ModelPickerRail = memo(function ModelPickerRail({
     if (!(event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End")) return;
     event.preventDefault();
     event.stopPropagation();
-    const nextIndex = event.key === "Home"
-      ? 0
-      : event.key === "End"
-        ? Math.max(0, entries.length - 1)
-        : Math.min(
-            Math.max(0, index + (event.key === "ArrowDown" ? 1 : -1)),
-            Math.max(0, entries.length - 1),
-          );
-    const next = entries[nextIndex];
+    const next = entries[railNavIndex(event.key, index, entries.length)];
     if (!next) return;
     const nextKey = entryKey(next);
     onSelect(nextKey);
@@ -63,7 +56,7 @@ export const ModelPickerRail = memo(function ModelPickerRail({
       role="tablist"
       aria-orientation="vertical"
       data-model-picker-rail="true"
-      className="flex w-12 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-white/[0.06] bg-black/[0.18] p-1"
+      className="flex w-[52px] shrink-0 flex-col gap-1 overflow-y-auto p-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
       {entries.map((entry, index) => {
         const key = entryKey(entry);
@@ -155,7 +148,7 @@ const RailButton = memo(function RailButton({
 
   return (
     <>
-      {showDivider ? <div className="my-0.5 h-px bg-white/[0.05]" aria-hidden /> : null}
+      {showDivider ? <div className="mx-1.5 my-0.5 h-px shrink-0 bg-fg/[0.06]" aria-hidden /> : null}
       <button
         ref={refCallback}
         type="button"
@@ -169,10 +162,10 @@ const RailButton = memo(function RailButton({
         onClick={handleClick}
         onKeyDown={(event) => onKeyDown(event, index)}
         className={cn(
-          "relative inline-flex aspect-square w-full items-center justify-center rounded-md transition-colors duration-100",
+          "relative inline-flex aspect-square w-full shrink-0 items-center justify-center rounded-xl transition-[background-color,color,box-shadow] duration-150",
           isSelected
-            ? "bg-white/[0.07] text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]"
-            : "text-fg/75 hover:bg-white/[0.04]",
+            ? "bg-(color:--work-popover-bg) text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07),0_1px_2px_rgba(0,0,0,0.25)]"
+            : "text-fg/70 hover:bg-fg/[0.05] hover:text-fg",
         )}
       >
         {icon}
@@ -180,15 +173,9 @@ const RailButton = memo(function RailButton({
           <span
             aria-hidden
             className={cn(
-              "absolute right-0.5 top-0.5 inline-block h-1.5 w-1.5 rounded-full ring-1 ring-black/40",
+              "absolute right-1 top-1 inline-block h-1.5 w-1.5 rounded-full ring-1 ring-black/40",
               dotColor,
             )}
-          />
-        ) : null}
-        {isSelected ? (
-          <span
-            aria-hidden
-            className="pointer-events-none absolute -right-1 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-l-full bg-violet-400/80"
           />
         ) : null}
       </button>

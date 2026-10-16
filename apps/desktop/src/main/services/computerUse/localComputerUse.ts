@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { ComputerUseArtifactKind } from "../../../shared/types";
-import { commandExists } from "../ai/utils";
+import { commandExistsCached } from "../ai/utils";
 
 export type LocalComputerUseCapabilityState = "present" | "missing" | "blocked_by_capability";
 
@@ -45,7 +45,7 @@ function blocked(detail: string): LocalComputerUseCapability {
 
 export function getLocalComputerUseCapabilities(
   platform: NodeJS.Platform = process.platform,
-  commandAvailable: (command: string) => boolean = commandExists,
+  commandAvailable: (command: string) => boolean = commandExistsCached,
 ): LocalComputerUseCapabilities {
   if (platform !== "darwin") {
     const blockedCapability = blocked(NATIVE_COMPUTER_USE_BLOCKED_DETAIL);
@@ -138,10 +138,34 @@ export function getCapabilityForRequirement(
   }
 }
 
+/**
+ * How much of a stem reaches the file name.
+ *
+ * The stem is often a user- or agent-authored caption, and the artifact file
+ * name is carried by every filesystem this project is checked out on — several
+ * cap a component at 255 bytes before the timestamp, hash and extension the
+ * store adds. The record keeps the whole caption; the name on disk is a label
+ * for a human reading a directory listing.
+ */
+const COMPUTER_USE_FILE_STEM_MAX = 60;
+
+/** FNV-1a, 32-bit, as 8 lowercase hex digits. A short, stable tag for the untruncated stem. */
+function shortStemHash(stem: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < stem.length; index += 1) {
+    hash ^= stem.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
 function computerUseFileName(stem: string, extension: string): string {
   const safeStem = stem.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "artifact";
+  const cappedStem = safeStem.slice(0, COMPUTER_USE_FILE_STEM_MAX).replace(/-+$/g, "") || "artifact";
   const safeExt = extension.replace(/^\./, "").trim() || "txt";
-  return `${Date.now()}-${safeStem}-${randomUUID().slice(0, 8)}.${safeExt}`;
+  // The hash keeps a stable identity for the same full stem even when the
+  // visible label is capped; the timestamp and uuid keep every name unique.
+  return `${Date.now()}-${cappedStem}-${shortStemHash(stem)}-${randomUUID().slice(0, 8)}.${safeExt}`;
 }
 
 export function createComputerUseArtifactPath(projectRoot: string, stem: string, extension: string): string {

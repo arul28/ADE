@@ -135,12 +135,28 @@ describe("resolveRemoteRuntimeSidecars", () => {
     fs.mkdirSync(path.join(cacheRoot, "v1.2.30", ARCH), { recursive: true });
     fs.writeFileSync(path.join(cacheRoot, "v1.2.30", ARCH, BINARY_ASSET), "stale");
 
-    await resolveRemoteRuntimeSidecars(
-      { archLabel: ARCH, appVersion: "1.2.33", bundledBinaryPath: null, bundledNativeDepsPath: null },
-      { cacheRoot, downloadFile: releaseTransport(), log: () => {} },
-    );
-    // GC is fire-and-forget; let its microtasks drain.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    const staleVersionDir = path.join(cacheRoot, "v1.2.30");
+    let resolveStaleRemoval!: () => void;
+    const staleRemoval = new Promise<void>((resolve) => { resolveStaleRemoval = resolve; });
+    const remove = fs.promises.rm.bind(fs.promises);
+    const removeSpy = vi.spyOn(fs.promises, "rm").mockImplementation(async (target, options) => {
+      try {
+        await remove(target, options);
+      } finally {
+        if (path.resolve(String(target)) === staleVersionDir) resolveStaleRemoval();
+      }
+    });
+
+    try {
+      await resolveRemoteRuntimeSidecars(
+        { archLabel: ARCH, appVersion: "1.2.33", bundledBinaryPath: null, bundledNativeDepsPath: null },
+        { cacheRoot, downloadFile: releaseTransport(), log: () => {} },
+      );
+      // GC is intentionally fire-and-forget; wait for its filesystem receipt.
+      await staleRemoval;
+    } finally {
+      removeSpy.mockRestore();
+    }
 
     expect(fs.readdirSync(cacheRoot)).toEqual(["v1.2.33"]);
   });

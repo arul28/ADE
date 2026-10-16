@@ -3,12 +3,19 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   CaretDown,
   CaretRight,
+  CircleDashed,
+  Clock,
   CopySimple,
+  Images,
+  LinkSimple,
+  ListChecks,
   Pause,
   Play,
   Square,
+  TerminalWindow,
   TreeStructure,
   X,
+  type Icon,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { formatDurationMs, formatSubagentDurationMs } from "../../lib/format";
@@ -43,6 +50,7 @@ import type {
   AgentChatSessionStatus,
   ClaudeActiveGoal,
   CodexThreadGoal,
+  CodexThreadGoalStatus,
 } from "../../../shared/types";
 import type { SubagentCapability } from "../../../shared/subagentCapabilities";
 import { BottomDrawerSection } from "./BottomDrawerSection";
@@ -51,6 +59,7 @@ import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from ".
 import { selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { ChatWorkflowActiveCard } from "./ChatWorkflowActiveCard";
+import { redactCommandLine } from "../../../shared/secretRedaction";
 
 const PANE_UI_STORAGE_PREFIX = "ade.chat.paneUi.v1";
 const PANE_CLEARED_STORAGE_PREFIX = "ade.chat.paneCleared.v1";
@@ -171,17 +180,30 @@ type GlyphCategory = "subagent" | "background";
 
 /* ── Section header — sentence case, paper-section feel ── */
 
-type SectionTone = "subagent" | "background" | "workflow" | "scheduled" | "neutral";
+type SectionTone = "subagent" | "background" | "workflow" | "scheduled" | "proof" | "sources" | "neutral";
 
-const SECTION_DOT_CLASS: Record<SectionTone, string> = {
-  subagent: "bg-[color:var(--color-accent,#A78BFA)]/70",
-  background: "bg-cyan-300/65",
-  workflow: "bg-amber-300/65",
-  scheduled: "bg-sky-300/65",
-  neutral: "bg-fg/30",
+/** Each section's icon, drawn left of its label in the section's color. */
+const SECTION_ICON: Record<SectionTone, { Icon: Icon; className: string }> = {
+  subagent: { Icon: TreeStructure, className: "text-[color:var(--color-accent,#A78BFA)]/80" },
+  background: { Icon: TerminalWindow, className: "text-cyan-300/75" },
+  workflow: { Icon: ListChecks, className: "text-amber-300/75" },
+  scheduled: { Icon: Clock, className: "text-sky-300/75" },
+  proof: { Icon: Images, className: "text-emerald-300/75" },
+  sources: { Icon: LinkSimple, className: "text-indigo-300/80" },
+  neutral: { Icon: CircleDashed, className: "text-fg/40" },
 };
 
-function SectionHeader({
+function SectionIcon({ tone }: { tone: SectionTone }) {
+  const { Icon: Glyph, className } = SECTION_ICON[tone];
+  return <Glyph aria-hidden size={12} weight="bold" className={cn("shrink-0", className)} />;
+}
+
+/**
+ * The chat-actions drawer's one section header: a dot, an uppercase label, an
+ * optional count and collapse arrow. Proof and Sources use it too, so every
+ * section of the drawer reads the same.
+ */
+export function SectionHeader({
   label,
   hint,
   action,
@@ -225,7 +247,7 @@ function SectionHeader({
             <span aria-hidden className="shrink-0 text-fg/35">
               {collapsed ? <CaretRight size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />}
             </span>
-            <span aria-hidden className={cn("inline-block h-1 w-1 shrink-0 rounded-full", SECTION_DOT_CLASS[tone])} />
+            <SectionIcon tone={tone} />
             <span className="truncate">{label}</span>
           </span>
           {hint ? (
@@ -246,10 +268,7 @@ function SectionHeader({
           emphasized ? "text-[10.5px] font-medium" : "text-[10px] font-medium",
         )}
       >
-        <span
-          aria-hidden
-          className={cn("inline-block h-1 w-1 rounded-full", SECTION_DOT_CLASS[tone])}
-        />
+        <SectionIcon tone={tone} />
         {label}
       </span>
       <span className="flex items-center gap-1.5">
@@ -298,7 +317,7 @@ function EarlierToggle({
       type="button"
       onClick={onToggle}
       aria-expanded={expanded}
-      className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1 text-left font-sans text-[10.5px] text-fg/40 transition-colors hover:bg-white/[0.035] hover:text-fg/60"
+      className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1 text-left font-sans text-[10.5px] text-fg/40 transition-colors hover:bg-fg/[0.035] hover:text-fg/60"
     >
       <span aria-hidden>{expanded ? <CaretDown size={10} weight="bold" /> : <CaretRight size={10} weight="bold" />}</span>
       Completed ({count}){clearedCount ? ` · ${clearedCount} hidden` : ""}
@@ -311,7 +330,7 @@ function ShowAllButton({ hiddenLabel, onClick }: { hiddenLabel: string; onClick:
     <button
       type="button"
       onClick={onClick}
-      className="mx-2 flex w-[calc(100%-1rem)] items-center rounded-md px-2 py-1 text-left font-sans text-[10.5px] text-fg/40 transition-colors hover:bg-white/[0.035] hover:text-fg/60"
+      className="mx-2 flex w-[calc(100%-1rem)] items-center rounded-md px-2 py-1 text-left font-sans text-[10.5px] text-fg/40 transition-colors hover:bg-fg/[0.035] hover:text-fg/60"
     >
       Show all ({hiddenLabel})
     </button>
@@ -390,7 +409,7 @@ function PaneScalableSection<T>({
   };
 
   return (
-    <section className={cn("pb-3", hasPrecedingSection && "border-t border-white/[0.04]")}>
+    <section className={cn("pb-3", hasPrecedingSection && "border-t border-fg/[0.04]")}>
       <SectionHeader
         label={label}
         hint={allClear ? "all clear" : hint}
@@ -572,7 +591,7 @@ function ScheduledWorkRow({
       data-paused={isPaused || undefined}
       className={cn(
         "group grid min-h-[42px] grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5",
-        "transition-colors duration-150 hover:bg-white/[0.035]",
+        "transition-colors duration-150 hover:bg-fg/[0.035]",
         isPaused && "opacity-45",
       )}
       title={prompt || detail || snapshot.title}
@@ -601,7 +620,7 @@ function ScheduledWorkRow({
           >
             {snapshot.title}
           </span>
-          <span className="shrink-0 rounded-sm bg-white/[0.05] px-1 py-px font-sans text-[9.5px] uppercase tracking-[0.05em] text-fg/40">
+          <span className="shrink-0 rounded-sm bg-fg/[0.05] px-1 py-px font-sans text-[9.5px] uppercase tracking-[0.05em] text-fg/40">
             {scheduledKindLabel(snapshot.kind)}
           </span>
         </div>
@@ -634,7 +653,7 @@ function ScheduledWorkRow({
             onClick={onCancel}
             aria-label={`Cancel ${snapshot.title}`}
             title={snapshot.kind === "cron" ? "Cancel through Claude CronDelete" : "Cancel scheduled work"}
-            className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/25 opacity-0 transition-all hover:bg-white/[0.06] hover:text-rose-200/80 group-hover:opacity-100 focus-visible:opacity-100"
+            className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/25 opacity-0 transition-all hover:bg-fg/[0.06] hover:text-rose-200/80 group-hover:opacity-100 focus-visible:opacity-100"
           >
             <X aria-hidden size={11} weight="bold" />
           </button>
@@ -702,7 +721,8 @@ function BackgroundCommandRow({
   onStop?: (snapshot: ChatScheduledWorkSnapshot) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const rawCommand = (snapshot.title || snapshot.prompt || snapshot.summary || "").trim();
+  // Masked before the label cuts it: a background command can carry a key.
+  const rawCommand = redactCommandLine((snapshot.title || snapshot.prompt || snapshot.summary || "").trim());
   const label = backgroundCommandLabel(rawCommand) || rawCommand || "Background command";
   const cwd = backgroundCommandCwd(rawCommand);
   const isRunning = snapshot.status === "running" || snapshot.status === "fired";
@@ -717,7 +737,7 @@ function BackgroundCommandRow({
   const isMuted = snapshot.status === "completed" || snapshot.status === "cancelled" || snapshot.status === "stopped";
 
   return (
-    <div className="rounded-md transition-colors duration-150 hover:bg-white/[0.035]">
+    <div className="rounded-md transition-colors duration-150 hover:bg-fg/[0.035]">
       <div className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1 pr-1">
       <button
         type="button"
@@ -770,9 +790,9 @@ function BackgroundCommandRow({
             transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
             className="overflow-hidden"
           >
-            <div className="mx-2 mb-1 mt-0.5 space-y-1 rounded-md bg-white/[0.025] px-2.5 py-2">
+            <div className="mx-2 mb-1 mt-0.5 space-y-1 rounded-md bg-fg/[0.025] px-2.5 py-2">
               {cwd ? (
-                <span className="inline-block rounded-sm bg-white/[0.05] px-1.5 py-px font-mono text-[10px] text-fg/45">
+                <span className="inline-block rounded-sm bg-fg/[0.05] px-1.5 py-px font-mono text-[10px] text-fg/45">
                   {cwd}
                 </span>
               ) : null}
@@ -839,6 +859,7 @@ function SubagentRow({
   const modelAttribution = subagentModelAttribution({
     snapshotModel: snapshot.model,
     sessionModelLabel,
+    reasoningEffort: snapshot.reasoningEffort,
   });
   const color = chatSubagentColor(snapshot.agentId ?? snapshot.taskId);
   const isRunning = snapshot.status === "running";
@@ -906,7 +927,7 @@ function SubagentRow({
         className={cn(
           "group relative flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2 py-1.5 text-left",
           "transition-colors duration-150",
-          "hover:bg-white/[0.04]",
+          "hover:bg-fg/[0.04]",
           (selected || expanded)
             && "bg-[color:color-mix(in_srgb,var(--color-accent)_10%,transparent)] ring-1 ring-inset ring-[color:color-mix(in_srgb,var(--color-accent)_30%,transparent)]",
         )}
@@ -934,13 +955,14 @@ function SubagentRow({
               {snapshot.workflowName}
             </span>
           ) : kindLabel ? (
-            <span className="ml-1.5 rounded-sm bg-white/[0.05] px-1 py-px font-sans text-[9.5px] uppercase tracking-[0.05em] text-fg/40">
+            <span className="ml-1.5 rounded-sm bg-fg/[0.05] px-1 py-px font-sans text-[9.5px] uppercase tracking-[0.05em] text-fg/40">
               {kindLabel}
             </span>
           ) : null}
           {modelAttribution ? (
             <span className="ml-1.5 font-sans text-[11px] tracking-[0.01em] text-fg/45">
               {modelAttribution.label}
+              {modelAttribution.effortLabel ? ` · ${modelAttribution.effortLabel}` : null}
               {modelAttribution.inherited ? (
                 <span className="text-fg/28"> · inherited</span>
               ) : null}
@@ -1001,7 +1023,7 @@ function SubagentRow({
             <button
               type="button"
               onClick={() => setFilesOpen((open) => !open)}
-              className="inline-flex items-center gap-1 rounded-sm px-1 py-0.5 font-sans text-[11px] text-fg/50 hover:bg-white/[0.04] hover:text-fg/70"
+              className="inline-flex items-center gap-1 rounded-sm px-1 py-0.5 font-sans text-[11px] text-fg/50 hover:bg-fg/[0.04] hover:text-fg/70"
             >
               {filesOpen ? <CaretDown size={10} weight="bold" /> : <CaretRight size={10} weight="bold" />}
               {filePaths.length} file{filePaths.length === 1 ? "" : "s"} returned
@@ -1010,7 +1032,7 @@ function SubagentRow({
               type="button"
               onClick={copyFilePaths}
               title="Copy all paths"
-              className="inline-flex items-center gap-0.5 rounded-sm px-1 py-0.5 font-sans text-[10.5px] text-fg/40 hover:bg-white/[0.04] hover:text-fg/70"
+              className="inline-flex items-center gap-0.5 rounded-sm px-1 py-0.5 font-sans text-[10.5px] text-fg/40 hover:bg-fg/[0.04] hover:text-fg/70"
             >
               <CopySimple size={11} />
               copy paths
@@ -1038,7 +1060,7 @@ function SubagentRow({
             transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
             className="overflow-hidden"
           >
-            <div className="mx-2 mb-1 mt-0.5 space-y-1 rounded-md bg-white/[0.025] px-2.5 py-2 font-sans text-[10.5px] leading-4 text-fg/55">
+            <div className="mx-2 mb-1 mt-0.5 space-y-1 rounded-md bg-fg/[0.025] px-2.5 py-2 font-sans text-[10.5px] leading-4 text-fg/55">
               {snapshot.description ? (
                 <div className="break-words text-fg/65">{snapshot.description}</div>
               ) : null}
@@ -1096,6 +1118,9 @@ export function ChatSubagentsPanel({
   onClose,
   goal,
   claudeGoal,
+  onEditClaudeGoal,
+  onClearClaudeGoal,
+  claudeGoalLocked = false,
   onEditGoal,
   onClearGoal,
   onSetGoalStatus,
@@ -1134,11 +1159,15 @@ export function ChatSubagentsPanel({
   variant?: "drawer" | "pane";
   onClose?: () => void;
   goal?: CodexThreadGoal | null;
-  /** Read-only Claude goal (owned by the CLI's /goal loop); Claude sessions only. */
+  /** Claude's `/goal`; edited and cleared by sending `/goal …` between turns. */
   claudeGoal?: ClaudeActiveGoal | null;
+  onEditClaudeGoal?: (condition: string) => void;
+  onClearClaudeGoal?: () => void;
+  /** A Claude turn is running; its goal changes wait for the turn boundary. */
+  claudeGoalLocked?: boolean;
   onEditGoal?: (nextObjective: string) => void;
   onClearGoal?: () => void;
-  onSetGoalStatus?: (status: Extract<NonNullable<CodexThreadGoal["status"]>, "active" | "paused" | "blocked" | "complete">) => void;
+  onSetGoalStatus?: (status: Extract<CodexThreadGoalStatus, "active" | "paused" | "blocked" | "complete">) => void;
   goalPending?: boolean;
   /**
    * The chat's one task list (`shared/chatTaskList.ts`). The host derives it
@@ -1576,26 +1605,37 @@ export function ChatSubagentsPanel({
           pending={goalPending}
         />
       ) : hasClaudeGoal && claudeGoal ? (
-        <GoalCard variant="claude" goal={claudeGoal} />
+        <GoalCard
+          variant="claude"
+          goal={claudeGoal}
+          onEdit={onEditClaudeGoal}
+          onClear={onClearClaudeGoal}
+          locked={claudeGoalLocked}
+        />
       ) : null}
 
       {/* ── Tasks: the chat's one task list, always expanded ──────── */}
       {hasTasks && taskList && taskProgress ? (
-        <section className={cn("pb-3", hasGoal && "border-t border-white/[0.04]")} data-testid="chat-info-tasks">
-          {/* A plan explanation or "Plan" reads as the list's own header
-              (with the count); a bare todo list needs only the section's. */}
+        <section className={cn("pb-3", hasGoal && "border-t border-fg/[0.04]")} data-testid="chat-info-tasks">
+          {/* One line: the label, the count and the collapse arrow. The list's
+              own "Plan" title would only repeat it. Open by default. */}
           <SectionHeader
             label="Tasks"
-            hint={taskList.label === "Tasks" ? `${taskProgress.done}/${taskProgress.total}` : undefined}
+            hint={`${taskProgress.done}/${taskProgress.total}`}
             tone="workflow"
             emphasized
             sticky={stickyHeaders}
+            collapsible
+            collapsed={paneUi.collapsed.tasks === true}
+            onToggle={() => toggleSection("tasks")}
           />
-          <ChatTaskListView
-            list={taskList}
-            showHeader={taskList.label !== "Tasks"}
-            className="px-4 pt-1"
-          />
+          {paneUi.collapsed.tasks === true ? null : (
+            <ChatTaskListView
+              list={taskList}
+              showHeader={false}
+              className="px-4 pt-1"
+            />
+          )}
         </section>
       ) : null}
 
@@ -1643,7 +1683,7 @@ export function ChatSubagentsPanel({
               onClick={onToggleSchedulesPaused}
               aria-label={schedulesPaused ? "Resume scheduled work for this chat" : "Pause scheduled work for this chat"}
               title={schedulesPaused ? "Resume scheduled work for this chat" : "Pause scheduled work for this chat"}
-              className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/35 transition-colors hover:bg-white/[0.05] hover:text-fg/65"
+              className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/35 transition-colors hover:bg-fg/[0.05] hover:text-fg/65"
             >
               {schedulesPaused ? <Play aria-hidden size={11} weight="fill" /> : <Pause aria-hidden size={11} weight="fill" />}
             </button>
@@ -1675,11 +1715,11 @@ export function ChatSubagentsPanel({
     </div>
   );
 
-  // Pane = one section of the chat actions drawer. The drawer owns the only
-  // scroll, so this renders no height, no scroller and no empty placeholder:
-  // nothing to show means no DOM at all, and the drawer's divider/empty-line
-  // rules see it as absent. `paneScrollRef` still finds rows for
-  // scroll-into-view; the browser scrolls the drawer's scroller.
+  // Pane = one section of the chat actions drawer. The drawer gives each
+  // section its own region and scroll, so this renders no height, no scroller
+  // and no empty placeholder: nothing to show means no DOM at all, and the
+  // drawer hides the region. `paneScrollRef` still finds rows for
+  // scroll-into-view; the browser scrolls the section's region.
   if (variant === "pane") {
     if (!hasAnything) return null;
     return (

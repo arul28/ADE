@@ -35,19 +35,31 @@ import type {
   PermissionCapability,
   SettingSourcesCapability,
 } from "../hostConfig.js";
+import type { AdeClientEvent, AdeClientEventMap } from "../client.js";
 import type {
+  HistoryPageOptions,
   SendOptions,
   SetModelOptions,
+  SetModelResult,
+  SteerOptions,
   ThreadEventChannel,
   ThreadModelSelection,
+  ThreadUpdate,
+  ThreadUpdateOptions,
+  ThreadUpdateResult,
+  ThreadRerunResult,
+  EditLastOptions,
 } from "../thread.js";
 import {
   STATUS_EVENT_TYPES,
   USAGE_EVENT_TYPES,
   type AgentChatEventEnvelope,
+  type DoctorReport,
   type McpCapabilityReport,
   type ModelCatalogEntry,
   type ProviderStatus,
+  type ThreadHistoryPage,
+  type ThreadSummary,
   type Unsubscribe,
 } from "../types.js";
 import {
@@ -68,22 +80,46 @@ const STATUS = new Set<string>(STATUS_EVENT_TYPES);
  *
  * Every member is typed with the SDK's own type, not a loosened copy, so this
  * interface satisfies `SdkLikeThread` from `@ade-dev/chat-ui` structurally and
- * `adaptSdkClient` takes it with no cast. The capability reports are read-only
- * snapshots taken at open: a proxy cannot re-derive one after `setModel` the
- * way a real thread does, so re-open the key if you need a fresh verdict.
+ * `adaptSdkClient` takes it with no cast. The capability reports, `title` and
+ * `model` are snapshots taken at open and refreshed by this handle's own
+ * `setModel` and `update` calls; a change made by another renderer or by the
+ * main process is seen at the next `threads.open` of the key, which always
+ * asks main.
  */
 export interface AdeIpcThread {
   readonly id: string;
   readonly key: string;
+  /** See `AdeThread.title`. */
+  readonly title: string | null;
+  /** See `AdeThread.model`. */
+  readonly model: ThreadModelSelection | null;
   readonly mcpCapability: McpCapabilityReport | null;
   readonly instructionsCapability: InstructionsCapability | null;
   readonly settingSourcesCapability: SettingSourcesCapability | null;
   readonly permissionCapability: PermissionCapability | null;
   send(text: string, opts?: SendOptions): Promise<void>;
-  steer(text: string): Promise<void>;
+  /** See `AdeThread.steer`. Attachments cross as path refs, like `send`. */
+  steer(text: string, opts?: SteerOptions): Promise<void>;
   interrupt(): Promise<void>;
-  setModel(modelId: string, opts?: SetModelOptions): Promise<ThreadModelSelection>;
+  /**
+   * See `AdeThread.setModel`. Refused with `unauthorized` when the host's
+   * `allowModel` hook says no. Refreshes this handle's `model` and capability
+   * reports from the answer.
+   */
+  setModel(modelId: string, opts?: SetModelOptions): Promise<SetModelResult>;
+  /** See `AdeThread.update`. Refreshes this handle's `title` and `model`. */
+  update(patch: ThreadUpdate, opts?: ThreadUpdateOptions): Promise<ThreadUpdateResult>;
+  /** See `AdeThread.retry`. */
+  retry(): Promise<ThreadRerunResult>;
+  /** See `AdeThread.editLast`. */
+  editLast(text: string, opts?: EditLastOptions): Promise<ThreadRerunResult>;
   history(opts?: { limit?: number }): Promise<AgentChatEventEnvelope[]>;
+  /**
+   * See `AdeThread.historyPage`. The newest page (no `beforeSequence`) is
+   * merged with live envelopes the same way `history()` is, so nothing that
+   * streams in while it loads is lost or doubled.
+   */
+  historyPage(opts?: HistoryPageOptions): Promise<ThreadHistoryPage>;
   approve(itemId: string, decision: ApprovalDecision, responseText?: string): Promise<void>;
   pendingApprovals(): Promise<ApprovalRequest[]>;
   on(channel: ThreadEventChannel, cb: (envelope: AgentChatEventEnvelope) => void): Unsubscribe;
@@ -97,7 +133,35 @@ export interface AdeIpcClient {
     onChange(cb: (statuses: Record<string, ProviderStatus>) => void): Unsubscribe;
   };
   models: { list(): Promise<ModelCatalogEntry[]> };
-  threads: { open(key: string, opts?: Record<string, unknown>): Promise<AdeIpcThread> };
+  threads: {
+    /**
+     * Open a key. What the SDK opens it WITH is the host's decision: with an
+     * `openOptions` hook the options passed here are ignored, and without one
+     * only `provider`, `model`, `title` and `reasoningEffort` cross.
+     */
+    open(key: string, opts?: Record<string, unknown>): Promise<AdeIpcThread>;
+    /** Every thread the host lets this renderer name (`allowThreadKey`). */
+    list(): Promise<ThreadSummary[]>;
+    /** See `AdeChatClient.threads.get`. Gated by `allowThreadKey`. SDK >= 0.4. */
+    get(key: string): Promise<ThreadSummary | null>;
+    /** See `AdeChatClient.threads.delete`. Drops this renderer's handle for the key. */
+    delete(key: string): Promise<void>;
+    /** See `AdeChatClient.threads.archive`. */
+    archive(key: string): Promise<void>;
+    /** See `AdeChatClient.threads.unarchive`. */
+    unarchive(key: string): Promise<void>;
+  };
+  /** See `AdeChatClient.doctor`. Gated by `authorize` only. */
+  doctor(): Promise<DoctorReport>;
+  /** See `AdeChatClient.exportThread`. Gated by `allowThreadKey`. */
+  exportThread(key: string): Promise<string>;
+  /**
+   * Runtime lifecycle events from the main process: `"exit"`, `"transport"`,
+   * `"restart"`, `"threadLifecycle"`, with the payloads `AdeClientEventMap`
+   * documents. One IPC
+   * subscription serves every listener in this renderer.
+   */
+  on<E extends AdeClientEvent>(event: E, cb: (payload: AdeClientEventMap[E]) => void): Unsubscribe;
 }
 
 /**
@@ -144,21 +208,26 @@ type ThreadState = {
  * Build an SDK-shaped client on top of the preload bridge.
  *
  * `bridge` is whatever `exposeAdeBridge` put on `window` — `window.ade` by
- * default. Nothing else is required of the host.
+ * default. Nothing else is required of the host. A missing bridge (undefined,
+ * because the preload did not run) throws `invalid_option`.
  */
-export function createAdeIpcClient(bridge: AdeBridge): AdeIpcClient {
-  if (!bridge || typeof bridge.invoke !== "function" || typeof bridge.onEvent !== "function") {
+export function createAdeIpcClient(bridgeInput: AdeBridge | null | undefined): AdeIpcClient {
+  if (!bridgeInput || typeof bridgeInput.invoke !== "function" || typeof bridgeInput.onEvent !== "function") {
     throw new AdeError(
       "invalid_option",
       "createAdeIpcClient needs the object exposeAdeBridge exposed (window.ade by default).",
     );
   }
+  const bridge: AdeBridge = bridgeInput;
 
   const threads = new Map<string, ThreadState>();
   const opening = new Map<string, Promise<AdeIpcThread>>();
   const providerListeners = new Set<(statuses: Record<string, ProviderStatus>) => void>();
   let providerSubscriptionId: string | null = null;
   let providerSubscribing: Promise<void> | null = null;
+  const clientListeners = new Map<string, Set<(payload: unknown) => void>>();
+  let clientSubscriptionId: string | null = null;
+  let clientSubscribing: Promise<void> | null = null;
   let detachBridge: (() => void) | null = null;
 
   async function call<T>(method: string, args: unknown[]): Promise<T> {
@@ -202,8 +271,61 @@ export function createAdeIpcClient(bridge: AdeBridge): AdeIpcClient {
       if (payload.kind === "providers") {
         if (payload.subscriptionId !== providerSubscriptionId) return;
         for (const cb of [...providerListeners]) cb(payload.statuses);
+        return;
+      }
+      if (payload.kind === "client") {
+        if (payload.subscriptionId !== clientSubscriptionId) return;
+        for (const cb of [...(clientListeners.get(payload.event) ?? [])]) cb(payload.payload);
       }
     });
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Client events                                                           */
+  /* ---------------------------------------------------------------------- */
+
+  function clientListenerCount(): number {
+    let count = 0;
+    for (const set of clientListeners.values()) count += set.size;
+    return count;
+  }
+
+  function clientOn<E extends AdeClientEvent>(
+    event: E,
+    cb: (payload: AdeClientEventMap[E]) => void,
+  ): Unsubscribe {
+    ensureBridgeListener();
+    let set = clientListeners.get(event);
+    if (!set) {
+      set = new Set();
+      clientListeners.set(event, set);
+    }
+    const listener = cb as (payload: unknown) => void;
+    set.add(listener);
+    if (!clientSubscriptionId && !clientSubscribing) {
+      clientSubscribing = call<AdeIpcSubscription>("client.subscribe", [])
+        .then((result) => {
+          if (clientListenerCount() === 0) {
+            void call("client.unsubscribe", [result.subscriptionId]).catch(() => {});
+            return;
+          }
+          clientSubscriptionId = result.subscriptionId;
+        })
+        .catch(() => {})
+        .finally(() => {
+          clientSubscribing = null;
+        });
+    }
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      set.delete(listener);
+      if (clientListenerCount() > 0) return;
+      const id = clientSubscriptionId;
+      clientSubscriptionId = null;
+      if (id) void call("client.unsubscribe", [id]).catch(() => {});
+    };
   }
 
   /* ---------------------------------------------------------------------- */
@@ -295,6 +417,12 @@ export function createAdeIpcClient(bridge: AdeBridge): AdeIpcClient {
         return state.snapshot.id;
       },
       key,
+      get title() {
+        return state.snapshot.title ?? null;
+      },
+      get model() {
+        return state.snapshot.model ?? null;
+      },
       get mcpCapability() {
         return state.snapshot.mcpCapability;
       },
@@ -310,14 +438,56 @@ export function createAdeIpcClient(bridge: AdeBridge): AdeIpcClient {
       async send(text, opts) {
         await call<null>("thread.send", [key, text, opts ?? null]);
       },
-      async steer(text) {
-        await call<null>("thread.steer", [key, text]);
+      async steer(text, opts) {
+        await call<null>("thread.steer", [key, text, opts?.attachments ? { attachments: opts.attachments } : null]);
       },
       async interrupt() {
         await call<null>("thread.interrupt", [key]);
       },
-      setModel(modelId, opts) {
-        return call<ThreadModelSelection>("thread.setModel", [key, modelId, opts ?? null]);
+      async setModel(modelId, opts) {
+        const result = await call<SetModelResult>("thread.setModel", [key, modelId, opts ?? null]);
+        const { capabilities, ...selection } = result;
+        state.snapshot = {
+          ...state.snapshot,
+          model: selection,
+          ...(capabilities
+            ? {
+                mcpCapability: capabilities.mcpCapability,
+                permissionCapability: capabilities.permissionCapability,
+                instructionsCapability: capabilities.instructionsCapability,
+                settingSourcesCapability: capabilities.settingSourcesCapability,
+              }
+            : {}),
+        };
+        return result;
+      },
+      async retry() {
+        return await call<ThreadRerunResult>("thread.retry", [key]);
+      },
+      async editLast(text, opts) {
+        return await call<ThreadRerunResult>("thread.editLast", [key, text, opts ?? null]);
+      },
+      async update(patch, opts) {
+        const result = await call<ThreadUpdateResult>("thread.update", [key, patch, opts ?? null]);
+        state.snapshot = { ...state.snapshot, title: result.title, model: result.model };
+        return result;
+      },
+      async historyPage(opts) {
+        if (opts?.beforeSequence !== undefined && opts.beforeSequence !== null) {
+          // An older page cannot race the live stream: everything live is newer.
+          return call<ThreadHistoryPage>("thread.historyPage", [key, opts]);
+        }
+        await acquireSubscription(key);
+        const buffer: BufferedEnvelope[] = [];
+        state.buffers.add(buffer);
+        try {
+          const page = await call<ThreadHistoryPage>("thread.historyPage", [key, opts ?? null]);
+          const missed = buffer.filter((row) => !row.deliveredLive).map((row) => row.envelope);
+          return { ...page, events: mergeHistoryWithBuffer(Array.isArray(page?.events) ? page.events : [], missed) };
+        } finally {
+          state.buffers.delete(buffer);
+          releaseSubscription(key);
+        }
       },
       async approve(itemId, decision, responseText) {
         await call<null>("thread.approve", [key, itemId, decision, responseText ?? null]);
@@ -363,7 +533,10 @@ export function createAdeIpcClient(bridge: AdeBridge): AdeIpcClient {
   async function openThread(key: string, opts?: Record<string, unknown>): Promise<AdeIpcThread> {
     const trimmed = typeof key === "string" ? key.trim() : "";
     if (!trimmed) throw new AdeError("invalid_option", "threads.open needs a non-empty key.");
-    if (threads.has(trimmed)) return buildThread(trimmed);
+    // A key this renderer already holds still goes to main: the host's
+    // `openOptions` hook runs on every open, and that is how a rotated MCP
+    // credential reaches a live thread. The existing handle keeps its
+    // listeners and takes the fresh snapshot.
     const pending = opening.get(trimmed);
     if (pending) return pending;
 
@@ -393,6 +566,17 @@ export function createAdeIpcClient(bridge: AdeBridge): AdeIpcClient {
     return started;
   }
 
+  /** Drop a key's local state after the main process deleted it. */
+  function forgetThread(key: string): void {
+    const state = threads.get(key);
+    if (!state) return;
+    threads.delete(key);
+    const id = state.subscriptionId;
+    state.subscriptionId = null;
+    state.listeners.clear();
+    if (id) void call("thread.unsubscribe", [id]).catch(() => {});
+  }
+
   return {
     providers: {
       status: () => call<Record<string, ProviderStatus>>("providers.status", []),
@@ -400,7 +584,24 @@ export function createAdeIpcClient(bridge: AdeBridge): AdeIpcClient {
       onChange: providersOnChange,
     },
     models: { list: () => call<ModelCatalogEntry[]>("models.list", []) },
-    threads: { open: openThread },
+    threads: {
+      open: openThread,
+      list: () => call<ThreadSummary[]>("threads.list", []),
+      get: (key) => call<ThreadSummary | null>("threads.get", [key]),
+      async delete(key) {
+        await call<null>("threads.delete", [key]);
+        forgetThread(typeof key === "string" ? key.trim() : key);
+      },
+      async archive(key) {
+        await call<null>("threads.archive", [key]);
+      },
+      async unarchive(key) {
+        await call<null>("threads.unarchive", [key]);
+      },
+    },
+    doctor: () => call<DoctorReport>("doctor", []),
+    exportThread: (key) => call<string>("thread.export", [key]),
+    on: clientOn,
   };
 }
 

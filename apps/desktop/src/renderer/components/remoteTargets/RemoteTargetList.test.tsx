@@ -9,10 +9,12 @@ import {
   within,
   waitFor,
 } from "@testing-library/react";
+import { __resetDialogRequestsForTests } from "../ui/dialog/confirm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AdeAccountMachine,
   RemoteRuntimeTarget,
+  UpdateImpact,
 } from "../../../shared/types";
 import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../shared/accountDirectory";
 import { AccountMachineRow } from "./AccountMachineRow";
@@ -40,6 +42,7 @@ const remoteRuntimeMock = {
   pairWithMachine: vi.fn(),
   runDoctor: vi.fn(),
   updateAndRestart: vi.fn(),
+  getUpdateImpact: vi.fn(async (_id: string): Promise<UpdateImpact> => ({ checked: true, chats: [], cliSessions: 0, terminals: 0 })),
 };
 
 const updateGetStateMock = vi.fn();
@@ -169,6 +172,7 @@ afterEach(() => {
 
 describe("RemoteTargetList", () => {
   afterEach(() => {
+    __resetDialogRequestsForTests();
     cleanup();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -451,10 +455,11 @@ describe("RemoteTargetList", () => {
     );
     expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy();
     expect(screen.queryByText(/Never connected/)).toBeNull();
-    expect(screen.getByText(/Last connected/)).toBeTruthy();
-    expect(
-      screen.getByText("This machine is on ADE 1.0.0. Mac Studio is on 0.9.0. They can still connect — update Mac Studio when you can."),
-    ).toBeTruthy();
+    // A connected row names where it is now; the version chip carries the
+    // build instead of a separate version-skew sentence.
+    expect(screen.getByText("Online")).toBeTruthy();
+    expect(screen.getByText("0.9.0")).toBeTruthy();
+    expect(screen.queryByText(/They can still connect/)).toBeNull();
     expect(screen.queryByText("/remote/ADE")).toBeNull();
     expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
 
@@ -464,7 +469,124 @@ describe("RemoteTargetList", () => {
         manual: true,
       }),
     );
-    expect(screen.getByText(/Not connected · Last connected/)).toBeTruthy();
+    expect(screen.getByText(/Not connected · last seen/)).toBeTruthy();
+  });
+
+  it("locks only the connecting row, and Cancel ends that attempt without an error", async () => {
+    const savedTarget = (id: string, name: string) => ({
+      id,
+      name,
+      hostname: `${id}.local`,
+      sshUser: "ade",
+      port: 22,
+      sshKeyPath: null,
+      lastSeenArch: "darwin-arm64",
+      runtimeBinaryVersion: "1.0.0",
+      lastConnectedAt: null,
+    });
+    remoteRuntimeMock.listTargets.mockResolvedValue([
+      savedTarget("alpha", "Alpha"),
+      savedTarget("beta", "Beta"),
+    ]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    let failAlphaLate: (error: Error) => void = () => {};
+    remoteRuntimeMock.connect.mockImplementation(
+      (targetId: string) =>
+        new Promise((_resolve, reject) => {
+          if (targetId === "alpha") failAlphaLate = reject;
+        }),
+    );
+    remoteRuntimeMock.disconnect.mockResolvedValue(undefined);
+    lanesMock.list.mockResolvedValue([]);
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+    await screen.findByText("Alpha");
+    const enabledConnects = () =>
+      screen
+        .getAllByRole("button", { name: "Connect" })
+        .filter((button) => !button.hasAttribute("disabled"));
+    expect(enabledConnects()).toHaveLength(2);
+    fireEvent.click(enabledConnects()[0]!);
+    await waitFor(() =>
+      expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("alpha"),
+    );
+
+    // Alpha is connecting; Beta keeps every action.
+    const cancel = screen.getByRole("button", {
+      name: "Cancel connecting to Alpha",
+    });
+    expect(enabledConnects()).toHaveLength(1);
+    expect(
+      screen.getByRole("button", { name: "Remove Beta" }).hasAttribute("disabled"),
+    ).toBe(false);
+    expect(
+      screen.getByRole("button", { name: "Remove Alpha" }).hasAttribute("disabled"),
+    ).toBe(false);
+
+    fireEvent.click(cancel);
+    await waitFor(() =>
+      expect(remoteRuntimeMock.disconnect).toHaveBeenCalledWith("alpha", {
+        manual: true,
+      }),
+    );
+    await waitFor(() => expect(enabledConnects()).toHaveLength(2));
+    expect(
+      screen.queryByRole("button", { name: "Cancel connecting to Alpha" }),
+    ).toBeNull();
+
+    // Main's answer to the cancelled attempt arrives late and is ignored.
+    await act(async () => {
+      failAlphaLate(new Error("late connect failure"));
+    });
+    expect(screen.queryByText(/late connect failure/)).toBeNull();
+    expect(enabledConnects()).toHaveLength(2);
+  });
+
+  it("keeps an account row locked until a cancelled pairing finishes in main", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    let finishPairing: (error: Error) => void = () => {};
+    accountMock.pairMachine.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        finishPairing = reject;
+      }),
+    );
+    installAdeMock();
+
+    render(
+      <RemoteTargetList
+        accountMachines={[accountMachine({ machineKey: "mk-stop", name: "Stop Studio" })]}
+        accountMachinesState="ok"
+        accountSignedIn
+      />,
+    );
+    await screen.findByText("Stop Studio");
+    const row = getAccountRow("Stop Studio");
+    fireEvent.click(within(row).getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(accountMock.pairMachine).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(
+      within(row).getByRole("button", { name: "Cancel connecting to Stop Studio" }),
+    );
+    // Main cannot interrupt a pairing: a second one must not start meanwhile.
+    const stopping = await within(row).findByRole("button", { name: "Stopping…" });
+    expect(stopping.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(stopping);
+    expect(accountMock.pairMachine).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      finishPairing(new Error("cancelled pairing ended"));
+    });
+    const connect = await within(row).findByRole("button", { name: "Connect" });
+    expect(connect.hasAttribute("disabled")).toBe(false);
+    expect(screen.queryByText(/cancelled pairing ended/)).toBeNull();
   });
 
   it("does not let an older event overwrite a local connection-setting snapshot", async () => {
@@ -1854,6 +1976,7 @@ describe("RemoteTargetList", () => {
         detailOpen={false}
         onToggleDetail={onToggleDetail}
         onConnect={vi.fn()}
+        onCancelConnect={vi.fn()}
       />,
     );
 
@@ -1870,6 +1993,7 @@ describe("RemoteTargetList", () => {
         detailOpen
         onToggleDetail={onToggleDetail}
         onConnect={vi.fn()}
+        onCancelConnect={vi.fn()}
       />,
     );
     expect(screen.getByText("Finish setup on the other computer")).toBeTruthy();
@@ -1889,6 +2013,7 @@ describe("RemoteTargetList", () => {
         detailOpen={false}
         onToggleDetail={vi.fn()}
         onConnect={vi.fn()}
+        onCancelConnect={vi.fn()}
         onRenamed={onRenamed}
       />,
     );
@@ -1904,9 +2029,11 @@ describe("RemoteTargetList", () => {
   });
   // --- Update & restart on a connected machine ----------------------------
 
-  function installConnectedMachine(remoteVersion: string): void {
+  // The update store outlives a page, and a test, by design, so each update
+  // test uses its own machine id.
+  function installConnectedMachine(remoteVersion: string, id = "target-c"): void {
     const connectedTarget = {
-      id: "target-c",
+      id,
       name: "Studio Mac",
       hostname: "studio.local",
       transport: "paired" as const,
@@ -1943,7 +2070,7 @@ describe("RemoteTargetList", () => {
     });
   }
 
-  it("does not offer Update & restart to a machine already level with this computer", async () => {
+  it("does not offer an update to a machine already level with this computer", async () => {
     installConnectedMachine("1.2.0");
     installAdeMock();
     updateGetStateMock.mockResolvedValue(autoUpdateSnapshot("1.2.0"));
@@ -1954,11 +2081,11 @@ describe("RemoteTargetList", () => {
       expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy(),
     );
     expect(
-      screen.queryByRole("button", { name: /Update & restart/ }),
+      screen.queryByRole("button", { name: "Update" }),
     ).toBeNull();
   });
 
-  it("offers Update & restart to a connected machine running an older ADE", async () => {
+  it("offers an update to a connected machine running an older ADE", async () => {
     installConnectedMachine("1.1.9");
     installAdeMock();
     updateGetStateMock.mockResolvedValue(autoUpdateSnapshot("1.2.0"));
@@ -1966,12 +2093,18 @@ describe("RemoteTargetList", () => {
     render(<RemoteTargetList />);
 
     expect(
-      await screen.findByRole("button", { name: /Update & restart/ }),
+      await screen.findByRole("button", { name: "Update" }),
     ).toBeTruthy();
   });
 
-  it("asks the outdated machine to update to the newest version this computer knows", async () => {
-    installConnectedMachine("1.1.9");
+  it("names what is running there, then asks the machine to update to the newest version this computer knows", async () => {
+    installConnectedMachine("1.1.9", "target-update-ok");
+    remoteRuntimeMock.getUpdateImpact.mockResolvedValueOnce({
+      checked: true,
+      chats: [{ sessionId: "chat-1", title: "Nightly perf pass", projectName: "ADE" }],
+      cliSessions: 0,
+      terminals: 0,
+    });
     installAdeMock();
     // This computer runs 1.2.0 but has already seen 1.3.0 published.
     updateGetStateMock.mockResolvedValue(autoUpdateSnapshot("1.2.0", "1.3.0"));
@@ -1987,22 +2120,71 @@ describe("RemoteTargetList", () => {
     render(<RemoteTargetList />);
 
     fireEvent.click(
-      await screen.findByRole("button", { name: /Update & restart/ }),
+      await screen.findByRole("button", { name: "Update" }),
     );
+
+    // Nothing restarts before the yes, and the question names the running chat.
+    const question = await screen.findByRole("alertdialog");
+    expect(question.textContent).toContain("Nightly perf pass");
+    expect(remoteRuntimeMock.getUpdateImpact).toHaveBeenCalledWith("target-update-ok");
+    expect(remoteRuntimeMock.updateAndRestart).not.toHaveBeenCalled();
+    fireEvent.click(within(question).getByRole("button", { name: "Update & restart" }));
 
     await waitFor(() =>
       expect(remoteRuntimeMock.updateAndRestart).toHaveBeenCalledWith(
-        "target-c",
+        "target-update-ok",
         "1.3.0",
       ),
     );
-    expect(
-      await screen.findByText("Studio Mac updated to 1.3.0 — restarting."),
-    ).toBeTruthy();
+    // Still on 1.1.9: the update is in flight, so the row shows where the
+    // update is and no longer offers a second Update over it.
+    const progress = await screen.findByRole("progressbar", { name: "Update progress" });
+    expect(progress.textContent).toContain("Back on 1.3.0");
+    expect(screen.getByText("Restarting on 1.3.0…")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Update" })).toBeNull();
+  });
+
+  it.each([
+    // The machine finished an earlier update while the question was open: the
+    // list said 1.1.9, the machine now says 1.3.0. Sending would restart it
+    // for nothing.
+    ["already on the target", "1.3.0", false],
+    // A version the client cannot read is not proof the machine is current;
+    // the host decides.
+    ["reporting an unreadable version", "nightly", true],
+  ])("re-reads a machine %s before sending the update (sent: %s)", async (label, liveVersion, sent) => {
+    const id = `target-live-${label.replace(/\W+/g, "-")}`;
+    installConnectedMachine("1.1.9", id);
+    installAdeMock();
+    updateGetStateMock.mockResolvedValue(autoUpdateSnapshot("1.2.0", "1.3.0"));
+    remoteRuntimeMock.updateAndRestart.mockResolvedValue({
+      ok: true,
+      updateApplied: true,
+      currentVersion: "1.1.9",
+      targetVersion: "1.3.0",
+      steps: [],
+      message: "Studio Mac updated to 1.3.0 — restarting.",
+    });
+
+    render(<RemoteTargetList />);
+    fireEvent.click(await screen.findByRole("button", { name: "Update" }));
+    const question = await screen.findByRole("alertdialog");
+    remoteRuntimeMock.updateAndRestart.mockClear();
+    installConnectedMachine(liveVersion, id);
+    fireEvent.click(within(question).getByRole("button", { name: "Update & restart" }));
+
+    if (sent) {
+      await waitFor(() =>
+        expect(remoteRuntimeMock.updateAndRestart).toHaveBeenCalledWith(id, "1.3.0"),
+      );
+    } else {
+      expect(await screen.findByText(/Already on 1\.3\.0/)).toBeTruthy();
+      expect(remoteRuntimeMock.updateAndRestart).not.toHaveBeenCalled();
+    }
   });
 
   it("shows the machine's own failure line when the update does not land", async () => {
-    installConnectedMachine("1.1.9");
+    installConnectedMachine("1.1.9", "target-update-fails");
     installAdeMock();
     updateGetStateMock.mockResolvedValue(autoUpdateSnapshot("1.2.0"));
     remoteRuntimeMock.updateAndRestart.mockResolvedValue({
@@ -2017,8 +2199,10 @@ describe("RemoteTargetList", () => {
     render(<RemoteTargetList />);
 
     fireEvent.click(
-      await screen.findByRole("button", { name: /Update & restart/ }),
+      await screen.findByRole("button", { name: "Update" }),
     );
+    const question = await screen.findByRole("alertdialog");
+    fireEvent.click(within(question).getByRole("button", { name: "Update & restart" }));
 
     expect(
       await screen.findByText(

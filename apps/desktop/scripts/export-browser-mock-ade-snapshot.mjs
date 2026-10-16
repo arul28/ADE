@@ -751,6 +751,7 @@ function buildSessions(projectId) {
     runtimeState: row.status === "running" ? "running" : "exited",
     resumeCommand: row.resume_command ?? null,
     resumeMetadata: safeJson(row.resume_metadata_json, null),
+    chatSessionId: row.chat_session_id ?? null,
   }));
 }
 

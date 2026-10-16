@@ -1,0 +1,27 @@
+---
+title: "v1.2.95"
+description: "Release notes for ADE v1.2.95 - October 7, 2026"
+---
+
+ADE 1.2.95 adds computer-use action rows and an always-available ADE browser for agents, faster punctuated dictation, Claude Haiku 5.5, and much lower Cloudflare cost.
+
+## Agents and computer use
+
+- Computer-use action rows, `ade browser attach`, and one floating preview (#1514, #1527).
+- The ADE browser no longer needs a token, so agents can always use it; attach a tab to a chat (#1523).
+- Claude Haiku 5.5 and Agent SDK 0.3.293; provider SDK bumps and ACP tested-version checks (#1513, #1521).
+- PR-branch automations (#1521).
+
+## Work
+
+- A parked subagent keeps its lane Working, not Done (#1510).
+- Import session loads full conversations, with a redesigned surface (#1506).
+- Dictation uses Parakeet Ultra on transcribe.cpp: faster and punctuated (#1522).
+
+## Updates
+
+- Updates fall back to Node when Chromium can't reach the update feed, and say when a check fails while an update is downloaded (#1507, #1508).
+
+## Cloud
+
+- Relay D1 reads cut by about 99%, and D1 writes and polling no longer scale per brain (#1504, #1511).

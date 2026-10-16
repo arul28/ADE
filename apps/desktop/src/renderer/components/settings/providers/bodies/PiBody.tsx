@@ -11,8 +11,13 @@ import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../../lanes/lane
 import { openExternalUrl } from "../../../../lib/openExternal";
 import { PiProvidersPanel } from "../../PiProvidersPanel";
 import type { ProvidersViewContext } from "../types";
+import { useSettingsMachineScope } from "../../SettingsMachineScope";
 
 export function PiBody({ ctx }: { ctx: ProvidersViewContext }) {
+  // Opening a file is an OS action on the computer in front of you. These
+  // paths are on the machine the page shows, so only This computer can open them.
+  const { isThisMachine, machineName } = useSettingsMachineScope();
+  const openDisabledTitle = isThisMachine ? undefined : `These files are on ${machineName}. Open them there.`;
   const piInstallation = ctx.status?.piInstallation ?? null;
   const statusLoadFailed = ctx.isInitialCheckInFlight && !ctx.loading && ctx.statusLoadError !== null;
 
@@ -52,21 +57,21 @@ export function PiBody({ ctx }: { ctx: ProvidersViewContext }) {
           <button type="button" style={outlineButton({ height: 28 })} onClick={() => openExternalUrl("https://github.com/earendil-works/pi")}>Pi docs</button>
         ) : null}
         {piInstallation.settingsFileDetected ? (
-          <button type="button" style={outlineButton({ height: 28 })} onClick={() => openPath(piInstallation.settingsPath)}>
+          <button type="button" style={outlineButton({ height: 28 })} disabled={!isThisMachine} title={openDisabledTitle} onClick={() => openPath(piInstallation.settingsPath)}>
             Open settings.json
           </button>
         ) : (
           <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>settings.json not found</span>
         )}
         {piInstallation.authFileDetected ? (
-          <button type="button" style={outlineButton({ height: 28 })} onClick={() => openPath(piInstallation.authPath)}>
+          <button type="button" style={outlineButton({ height: 28 })} disabled={!isThisMachine} title={openDisabledTitle} onClick={() => openPath(piInstallation.authPath)}>
             Open auth.json
           </button>
         ) : (
           <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>auth.json not found</span>
         )}
         {piInstallation.modelsFileDetected ? (
-          <button type="button" style={outlineButton({ height: 28 })} onClick={() => openPath(piInstallation.modelsPath)}>
+          <button type="button" style={outlineButton({ height: 28 })} disabled={!isThisMachine} title={openDisabledTitle} onClick={() => openPath(piInstallation.modelsPath)}>
             Open models.json
           </button>
         ) : (

@@ -62,7 +62,7 @@ describe("ClaudeLoginPromptButton", () => {
         tracked: true,
         toolType: "shell",
         startupCommand: "claude auth login",
-      });
+      }, null);
     });
     expect(onRevealTerminal).toHaveBeenCalledWith({
       laneId: "lane-1",

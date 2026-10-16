@@ -14,7 +14,7 @@ That split is what makes this possible: install the brain on a machine, connect 
 
 <Steps>
   <Step title="Account">
-    Reuses a valid session, or signs you in. A browser-capable machine opens a loopback OAuth callback; SSH sessions and display-less hosts get a copy-paste device code instead.
+    Reuses a valid session, or signs you in. A machine with a browser opens it, and also prints a QR code, a link, and a short code, so you can finish on your phone or on a different computer instead. SSH sessions and display-less hosts print only the QR code, the link, and the code.
   </Step>
   <Step title="Service">
     Installs and starts this platform's login service if it is not already running — launchd on macOS, a systemd user service on Linux, a per-user startup entry on Windows. None of them need an elevated shell.
@@ -27,7 +27,7 @@ That split is what makes this possible: install the brain on a machine, connect 
 ```bash
 ade connect                  # sign in, install the service, publish this machine
 ade connect --status --text  # report the three steps, change nothing
-ade connect --headless       # force the copy-paste device flow
+ade connect --headless       # sign in from another device only: QR code, link, and code
 ade connect --no-login       # service only — stay local and LAN-only
 ade connect --no-service     # account only — do not install the login service
 ade connect --timeout 120    # seconds to wait for the machine row (default 60)
@@ -60,13 +60,13 @@ Linux runs the brain, not a desktop app — and that is the point. There is no A
     The systemd user service is registered only when a systemd user session is available. On a box without one, start the brain yourself and keep it running.
   </Step>
   <Step title="Connect it">
-    Over SSH there is no browser, so use the device flow:
+    Over SSH there is no browser, so sign in from another device:
 
     ```bash
     ade connect --headless
     ```
 
-    The CLI prints a verification URL and a short code. Complete it in a browser on any device.
+    The CLI prints a QR code, a verification URL, and a short code. Scan the QR code with your phone, or open the URL in a browser on any device and enter the code. The server signs in when you finish, and your password is never typed on the server. If ADE Mobile is on the phone and signed in, the scan opens the app: tap **Approve**, then **Allow**.
   </Step>
   <Step title="Open a project on it">
     Register a repository that lives on that box:
@@ -106,7 +106,7 @@ ade logout                      # sign out — undoes the account half of connec
 ade runtime uninstall-service   # remove the login service
 ```
 
-ADE accounts are optional. Local `ade code`, project, lane, and phone-pairing workflows keep working while signed out.
+The desktop app, the web client, and the iOS app need an account. The brain does not: local `ade code`, project, and lane workflows keep working on the machine while it is signed out, and `ade connect --no-login` installs the service with no account.
 
 ## Remote machines over SSH, instead
 

@@ -41,21 +41,27 @@ describe("materializeWorkerImages", () => {
       { path: filePath, mimeType: "image/png", rootPath: root },
       { url: "https://example.com/ui.png" },
       { data: "abc", mimeType: "image/jpeg" },
-    ])).resolves.toEqual([
-      { data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString("base64"), mimeType: "image/png" },
-      { url: "https://example.com/ui.png" },
-      { data: "abc", mimeType: "image/jpeg" },
-    ]);
+    ])).resolves.toEqual({
+      images: [
+        { data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString("base64"), mimeType: "image/png" },
+        { url: "https://example.com/ui.png" },
+        { data: "abc", mimeType: "image/jpeg" },
+      ],
+      omittedHints: [],
+    });
   });
 
-  it("rejects an oversized screenshot instead of stuffing it onto the IPC pipe", async () => {
+  it("omits an oversized screenshot as a hint instead of stuffing it onto the IPC pipe", async () => {
     const root = makeTempDir();
     const filePath = path.join(root, "huge.png");
     fs.writeFileSync(filePath, Buffer.alloc(8, 1));
     await expect(materializeWorkerImages(
       [{ path: filePath, mimeType: "image/png", rootPath: root }],
       { maxBytes: 4 },
-    )).rejects.toThrow(/too large/);
+    )).resolves.toEqual({
+      images: [],
+      omittedHints: [expect.stringContaining("too large to read")],
+    });
   });
 
   it("refuses a path that escaped the attachment root", async () => {

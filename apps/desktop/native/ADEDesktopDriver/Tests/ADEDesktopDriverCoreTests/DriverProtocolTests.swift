@@ -41,7 +41,7 @@ final class DriverProtocolTests: XCTestCase {
                 "display.create", "display.destroy", "display.reconcile",
                 "watch-permissions", "request-permission",
                 "window.list", "window.park", "window.unpark",
-                "app.launch", "present", "observe", "input",
+                "app.launch", "app.quit", "present", "observe", "input",
                 "lease.set", "lease.clear",
                 "capture.screenshot",
                 "stream.start", "stream.setRate", "stream.setCursorVisible", "stream.stop",

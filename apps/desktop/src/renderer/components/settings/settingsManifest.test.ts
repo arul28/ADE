@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SETTINGS_SECTIONS } from "../app/settingsSections";
 import {
   availableSettingsEntries,
+  clearStandaloneSettingsResolver,
+  setStandaloneSettingsResolver,
   setWebMachineBindingResolver,
   SETTINGS_TABS,
   settingsTabLabel,
@@ -59,12 +61,25 @@ describe("settings manifest", () => {
     "appearance.chat-corners": "chat",
     "appearance.code-block-copy": "chat",
     "appearance.message-minimap": "chat",
-    "appearance.prompt-stash": "chat",
+    "appearance.drafts": "chat",
     "appearance.launch-prompt": "chat",
     "appearance.preview": "chat",
     "agents.dictation": "chat",
-    "agents.scheduled-work": "activity",
-    "agents.budget": "stats",
+    "agents.scheduled-work": "notifications",
+    // The Activity settings now sit on Notifications, but their ids keep the
+    // `activity.` namespace and their anchors are still what old deeplinks use.
+    "activity.sounds": "notifications",
+    "activity.hide-details": "notifications",
+    "activity.dock-badge": "notifications",
+    "activity.machines": "notifications",
+    // The Apple device rows follow the account, so they moved off Appearance to
+    // their own Apple devices tab. Their ids and anchors keep the old namespace
+    // because telemetry and deeplinks hold on to them.
+    "appearance.apple-realistic-body": "apple",
+    "appearance.apple-tap-rings": "apple",
+    "appearance.apple-typed-badges": "apple",
+    "appearance.apple-remote-bitrate": "apple",
+    "appearance.apple-recordings-warn": "apple",
   };
 
   it("namespaces every entry id under its tab, except the rows that deliberately moved", () => {
@@ -129,21 +144,23 @@ describe("settings manifest", () => {
     }
   });
 
-  it("follows the legacy Activity-settings aliases already in the wild", () => {
-    // `?tab=notifications#attention-notch` shipped in tour steps and deeplinks
-    // before Activity had a tab of its own. Landing those on Notifications —
-    // which no longer holds the card — would be an invisible dead end.
+  it("follows the legacy hashes already in the wild", () => {
+    // These cards used to live on an Activity tab of their own. That tab is
+    // gone and its settings now sit on Notifications, so the old hashes and
+    // the old `attention`/`activity` tab names must land on Notifications —
+    // landing them anywhere else would be an invisible dead end. Reset ADE
+    // used to sit inside the About card, under `#about.reset`.
     for (const [hash, expectedTab] of [
-      ["attention-notch", "activity"],
-      ["celebrations", "activity"],
-      ["attention-sounds", "activity"],
-      ["hide-previews", "activity"],
+      ["attention-sounds", "notifications"],
+      ["hide-previews", "notifications"],
+      ["about.reset", "general"],
     ] as const) {
       const entry = resolveSettingsHash(hash);
       expect(entry, `hash "${hash}" did not resolve`).not.toBeNull();
       expect(entry!.tab).toBe(expectedTab);
     }
-    expect(resolveSettingsTab("attention")).toBe("activity");
+    expect(resolveSettingsTab("attention")).toBe("notifications");
+    expect(resolveSettingsTab("activity")).toBe("notifications");
   });
 
   it("resolves a live anchor directly, without needing an alias", () => {
@@ -189,7 +206,6 @@ describe("settings manifest", () => {
   });
 
   it("finds settings by keyword when the label does not contain the query", () => {
-    expect(searchSettingsEntries("telemetry").map((e) => e.id)).toContain("general.analytics");
     expect(searchSettingsEntries("api key").map((e) => e.id)).toContain("secrets.secrets");
     expect(searchSettingsEntries("banner").map((e) => e.id)).toContain("lanes-git.rebase-suggestions");
     expect(searchSettingsEntries("do not disturb").map((e) => e.id)).toContain("notifications.focus-suppression");
@@ -197,7 +213,7 @@ describe("settings manifest", () => {
     expect(searchSettingsEntries("crash").map((e) => e.id)).toContain("general.diagnostics-sharing");
   });
 
-  it("registers the five Apple device keys on Appearance, account-scoped like Browser", () => {
+  it("registers the five Apple device keys on the per-computer Apple devices tab", () => {
     const ids = [
       "appearance.apple-realistic-body",
       "appearance.apple-tap-rings",
@@ -208,8 +224,8 @@ describe("settings manifest", () => {
     for (const id of ids) {
       const entry = SETTINGS_ENTRIES.find((candidate) => candidate.id === id);
       expect(entry, id).toBeDefined();
-      expect(entry!.tab).toBe("appearance");
-      expect(entry!.scope).toBe("account");
+      expect(entry!.tab).toBe("apple");
+      expect(entry!.scope).toBe("machine");
       expect(entry!.web).toBe("browser");
       expect(entry!.group).toBe("Apple Development");
     }
@@ -388,7 +404,6 @@ describe("settings command palette entries", () => {
 
   it("reaches settings whose label does not contain the query", () => {
     const cases: [string, string][] = [
-      ["telemetry", "setting-general.analytics"],
       ["font size", "setting-appearance.chat-font-size"],
       ["scrollback", "setting-appearance.terminal"],
       ["do not disturb", "setting-notifications.focus-suppression"],
@@ -438,8 +453,10 @@ describe("web machine-scoped availability", () => {
     SETTINGS_ENTRIES.filter((entry) => entry.web === "machine").map((entry) => entry.id),
   );
 
-  it("keeps every setting on the desktop, bound or not", () => {
-    expect(availableSettingsEntries()).toHaveLength(SETTINGS_ENTRIES.length);
+  it("keeps every setting on the desktop, bound or not, except the web-only cards", () => {
+    const available = new Set(availableSettingsEntries().map((entry) => entry.id));
+    expect(SETTINGS_ENTRIES.some((entry) => entry.webOnly)).toBe(true);
+    for (const entry of SETTINGS_ENTRIES) expect(available.has(entry.id)).toBe(entry.webOnly !== true);
   });
 
   it("drops machine-scoped settings on web while no project tab is bound", () => {
@@ -453,5 +470,36 @@ describe("web machine-scoped availability", () => {
     setWebMachineBindingResolver(() => true);
     const available = new Set(availableSettingsEntries().map((entry) => entry.id));
     for (const id of machineEntryIds()) expect(available.has(id)).toBe(true);
+  });
+});
+
+/**
+ * Settings with no project open (the new-project screen's Settings button).
+ * A project-scoped setting has nowhere to write there, so nav, search and the
+ * palette must all drop it, and only the page that installed the mode may end
+ * it.
+ */
+describe("standalone settings availability", () => {
+  const isProjectScoped = (scope: string) => scope === "account-repo" || scope === "machine-repo";
+
+  it("hides every project-scoped setting until its own page clears the mode", () => {
+    const installed = () => true;
+    setStandaloneSettingsResolver(installed);
+    try {
+      const available = availableSettingsEntries();
+      expect(available.some((entry) => isProjectScoped(entry.scope))).toBe(false);
+      expect(available.map((entry) => entry.id)).toEqual(
+        SETTINGS_ENTRIES.filter((entry) => !entry.webOnly && !isProjectScoped(entry.scope)).map((entry) => entry.id),
+      );
+      expect(searchSettingsEntries("reset").map((entry) => entry.id)).toContain("general.reset");
+      expect(searchSettingsEntries("secrets").some((entry) => entry.id === "secrets.secrets")).toBe(false);
+
+      // Another page's cleanup must not end this page's mode.
+      clearStandaloneSettingsResolver(() => true);
+      expect(availableSettingsEntries().some((entry) => isProjectScoped(entry.scope))).toBe(false);
+    } finally {
+      clearStandaloneSettingsResolver(installed);
+    }
+    expect(availableSettingsEntries().some((entry) => isProjectScoped(entry.scope))).toBe(true);
   });
 });

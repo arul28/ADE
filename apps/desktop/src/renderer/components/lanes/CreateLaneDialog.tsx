@@ -17,7 +17,7 @@ import { LaneColorPicker } from "./LaneColorPicker";
 import { colorsInUse, nextAvailableColor } from "./laneColorPalette";
 import { BranchPickerView } from "./BranchPickerView";
 import { formatRelativeTime } from "./branchPickerSearch";
-import { linearIssueBranchName, linearIssueLaneName } from "../../../shared/linearIssueBranch";
+import { linearIssueLaneName, resolveLinearIssueBranchName } from "../../../shared/linearIssueBranch";
 import { branchExistsForLinearIssue, issueProjectLabel } from "./linearIssueDisplay";
 import { LinearMark, LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "./linearBrand";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
@@ -139,6 +139,7 @@ export function CreateLaneDialog({
   selectedMachineId,
   onSelectMachine,
   onConnectMachine,
+  machineRequired = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -190,12 +191,18 @@ export function CreateLaneDialog({
   /**
    * Connected machines a lane can be created on. A lane owns its machine, so
    * this is the only place one is picked. Rendered only when there is more than
-   * one machine to choose from — a single-machine setup looks exactly as before.
+   * one machine to choose from; a single-machine setup shows no selector.
    */
   machines?: LaneMachineOption[];
+  /** "" (or omitted) while no machine is chosen. Never defaulted here. */
   selectedMachineId?: string;
   onSelectMachine?: (machineId: string) => void;
   onConnectMachine?: () => void;
+  /**
+   * The lane is really created, so the machine must be chosen before submit.
+   * The host pre-selects the only eligible machine; otherwise the user picks.
+   */
+  machineRequired?: boolean;
 }) {
   const baseBranchOptions = React.useMemo(
     () => listNewLaneBaseOptions(createBranches, createBaseSource),
@@ -217,7 +224,7 @@ export function CreateLaneDialog({
     return map;
   }, [lanes]);
 
-  // One machine behaves exactly as before: no selector, no extra chrome.
+  // One machine: no selector, no extra chrome.
   const machineOptions = machines ?? [];
   const showMachineSelector = machineOptions.length > 1 && !!onSelectMachine;
 
@@ -295,7 +302,7 @@ export function CreateLaneDialog({
   else if (allBranches.length === 0) branchPickerPlaceholder = "No branches found";
   else branchPickerPlaceholder = "Pick a branch…";
 
-  const selectedLinearBranchName = selectedLinearIssue ? linearIssueBranchName(selectedLinearIssue) : "";
+  const selectedLinearBranchName = selectedLinearIssue ? resolveLinearIssueBranchName(selectedLinearIssue) : "";
   const selectedLinearBranchConflict = selectedLinearIssue
     ? branchExistsForLinearIssue(selectedLinearBranchName, createBranches)
     : false;
@@ -306,9 +313,16 @@ export function CreateLaneDialog({
     }
   }, [open, lanes, selectedColor, setSelectedColor]);
 
+  const machineMissing = Boolean(machineRequired) && !laneCreated && !selectedMachineId;
+  const machineHint = !machineMissing
+    ? null
+    : showMachineSelector
+      ? "Choose the machine this lane will live on."
+      : "No connected machine has this repository open.";
   const isSubmitDisabled = laneCreated
     ? !!busy
     : (busy
+      || machineMissing
       || !createLaneName.trim()
       || (createMode === "child" && !createParentLaneId)
       || (createMode === "primary" && (!selectedBaseBranchValid || loadingBranches))
@@ -338,6 +352,11 @@ export function CreateLaneDialog({
         <div className="space-y-3">
           {error ? (
             <Banner model={{ id: "create-lane-error", tone: "error", title: error }} layout="inline" />
+          ) : null}
+          {machineHint && !error ? (
+            <div className="text-right text-[11px] text-muted-fg/70" data-testid="create-lane-machine-hint">
+              {machineHint}
+            </div>
           ) : null}
           <div className="flex items-center justify-end gap-2">
             <Button
@@ -401,7 +420,7 @@ export function CreateLaneDialog({
         {showMachineSelector && onSelectMachine ? (
           <LaneMachineSelector
             machines={machineOptions}
-            selectedMachineId={selectedMachineId ?? machineOptions[0]?.id ?? ""}
+            selectedMachineId={selectedMachineId ?? ""}
             onSelectMachine={onSelectMachine}
             onConnectMachine={onConnectMachine}
             disabled={busy || laneCreated}
@@ -512,11 +531,11 @@ export function CreateLaneDialog({
                     ) : null}
                   </>
                 ) : loadingBranches ? (
-                  <div className="rounded-lg border border-dashed border-white/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
+                  <div className="rounded-lg border border-dashed border-fg/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
                     Loading branches...
                   </div>
                 ) : (
-                  <div className="rounded-lg border border-dashed border-white/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
+                  <div className="rounded-lg border border-dashed border-fg/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
                     No {createBaseSource === "remote" ? "remote-tracking refs" : "local branches"} found.
                   </div>
                 )}
@@ -529,7 +548,7 @@ export function CreateLaneDialog({
                   type="button"
                   onClick={() => setPickerOpen(true)}
                   disabled={busy || laneCreated || (loadingBranches && allBranches.length === 0)}
-                  className="flex w-full items-center gap-3 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 text-left transition-colors hover:border-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="flex w-full items-center gap-3 rounded-lg border border-fg/[0.06] bg-fg/[0.03] px-3 py-2.5 text-left transition-colors hover:border-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
                   aria-label="Choose import branch"
                   aria-describedby={importBranchWarning ? "import-branch-warning" : undefined}
                   data-tour="lanes.createDialog.branchPickerOpen"
@@ -545,7 +564,7 @@ export function CreateLaneDialog({
                             {selectedBranchMeta.branch.name}
                           </span>
                           {selectedBranchMeta.branch.isRemote ? (
-                            <span className="rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-fg">
+                            <span className="rounded-full bg-fg/[0.06] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-fg">
                               remote
                             </span>
                           ) : null}
@@ -636,7 +655,7 @@ export function CreateLaneDialog({
         </section>
 
         {/* Advanced — Linear issue + template */}
-        <details open className="group rounded-xl border border-white/[0.06] bg-white/[0.02] open:bg-white/[0.03]">
+        <details open className="group rounded-xl border border-fg/[0.06] bg-fg/[0.02] open:bg-fg/[0.03]">
           <summary className="flex cursor-pointer select-none items-center justify-between gap-3 rounded-xl px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-fg/70 transition-colors hover:text-fg [&::-webkit-details-marker]:hidden">
             <span className="flex items-center gap-2">
               <CaretDown size={10} weight="bold" className="transition-transform group-open:rotate-0 -rotate-90" />
@@ -855,7 +874,7 @@ function SelectedLinearIssueCard({
         </div>
         <button
           type="button"
-          className="rounded-md p-1 text-muted-fg/60 transition-colors hover:bg-white/[0.06] hover:text-fg"
+          className="rounded-md p-1 text-muted-fg/60 transition-colors hover:bg-fg/[0.06] hover:text-fg"
           onClick={onClear}
           aria-label="Disconnect Linear issue"
         >

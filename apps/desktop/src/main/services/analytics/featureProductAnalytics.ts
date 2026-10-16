@@ -1,3 +1,4 @@
+import { isClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsPropertyValue,
@@ -17,14 +18,22 @@ export type FeatureAnalyticsName =
   | "proxy"
   | "usage"
   | "chat"
-  | "work";
+  | "work"
+  | "automations"
+  | "updates"
+  | "attention"
+  | "home";
 
 export type FeatureAnalyticsAction =
   | "account_created"
   | "account_removed"
+  | "account_signed_out"
   | "default_selected"
   | "balance_changed"
   | "auto_start_changed"
+  | "subagent_cache_changed"
+  | "main_cache_changed"
+  | "extra_usage_stop_changed"
   | "credential_stored"
   | "credential_removed"
   | "preset_created"
@@ -33,12 +42,24 @@ export type FeatureAnalyticsAction =
   | "start"
   | "stop"
   | "reset_credit_consumed"
+  | "model_price_changed"
+  | "model_mapping_changed"
   | "pending_input_dismissed"
+  | "account_switched"
   | "new_lane_launch"
+  | "voice_conversation_started"
   | "session_continue_chat"
   | "session_copy_chat"
   | "session_continue_cli"
-  | "session_copy_cli";
+  | "session_copy_cli"
+  | "webhook_url_created"
+  | "safe_test_started"
+  | "live_test_started"
+  | "secret_requested"
+  | "provider_cli_updated"
+  | "notification_sent"
+  | "music_connected"
+  | "spotify_connected";
 
 export type FeatureAnalyticsOutcome =
   | "completed"
@@ -49,7 +70,9 @@ export type FeatureAnalyticsOutcome =
   | "no_credit"
   | "already_redeemed"
   | "cancelled"
-  | "failed";
+  | "failed"
+  | "kept"
+  | "skipped_budget";
 
 /**
  * Convert provider-shaped input to the existing closed provider-family set.
@@ -73,6 +96,8 @@ export function coarseProviderFamily(value: unknown): string {
       return "opencode";
     case "pi":
       return "pi";
+    case "muse":
+      return "muse";
     case "gemini":
     case "google":
       return "gemini";
@@ -93,9 +118,11 @@ export function captureFeatureUsedAnalytics(args: {
   action: FeatureAnalyticsAction;
   outcome: FeatureAnalyticsOutcome;
   provider?: unknown;
+  sessionId?: string | null;
 }): void {
   if (!args.analytics) return;
   const provider = args.provider === undefined ? undefined : coarseProviderFamily(args.provider);
+  const sessionId = args.sessionId?.trim() || undefined;
   const properties: Record<string, ProductAnalyticsPropertyValue> = {
     feature: args.feature,
     action: args.action,
@@ -106,7 +133,8 @@ export function captureFeatureUsedAnalytics(args: {
   args.analytics.captureInternal({
     event: FEATURE_EVENT,
     surface: args.surface,
-    dedupeKey: `feature:${args.feature}:${args.action}:${args.outcome}${dedupeProvider}`,
+    ...(sessionId ? { sessionId } : {}),
+    dedupeKey: `feature:${args.feature}:${args.action}:${args.outcome}${dedupeProvider}${sessionId ? `:${sessionId}` : ""}`,
     minimumIntervalMs: FEATURE_DEDUPE_INTERVAL_MS,
     properties,
   } satisfies ProductAnalyticsCapture);
@@ -114,7 +142,15 @@ export function captureFeatureUsedAnalytics(args: {
 
 type ProviderAccountAnalyticsAction = Extract<
   FeatureAnalyticsAction,
-  "account_created" | "account_removed" | "default_selected" | "balance_changed" | "auto_start_changed"
+  | "account_created"
+  | "account_removed"
+  | "account_signed_out"
+  | "default_selected"
+  | "balance_changed"
+  | "auto_start_changed"
+  | "subagent_cache_changed"
+  | "extra_usage_stop_changed"
+  | "main_cache_changed"
 >;
 
 type ProviderAccountAnalyticsOutcome = Extract<
@@ -190,13 +226,28 @@ export function captureResetCreditAnalytics(args: {
   analytics: FeatureAnalytics | null | undefined;
   surface: ProductAnalyticsSurface;
   outcome: ResetCreditAnalyticsOutcome;
+  /** The provider whose credit was spent; omitted when no account was named. */
+  provider?: "claude" | "codex";
 }): void {
   captureFeatureUsedAnalytics({
     ...args,
     feature: "usage",
     action: "reset_credit_consumed",
-    provider: "codex",
   });
+}
+
+/**
+ * A price the user set (`enabled`) or cleared back to automatic (`disabled`)
+ * on the Usage page, or a "Map to" added or removed. Never the model id or
+ * the rates.
+ */
+export function captureModelPriceAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  action: Extract<FeatureAnalyticsAction, "model_price_changed" | "model_mapping_changed">;
+  outcome: Extract<FeatureAnalyticsOutcome, "enabled" | "disabled">;
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "usage" });
 }
 
 export function capturePendingInputDismissedAnalytics(args: {
@@ -208,6 +259,73 @@ export function capturePendingInputDismissedAnalytics(args: {
     ...args,
     feature: "chat",
     action: "pending_input_dismissed",
+    outcome: "completed",
+  });
+}
+
+/**
+ * The user ran ADE's one-click update of a user-installed provider CLI (Grok,
+ * Copilot, Qwen...), from Settings or a chat warning. Never the version, the
+ * install path, or the command's output.
+ */
+export function captureProviderCliUpdateAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  provider: unknown;
+  outcome: Extract<FeatureAnalyticsOutcome, "completed" | "failed">;
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "updates", action: "provider_cli_updated" });
+}
+
+/** A private webhook URL was made (with or without its automation). */
+export function captureWebhookUrlCreatedAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "automations", action: "webhook_url_created", outcome: "completed" });
+}
+
+/**
+ * A person started a safe or live test of an automation, or it failed to
+ * start. Never the rule, its steps, the event, or the lanes it made.
+ */
+export function captureAutomationTestAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  mode: "safe" | "live";
+  outcome: Extract<FeatureAnalyticsOutcome, "completed" | "failed">;
+}): void {
+  captureFeatureUsedAnalytics({
+    analytics: args.analytics,
+    surface: args.surface,
+    feature: "automations",
+    action: args.mode === "live" ? "live_test_started" : "safe_test_started",
+    outcome: args.outcome,
+  });
+}
+
+/**
+ * How a private secret card an agent raised ended. Never the secret's name,
+ * its value, the reason, or the chat.
+ */
+export function captureSecretRequestedAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  outcome: Extract<FeatureAnalyticsOutcome, "completed" | "kept" | "cancelled" | "failed">;
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "chat", action: "secret_requested", outcome: args.outcome });
+}
+
+/** The user moved a chat to another account of its provider. */
+export function captureChatAccountSwitchedAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  provider: unknown;
+}): void {
+  captureFeatureUsedAnalytics({
+    ...args,
+    feature: "chat",
+    action: "account_switched",
     outcome: "completed",
   });
 }
@@ -253,4 +371,48 @@ export function captureSessionImportAnalytics(args: {
     outcome: args.outcome,
     provider: args.provider,
   });
+}
+
+/**
+ * What became of one custom notification: `completed` when the relay took it
+ * for at least one phone and no delivery failed (a phone that stayed quiet by
+ * its own settings is not a failure), `skipped_budget` when the account's
+ * hourly cap refused it, `failed` otherwise, including an account with no
+ * phone. Never the title, body, link, or phones.
+ */
+export function captureNotificationSentAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  outcome: Extract<FeatureAnalyticsOutcome, "completed" | "skipped_budget" | "failed">;
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "attention", action: "notification_sent" });
+}
+
+/**
+ * Report which account settings one settings patch changed. Both boundaries
+ * that accept the patch (desktop IPC and the runtime action) call this, so
+ * they cannot report different things. The two Claude settings belong to an
+ * account, so they count only when the patch names one.
+ */
+export function captureProviderAccountSettingsChange(
+  capture: ReturnType<typeof providerAccountAnalyticsCapture>,
+  args: { settings: Readonly<Record<string, unknown>>; provider: unknown; instanceId: string | undefined },
+): void {
+  const { settings, provider, instanceId } = args;
+  if (typeof settings.smartBalance === "boolean") {
+    capture("balance_changed", settings.smartBalance ? "enabled" : "disabled", provider);
+  }
+  if (typeof settings.autoStartWindows === "boolean") {
+    capture("auto_start_changed", settings.autoStartWindows ? "enabled" : "disabled", provider);
+  }
+  if (!instanceId || provider !== "claude") return;
+  if (Object.hasOwn(settings, "subagentPromptCacheTtl")) {
+    capture("subagent_cache_changed", settings.subagentPromptCacheTtl === "1h" ? "enabled" : "disabled", provider);
+  }
+  if (Object.hasOwn(settings, "mainPromptCacheTtl")) {
+    capture("main_cache_changed", isClaudePromptCacheTtl(settings.mainPromptCacheTtl) ? "enabled" : "disabled", provider);
+  }
+  if (Object.hasOwn(settings, "onExtraUsage")) {
+    capture("extra_usage_stop_changed", settings.onExtraUsage === "stop" ? "enabled" : "disabled", provider);
+  }
 }

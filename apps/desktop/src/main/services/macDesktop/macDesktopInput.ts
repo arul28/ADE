@@ -11,8 +11,21 @@
  * gates in, and keeps the API surface.
  */
 
+import type { DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
+import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
+import { demoTypedLabelForField } from "../demoVideo/demoTrackTargets";
+import { macDesktopNextStep, macDesktopRefusedNextStep } from "./macDesktopNextStep";
+import { macDesktopDemoKey } from "./macDesktopRecording";
+import { MAC_DESKTOP_ANONYMOUS_HOLDER_ID } from "./macDesktopLeaseFlow";
 import {
+  MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
   MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT,
+  MAC_DESKTOP_USER_HAS_CONTROL_CODE,
+  isMacDesktopInputMode,
+  WINDOWS_DESKTOP_MAX_TYPED_CHARS,
+  desktopSeatKind,
+  windowsDesktopTypeTimeoutMs,
+  type DesktopSeatKind,
   type DesktopSeatProvider,
   type MacDesktopClickArgs,
   type MacDesktopDisplay,
@@ -35,6 +48,12 @@ import {
   type MacDesktopWaitArgs,
   type MacDesktopWaitResult,
 } from "../../../shared/types/macDesktop";
+import {
+  agentEffectElementKey,
+  compareAgentEffectFingerprints,
+  type AgentEffectFingerprint,
+} from "../../../shared/agentObservation";
+import type { ComputerUseActionEffect } from "../../../shared/types/agentObservation";
 import { sleep } from "../shared/utils";
 import { MAC_DESKTOP_GESTURE_IN_FLIGHT_CODE } from "./macDesktopDriverClient";
 import type { MacDesktopLeaseRegistry } from "./macDesktopLease";
@@ -59,10 +78,75 @@ const isGestureInFlight = (error: unknown): boolean =>
   asRecord(error).code === MAC_DESKTOP_GESTURE_IN_FLIGHT_CODE;
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
+
+/** The driver client's "did not answer in time", as opposed to a refusal. */
+const isDriverRequestTimeout = (error: unknown): boolean =>
+  error instanceof Error && /did not answer .* in \d+ms/.test(error.message);
 const MAX_WAIT_TIMEOUT_MS = 120_000;
+
+/**
+ * An observation as an action-effect fingerprint: the parked windows, the
+ * focused element, and every listed element's role, name, value and rounded
+ * frame. Handles and indexes are left out — they are new in every observation.
+ */
+export function macDesktopEffectFingerprint(observation: MacDesktopObservation): AgentEffectFingerprint {
+  const focused = observation.elements.find((element) => element.focused) ?? null;
+  return {
+    windows: observation.windows
+      .map((window) => `${window.id}:${window.title ?? ""}:${window.minimized ? "min" : ""}`)
+      .sort()
+      .join("|"),
+    focus: focused
+      ? [focused.role, focused.title ?? "", focused.label ?? "", focused.identifier ?? "", focused.windowId ?? ""].join("|")
+      : null,
+    elementCount: observation.elementCount,
+    elements: observation.elements.map((element) =>
+      agentEffectElementKey({
+        role: element.subrole ? `${element.role}/${element.subrole}` : element.role,
+        label: element.title ?? element.label,
+        value: element.value,
+        text: element.identifier,
+        disabled: !element.enabled,
+        frame: element.frame,
+      })),
+    truncated: observation.truncated,
+  };
+}
+
+/**
+ * Did the action change the accessibility tree?
+ *
+ * The comparison is against the observation the target was resolved against,
+ * which is the newest one this process holds for the lane. That is the right
+ * "before" for an agent that observes, then acts. It is not a fresh read, so a
+ * lane with no observation yet answers `not_checked` instead of guessing.
+ */
+export function macDesktopActionEffect(
+  before: MacDesktopObservation | null,
+  after: MacDesktopObservation,
+): ComputerUseActionEffect {
+  return compareAgentEffectFingerprints(
+    before ? macDesktopEffectFingerprint(before) : null,
+    macDesktopEffectFingerprint(after),
+    { missingReason: "there was no earlier observation of this lane to compare with" },
+  );
+}
 
 export type MacDesktopInputDeps = {
   now: () => number;
+  /**
+   * The seat's host. A Windows private seat is a separate session with its own
+   * pointer and keyboard, so real input there needs no lease; a Mac display and
+   * a Windows shared seat both share the one real pointer with the user.
+   */
+  platform?: NodeJS.Platform;
+  /**
+   * Windows shared seat: the user's consent to the shared seat covers real
+   * input for this lane, so the acting chat takes the lane's lease here rather
+   * than asking again. Refuses while another lane's shared seat is driving the
+   * same main desktop. Called only for a Windows shared seat.
+   */
+  takeSharedSeatLease: (laneId: string, holderId: string) => Promise<void>;
   emit: (payload: MacDesktopEventPayload) => void;
   /** Starts the backend if needed. Throws the same errors the service does. */
   ensureProvider: () => Promise<DesktopSeatProvider>;
@@ -74,8 +158,6 @@ export type MacDesktopInputDeps = {
   leases: MacDesktopLeaseRegistry;
   /** `streamServer.noteActivity`: a driven display is a watched display. */
   noteStreamActivity: (laneId: string) => void;
-  /** `recording.noteTurnActivity`: the turn clip only runs while acts arrive. */
-  noteTurnActivity: (laneId: string, chatSessionId: string | null | undefined) => void;
   /** Maps a driver/ownership/observation error onto the service's error type. */
   toServiceError: (error: unknown) => Error;
   /** Mints the service's own error, so this module owns no error class. */
@@ -135,6 +217,8 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         ? reply.stalledApps.filter((app): app is string => typeof app === "string" && app.length > 0)
         : [],
       caption: asNullableString(reply.caption) ?? args.caption?.trim() ?? null,
+      ...(deps.platform ? { platform: deps.platform } : {}),
+      ...(display.seatMode ? { seatMode: display.seatMode } : {}),
     };
     observations.writeObservationSidecar({
       imagePath: observation.screenshotPath,
@@ -167,7 +251,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
   const resolveTarget = (laneId: string, target: MacDesktopTarget): {
     payload: Record<string, unknown>;
     element: MacDesktopElement | null;
-    needsReal: boolean;
+    needsPointer: boolean;
   } => {
     const handle = target.handle?.trim();
     if (handle) {
@@ -175,7 +259,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       return {
         payload: { handle, index: element.index, windowId: element.windowId, pid: element.pid },
         element,
-        needsReal: false,
+        needsPointer: false,
       };
     }
     const text = target.text?.trim();
@@ -183,26 +267,81 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       return {
         payload: { text, ...(target.windowId != null ? { windowId: target.windowId } : {}) },
         element: null,
-        needsReal: false,
+        needsPointer: false,
       };
     }
     if (typeof target.x === "number" && typeof target.y === "number") {
       return {
         payload: { x: target.x, y: target.y, ...(target.windowId != null ? { windowId: target.windowId } : {}) },
         element: null,
-        // A bare point has no element to act on, so it can only be delivered as
-        // a real pointer event.
-        needsReal: true,
+        // A bare point has no element to act on, so it is delivered as a
+        // pointer event: background on a Mac, real on a Windows seat.
+        needsPointer: true,
       };
     }
     if (target.windowId != null) {
-      return { payload: { windowId: target.windowId }, element: null, needsReal: false };
+      return { payload: { windowId: target.windowId }, element: null, needsPointer: false };
     }
-    return { payload: {}, element: null, needsReal: false };
+    return { payload: {}, element: null, needsPointer: false };
   };
 
-  const leaseHolderId = (chatSessionId: string | null | undefined): string =>
-    chatSessionId?.trim() || "anonymous-agent";
+  /** A bare `{x, y}` in a driver payload (a drag's `from`), global points. */
+  const pointOf = (payload: Record<string, unknown>): { x: number; y: number } | null => {
+    const source = (payload.from && typeof payload.from === "object" ? payload.from : payload) as Record<string, unknown>;
+    return typeof source.x === "number" && typeof source.y === "number" ? { x: source.x, y: source.y } : null;
+  };
+
+  /**
+   * A click's button and count, or a scroll's direction and amount, so the
+   * next-step advice reproduces the action. Empty for every other action,
+   * whose payload carries none of these fields.
+   */
+  const actionShape = (
+    payload: Record<string, unknown>,
+  ): { button?: string; count?: number; direction?: string; amount?: number } => ({
+    ...(typeof payload.button === "string" ? { button: payload.button } : {}),
+    ...(typeof payload.count === "number" ? { count: payload.count } : {}),
+    ...(typeof payload.direction === "string" ? { direction: payload.direction } : {}),
+    ...(typeof payload.amount === "number" ? { amount: payload.amount } : {}),
+  });
+
+  /**
+   * Notes one action on the lane's running recording, in the display's own
+   * frame: element frames and points are global screen points, the recording
+   * is the lane's display. A lane that is not recording notes nothing.
+   */
+  const noteDemoAction = (laneId: string, action: {
+    kind: DemoTrackEventKind;
+    label: string | null;
+    element: MacDesktopElement | null;
+    point: { x: number; y: number } | null;
+    by: "agent" | "user";
+  }): void => {
+    const key = macDesktopDemoKey(laneId);
+    if (!demoTrackRegistry.isRecording(key)) return;
+    let display: MacDesktopDisplay;
+    try {
+      display = deps.requireDisplay(laneId);
+    } catch {
+      return;
+    }
+    if (display.width <= 0 || display.height <= 0) return;
+    const nx = (x: number) => (x - display.origin.x) / display.width;
+    const ny = (y: number) => (y - display.origin.y) / display.height;
+    const frame = action.element?.frame ?? null;
+    const center = action.element?.center ?? action.point;
+    demoTrackRegistry.note(key, {
+      kind: action.kind,
+      by: action.by,
+      ...(center ? { x: nx(center.x), y: ny(center.y) } : {}),
+      ...(frame ? { rect: [nx(frame.x), ny(frame.y), frame.width / display.width, frame.height / display.height] } : {}),
+      // A type event's label is the typed text itself (already filtered), never
+      // the field's name: the caption reads `Type "<label>"`.
+      label: action.kind === "type"
+        ? action.label ?? undefined
+        : action.label ?? action.element?.title ?? action.element?.label ?? undefined,
+    });
+  };
 
   /**
    * Who this call claims to be, for the lease check.
@@ -215,9 +354,14 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
    * does not hold the lease is refused exactly as before, and the RPC scope
    * strips the field entirely from an agent's call so a holder id it read out of
    * `getStatus` is not a holder id it can wear.
+   *
+   * After the chat comes `holderId`: the one stable holder a trusted caller
+   * with no chat acts as (`MacDesktopTrustedHolderArgs`), which the RPC scope
+   * also strips from every agent. With none of the three, the caller is the
+   * anonymous holder, which no consent covers.
    */
-  const inputHolderId = (args: { controllerId?: string | null; chatSessionId?: string | null }): string =>
-    args.controllerId?.trim() || leaseHolderId(args.chatSessionId);
+  const inputHolderId = (args: { controllerId?: string | null; chatSessionId?: string | null; holderId?: string | null }): string =>
+    args.controllerId?.trim() || args.chatSessionId?.trim() || args.holderId?.trim() || MAC_DESKTOP_ANONYMOUS_HOLDER_ID;
 
   /**
    * May this call skip its own observation?
@@ -240,6 +384,69 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     throw deps.serviceError(decision.code, decision.message);
   };
 
+  /** The lane's seat kind, or null when it has no screen. */
+  const seatOf = (laneId: string, display?: MacDesktopDisplay): DesktopSeatKind | null => {
+    let current = display ?? null;
+    if (!current) {
+      try {
+        current = deps.requireDisplay(laneId);
+      } catch {
+        return null;
+      }
+    }
+    return desktopSeatKind({ platform: deps.platform, display: current });
+  };
+
+  /**
+   * The lease rule, per seat.
+   *
+   * - Mac: the lease, always. Real input moves the user's one pointer.
+   * - Windows private: no lease. The seat is a separate Windows session with
+   *   its own pointer and keyboard, so nothing of the user's moves. A person
+   *   who took control from the pane, or another chat holding the lease, still
+   *   wins: those refusals stand.
+   * - Windows shared: the lease, taken for the acting chat on the strength of
+   *   the user's shared-seat consent (only a consented lane has a shared seat).
+   */
+  const authorizeRealInput = async (
+    laneId: string,
+    display: MacDesktopDisplay,
+    holderId: string,
+    controllerId: string | null | undefined,
+  ): Promise<void> => {
+    const seat = seatOf(laneId, display);
+    if (seat === "windows-private") {
+      const decision = leases.checkRealInput({ laneId, holderId });
+      if (decision.ok || decision.code === MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE) return;
+      throw deps.serviceError(decision.code, decision.message);
+    }
+    if (seat === "windows-shared" && !controllerId?.trim()) {
+      await deps.takeSharedSeatLease(laneId, holderId);
+    }
+    assertRealInputAllowed(laneId, holderId);
+  };
+
+  /**
+   * Windows shared seat: an Accessibility (UIA) action takes the user's
+   * foreground as surely as real input does, so it goes through the same
+   * per-host lease. Two shared lanes then cannot fight over the one pointer
+   * and foreground: the second is refused with MAC_DESKTOP_LEASE_HELD_BY_OTHER
+   * naming the lane that holds it. A person who took control keeps it. No-op
+   * on the Mac and on a private seat (its own session, its own foreground).
+   */
+  const claimSharedSeatForeground = async (
+    laneId: string,
+    args: { chatSessionId?: string | null; controllerId?: string | null; holderId?: string | null },
+  ): Promise<void> => {
+    if (args.controllerId?.trim() || seatOf(laneId) !== "windows-shared") return;
+    const holderId = inputHolderId(args);
+    await deps.takeSharedSeatLease(laneId, holderId);
+    assertRealInputAllowed(laneId, holderId);
+  };
+
+  /** A Windows shared seat sends keys only as real input (the driver's rule). */
+  const isSharedSeat = (laneId: string): boolean => seatOf(laneId) === "windows-shared";
+
   const runAction = async (args: {
     laneId: string;
     action: string;
@@ -249,26 +456,45 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     resolved: MacDesktopElement | null;
     chatSessionId?: string | null;
     controllerId?: string | null;
+    holderId?: string | null;
     caption: string;
     target: Record<string, unknown> | null;
     /** A human takeover: act, and do not look. */
     silent?: boolean;
     /** The first step of two: the second one observes, so this one does not. */
     skipObservation?: boolean;
+    /** What a running recording's demo track notes about this action. */
+    demo?: { kind: DemoTrackEventKind; label?: string | null } | null;
+    /** The driver budget, when this action takes longer than a usual request. */
+    timeoutMs?: number;
+    /** The error to throw instead when that budget runs out. */
+    timeoutError?: () => Error;
   }): Promise<MacDesktopInputResult> => {
     const laneId = args.laneId;
-    deps.requireDisplay(laneId);
+    const display = deps.requireDisplay(laneId);
     const seat = await deps.ensureProvider();
     // Both modes drive the accessibility API: `real` posts a `CGEvent` at a
     // point this process resolved through that same tree.
     deps.assertPermission("accessibility");
     const holderId = inputHolderId(args);
+    const onMacSeat = seatOf(laneId, display) === "mac";
     if (args.mode === "real") {
-      assertRealInputAllowed(laneId, holderId);
+      await authorizeRealInput(laneId, display, holderId, args.controllerId);
       // A synthetic event posted without Accessibility is dropped by macOS
       // with no error, which is how a takeover looked like a dead screen. Say
       // so instead, with the grant named.
       deps.assertPermission("accessibility");
+    } else {
+      // A person who took control of the screen is driving it, so anyone
+      // else's accessibility or background input would land in the app under
+      // their hands: every action meets the takeover check, whatever its mode.
+      // The person holding control passes, because their controller id is the
+      // lease holder; a controller id alone authorizes nothing.
+      const decision = leases.checkRealInput({ laneId, holderId });
+      if (!decision.ok && decision.code === MAC_DESKTOP_USER_HAS_CONTROL_CODE) {
+        throw deps.serviceError(decision.code, decision.message);
+      }
+      await claimSharedSeatForeground(laneId, args);
     }
     const startedAt = new Date(now()).toISOString();
     const startedMs = now();
@@ -278,6 +504,10 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     // index is gone from the new tree, or names a different element in it.
     const resolvedAgainst = observations.latest(laneId);
     let resolvedIndex: number | null = null;
+    // The path the driver actually took. An accessibility click on an element
+    // with no press action, or a right or double click, is delivered as
+    // background input at the element's centre and says so.
+    let deliveredMode: MacDesktopInputMode = args.mode;
     let failure: Error | null = null;
     try {
       // A silent takeover posts `CGEvent`s at virtual-display coordinates,
@@ -296,15 +526,44 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         // than trusting its caller. Telling it which holder this process just
         // authorized is what lets the two agree instead of racing.
         ...(args.mode === "real" ? { lease: { holderId } } : {}),
+        ...(args.timeoutMs ? { timeoutMs: args.timeoutMs } : {}),
       });
       resolvedIndex = typeof reply.resolvedIndex === "number" ? reply.resolvedIndex : null;
+      if (isMacDesktopInputMode(reply.deliveredMode)) deliveredMode = reply.deliveredMode;
     } catch (error) {
-      failure = deps.toServiceError(error);
+      failure = args.timeoutError && isDriverRequestTimeout(error)
+        ? args.timeoutError()
+        : deps.toServiceError(error);
     }
     deps.noteStreamActivity(laneId);
     ownership.touchDisplay(laneId);
-    deps.noteTurnActivity(laneId, args.chatSessionId);
-    if (failure) throw failure;
+    if (failure) {
+      const refused = macDesktopRefusedNextStep({
+        action: args.action,
+        mode: args.mode,
+        message: failure.message,
+        resolved: args.resolved,
+        before: resolvedAgainst,
+        ...actionShape(args.payload),
+        lease: leases.checkRealInput({ laneId, holderId }),
+        realInputNeedsNoCard: !onMacSeat,
+      });
+      if (!refused) throw failure;
+      const code = (failure as { code?: unknown }).code;
+      const message = `${failure.message.replace(/^[A-Za-z_]+: /, "")} Next: ${refused.reason}${refused.command ? ` — run: ${refused.command}` : ""}`;
+      throw typeof code === "string" ? deps.serviceError(code, message) : new Error(message);
+    }
+    if (args.demo) {
+      const element = args.resolved
+        ?? (resolvedIndex != null ? resolvedAgainst?.elements.find((entry) => entry.index === resolvedIndex) ?? null : null);
+      noteDemoAction(laneId, {
+        kind: args.demo.kind,
+        label: args.demo.label ?? null,
+        element,
+        point: pointOf(args.payload),
+        by: args.controllerId?.trim() ? "user" : "agent",
+      });
+    }
     // A human takeover always carries a controller id; the action bus strips
     // that field from every agent-shaped caller. The fast path never reaches
     // here, so a person's pointer does not count as an agent driving.
@@ -314,7 +573,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     // capture, the AX walk, the `observation` event and the caption that would
     // have narrated the user's own keystroke back at them.
     if (args.silent || args.skipObservation) {
-      return { ok: true, action: args.action, mode: args.mode, silent: true, resolved: null, observation: null, trace: null };
+      return { ok: true, action: args.action, mode: deliveredMode, silent: true, resolved: null, observation: null, trace: null };
     }
     const observation = await observeInternal({
       laneId,
@@ -326,12 +585,25 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       ?? (resolvedIndex != null
         ? resolvedAgainst?.elements.find((element) => element.index === resolvedIndex) ?? null
         : null);
+    const compared = macDesktopActionEffect(resolvedAgainst, observation);
+    const next = macDesktopNextStep({
+      action: args.action,
+      mode: deliveredMode,
+      effect: compared,
+      resolved,
+      before: resolvedAgainst,
+      ...actionShape(args.payload),
+      lease: leases.checkRealInput({ laneId, holderId }),
+      realInputNeedsNoCard: !onMacSeat,
+      backgroundAvailable: onMacSeat,
+    });
     return {
       ok: true,
       action: args.action,
-      mode: args.mode,
+      mode: deliveredMode,
       resolved,
       observation,
+      effect: next ? { ...compared, next } : compared,
       trace: {
         id: `${observation.id}:${args.action}`,
         sessionId: args.chatSessionId?.trim() || null,
@@ -349,10 +621,35 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     };
   };
 
+  /**
+   * The mode a pointer-shaped action (click, scroll, drag) takes.
+   *
+   * An explicit `real` always wins. A point target, or a `background`
+   * request, takes the pointer path: a Mac seat delivers pointer events to the
+   * app alone (`background`), which moves nobody's pointer; a Windows seat has
+   * no such path in its driver and keeps `real` — the private seat has its own
+   * pointer anyway, and the shared seat takes the lease it always took.
+   * Everything else stays on accessibility.
+   */
   const resolveMode = (
+    laneId: string,
     requested: MacDesktopInputMode | null | undefined,
-    needsReal: boolean,
-  ): MacDesktopInputMode => (needsReal ? "real" : requested ?? "accessibility");
+    needsPointer: boolean,
+  ): MacDesktopInputMode => {
+    if (requested === "real") return "real";
+    if (requested === "background" || needsPointer) return seatOf(laneId) === "mac" ? "background" : "real";
+    return requested ?? "accessibility";
+  };
+
+  /**
+   * The mode a key action (type, press) takes. Keys have no background path —
+   * a key already goes to the app alone — so `background` means "no
+   * preference", the same as no mode at all, and gets `fallback`.
+   */
+  const keyMode = (
+    requested: MacDesktopInputMode | null | undefined,
+    fallback: MacDesktopInputMode,
+  ): MacDesktopInputMode => (requested === "real" || requested === "accessibility" ? requested : fallback);
 
   /**
    * The fast path for a human takeover.
@@ -396,18 +693,24 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     }
     deps.noteStreamActivity(laneId);
     ownership.touchDisplay(laneId);
-    deps.noteTurnActivity(laneId, args.chatSessionId);
+    // A person's own clicks on the live view count for the demo too; their
+    // pointer moves do not (sixty a second, and the drawn pointer follows
+    // actions, not motion).
+    if (args.command === "click") {
+      noteDemoAction(laneId, { kind: "click", label: null, element: null, point: pointOf(args.payload), by: "user" });
+    }
   };
 
   return {
     postRealInput,
+    claimSharedSeatForeground,
     /** The one capture path. The service's `observe` is this plus the gate. */
     observe: observeInternal,
 
     async click(args: MacDesktopClickArgs): Promise<MacDesktopInputResult> {
       const laneId = args.laneId.trim();
       const target = resolveTarget(laneId, args);
-      const mode = resolveMode(args.mode, target.needsReal);
+      const mode = resolveMode(laneId, args.mode, target.needsPointer);
       const label = target.element?.title ?? target.element?.label ?? args.text ?? "point";
       return await runAction({
         laneId,
@@ -422,16 +725,35 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: target.element,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
+        holderId: args.holderId ?? null,
         silent: isSilent(args, mode),
         caption: `click · ${label}`,
+        demo: { kind: "click", label: label === "point" ? null : label },
         target: { ...target.payload },
       });
     },
 
     async type(args: MacDesktopTypeArgs): Promise<MacDesktopInputResult> {
       const laneId = args.laneId.trim();
-      const target = args.target ? resolveTarget(laneId, args.target) : { payload: {}, element: null, needsReal: false };
-      const mode = resolveMode(args.mode, target.needsReal);
+      const target = args.target ? resolveTarget(laneId, args.target) : { payload: {}, element: null, needsPointer: false };
+      // Typing has no pointer form: keys already go to the app alone, so a
+      // point target is real input on every seat. `--clear` on the Windows
+      // main desktop is a real Ctrl+A.
+      const mode: MacDesktopInputMode = target.needsPointer
+        ? "real"
+        : keyMode(args.mode, args.clear === true && isSharedSeat(laneId) ? "real" : "accessibility");
+      // Windows sends keystrokes one character at a time with a pause after
+      // each (real input, and every type on the private seat, which is its own
+      // session), so that typing gets a budget that grows with the text and a
+      // cap the driver refuses past. Accessibility typing on the shared seat
+      // sets the value or posts the text at once.
+      const perCharacter = deps.platform === "win32" && (mode === "real" || seatOf(laneId) === "windows-private");
+      if (perCharacter && args.text.length > WINDOWS_DESKTOP_MAX_TYPED_CHARS) {
+        throw new Error(
+          `Windows Desktop types at most ${WINDOWS_DESKTOP_MAX_TYPED_CHARS} characters of real input in one call; this text has ${args.text.length}. Split it into several type calls.`,
+        );
+      }
+      const typeTimeoutMs = perCharacter ? windowsDesktopTypeTimeoutMs(args.text.length) : undefined;
       const silent = isSilent(args, mode);
       const submit = args.submit === true;
       const caption = `type · ${args.text.slice(0, 40)}`;
@@ -444,12 +766,29 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         // overwritten by them. The driver reads `text` as the words only when
         // `typeText` is absent (an older service), and then never as a label.
         payload: { ...target.payload, typeText: args.text, clear: args.clear === true },
+        ...(typeTimeoutMs ? {
+          timeoutMs: typeTimeoutMs,
+          timeoutError: () => deps.serviceError(
+            "MAC_DESKTOP_DRIVER_UNAVAILABLE",
+            `Windows Desktop did not finish typing ${args.text.length} characters within ${Math.round(typeTimeoutMs / 1000)} s. It may still be typing: observe the screen before typing again.`,
+          ),
+        } : {}),
         resolved: target.element,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
+        holderId: args.holderId ?? null,
         silent,
         skipObservation: submit,
         caption,
+        // Only for a named field that is not a secure (password) field: a demo
+        // goes to a pull request, and text typed into whatever had focus may
+        // be a password.
+        demo: {
+          kind: "type",
+          label: target.element && target.element.subrole !== "AXSecureTextField" && target.element.role !== "AXSecureTextField"
+            ? demoTypedLabelForField(args.text, [target.element.title, target.element.label, target.element.identifier, target.element.help])
+            : null,
+        },
         target: { ...target.payload },
       });
       if (!submit) return typed;
@@ -474,6 +813,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: target.element,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
+        holderId: args.holderId ?? null,
         silent,
         caption: `${caption} · return`,
         target: { ...target.payload, key: "return" },
@@ -482,17 +822,25 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
 
     async press(args: MacDesktopPressArgs): Promise<MacDesktopInputResult> {
       const laneId = args.laneId.trim();
+      if (deps.platform !== "win32" && (args.modifiers ?? []).includes("win")) {
+        throw new Error("A Mac has no Windows key. Use --cmd, --ctrl, --alt or --shift.");
+      }
+      // The Windows main desktop takes keys only as real input; asking for
+      // accessibility there was a refusal with no way forward.
+      const mode = keyMode(args.mode, isSharedSeat(laneId) ? "real" : "accessibility");
       return await runAction({
         laneId,
         action: "press",
         command: "press",
-        mode: args.mode ?? "accessibility",
+        mode,
         payload: { key: args.key, modifiers: args.modifiers ?? [] },
         resolved: null,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
-        silent: isSilent(args, args.mode ?? "accessibility"),
+        holderId: args.holderId ?? null,
+        silent: isSilent(args, mode),
         caption: `press · ${[...(args.modifiers ?? []), args.key].join("+")}`,
+        demo: { kind: "key", label: [...(args.modifiers ?? []), args.key].join("+") },
         target: { key: args.key, modifiers: args.modifiers ?? [] },
       });
     },
@@ -500,7 +848,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     async scroll(args: MacDesktopScrollArgs): Promise<MacDesktopInputResult> {
       const laneId = args.laneId.trim();
       const target = resolveTarget(laneId, args);
-      const mode = resolveMode(args.mode, target.needsReal);
+      const mode = resolveMode(laneId, args.mode, target.needsPointer);
       return await runAction({
         laneId,
         action: "scroll",
@@ -514,8 +862,10 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: target.element,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
+        holderId: args.holderId ?? null,
         silent: isSilent(args, mode),
         caption: `scroll · ${args.direction}`,
+        demo: { kind: "scroll", label: null },
         target: { ...target.payload, direction: args.direction },
       });
     },
@@ -524,13 +874,16 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       const laneId = args.laneId.trim();
       const from = resolveTarget(laneId, args.from);
       const to = resolveTarget(laneId, args.to);
-      // A drag has no accessibility action anywhere in AppKit, so it is always
-      // a real pointer sequence and always behind the lease.
+      // A drag has no accessibility action anywhere in AppKit, so it is a
+      // pointer sequence: background on a Mac (it stays inside the window it
+      // starts in), real when asked for — a drop onto another app or the Dock
+      // needs the window server — and real on a Windows seat.
+      const mode = resolveMode(laneId, args.mode, true);
       return await runAction({
         laneId,
         action: "drag",
         command: "drag",
-        mode: "real",
+        mode,
         payload: {
           from: from.payload,
           to: to.payload,
@@ -539,8 +892,10 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: from.element,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
-        silent: isSilent(args, "real"),
+        holderId: args.holderId ?? null,
+        silent: isSilent(args, mode),
         caption: "drag",
+        demo: { kind: "drag", label: null },
         target: { from: from.payload, to: to.payload },
       });
     },
@@ -565,6 +920,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: null,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
+        holderId: args.holderId ?? null,
         silent: args.silent !== false,
         caption: "move",
         target: { x: args.x, y: args.y },

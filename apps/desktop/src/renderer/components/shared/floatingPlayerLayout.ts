@@ -161,3 +161,41 @@ export function resizeFloatingPlayer(input: {
   );
   return { ...position, ...size };
 }
+
+function overlaps(a: FloatingPlayerFrame, b: FloatingPlayerFrame, gap: number): boolean {
+  return a.x < b.x + b.width + gap
+    && b.x < a.x + a.width + gap
+    && a.y < b.y + b.height + gap
+    && b.y < a.y + a.height + gap;
+}
+
+/**
+ * Where a player that was never moved opens, clear of the players already on
+ * screen: down the right edge first, then in the next column to the left.
+ * Every player used to open in the same top-right spot, so a second one sat
+ * on top of the first. With no free place it falls back to the corner.
+ */
+export function placeFloatingPlayerClear(input: {
+  size: FloatingPlayerSize;
+  container: FloatingPlayerSize;
+  others: readonly FloatingPlayerFrame[];
+}): FloatingPlayerPosition {
+  const { size, container, others } = input;
+  const gap = FLOATING_PLAYER_EDGE_GAP;
+  const corner = { x: container.width - gap - size.width, y: gap };
+  if (!others.length) return corner;
+  let x = corner.x;
+  for (let column = 0; column < 4 && x >= gap; column += 1) {
+    let y = gap;
+    for (let attempt = 0; attempt <= others.length && y + size.height <= container.height - gap; attempt += 1) {
+      const candidate = { x, y, ...size };
+      const blocker = others.find((other) => overlaps(candidate, other, gap));
+      if (!blocker) return { x, y };
+      y = blocker.y + blocker.height + gap;
+    }
+    const inColumn = others.filter((other) => other.x < x + size.width && other.x + other.width > x);
+    const leftmost = Math.min(x, ...inColumn.map((other) => other.x));
+    x = leftmost - gap - size.width;
+  }
+  return corner;
+}

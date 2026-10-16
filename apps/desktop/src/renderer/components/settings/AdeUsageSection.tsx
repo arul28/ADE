@@ -12,6 +12,7 @@
 import React from "react";
 import { ArrowClockwise } from "@phosphor-icons/react";
 import type {
+  AdeUsageCostBreakdownTotals,
   AdeUsageDailyPoint,
   AdeUsageMachineContribution,
   AdeUsageModelSummary,
@@ -20,42 +21,39 @@ import type {
   AdeUsageScope,
   AdeUsageStats,
 } from "../../../shared/types";
-import { formatCost, formatTokens, relativeTimeCompact } from "../../lib/format";
+import { formatCompact, formatDayShort, formatSpend, formatTokens, relativeTimeCompact } from "../../lib/format";
 import { useAppStore } from "../../state/appStore";
 import { ActivityModule, RANGE_OPTIONS } from "../usage/ActivityModule";
 import { providerColor } from "../usage/providerColors";
-import { cn } from "../ui/cn";
+import { ProviderLogo } from "../shared/ProviderLogos";
 import {
   UsageChartLegend,
   UsageDailyChart,
   buildDayColumns,
   selectTopSeries,
 } from "../usage/UsageDailyChart";
+import { UsagePooledLimits } from "../usage/UsagePooledLimits";
+import { CostSplitBars } from "../usage/UsageCostSplit";
 import { UsageSegmented } from "../usage/UsageSegmented";
-import {
-  USAGE_BUTTON_CLASS,
-  USAGE_CARD_CLASS,
-  USAGE_DIVIDER_COLOR_CLASS,
-  USAGE_EYEBROW_CLASS,
-  USAGE_HAIRLINE_CLASS,
-  USAGE_HOVER_ROW_CLASS,
-  USAGE_NUMERIC_CLASS,
-  USAGE_PANEL_HEADER_CLASS,
-  USAGE_TEXT,
-} from "../usage/usageDesign";
+import { DeltaTag, UsageDayStrip, UsageSparkline, periodDelta } from "../usage/UsageSparks";
+import { UsageWeekCompare, dayMetric } from "../usage/UsageWeekCompare";
+import { UsageLimitGauges } from "../usage/UsageLimitGauges";
+import { humanizeProvider } from "../usage/usageProviderNames";
+import { sumCostSplitsOrNull } from "../../../shared/usageCostSplit";
+import { UsageBreakdown } from "./UsageBreakdown";
+import { UsageModelDetailDialog } from "./UsageModelDetailDialog";
 import { formatUpdatedAge } from "../usage/usageWindowFormat";
-import { SettingsDashboardPage, SettingsDashboardStat } from "./primitives/SettingsDashboardPage";
+import { SettingsColumn } from "./primitives";
+import "../usage/usageSurfaces.css";
+import { Banner } from "../ui/notice";
 
 const SCOPE_STORAGE_KEY = "ade.stats.scope.v1";
 const RANGE_STORAGE_KEY = "ade.stats.range.v1";
 /*
- * Live quota is deliberately absent from this page.
- *
- * The top-bar usage meter already answers "how much quota is left", it is on
- * screen in every tab, and it updates continuously. A second copy here — even
- * behind a disclosure — put the least relevant thing on a page about spend and
- * history directly in the reading path. The meter's popover links back here for
- * the fuller history, which is the direction that actually gets used.
+ * Live quota is shown here as gauges, one per window, with where each window
+ * is in its cycle. The top-bar meter answers "how much is left" at a glance;
+ * this page answers it with pace and cycle beside it, next to the history
+ * that explains it. The account scope shows the pooled, all-machines version.
  */
 
 /** How often the machine list re-reads the clock to age its "2m ago" labels. */
@@ -119,42 +117,6 @@ function persistPreset(preset: AdeUsageRangePreset): void {
 
 function formatWhole(value: number): string {
   return Math.max(0, Math.floor(value || 0)).toLocaleString();
-}
-
-function formatUsd(value: number): string {
-  return value > 0 ? formatCost(value) : "$0.00";
-}
-
-function humanizeProvider(provider: string): string {
-  const known: Record<string, string> = {
-    anthropic: "Anthropic",
-    claude: "Claude",
-    codex: "Codex",
-    copilot: "Copilot",
-    cursor: "Cursor",
-    "cursor-agent": "Cursor Agent",
-    deepseek: "DeepSeek",
-    droid: "Droid",
-    gemini: "Gemini",
-    google: "Google",
-    lmstudio: "LM Studio",
-    mistral: "Mistral",
-    ollama: "Ollama",
-    opencode: "OpenCode",
-    openai: "OpenAI",
-    openclaw: "OpenClaw",
-    openrouter: "OpenRouter",
-    xai: "xAI",
-  };
-  const normalized = provider.trim().toLowerCase();
-  return (
-    known[normalized] ??
-    provider
-      .split(/[-_/\s]+/)
-      .filter(Boolean)
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(" ")
-  );
 }
 
 function estimationNote(kind: AdeUsageProviderSummary["estimation"]): string | null {
@@ -270,33 +232,49 @@ function formatRangeLabel(stats: AdeUsageStats | null): string {
 type MetricSource = "Providers" | "GitHub" | "Local git";
 
 /**
- * One cell of the metric strip — `SettingsDashboardStat`, the tile every
- * settings dashboard uses, with the source label kept as its own element
- * beside the metric's name so a reader can still tell provider-ledger tokens
- * from GitHub's pull-request counts at a glance.
+ * One cell of the stat strip: mono eyebrow, a big tight number, one muted mono
+ * line of context. The source label stays beside the eyebrow so provider-ledger
+ * tokens and GitHub's pull-request counts never read as the same kind of number.
  */
 function Metric({
   label,
   value,
   detail,
   source,
+  tag,
+  size = "lg",
+  valueTitle,
+  detailTitle,
+  trend,
 }: {
+  /** A tiny trend under the number (sparkline or day strip). */
+  trend?: React.ReactNode;
   label: string;
   value: string;
   detail: string;
   source?: MetricSource;
+  tag?: { text: string; tone?: "ok" | "warn" | "crit"; title?: string } | null;
+  size?: "lg" | "sm";
+  valueTitle?: string;
+  detailTitle?: string;
 }) {
   return (
-    <SettingsDashboardStat
-      label={
-        <span className="flex items-baseline justify-between gap-2">
-          <span className="min-w-0 truncate">{label}</span>
-          {source ? <span className="shrink-0 opacity-70">{source}</span> : null}
+    <div className="usage-stat">
+      <span className="usage-stat-head">
+        <span className="kit-eyebrow">{label}</span>
+        {source ? <span className="usage-stat-source">{source}</span> : null}
+      </span>
+      <span className="usage-stat-value">
+        <span className={size === "lg" ? "kit-stat" : "usage-stat-num"} title={valueTitle}>{value}</span>
+        {tag ? <span className="kit-tag" data-tone={tag.tone} title={tag.title}>{tag.text}</span> : null}
+      </span>
+      {trend ? <span className="usage-stat-trend">{trend}</span> : null}
+      {detail ? (
+        <span className="usage-stat-detail" title={detailTitle} style={detailTitle ? { cursor: "help" } : undefined}>
+          {detail}
         </span>
-      }
-      value={value}
-      hint={detail}
-    />
+      ) : null}
+    </div>
   );
 }
 
@@ -346,108 +324,106 @@ function codeMovementMetric(stats: AdeUsageStats | null): {
 }
 
 /**
- * A titled band of the page.
- *
- * The page previously ran section headings straight onto the page background,
- * which is why it read as one undifferentiated sheet — "everything feels like
- * chalk". Each band is now the same card surface the rest of the app uses, so
- * the page has the layering ADE has everywhere else.
- */
-function Panel({
-  title,
-  actions,
-  children,
-  className,
-  bodyClassName,
-}: {
-  title?: string;
-  actions?: React.ReactNode;
-  children: React.ReactNode;
-  className?: string;
-  bodyClassName?: string;
-}) {
-  return (
-    <section className={cn(USAGE_CARD_CLASS, "overflow-hidden", className)}>
-      {title || actions ? (
-        <div
-          className={cn(
-            "flex flex-wrap items-center justify-between gap-3 px-6 py-3.5",
-            USAGE_PANEL_HEADER_CLASS,
-          )}
-        >
-          {title ? <h2 className={cn(USAGE_TEXT.body, "m-0 font-medium text-fg")}>{title}</h2> : <span />}
-          {actions ? <div className="flex items-center gap-4">{actions}</div> : null}
-        </div>
-      ) : null}
-      <div className={cn("p-6", bodyClassName)}>{children}</div>
-    </section>
-  );
-}
-
-/**
- * The cost hero.
+ * The cost cell's footnote and its explanation.
  *
  * The asterisk is a real explanation, not decoration: unlike tools that read
  * exact token counts out of provider transcripts, some of our ledgers estimate
  * tokens from character counts, so this figure has two independent sources of
  * softness and the reader deserves to know which apply.
  */
-function CostHero({
-  costUsd,
-  providers,
-  loading,
-  pricingUpdatedAt,
-}: {
-  costUsd: number;
-  providers: AdeUsageProviderSummary[];
-  loading: boolean;
-  /** When the public rate list was last fetched; null = built-in rates only. */
-  pricingUpdatedAt?: string | null;
-}) {
+function costFootnote(providers: AdeUsageProviderSummary[], pricingUpdatedAt?: string | null): { text: string; title: string } {
   const estimated = providers
     .map((provider) => {
       const note = estimationNote(provider.estimation);
       return note ? `${humanizeProvider(provider.provider)}: ${note}` : null;
     })
     .filter((entry): entry is string => entry !== null);
-
   const ratesNote = describeRatesSource(providers, pricingUpdatedAt);
-
-  const footnote =
+  const text =
     estimated.length === 0
-      ? "if billed at full API rate"
-      : `if billed at full API rate — ${estimated.length === 1 ? "one provider is" : `${estimated.length} providers are`} estimated`;
+      ? "* if billed at full API rate"
+      : `* if billed at full API rate — ${estimated.length === 1 ? "one provider is" : `${estimated.length} providers are`} estimated`;
+  const title = [
+    estimated.length > 0
+      ? `Not money spent — subscriptions bill separately.\n\n${estimated.join("\n")}`
+      : "Not money spent — subscriptions bill separately. Token counts are provider-reported.",
+    ratesNote,
+  ].filter(Boolean).join("\n\n");
+  return { text, title };
+}
 
+/** What the range's cost went to, by token type and speed, plus ADE's own billing. */
+function CostComposition({
+  providers,
+  billing,
+  theme,
+  facts,
+}: {
+  facts: Array<{ label: string; value: string; detail?: string }>;
+  providers: AdeUsageProviderSummary[];
+  /** ADE chats' billed dollars and plan value, from the per-turn ledger. */
+  billing: AdeUsageCostBreakdownTotals | null;
+  theme: "dark" | "light";
+}) {
+  // The page total's split is the providers' splits added up, shown only when
+  // every provider with a cost sent one: a partial split would mislead.
+  const split = sumCostSplitsOrNull(providers.filter((provider) => provider.rangeCostUsd > 0).map((provider) => provider.costSplit));
   return (
-    <div className="flex flex-col gap-2">
-      <span className={USAGE_EYEBROW_CLASS}>Estimated cost</span>
-      <span className={cn(USAGE_TEXT.hero, USAGE_NUMERIC_CLASS, "font-semibold text-fg")}>
-        {loading ? "—" : `${formatUsd(costUsd)}*`}
-      </span>
-      <span
-        className={cn(USAGE_TEXT.micro, "cursor-help text-muted-fg")}
-        title={[
-          estimated.length > 0
-            ? `Not money spent — subscriptions bill separately.\n\n${estimated.join("\n")}`
-            : "Not money spent — subscriptions bill separately. Token counts are provider-reported.",
-          ratesNote,
-        ].filter(Boolean).join("\n\n")}
-      >
-        * {footnote}
-      </span>
+    <div className="flex flex-col gap-4">
+      {facts.length > 0 ? (
+        <>
+          <div className="usage-facts">
+            {facts.map((fact) => (
+              <div key={fact.label} className="usage-fact">
+                <span className="kit-eyebrow">{fact.label}</span>
+                <span className="usage-fact-value">{fact.value}</span>
+                {fact.detail ? <span className="usage-stat-detail">{fact.detail}</span> : null}
+              </div>
+            ))}
+          </div>
+          <hr className="kit-rule" />
+        </>
+      ) : null}
+      <CostSplitBars split={split} theme={theme} />
+      {!split ? <span className="usage-footnote">No per-type cost split reported for this range.</span> : null}
+      {billing && billing.turns > 0 ? (
+        <>
+          <hr className="kit-rule" />
+          <div
+            className="flex flex-col gap-2"
+            title="From ADE's per-turn ledger: chats ADE ran on this machine. Billed is what API keys and routed accounts were charged; plan value is what subscription turns would have cost at list prices."
+          >
+            <span className="kit-eyebrow">ADE chats</span>
+            <div className="usage-split-legend">
+              <span className="usage-split-legend-item">Billed to API keys<b>{formatSpend(billing.billedUsd)}</b></span>
+              <span className="usage-split-legend-item">Plan value<b>{formatSpend(billing.planValueUsd)}</b></span>
+            </div>
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
 
-/** Per-provider share of the range's cost, ranked. */
+const DONUT_SIZE = 148;
+const DONUT_STROKE = 14;
+
+/**
+ * Per-provider share of the range's cost: a donut with the total in its centre
+ * and a ranked legend beside it — logo, name, thin share bar, mono value.
+ */
 function ProviderCostSplit({
   providers,
   theme,
+  totalCostUsd,
+  loading,
   highlightedMembers,
   onHighlight,
 }: {
   providers: AdeUsageProviderSummary[];
   theme: "dark" | "light";
+  totalCostUsd: number;
+  loading: boolean;
   /**
    * The provider ids currently lit, or `null` for "nothing is". A set rather
    * than a single id because hovering the chart's merged "Other" band lights
@@ -461,131 +437,98 @@ function ProviderCostSplit({
     .filter((provider) => provider.totalTokens > 0 || provider.rangeCostUsd > 0)
     .sort((a, b) => b.rangeCostUsd - a.rangeCostUsd);
 
-  if (ranked.length === 0) return null;
+  const radius = (DONUT_SIZE - DONUT_STROKE) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const gap = ranked.filter((provider) => provider.rangeCostUsd > 0).length > 1 ? 2 : 0;
+  let offset = 0;
 
   return (
-    // ADE tracks nine providers. Uncapped, this column grows taller than the
-    // chart beside it and drags the panel — and the metric strip below it — down
-    // past the fold on a machine that has used most of them. The list scrolls
-    // inside its own bounds instead, and the cap is tall enough that the four or
-    // five providers a typical machine reports never scroll at all.
-    <div className="-mx-2 flex max-h-[19rem] flex-col gap-1 overflow-y-auto px-2 py-1">
-      {ranked.map((provider) => {
-        const share = total > 0 ? provider.rangeCostUsd / total : 0;
-        const color = providerColor(provider.provider, theme);
-        const focused = highlightedMembers?.has(provider.provider) ?? false;
-        const dimmed = highlightedMembers !== null && !focused;
-        return (
-          <div
-            key={provider.provider}
-            className={cn(
-              "flex flex-col gap-1.5 rounded-md px-2 py-1.5",
-              USAGE_HOVER_ROW_CLASS,
-              dimmed && "opacity-40",
-            )}
-            // The hovered provider tints in its own brand colour rather than a
-            // neutral grey, so the row, its bar, and its band in the chart are
-            // all obviously the same thing.
-            style={focused ? { background: `color-mix(in srgb, ${color} 12%, transparent)` } : undefined}
-            onMouseEnter={() => onHighlight(provider.provider)}
-            onMouseLeave={() => onHighlight(null)}
-          >
-            <div className="flex items-baseline justify-between gap-3">
-              <span className={cn(USAGE_TEXT.body, "flex items-center gap-2 text-fg")}>
-                <span
-                  aria-hidden
-                  className="inline-block h-2.5 w-2.5 shrink-0 rounded-full transition-shadow duration-150 motion-reduce:transition-none"
-                  style={{
-                    background: color,
-                    boxShadow: focused ? `0 0 0 3px color-mix(in srgb, ${color} 28%, transparent)` : undefined,
-                  }}
-                />
-                {humanizeProvider(provider.provider)}
-              </span>
-              <span className={cn(USAGE_TEXT.body, USAGE_NUMERIC_CLASS, "text-fg")}>
-                {formatUsd(provider.rangeCostUsd)}
-              </span>
-            </div>
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-              <div
-                className="h-full rounded-full transition-[width] duration-500 motion-reduce:transition-none"
-                style={{ width: `${(share * 100).toFixed(1)}%`, background: color }}
-              />
-            </div>
-            <span className={cn(USAGE_TEXT.micro, USAGE_NUMERIC_CLASS, "text-muted-fg")}>
-              {`${Math.round(share * 100)}% of cost · ${formatTokens(provider.totalTokens)} tokens`}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/** Top models by cost. */
-function ModelBreakdown({ models, theme }: { models: AdeUsageModelSummary[]; theme: "dark" | "light" }) {
-  const top = models.slice(0, 10);
-  const total = models.reduce((sum, model) => sum + Math.max(0, model.costUsd), 0);
-
-  return (
-    <>
-      {top.length === 0 ? (
-        <p className={cn(USAGE_TEXT.detail, "py-6 text-center text-muted-fg")}>
-          No model activity in this range.
-        </p>
+    <div className="usage-donut-layout">
+      <div className="usage-donut">
+        <svg width={DONUT_SIZE} height={DONUT_SIZE} viewBox={`0 0 ${DONUT_SIZE} ${DONUT_SIZE}`} aria-hidden>
+          <circle
+            cx={DONUT_SIZE / 2}
+            cy={DONUT_SIZE / 2}
+            r={radius}
+            fill="none"
+            stroke="var(--kit-track)"
+            strokeWidth={DONUT_STROKE}
+          />
+          {total > 0
+            ? ranked.map((provider) => {
+                const share = Math.max(0, provider.rangeCostUsd) / total;
+                const length = Math.max(0, share * circumference - gap);
+                const dash = `${length} ${circumference - length}`;
+                const segment = (
+                  <circle
+                    key={provider.provider}
+                    cx={DONUT_SIZE / 2}
+                    cy={DONUT_SIZE / 2}
+                    r={radius}
+                    fill="none"
+                    stroke={providerColor(provider.provider, theme)}
+                    strokeWidth={DONUT_STROKE}
+                    strokeDasharray={dash}
+                    strokeDashoffset={-offset}
+                    style={{
+                      opacity: highlightedMembers && !highlightedMembers.has(provider.provider) ? 0.25 : 1,
+                      transition: "opacity 140ms ease",
+                    }}
+                    onMouseEnter={() => onHighlight(provider.provider)}
+                    onMouseLeave={() => onHighlight(null)}
+                  />
+                );
+                offset += share * circumference;
+                return segment;
+              })
+            : null}
+        </svg>
+        <div className="usage-donut-center">
+          <span className="kit-eyebrow">Total</span>
+          <span className="usage-donut-total">{loading ? "—" : formatSpend(totalCostUsd)}</span>
+        </div>
+      </div>
+      {ranked.length === 0 ? (
+        <span className="usage-footnote">No provider spend in this range.</span>
       ) : (
-        <table className={cn(USAGE_TEXT.detail, "w-full")}>
-          <thead>
-            <tr
-              className={cn(
-                USAGE_TEXT.micro,
-                "border-b text-left text-muted-fg",
-                USAGE_HAIRLINE_CLASS,
-              )}
-            >
-              <th className="py-2 font-normal">Model</th>
-              <th className="py-2 text-right font-normal">Cost</th>
-              <th className="py-2 text-right font-normal">Share</th>
-              <th className="py-2 text-right font-normal">Tokens</th>
-            </tr>
-          </thead>
-          <tbody>
-            {top.map((model) => {
-              const cost = model.costUsd;
-              const share = total > 0 ? cost / total : 0;
-              return (
-                <tr
-                  key={`${model.provider}:${model.model}`}
-                  className={cn(
-                    "border-b last:border-b-0 hover:bg-muted",
-                    USAGE_DIVIDER_COLOR_CLASS,
-                    USAGE_HOVER_ROW_CLASS,
-                  )}
-                >
-                  <td className="py-2 pl-2 text-fg">
-                    <span className="flex items-center gap-2">
-                      <span
-                        aria-hidden
-                        className="inline-block h-2 w-2 shrink-0 rounded-full"
-                        style={{ background: providerColor(model.provider, theme) }}
-                      />
-                      {model.model}
-                    </span>
-                  </td>
-                  <td className={cn("py-2 text-right text-fg", USAGE_NUMERIC_CLASS)}>{formatUsd(cost)}</td>
-                  <td className={cn("py-2 text-right text-muted-fg", USAGE_NUMERIC_CLASS)}>
-                    {`${Math.round(share * 100)}%`}
-                  </td>
-                  <td className={cn("py-2 pr-2 text-right text-muted-fg", USAGE_NUMERIC_CLASS)}>
-                    {formatTokens(model.totalTokens)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        // ADE tracks nine providers. The list scrolls inside its own bounds
+        // instead of growing past the donut; the four or five a typical machine
+        // reports never scroll at all.
+        <ul className="usage-rank">
+          {ranked.map((provider) => {
+            const share = total > 0 ? provider.rangeCostUsd / total : 0;
+            const color = providerColor(provider.provider, theme);
+            const focused = highlightedMembers?.has(provider.provider) ?? false;
+            const dimmed = highlightedMembers !== null && !focused;
+            return (
+              <li
+                key={provider.provider}
+                className="usage-rank-row"
+                data-dimmed={dimmed ? "true" : undefined}
+                // The hovered provider tints in its own brand colour, so the
+                // row, its slice and its band in the chart read as one thing.
+                style={focused ? { background: `color-mix(in srgb, ${color} 10%, transparent)` } : undefined}
+                onMouseEnter={() => onHighlight(provider.provider)}
+                onMouseLeave={() => onHighlight(null)}
+                title={`${formatTokens(provider.totalTokens)} tokens`}
+              >
+                <span aria-hidden className="usage-rank-mark" style={{ boxShadow: `0 0 0 1.5px ${color}` }}>
+                  <ProviderLogo family={provider.provider} size={12} />
+                </span>
+                <span className="usage-rank-name">
+                  {humanizeProvider(provider.provider)}
+                  <span className="usage-rank-share">{`${Math.round(share * 100)}%`}</span>
+                </span>
+                <span className="usage-rank-value">{formatSpend(provider.rangeCostUsd)}</span>
+                <span aria-hidden className="usage-rank-bar">
+                  <span style={{ width: `${(share * 100).toFixed(1)}%`, background: color }} />
+                </span>
+              </li>
+            );
+          })}
+        </ul>
       )}
-    </>
+    </div>
   );
 }
 
@@ -611,13 +554,9 @@ function ChartCostUnavailable({
 }) {
   if (scope === "project") {
     return (
-      <span className={cn(USAGE_TEXT.micro, "flex items-center gap-2 text-muted-fg")}>
+      <span className="usage-card-sub flex items-center gap-2">
         Cost isn&apos;t tracked per project
-        <button
-          type="button"
-          onClick={onShowMachine}
-          className={cn(USAGE_BUTTON_CLASS, "min-h-7 px-2 py-1")}
-        >
+        <button type="button" onClick={onShowMachine} className="kit-card-head-action" style={{ marginLeft: 0, marginRight: 0 }}>
           Show this machine
         </button>
       </span>
@@ -625,7 +564,7 @@ function ChartCostUnavailable({
   }
   return (
     <span
-      className={cn(USAGE_TEXT.micro, "text-muted-fg")}
+      className="usage-card-sub"
       title="Your providers reported day-by-day tokens for this range but no day-by-day cost."
     >
       No cost by day in this range
@@ -641,14 +580,8 @@ function ChartCostUnavailable({
  * and when is what keeps the total honest.
  */
 function MachineList({ machines }: { machines: readonly AdeUsageMachineContribution[] }) {
-  // The clock lives here, not on the page.
-  //
-  // It used to tick page-level state every 15s, which re-rendered the whole
-  // Usage page — the 365-column daily chart included — to age one relative
-  // timestamp in a panel that only renders when there are other machines to
-  // list, and is usually below the fold. Owning it here scopes the re-render to
-  // the rows that actually read it, and costs nothing at all when the panel is
-  // not mounted.
+  // The clock lives here, not on the page, so ageing one relative timestamp
+  // re-renders only these rows — never the 365-column chart above them.
   const [nowMs, setNowMs] = React.useState(() => Date.now());
   React.useEffect(() => {
     const timer = window.setInterval(() => setNowMs(Date.now()), MACHINE_FRESHNESS_TICK_MS);
@@ -658,34 +591,26 @@ function MachineList({ machines }: { machines: readonly AdeUsageMachineContribut
   return (
     <dl className="m-0 flex flex-col">
       {machines.map((machine) => (
-          <div
-            key={machine.machineKey}
-            className={cn(
-              "-mx-2 flex items-baseline justify-between gap-3 rounded-md border-b last:border-b-0 px-2 py-2 hover:bg-muted",
-              USAGE_DIVIDER_COLOR_CLASS,
-              USAGE_HOVER_ROW_CLASS,
-            )}
-          >
-            <dt className={cn(USAGE_TEXT.detail, "flex items-center gap-2 text-fg")}>
-              <span aria-hidden className="text-muted-fg">
-                {platformGlyph(machine.platform)}
+        <div key={machine.machineKey} className="kit-row" style={{ justifyContent: "space-between" }}>
+          <dt className="flex min-w-0 items-center gap-2">
+            <span aria-hidden className="text-muted-fg">
+              {platformGlyph(machine.platform)}
+            </span>
+            <span className="truncate">{machine.label.trim() || machine.machineKey}</span>
+            {machine.state === "deduped" && machine.dedupedAgainstMachineKey ? (
+              <span className="usage-card-sub truncate">
+                counted once with {machine.dedupedAgainstMachineKey}
               </span>
-              {machine.label.trim() || machine.machineKey}
-              {machine.state === "deduped" && machine.dedupedAgainstMachineKey ? (
-                <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>
-                  counted once with {machine.dedupedAgainstMachineKey}
-                </span>
-              ) : null}
-            </dt>
-            {/* The merge writes a plain-language reason for failed and stale
-                machines; prefer it over a generic label so the row says what
-                actually happened. */}
-            <dd className={cn(USAGE_TEXT.micro, USAGE_NUMERIC_CLASS, "text-muted-fg")}>
-              {machine.state === "failed"
-                ? machine.message?.trim() || "did not report"
-                : formatUpdatedAge(machine.lastReportedAt, nowMs)}
-            </dd>
-          </div>
+            ) : null}
+          </dt>
+          {/* The merge writes a plain-language reason for failed and stale
+              machines; prefer it over a generic label. */}
+          <dd className="usage-stat-detail m-0">
+            {machine.state === "failed"
+              ? machine.message?.trim() || "did not report"
+              : formatUpdatedAge(machine.lastReportedAt, nowMs)}
+          </dd>
+        </div>
       ))}
     </dl>
   );
@@ -706,6 +631,8 @@ export function AdeUsageSection() {
   const [error, setError] = React.useState<string | null>(null);
   const [metric, setMetric] = React.useState<"cost" | "tokens">("cost");
   const [highlighted, setHighlighted] = React.useState<string | null>(null);
+  const [detailModel, setDetailModel] = React.useState<AdeUsageModelSummary | null>(null);
+  const [billing, setBilling] = React.useState<AdeUsageCostBreakdownTotals | null>(null);
   const loadSeqRef = React.useRef(0);
 
   const loadStats = React.useCallback(
@@ -821,6 +748,48 @@ export function AdeUsageSection() {
     return () => unsubscribe?.();
   }, [cacheScope, loadStats, preset, scope]);
 
+  // Billed vs plan value for ADE's own chats rides the per-turn ledger, read
+  // per range whenever the stats reload. A host without the action shows none.
+  React.useEffect(() => {
+    if (!stats || typeof window.ade?.usage?.getCostBreakdown !== "function") {
+      setBilling(null);
+      return;
+    }
+    let cancelled = false;
+    // "This project" reads its own chats (grouped by lane); the machine and
+    // account views read every ADE chat on the machine (grouped by account).
+    void window.ade.usage.getCostBreakdown({ by: scope === "project" ? "lane" : "account", preset, limit: 1 })
+      .then((result) => {
+        if (!cancelled) setBilling(result?.available ? result.totals : null);
+      })
+      .catch(() => {
+        if (!cancelled) setBilling(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [preset, scope, stats]);
+
+  // C and T switch the metric, the way the segmented control does, unless a
+  // field or a dialog has the keyboard.
+  React.useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey || detailModel) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true'], [role='dialog']")) return;
+      const key = event.key.toLowerCase();
+      if (key === "c") setMetric("cost");
+      else if (key === "t") setMetric("tokens");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [detailModel]);
+
+  const knownModels = React.useMemo(
+    () => Array.from(new Set((stats?.models ?? []).map((model) => model.model))).sort(),
+    [stats?.models],
+  );
+
   const changeScope = React.useCallback((next: AdeUsageScope) => {
     setScope(next);
     persistScope(next);
@@ -909,7 +878,7 @@ export function AdeUsageSection() {
       const undated = rangeCost - chartedCost;
       if (undated > 0.01 && undated / rangeCost > 0.01) {
         notes.push(
-          `${formatUsd(undated)} of this total comes from records with no date and isn't on the daily chart.`,
+          `${formatSpend(undated)} of this total comes from records with no date and isn't on the daily chart.`,
         );
       }
     }
@@ -935,196 +904,382 @@ export function AdeUsageSection() {
     ? relativeTimeCompact(stats.freshness?.providerUpdatedAt ?? stats.generatedAt)
     : null;
 
+  const chartActions = costChartUnavailable ? (
+    <ChartCostUnavailable scope={scope} onShowMachine={() => changeScope("machine")} />
+  ) : (
+    <UsageSegmented
+      ariaLabel="Chart metric"
+      options={[
+        { value: "cost", label: "Cost", title: "Cost (C)" },
+        { value: "tokens", label: "Tokens", title: "Tokens (T)" },
+      ]}
+      value={metric}
+      onChange={setMetric}
+    />
+  );
+
+  const noStats = loading || !stats;
+  const footnote = costFootnote(stats?.providers ?? [], stats?.pricingUpdatedAt);
+  const sessions = (summary?.chatSessions ?? 0) + (summary?.terminalSessions ?? 0);
+  // Some ledgers count cache reads inside input, others beside it (Anthropic
+  // reports them separately, so cached can exceed "input" many times over).
+  // When cached outgrows input it cannot be a subset, so it joins the base.
+  const cachedShare = (() => {
+    if (!summary) return null;
+    const cached = summary.observedProviderCachedTokens;
+    const input = summary.observedProviderInputTokens;
+    const base = cached > input ? input + cached : input;
+    return base > 0 ? Math.min(100, Math.round((cached / base) * 100)) : null;
+  })();
+  const streak = summary?.currentStreakDays ?? 0;
+  const rangeDays = daily.length;
+
+  // The last two weeks of the plotted days, for the strip's sparklines and
+  // their week-over-week deltas.
+  const recent = React.useMemo(() => daily.slice(-14), [daily]);
+  const trendTokens = React.useMemo(() => recent.map((point) => point.totalTokens || 0), [recent]);
+  const trendCost = React.useMemo(() => recent.map((point) => dayMetric(point, "cost")), [recent]);
+  const trendSessions = React.useMemo(() => recent.map((point) => point.sessions || 0), [recent]);
+  const trendActive = React.useMemo(
+    () => recent.map((point) => (point.totalTokens || 0) > 0 || (point.sessions || 0) > 0),
+    [recent],
+  );
+  const trendTitle = "Last 7 days against the 7 before";
+
+  // Three quick reads of the same spend: the typical day, the worst day, and
+  // what a million tokens cost on average. Derived from the plotted days so
+  // they agree with the chart above them.
+  const costFacts = React.useMemo(() => {
+    if (!summary || daily.length === 0) return [];
+    const dayCost = (point: AdeUsageDailyPoint) =>
+      Object.values(point.byProvider ?? {}).reduce((sum, entry) => sum + (entry.costUsd || 0), 0);
+    const active = daily.filter((point) => point.totalTokens > 0);
+    const facts: Array<{ label: string; value: string; detail?: string }> = [];
+    const charted = daily.reduce((sum, point) => sum + dayCost(point), 0);
+    if (charted > 0 && active.length > 0) {
+      facts.push({ label: "Avg / day", value: formatSpend(charted / active.length), detail: `over ${active.length} active days` });
+      const peak = daily.reduce((best, point) => (dayCost(point) > dayCost(best) ? point : best), daily[0]!);
+      facts.push({ label: "Peak", value: formatSpend(dayCost(peak)), detail: formatDayShort(peak.date) });
+    }
+    if (summary.totalTokens > 0 && summary.observedProviderCostRangeUsd > 0) {
+      facts.push({
+        label: "Per 1M",
+        value: formatSpend(summary.observedProviderCostRangeUsd / (summary.totalTokens / 1_000_000)),
+        detail: "tokens, blended",
+      });
+    }
+    return facts;
+  }, [daily, summary]);
+
+  const breakdown = (
+    <section className="kit-card">
+      <div className="kit-card-head">
+        <span>Breakdown</span>
+        <span className="usage-card-sub">Select a model for its detail and price</span>
+      </div>
+      <div className="kit-card-body">
+        <UsageBreakdown
+          models={stats?.models ?? []}
+          preset={preset}
+          scope={scope}
+          metric={effectiveMetric}
+          reloadKey={stats}
+          onOpenModel={setDetailModel}
+        />
+      </div>
+    </section>
+  );
+
   return (
-    // Read-only figures end to end, so this is a dashboard page. It also gives
-    // `#ade-usage` — the anchor the manifest, ⌘K and the header usage control
-    // all link to — somewhere to land: before this, nothing in the DOM carried
-    // it and the deeplink scrolled nowhere. The title is the manifest's own
-    // label ("Usage & spend"), not a second copy of the shell's "Usage".
-    <SettingsDashboardPage anchor="ade-usage" title="Usage & spend">
-      <div className="flex flex-col gap-6">
-      {/* The Settings shell already prints "Usage" and its one-line
-          description above this component, so the page does not print them a
-          second time. What the shell cannot know — which range is on screen and
-          how old the reading is — sits with the controls that change it. */}
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <p className={cn(USAGE_TEXT.detail, USAGE_NUMERIC_CLASS, "m-0 text-muted-fg")}>
-          {formatRangeLabel(stats)}
-          {updatedLabel ? ` · updated ${updatedLabel} ago` : ""}
-        </p>
+    // `#ade-usage` is the anchor the manifest, ⌘K and the header usage control
+    // all link to, so the page root carries it.
+    <SettingsColumn wide>
+      <div id="ade-usage" data-settings-anchor="ade-usage" className="usage-page">
+        {/* What the Settings shell cannot know — which range is on screen and
+            how old the reading is — sits with the controls that change it. */}
+        <header className="usage-toolbar">
+          <div className="usage-toolbar-meta">
+            <span className="kit-eyebrow">
+              {scope === "account" ? "All machines" : scope === "machine" ? "This machine" : "This project"}
+            </span>
+            <p className="usage-toolbar-range">
+              {formatRangeLabel(stats)}
+              {updatedLabel ? (updatedLabel === "now" ? " · updated just now" : ` · updated ${updatedLabel} ago`) : ""}
+            </p>
+          </div>
+          <div className="usage-toolbar-controls">
+            <UsageSegmented
+              ariaLabel="Usage scope"
+              labelCase="sentence"
+              options={[
+                { value: "account", label: "All machines" },
+                { value: "machine", label: "This machine" },
+                { value: "project", label: "This project" },
+              ]}
+              value={scope}
+              onChange={changeScope}
+            />
+            <UsageSegmented
+              ariaLabel="Date range"
+              options={RANGE_OPTIONS.map((option) => ({ value: option.preset, label: option.label }))}
+              value={preset}
+              onChange={changePreset}
+            />
+            <button
+              type="button"
+              onClick={() => cacheScope && loadStats(preset, scope, cacheScope, true)}
+              disabled={refreshing || !cacheScope}
+              aria-label="Refresh usage"
+              title="Refresh"
+              className="kit-icon-btn"
+            >
+              <ArrowClockwise size={13} className={refreshing ? "animate-spin motion-reduce:animate-none" : undefined} />
+            </button>
+          </div>
+        </header>
 
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <UsageSegmented
-            ariaLabel="Usage scope"
-            options={[
-              { value: "account", label: "All machines" },
-              { value: "machine", label: "This machine" },
-              { value: "project", label: "This project" },
-            ]}
-            value={scope}
-            onChange={changeScope}
+        {error ? (
+          <Banner
+            layout="inline"
+            model={{ id: "ade-usage-error", tone: "warning", title: error, ariaLabel: error }}
           />
-          <UsageSegmented
-            ariaLabel="Date range"
-            options={RANGE_OPTIONS.map((option) => ({ value: option.preset, label: option.label }))}
-            value={preset}
-            onChange={changePreset}
-          />
-          <button
-            type="button"
-            onClick={() => cacheScope && loadStats(preset, scope, cacheScope, true)}
-            disabled={refreshing || !cacheScope}
-            aria-label="Refresh usage"
-            className={cn(USAGE_TEXT.micro, USAGE_BUTTON_CLASS, "min-h-8 px-3")}
-          >
-            <ArrowClockwise size={13} className={refreshing ? "animate-spin" : undefined} />
-            {refreshing ? "Refreshing" : "Refresh"}
-          </button>
-        </div>
-      </header>
+        ) : null}
 
-      {error ? (
-        <div className={cn(USAGE_CARD_CLASS, USAGE_TEXT.detail, "px-6 py-4 text-muted-fg")}>{error}</div>
-      ) : null}
+        {isEmpty ? (
+          <section className="kit-card usage-empty">
+            <span className="usage-card-title">Nothing here yet</span>
+            <span className="usage-card-sub" style={{ maxWidth: "46ch" }}>
+              Your first Claude or Codex turn shows up within a minute.
+            </span>
+          </section>
+        ) : (
+          <>
+            {/* The headline numbers: what it cost, how much moved, how often. */}
+            <section className="kit-card" aria-label="Totals">
+              <div className="usage-stats">
+                <Metric
+                  label="Estimated cost"
+                  // `!stats`, not `loading && !stats`: a failed load with
+                  // nothing cached clears `loading` while `stats` stays null.
+                  // No data is not zero.
+                  value={noStats ? "—" : `${formatSpend(summary?.observedProviderCostRangeUsd ?? 0)}*`}
+                  detail={footnote.text}
+                  detailTitle={footnote.title}
+                  trend={trendCost.some((value) => value > 0) ? (
+                    <>
+                      <UsageSparkline values={trendCost} label="Daily cost, last 14 days" color="var(--color-accent)" />
+                      <DeltaTag delta={periodDelta(trendCost)} title={trendTitle} />
+                    </>
+                  ) : null}
+                />
+                <Metric
+                  label="Tokens"
+                  source="Providers"
+                  value={summary ? formatTokens(summary.totalTokens) : "—"}
+                  detail={summary ? `${formatTokens(summary.observedProviderInputTokens)} in · ${formatTokens(summary.observedProviderOutputTokens)} out` : ""}
+                  tag={cachedShare != null && cachedShare > 0 ? { text: `${cachedShare}% cached`, title: "Share of input served from cache" } : null}
+                  trend={trendTokens.some((value) => value > 0) ? (
+                    <>
+                      <UsageSparkline values={trendTokens} label="Daily tokens, last 14 days" />
+                      <DeltaTag delta={periodDelta(trendTokens)} title={trendTitle} />
+                    </>
+                  ) : null}
+                />
+                <Metric
+                  label="Sessions"
+                  value={summary ? formatWhole(sessions) : "—"}
+                  detail={summary ? `${formatCompact(summary.chatSessions ?? 0)} chats · ${formatCompact(summary.terminalSessions ?? 0)} shells` : ""}
+                  trend={trendSessions.some((value) => value > 0) ? (
+                    <>
+                      <UsageSparkline values={trendSessions} label="Daily sessions, last 14 days" />
+                      <DeltaTag delta={periodDelta(trendSessions)} title={trendTitle} />
+                    </>
+                  ) : null}
+                />
+                <Metric
+                  label="Active days"
+                  value={summary?.activeDays != null ? formatWhole(summary.activeDays) : "—"}
+                  detail={summary?.activeDays != null && rangeDays > 0
+                    ? `of ${formatWhole(rangeDays)} · best run ${formatWhole(summary.longestStreakDays ?? 0)}d`
+                    : ""}
+                  tag={streak >= 3 ? { text: `${streak}-day streak`, tone: "ok" } : null}
+                  trend={trendActive.length > 1 ? (
+                    <>
+                      <UsageDayStrip days={trendActive} label="Active days, last 14 days" />
+                      <span className="usage-delta">{`${trendActive.filter(Boolean).length}/${trendActive.length}`}</span>
+                    </>
+                  ) : null}
+                />
+              </div>
+              <div className="usage-stats" data-size="sm">
+                <Metric
+                  size="sm"
+                  label="Cached input"
+                  source="Providers"
+                  value={summary ? formatTokens(summary.observedProviderCachedTokens) : "—"}
+                  detail="served from cache"
+                />
+                <Metric
+                  size="sm"
+                  label="Output"
+                  source="Providers"
+                  value={summary ? formatTokens(summary.observedProviderOutputTokens) : "—"}
+                  detail={summary ? `${formatSpend(summary.observedProviderCostTodayUsd)} today` : ""}
+                />
+                <Metric size="sm" label="Lines changed" {...codeMovement} />
+                <Metric
+                  size="sm"
+                  label="Pull requests"
+                  source="GitHub"
+                  value={summary ? formatWhole(prsTracked) : "—"}
+                  detail={summary ? `${formatWhole(prsMerged)} merged` : ""}
+                />
+              </div>
+            </section>
 
-      {isEmpty ? (
-        <div className={cn(USAGE_CARD_CLASS, "flex flex-col items-center gap-2 px-6 py-16 text-center")}>
-          <span className={cn(USAGE_TEXT.body, "font-medium text-fg")}>Nothing here yet</span>
-          <span className={cn(USAGE_TEXT.detail, "max-w-[46ch] text-muted-fg")}>
-            Your first Claude or Codex turn shows up within a minute.
-          </span>
-        </div>
-      ) : (
-        <>
-          {/* Cost first, then the shape of it. The summary and the chart follow
-              the same metric toggle so the headline and the series are always
-              reading in the same units. */}
-          <div className="grid gap-6 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]">
-            <Panel bodyClassName="flex flex-col gap-5">
-              <CostHero
-                costUsd={summary?.observedProviderCostRangeUsd ?? 0}
-                providers={stats?.providers ?? []}
-                // `!stats` on its own, not `loading && !stats`: a load that
-                // failed with nothing cached clears `loading` while `stats`
-                // stays null, and the hero then printed a confident "$0.00"
-                // over an error banner. No data is not zero.
-                loading={loading || !stats}
-                pricingUpdatedAt={stats?.pricingUpdatedAt}
-              />
-              <ProviderCostSplit
-                providers={stats?.providers ?? []}
-                theme={theme}
-                highlightedMembers={highlightedMembers}
-                onHighlight={setHighlighted}
-              />
-            </Panel>
+            {/* Whether you can keep going: this machine's live windows. The
+                account scope shows the pooled version at the foot instead. */}
+            {scope !== "account" ? (
+              <section className="kit-card" aria-label="Rate limits">
+                <div className="kit-card-head">
+                  <span>Rate limits</span>
+                  <span className="usage-card-sub">Live on this machine · % left, tick marks a steady pace</span>
+                </div>
+                <div className="kit-card-body">
+                  <UsageLimitGauges />
+                </div>
+              </section>
+            ) : null}
 
-            <Panel
-              title={`Daily ${effectiveMetric === "tokens" ? "tokens" : "cost"}`}
-              actions={
-                <>
-                  {costChartUnavailable ? (
-                    <ChartCostUnavailable
-                      scope={scope}
-                      onShowMachine={() => changeScope("machine")}
-                    />
-                  ) : (
-                    <UsageSegmented
-                      ariaLabel="Chart metric"
-                      options={[
-                        { value: "cost", label: "Cost" },
-                        { value: "tokens", label: "Tokens" },
-                      ]}
-                      value={metric}
-                      onChange={setMetric}
-                    />
-                  )}
-                  <UsageChartLegend
-                    series={chartSeries}
-                    metric={effectiveMetric}
+            {/* The shape of the spend. Shares the metric toggle with the
+                breakdown so every number below reads in the same units. */}
+            <section className="kit-card" aria-label="Spend over time">
+              <div className="usage-chart-card-head">
+                <div className="flex min-w-0 flex-col gap-1">
+                  <span className="kit-eyebrow">{`Daily ${effectiveMetric === "tokens" ? "tokens" : "cost"}`}</span>
+                  <span className="usage-card-sub">By provider · hover to compare</span>
+                </div>
+                {chartActions}
+              </div>
+              <div className="usage-chart-card-body flex flex-col gap-3">
+                <UsageChartLegend
+                  series={chartSeries}
+                  metric={effectiveMetric}
+                  theme={theme}
+                  highlightedProvider={highlighted}
+                  onHighlight={setHighlighted}
+                />
+                <UsageDailyChart
+                  days={days}
+                  daily={daily}
+                  metric={effectiveMetric}
+                  theme={theme}
+                  highlightedProvider={highlighted}
+                />
+              </div>
+            </section>
+
+            <section className="kit-card usage-week-card" aria-label="This week against last">
+              <div className="usage-chart-card-head">
+                <div className="flex min-w-0 flex-col gap-1">
+                  <span className="kit-eyebrow">{`Week over week · ${effectiveMetric === "tokens" ? "tokens" : "cost"}`}</span>
+                  <span className="usage-card-sub">Each day against the same weekday a week earlier</span>
+                </div>
+              </div>
+              <div className="usage-chart-card-body">
+                <UsageWeekCompare daily={daily} metric={effectiveMetric} />
+              </div>
+            </section>
+
+            <div className="usage-grid" data-cols="2">
+              <section className="kit-card">
+                <div className="kit-card-head">
+                  <span>By provider</span>
+                  <span className="kit-card-head-count">{(stats?.providers ?? []).filter((provider) => provider.rangeCostUsd > 0 || provider.totalTokens > 0).length}</span>
+                </div>
+                <div className="kit-card-body">
+                  <ProviderCostSplit
+                    providers={stats?.providers ?? []}
                     theme={theme}
-                    highlightedProvider={highlighted}
+                    totalCostUsd={summary?.observedProviderCostRangeUsd ?? 0}
+                    loading={noStats}
+                    highlightedMembers={highlightedMembers}
                     onHighlight={setHighlighted}
                   />
-                </>
-              }
-            >
-              <UsageDailyChart
-                days={days}
-                daily={daily}
-                metric={effectiveMetric}
-                theme={theme}
-                highlightedProvider={highlighted}
-              />
-            </Panel>
-          </div>
+                </div>
+              </section>
+              <section className="kit-card">
+                <div className="kit-card-head">
+                  <span>Where the cost went</span>
+                </div>
+                <div className="kit-card-body">
+                  {noStats ? (
+                    <span className="usage-footnote">Loading…</span>
+                  ) : (
+                    <CostComposition providers={stats?.providers ?? []} billing={billing} theme={theme} facts={costFacts} />
+                  )}
+                </div>
+              </section>
+            </div>
 
-          {/* The strip is five dashboard stats. Each tile is self-contained and
-              bordered by the template, so the grid just spaces them — the old
-              hairline-through-a-1px-gap trick belonged to a hand-drawn card. */}
-          <section className="grid grid-cols-2 gap-3 md:grid-cols-5">
-            <Metric
-              label="Processed tokens"
-              source="Providers"
-              value={summary ? formatTokens(summary.totalTokens) : "—"}
-              detail={summary ? `${formatTokens(summary.observedProviderInputTokens)} in` : ""}
-            />
-            <Metric
-              label="Cached input"
-              source="Providers"
-              value={summary ? formatTokens(summary.observedProviderCachedTokens) : "—"}
-              detail="reads served from cache"
-            />
-            <Metric
-              label="Output"
-              source="Providers"
-              value={summary ? formatTokens(summary.observedProviderOutputTokens) : "—"}
-              detail={summary ? `${formatUsd(summary.observedProviderCostTodayUsd)} today` : ""}
-            />
-            <Metric label="Lines changed" {...codeMovement} />
-            <Metric
-              label="Pull requests"
-              source="GitHub"
-              value={summary ? formatWhole(prsTracked) : "—"}
-              detail={summary ? `${formatWhole(prsMerged)} merged` : ""}
-            />
-          </section>
+            {machines.length > 0 ? (
+              <div className="usage-grid" data-cols="wide-start">
+                {breakdown}
+                <section className="kit-card">
+                  <div className="kit-card-head">
+                    <span>Machines</span>
+                    <span className="usage-card-sub">Who reported, and when</span>
+                  </div>
+                  <div className="kit-card-body" data-flush="true">
+                    <MachineList machines={machines} />
+                  </div>
+                </section>
+              </div>
+            ) : breakdown}
 
-          {/* The activity module brings its own card, so this band is a heading
-              and the module — not a card inside a card. */}
-          <section className="flex flex-col gap-3">
-            <h2 className={cn(USAGE_TEXT.body, "m-0 font-medium text-fg")}>Activity</h2>
             <ActivityModule
               stats={stats}
               loading={loading && !stats}
               variant="full"
               preset={preset}
               showRangeControl={false}
+              fillSlot
             />
-          </section>
 
-          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,18rem)]">
-            <Panel title="Breakdown">
-              <ModelBreakdown models={stats?.models ?? []} theme={theme} />
-            </Panel>
-            {machines.length > 0 ? (
-              <Panel title="Machines">
-                <MachineList machines={machines} />
-              </Panel>
+            {/* The host's own caveats about how these numbers were gathered,
+                verbatim rather than summarised away. */}
+            {sourceNotes.length > 0 ? (
+              <p className="usage-footnote">{sourceNotes.join(" · ")}</p>
             ) : null}
-          </div>
+          </>
+        )}
 
-          {/* Host-provided caveats about how these numbers were gathered. They
-              are the host's own words about its data, so they are surfaced
-              verbatim rather than summarised away. */}
-          {sourceNotes.length > 0 ? (
-            <p className={cn(USAGE_TEXT.micro, "m-0 leading-relaxed text-muted-fg")}>
-              {sourceNotes.join(" · ")}
-            </p>
-          ) : null}
-        </>
-      )}
+        <UsageModelDetailDialog
+          model={detailModel}
+          preset={preset}
+          scope={scope}
+          theme={theme}
+          knownModels={knownModels}
+          onClose={() => setDetailModel(null)}
+        />
+
+        {/* Pooled live limits belong to the account scope only: "This machine"
+            and "This project" are single-environment views, and the top-bar
+            popover already carries this machine's limits. Rendered outside the
+            historical empty state: live quota is a current reading, so an empty
+            date range must not hide a working account's limits. */}
+        {scope === "account" && stats?.liveQuota ? (
+          <section className="kit-card">
+            <div className="kit-card-head">
+              <span>Live limits</span>
+              <span className="usage-card-sub">Every signed-in machine, pooled. The top bar shows this one.</span>
+            </div>
+            <div className="kit-card-body">
+              <UsagePooledLimits environments={stats.liveQuota.environments} />
+            </div>
+          </section>
+        ) : null}
       </div>
-    </SettingsDashboardPage>
+    </SettingsColumn>
   );
 }

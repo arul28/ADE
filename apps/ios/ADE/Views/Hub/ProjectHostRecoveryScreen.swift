@@ -364,7 +364,7 @@ struct ProjectHostRecoveryScreen: View {
         Button("Fix connection") {
           Task { await syncService.recoverProjectHost() }
         }
-        .buttonStyle(.glassProminent)
+        .buttonStyle(ADEKitButtonStyle(prominent: true))
         .padding(.top, 4)
       } else if let guidance {
         Text(guidance)
@@ -391,7 +391,7 @@ struct ProjectHostRecoveryScreen: View {
         Button("Retry") {
           Task { await syncService.retryProjectHost() }
         }
-        .buttonStyle(.glassProminent)
+        .buttonStyle(ADEKitButtonStyle(prominent: true))
         .padding(.top, 4)
 
         Button("Switch Mac") {
@@ -410,7 +410,7 @@ struct ProjectHostRecoveryScreen: View {
           .padding(.top, 6)
       }
     }
-    .adeGlassCard()
+    .adeKitCard()
   }
 
   private var progressCard: some View {
@@ -449,7 +449,7 @@ struct ProjectHostRecoveryScreen: View {
       }
       .font(.subheadline.weight(.semibold))
     }
-    .adeGlassCard()
+    .adeKitCard()
   }
 }
 

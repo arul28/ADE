@@ -16,6 +16,8 @@
  * session and feed every update for that session through it in arrival order.
  */
 
+import { hasNonEmptyRecord } from "../../../../shared/agentObservationNormalizers";
+import { stripDevinCloudBranchPin } from "../../../../shared/devinCloud";
 import type { AgentChatEvent, AgentChatPlanStep, ChatSourceRef } from "../../../../shared/types";
 import { boundChatSourceRefs } from "../../../../shared/chatSources";
 import { acpResourceLinkSourceRef, acpToolSourceRefs } from "../chatSourceAdapters";
@@ -42,6 +44,8 @@ import {
   type AcpToolCallContent,
   type AcpToolCallStatus,
   type AcpToolKind,
+  type AcpWireToolCallStatus,
+  type AcpWireToolKind,
 } from "./acpProtocolTypes";
 
 /**
@@ -59,10 +63,21 @@ type TrackedToolCall = {
   status: AcpToolCallStatus;
   /** Set once a `tool_call` (or `command`/`file_change`) row was emitted. */
   opened: boolean;
+  /**
+   * The command text an execute row opened with. The close reuses it: the
+   * transcript keys command rows by their text, so a close that fell back to
+   * the title split one command into a stuck "running" row and a finished one.
+   */
+  command?: string;
+  /** Whether a `tool_call` row has gone out with a non-empty `rawInput`. */
+  emittedArgsJson?: string;
   /** Working directory reported for an execute tool, when it reported one. */
   cwd: string;
   /** Text collected from tool content, newest wins for terminal output. */
   lastOutput: string;
+  /** Latest structured result, retained when a later update omits rawOutput. */
+  rawOutput?: unknown;
+  hasRawOutput: boolean;
   /** Paths already announced for an edit tool, to keep row ids stable. */
   diffIndexByPath: Map<string, number>;
   /** Latest `rawInput` / `locations`, read when the row closes to find web sources. */
@@ -81,7 +96,7 @@ export type AcpTranslatorCallbacks = {
     currentModeId: string | null;
   }) => void;
   /** Fired for `session_info_update`. Carries the agent's own session title. */
-  onSessionInfo?: (info: { title: string | null; updatedAt: string | null }) => void;
+  onSessionInfo?: (info: { title: string | null; updatedAt: string | null; meta?: Record<string, unknown> | null }) => void;
   /** Fired for every usage sample the dialect could read. */
   onUsage?: (sample: AcpUsageSample) => void;
   /**
@@ -96,6 +111,8 @@ export type AcpEventTranslatorOptions = {
   readUsage?: ((update: Extract<AcpSessionUpdate, { sessionUpdate: "usage_update" }>) => AcpUsageSample | null) | null;
   /** Keeps only the slash commands ADE should offer in its picker. */
   includeSlashCommand?: (command: AcpAvailableCommand) => boolean;
+  /** See `AcpDialectBase.echoRemoteUserMessages`. */
+  echoRemoteUserMessages?: boolean;
   callbacks?: AcpTranslatorCallbacks;
 };
 
@@ -111,6 +128,18 @@ export type AcpEventTranslator = {
   /** Forget per-turn state. Session-scoped state (slash dedupe) survives. */
   resetTurnState(): void;
 };
+
+/**
+ * A chunk that is a whole message, from an agent that marks them so. Devin's
+ * relay stamps every event with an id and `streaming: false` when the chunk is
+ * complete; without an id each such message would run into the previous one.
+ */
+function completeMessageEventId(update: { _meta?: unknown }): string | null {
+  const meta = update._meta && typeof update._meta === "object" ? update._meta as Record<string, unknown> : null;
+  if (!meta || meta["cognition.ai/streaming"] !== false) return null;
+  const id = meta["cognition.ai/eventId"];
+  return typeof id === "string" && id.length ? id : null;
+}
 
 function textOfContentBlock(block: AcpContentBlock): string {
   switch (block.type) {
@@ -132,6 +161,7 @@ function textOfContentBlock(block: AcpContentBlock): string {
     case "resource":
       return typeof block.resource.text === "string" ? block.resource.text : "";
     default:
+      // The wire validator admits only these block types.
       return assertNever(block, "acp content block");
   }
 }
@@ -145,8 +175,31 @@ function planStatusToAde(status: AcpPlanEntry["status"]): AgentChatPlanStep["sta
     case "completed":
       return "completed";
     default:
-      return assertNever(status, "acp plan entry status");
+      // A plan status from a newer schema keeps its step, as pending.
+      return "pending";
   }
+}
+
+const ACP_TOOL_KINDS: ReadonlySet<string> = new Set<AcpToolKind>([
+  "read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other",
+]);
+const ACP_TOOL_STATUSES: ReadonlySet<string> = new Set<AcpToolCallStatus>(["pending", "in_progress", "completed", "failed"]);
+
+/**
+ * Narrow a wire tool kind to one ADE knows. Grok reports file writes as
+ * `write`, which is not an ACP kind but is an edit; anything else unknown is
+ * the protocol's own catch-all, so the call still shows as a generic tool.
+ */
+function normalizeToolKind(kind: AcpWireToolKind | null | undefined): AcpToolKind {
+  if (kind == null) return "other";
+  if (kind === "write") return "edit";
+  return ACP_TOOL_KINDS.has(kind) ? (kind as AcpToolKind) : "other";
+}
+
+/** A status from a newer schema has not finished the call, so it reads as in progress. */
+function normalizeToolStatus(status: AcpWireToolCallStatus | null | undefined, fallback: AcpToolCallStatus): AcpToolCallStatus {
+  if (status == null) return fallback;
+  return ACP_TOOL_STATUSES.has(status) ? (status as AcpToolCallStatus) : "in_progress";
 }
 
 function toolStatusToAde(status: AcpToolCallStatus): "running" | "completed" | "failed" {
@@ -248,6 +301,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
   let activeThoughtMessageId: string | null = null;
   const textByMessageId = new Map<string, string>();
   let lastSlashSignature: string | null = null;
+  const echoedUserMessageIds = new Set<string>();
 
   const withTurn = <T extends object>(event: T): T & { turnId?: string } =>
     (turnId ? { ...event, turnId } : event) as T & { turnId?: string };
@@ -274,6 +328,8 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
     status: AcpToolCallStatus,
   ): AgentChatEvent[] => {
     const events: AgentChatEvent[] = [];
+    // The validator only checks that items are records, so an item type from a
+    // newer schema matches none of these and falls through.
     for (const item of content) {
       if (item.type === "content") {
         const text = textOfContentBlock(item.content);
@@ -319,46 +375,55 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
             status: toolStatusToAde(status),
           }),
         );
-        continue;
+        tracked.opened = true;
       }
-      assertNever(item, "acp tool call content");
     }
     return events;
   };
 
+  const commandRow = (tracked: TrackedToolCall, toolCallId: string): AgentChatEvent => withTurn({
+    type: "command" as const,
+    command: tracked.command ?? tracked.title,
+    cwd: tracked.cwd,
+    output: tracked.lastOutput,
+    itemId: toolCallId,
+    status: toolStatusToAde(tracked.status),
+  });
+
   const openRow = (tracked: TrackedToolCall, toolCallId: string, rawInput: unknown): AgentChatEvent[] => {
-    tracked.opened = true;
     switch (tracked.rowKind) {
       case "command": {
-        const command = readRawInputString(rawInput, ["command", "cmd", "script", "input"]) || tracked.title;
+        const inputCommand = readRawInputString(rawInput, ["command", "cmd", "script", "input"]);
+        // `pending` means the input is still streaming or awaiting approval
+        // (ACP tool-calls spec). Opening now would fix the row's text to the
+        // title ("bash") before the real command arrives on an update.
+        if (!inputCommand && tracked.status !== "completed" && tracked.status !== "failed") return [];
+        tracked.opened = true;
+        tracked.command = inputCommand || tracked.title;
         tracked.cwd = readRawInputString(rawInput, ["cwd", "workdir", "directory"]) || tracked.cwd;
-        return [
-          withTurn({
-            type: "command" as const,
-            command,
-            cwd: tracked.cwd,
-            output: tracked.lastOutput,
-            itemId: toolCallId,
-            status: toolStatusToAde(tracked.status),
-          }),
-        ];
+        return [commandRow(tracked, toolCallId)];
       }
       case "file_change":
         // The edit row cannot open until a diff arrives; the diff carries the
         // path. `emitToolContent` opens it.
         return [];
       case "tool":
-        return [
-          withTurn({
-            type: "tool_call" as const,
-            tool: tracked.toolName,
-            args: rawInput ?? {},
-            itemId: toolCallId,
-          }),
-        ];
+        tracked.opened = true;
+        return [toolCallRow(tracked, toolCallId, rawInput)];
       default:
         return assertNever(tracked.rowKind, "acp tool row kind");
     }
+  };
+
+  const toolCallRow = (tracked: TrackedToolCall, toolCallId: string, rawInput: unknown): AgentChatEvent => {
+    if (hasNonEmptyRecord(rawInput)) tracked.emittedArgsJson = JSON.stringify(rawInput);
+    return withTurn({
+      type: "tool_call" as const,
+      tool: tracked.toolName,
+      args: rawInput ?? {},
+      toolKind: tracked.kind,
+      itemId: toolCallId,
+    });
   };
 
   const closeRow = (
@@ -368,16 +433,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
   ): AgentChatEvent[] => {
     switch (tracked.rowKind) {
       case "command":
-        return [
-          withTurn({
-            type: "command" as const,
-            command: tracked.title,
-            cwd: tracked.cwd,
-            output: tracked.lastOutput,
-            itemId: toolCallId,
-            status: toolStatusToAde(tracked.status),
-          }),
-        ];
+        return [commandRow(tracked, toolCallId)];
       case "file_change":
         // Every file row already carries its own status from the diff pass.
         return [];
@@ -411,13 +467,31 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
 
   const translate = (update: AcpSessionUpdate): AgentChatEvent[] => {
     switch (update.sessionUpdate) {
-      case "user_message_chunk":
-        // ADE already owns the user's message. Echoing it would duplicate the
-        // bubble on every replay.
-        return [];
+      case "user_message_chunk": {
+        // ADE already owns the user's message inside its own turn; echoing it
+        // would duplicate the bubble. Outside one, a dialect that says so is
+        // reporting a message ADE never saw (a replayed history, or a message
+        // sent from the provider's web app), and dropping it loses half the
+        // conversation.
+        if (turnId || !options.echoRemoteUserMessages) return [];
+        // A replayed turn ADE sent carries its branch pin; show what the user wrote.
+        const text = stripDevinCloudBranchPin(textOfContentBlock(update.content)).trim();
+        if (!text.length) return [];
+        const meta = (update as { _meta?: Record<string, unknown> })._meta ?? null;
+        const eventId = meta && typeof meta["cognition.ai/eventId"] === "string"
+          ? meta["cognition.ai/eventId"] as string
+          : null;
+        const messageId = eventId ?? update.messageId ?? `remote-user-${++syntheticMessageCounter}`;
+        if (echoedUserMessageIds.has(messageId)) return [];
+        echoedUserMessageIds.add(messageId);
+        return [{ type: "user_message", text, messageId, runtime: "cloud" }];
+      }
 
       case "agent_message_chunk": {
-        const messageId = messageIdFor("text", update.messageId);
+        // Devin links its own terminal buffers as `devin:///terminal_contents/…`.
+        // They resolve only inside Devin, so as chat text they are noise.
+        if (update.content.type === "resource_link" && /^devin:/i.test(update.content.uri)) return [];
+        const messageId = messageIdFor("text", update.messageId ?? completeMessageEventId(update));
         let text = textOfContentBlock(update.content);
         if (!text.length) return [];
         if (acpResourceLinkSourceRef(update.content)) {
@@ -434,21 +508,23 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
       case "agent_thought_chunk": {
         const text = textOfContentBlock(update.content);
         if (!text.length) return [];
-        const messageId = messageIdFor("thought", update.messageId);
+        const messageId = messageIdFor("thought", update.messageId ?? completeMessageEventId(update));
         return [withTurn({ type: "reasoning" as const, text, itemId: messageId })];
       }
 
       case "tool_call": {
-        const kind = update.kind ?? "other";
+        const kind = normalizeToolKind(update.kind);
         const tracked: TrackedToolCall = {
           rowKind: classifyRowKind(kind),
           toolName: update.name?.length ? update.name : update.title,
           title: update.title,
           kind,
-          status: update.status ?? "pending",
+          status: normalizeToolStatus(update.status, "pending"),
           opened: false,
           cwd: "",
           lastOutput: "",
+          rawOutput: update.rawOutput,
+          hasRawOutput: Object.prototype.hasOwnProperty.call(update, "rawOutput"),
           diffIndexByPath: new Map(),
           rawInput: update.rawInput,
           locations: update.locations,
@@ -457,7 +533,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
         const events = openRow(tracked, update.toolCallId, update.rawInput);
         events.push(...emitToolContent(tracked, update.toolCallId, update.content ?? [], tracked.status));
         if (tracked.status === "completed" || tracked.status === "failed") {
-          events.push(...closeRow(tracked, update.toolCallId, update.rawOutput));
+          events.push(...closeRow(tracked, update.toolCallId, tracked.hasRawOutput ? tracked.rawOutput : undefined));
         }
         return events;
       }
@@ -467,16 +543,18 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
         if (!tracked) {
           // An update for a tool call ADE never saw. Adopt it rather than drop
           // it: an agent that restarts mid-turn can skip the opening frame.
-          const kind = update.kind ?? "other";
+          const kind = normalizeToolKind(update.kind);
           const adopted: TrackedToolCall = {
             rowKind: classifyRowKind(kind),
             toolName: update.name?.length ? update.name : update.title ?? update.toolCallId,
             title: update.title ?? update.toolCallId,
             kind,
-            status: update.status ?? "in_progress",
+            status: normalizeToolStatus(update.status, "in_progress"),
             opened: false,
             cwd: "",
             lastOutput: "",
+            rawOutput: update.rawOutput,
+            hasRawOutput: Object.prototype.hasOwnProperty.call(update, "rawOutput"),
             diffIndexByPath: new Map(),
             rawInput: update.rawInput ?? undefined,
             locations: update.locations ?? undefined,
@@ -487,7 +565,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
             ...emitToolContent(adopted, update.toolCallId, update.content ?? [], adopted.status),
           );
           if (adopted.status === "completed" || adopted.status === "failed") {
-            adoptedEvents.push(...closeRow(adopted, update.toolCallId, update.rawOutput));
+            adoptedEvents.push(...closeRow(adopted, update.toolCallId, adopted.hasRawOutput ? adopted.rawOutput : undefined));
           }
           return adoptedEvents;
         }
@@ -495,17 +573,57 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
         if (update.title?.length) tracked.title = update.title;
         if (update.name?.length) tracked.toolName = update.name;
         if (update.rawInput != null) tracked.rawInput = update.rawInput;
+        if (Object.prototype.hasOwnProperty.call(update, "rawOutput")) {
+          tracked.rawOutput = update.rawOutput;
+          tracked.hasRawOutput = true;
+        }
         if (update.locations != null) tracked.locations = update.locations;
+        // The row type is fixed once a row is out; before that, a late `kind`
+        // still decides it.
+        if (update.kind && !tracked.opened) {
+          tracked.kind = normalizeToolKind(update.kind);
+          tracked.rowKind = classifyRowKind(tracked.kind);
+        }
         const previousStatus = tracked.status;
-        if (update.status) tracked.status = update.status;
+        if (update.status) tracked.status = normalizeToolStatus(update.status, previousStatus);
+
+        const terminalStatus = tracked.status === "completed" || tracked.status === "failed";
+        let commandDetailsChanged = false;
+        if (tracked.opened && tracked.rowKind === "command" && update.rawInput != null) {
+          const previousCommand = tracked.command;
+          const previousCwd = tracked.cwd;
+          const inputCommand = readRawInputString(update.rawInput, ["command", "cmd", "script", "input"]);
+          if (inputCommand) tracked.command = inputCommand;
+          tracked.cwd = readRawInputString(update.rawInput, ["cwd", "workdir", "directory"]) || tracked.cwd;
+          commandDetailsChanged = previousCommand !== tracked.command || previousCwd !== tracked.cwd;
+        }
+        const toolInputChanged = tracked.opened
+          && tracked.rowKind === "tool"
+          && hasNonEmptyRecord(update.rawInput)
+          && JSON.stringify(update.rawInput) !== tracked.emittedArgsJson;
 
         const events: AgentChatEvent[] = [];
-        if (!tracked.opened) events.push(...openRow(tracked, update.toolCallId, update.rawInput));
+        if (!tracked.opened) {
+          events.push(...openRow(tracked, update.toolCallId, tracked.rawInput));
+        } else if (toolInputChanged) {
+          // Input that arrived after the opening frame. Same item id, so the
+          // row merges. A terminal result follows below when this update arrives
+          // after completion, so the final transcript state stays closed.
+          events.push(toolCallRow(tracked, update.toolCallId, update.rawInput));
+        } else if (tracked.rowKind === "command" && commandDetailsChanged && !terminalStatus) {
+          // Execute tools may refine their partial command after the row opens.
+          events.push(commandRow(tracked, update.toolCallId));
+        }
         events.push(...emitToolContent(tracked, update.toolCallId, update.content ?? [], tracked.status));
         const becameTerminal =
           (tracked.status === "completed" || tracked.status === "failed")
           && previousStatus !== tracked.status;
-        if (becameTerminal) events.push(...closeRow(tracked, update.toolCallId, update.rawOutput));
+        if (
+          becameTerminal
+          || (terminalStatus && (toolInputChanged || commandDetailsChanged))
+        ) {
+          events.push(...closeRow(tracked, update.toolCallId, tracked.hasRawOutput ? tracked.rawOutput : undefined));
+        }
         return events;
       }
 
@@ -556,6 +674,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
         options.callbacks?.onSessionInfo?.({
           title: update.title ?? null,
           updatedAt: update.updatedAt ?? null,
+          meta: update._meta && typeof update._meta === "object" ? update._meta as Record<string, unknown> : null,
         });
         return [];
 

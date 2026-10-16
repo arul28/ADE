@@ -60,8 +60,8 @@ working branch:
   download links and release assets remain disabled until the public gates
   are explicitly enabled.
 - Windows chrome, AppUserModelID, microphone-denial guidance, sync health, and
-  platform-aware copy/navigation are implemented. macOS-native Notch,
-  computer-use, and iOS Simulator actions are hidden or capability-blocked
+  platform-aware copy/navigation are implemented. macOS-native computer-use
+  and iOS Simulator actions are hidden or capability-blocked
   while App Control, Browser, and proof ingestion remain available.
 - The Windows developer loop now uses a per-user named pipe, invokes local
   JavaScript CLI entry points instead of fragile global `.cmd` shims, strips
@@ -123,7 +123,7 @@ release; a manual binary copy is not acceptable proof.
 | Windows developer loop | Per-user runtime pipe, successful-build-gated Electron launch, hidden background probes, and owned-runtime cleanup are implemented and host-tested | Repeat from a clean clone |
 | Sync/iPhone pairing | Intended to work | CRR roundtrip and firewall testing |
 | Built-in browser/proof ingest | Mostly platform-neutral | Windows Hello, download, and security testing |
-| Native computer use | macOS-only by design; capability-gated on Windows | Separate native Windows project |
+| Native computer use | Windows Desktop gives each lane a Windows screen: a private Remote Desktop child session after a one-time admin setup, or the user's main desktop on their Allow, driven by `ade-desktop-driver.exe` (UI Automation, `SendInput`, Media Foundation H.264) through `ade screen`. Codex Computer Use and Ghost OS stay macOS-only | Installed-build proof of setup, the private seat, the shared seat and a recording on a clean Windows 11 VM |
 | iOS Simulator/Xcode Preview | macOS-only and hidden on Windows | No Windows work required |
 | Windows remote brain host | Explicitly rejected | Separate project |
 | Windows ARM64 | Native payloads incomplete | Separate project |
@@ -293,7 +293,7 @@ The build PR should also include a focused platform pass:
   `hiddenInset`, macOS traffic-light positioning, and a renderer header with
   80 px of left padding. Verify caption buttons, dragging, double-click
   maximize, Snap Layouts, and DPI scaling.
-- Hide or clearly disable iOS Simulator, Xcode Preview, native Notch, and local
+- Hide or clearly disable iOS Simulator, Xcode Preview, and local
   OS computer-use actions.
 - Keep browser/App Control capture and proof-file ingestion enabled where
   supported.
@@ -387,7 +387,6 @@ At minimum:
 These should not block the first Windows desktop build:
 
 - Windows as a remotely installable ADE brain.
-- Native Windows computer use using Windows Graphics Capture/UI Automation.
 - Signed N-to-N+1 automatic-update testing, including cache/retry/relaunch,
   HKCU startup-supervisor recovery, legacy Scheduled Task cleanup, data
   preservation, and rejection of tampered or incorrectly signed updates.

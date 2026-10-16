@@ -1,3 +1,5 @@
+import { PROVIDER_DISPLAY_NAME } from "../../../../shared/providers";
+
 import type {
   AutoRebaseLaneStatus,
   GitCommitSummary,
@@ -31,6 +33,7 @@ const PROVIDER_NAMES: Record<string, string> = {
   copilot: "Copilot",
   gemini: "Gemini",
   pi: "Pi",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   qwen: "Qwen",
   kimi: "Kimi",
   grok: "Grok",
@@ -61,6 +64,7 @@ function providerFromText(text: string): string | null {
   if (/gemini/.test(s)) return "gemini";
   if (/opencode/.test(s)) return "opencode";
   if (/\bdroid\b|factory\.ai|factory-droid/.test(s)) return "droid";
+  if (/\bmuse\b/.test(s)) return "muse";
   return null;
 }
 
@@ -72,8 +76,13 @@ function providerFromText(text: string): string | null {
 export function parseCoAuthorProvider(message: string | null | undefined): string | null {
   if (!message) return null;
   const pattern = /^\s*co-authored-by:\s*(.+)$/gim;
-  for (const match of message.matchAll(pattern)) {
-    const provider = providerFromText(match[1] ?? "");
+  return providerFromCoAuthors(Array.from(message.matchAll(pattern), (match) => match[1] ?? ""));
+}
+
+/** The first agent named by a commit's `Co-authored-by` trailer values. */
+export function providerFromCoAuthors(values: readonly string[]): string | null {
+  for (const value of values) {
+    const provider = providerFromText(value);
     if (provider) return provider;
   }
   return null;

@@ -34,7 +34,7 @@ function VariableButton({
           "flex h-6 items-center gap-1 rounded-md border px-1.5 text-[10px] font-medium transition-colors",
           open
             ? "border-accent/40 bg-accent/10 text-accent"
-            : "border-white/[0.08] bg-white/[0.03] text-muted-fg/70 hover:border-accent/30 hover:text-fg",
+            : "border-fg/[0.08] bg-fg/[0.03] text-muted-fg/70 hover:border-accent/30 hover:text-fg",
         )}
       >
         <Code size={11} weight="bold" />
@@ -47,7 +47,7 @@ function VariableButton({
         anchorRef={buttonRef}
         onClose={() => setOpen(false)}
         placement="bottom-end"
-        className="max-h-[280px] w-[220px] overflow-y-auto rounded-lg border border-white/[0.08] bg-surface-overlay p-1 shadow-float"
+        className="max-h-[280px] w-[220px] overflow-y-auto rounded-lg border border-fg/[0.08] bg-surface-overlay p-1 shadow-float"
       >
         {groups.map((group) => (
           <div key={group.title} className="mb-1 last:mb-0">
@@ -62,7 +62,7 @@ function VariableButton({
                   onInsert(variable.token);
                   setOpen(false);
                 }}
-                className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1 text-left hover:bg-white/[0.05]"
+                className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1 text-left hover:bg-fg/[0.05]"
               >
                 <span className="text-[11px] text-fg">{variable.label}</span>
                 <span className="truncate font-mono text-[9.5px] text-muted-fg/50">{variable.token}</span>
@@ -150,7 +150,7 @@ export function VariableTextarea({
 }) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
   return (
-    <div className="rounded-md border border-white/[0.08] bg-white/[0.03] transition-colors focus-within:border-accent/45 focus-within:ring-1 focus-within:ring-accent/20">
+    <div className="rounded-md border border-fg/[0.08] bg-fg/[0.03] transition-colors focus-within:border-accent/45 focus-within:ring-1 focus-within:ring-accent/20">
       <textarea
         ref={ref}
         value={value}
@@ -165,7 +165,7 @@ export function VariableTextarea({
           className,
         )}
       />
-      <div className="flex items-center justify-end border-t border-white/[0.05] px-1.5 py-1">
+      <div className="flex items-center justify-end border-t border-fg/[0.05] px-1.5 py-1">
         <VariableButton
           triggerType={triggerType}
           onInsert={(token) => {

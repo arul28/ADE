@@ -1,4 +1,9 @@
 @import "tailwindcss";
+@import "./styles/surfaceKit.css";
+@import "./styles/scene.css";
+@import "./styles/foundation.css";
+@import "./styles/toolPickerBackdrop.css";
+@import "./styles/smartTooltip.css";
 /* The config, named rather than found, and load-bearing today.
    `@tailwindcss/postcss` 4.2.1 does NOT auto-detect `tailwind.config.cjs`
    beside package.json. I compiled this stylesheet both ways: with the line,
@@ -8,443 +13,27 @@
    renders see-through. Do not remove this line. */
 @config "../../tailwind.config.cjs";
 
-[data-theme="dark"] .editor-target-logo--invert-in-dark {
-  filter: invert(1);
+/* lib/xtermCursorBlink.ts drives a focused cursor's blink: xterm's own
+   `step-end` keyframes stay, held paused at 25% (on) or 75% (off) and flipped
+   every 500 ms, so the cursor looks the same without a running animation
+   re-styling it every display frame. */
+.ade-xterm-blink-clock .xterm-rows.xterm-focus .xterm-cursor.xterm-cursor-blink {
+  animation-play-state: paused !important;
+  animation-delay: -250ms !important;
+}
+.ade-xterm-blink-clock.ade-xterm-blink-off .xterm-rows.xterm-focus .xterm-cursor.xterm-cursor-blink {
+  animation-delay: -750ms !important;
 }
 
-/* Font @font-face declarations are injected from main.tsx via Vite ?url imports
-   so the dev server resolves them correctly (CSS-relative ../../node_modules
-   paths fall outside Vite's served root and 403). */
-
-@theme {
-  --radius-xl: 16px;
-  --radius-lg: 12px;
-  --radius-md: 8px;
-  --radius-sm: 6px;
-  --radius-full: 9999px;
-
-  --pane-gap: 4px;
-  --pane-radius: 12px;
-  --pane-minimized-height: 28px;
-
-  /* Both Apple fallbacks are unresolvable off macOS, so a Windows box with no
-     Geist landed on Arial. `system-ui` and "Segoe UI" keep it on the platform
-     UI face instead — same stack webclient.html already ships. */
-  --font-sans: "Geist", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, monospace;
-  --animate-pulse: ade-duty-pulse 2s infinite;
-  --animate-ping: ade-duty-ping 2s infinite;
-
-  --shadow-card: 0 4px 16px -4px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(45, 40, 64, 0.25);
-  --shadow-card-hover: 0 8px 30px -6px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(167, 139, 250, 0.15);
-  --shadow-float: 0 20px 50px -16px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(167, 139, 250, 0.08);
-
-  --chat-radius-shell: 18px;
-  --chat-radius-card: 16px;
-  /*
-   * Chat surfaces overwrite both of these per pane. They are declared here so a
-   * chat component rendered OUTSIDE a pane still computes: an undefined var in
-   * `calc(var(--chat-font-size) * 13 / 14)` makes the whole declaration invalid,
-   * which silently fell back to the document size, and an undefined
-   * `--chat-accent` fell back to the operating system's accent colour.
-   * 14px is the base every `* n / 14` ratio in the chat components is written
-   * against.
-   */
-  --chat-font-size: 14px;
-  --chat-accent: var(--color-accent);
-  --chat-radius-pill: 9999px;
-  /* 32px title rail + 1px hairline. Shared by `.ade-tool-header` and
-     `.ade-chat-shell-header` so the Work split's two bars meet. */
-  --ade-work-chrome-rail-h: 33px;
-  /* The one hairline under the sidebar tab row, the chat header and the
-     tools header, so the three read as one bar. */
-  --ade-work-chrome-rail-border: rgba(255, 255, 255, 0.07);
-}
-
-/* ═══════════════════════════════════════════════════════════
-   Dark Theme (DEFAULT)
-   ═══════════════════════════════════════════════════════════ */
-
-:root,
-[data-theme="dark"] {
-  --color-bg: #0C0B10;
-  /* Neutral codex-style canvas (shared by the chat surface + work-tab chrome so
-     there is no color split). rgb(15, 15, 17). */
-  --chat-canvas-bg: #0f0f11;
-  --color-fg: #F0F0F2;
-  --color-surface: #16141E;
-  --color-card: #1A1830;
-  --color-card-fg: #F0F0F2;
-  --color-card-rgb: 28, 25, 38;
-  --color-secondary: #252232;
-  --color-secondary-fg: #A8A8B4;
-  --color-muted: #1E1B28;
-  --color-muted-fg: #908FA0;
-  --color-border: #302C42;
-  --color-accent: #A78BFA;
-  --color-accent-fg: #0C0B10;
-  --color-accent-muted: rgba(167, 139, 250, 0.20);
-  --color-accent-bright: #C4B5FD;
-  --color-accent-deep: #7C3AED;
-  --color-accent-glow-strong: rgba(168, 130, 255, 0.22);
-  --color-surface-raised: #1E1B2E;
-  --color-surface-recessed: #0A090E;
-  --color-surface-overlay: #1E1B2E;
-  --color-popup-bg: #151325;
-  --color-modal-bg: #1A1830;
-  --color-composer-bg: #14121F;
-  --color-glass-card: #141220;
-  --gradient-popup-border: linear-gradient(180deg, rgba(167, 139, 250, 0.20), rgba(124, 58, 237, 0.10));
-  --gradient-accent: linear-gradient(135deg, #7C3AED, #A78BFA);
-  --gradient-accent-soft: linear-gradient(135deg, rgba(124, 58, 237, 0.20), rgba(167, 139, 250, 0.10));
-  --shadow-popup: 0 20px 50px -12px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(167, 139, 250, 0.12);
-  --shadow-modal: 0 28px 64px -16px rgba(0, 0, 0, 0.67), 0 0 0 1px rgba(167, 139, 250, 0.10);
-  --blur-popup: 40px;
-  --blur-modal: 60px;
-  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.5);
-  --shadow-separator: inset 0 0 4px 0 rgba(0, 0, 0, 0.4);
-  --shadow-panel: 0 2px 12px -2px rgba(0, 0, 0, 0.6);
-  --color-separator: #302C42;
-  --color-separator-active: #A78BFA;
-  --border-separator: #38334E;
-  --gradient-surface: linear-gradient(180deg, #16141E 0%, #0C0B10 100%);
-  --gradient-panel: linear-gradient(180deg, #211E2E 0%, #16141E 100%);
-  --color-glow: rgba(167, 139, 250, 0.22);
-  --pane-bg: rgba(28, 25, 38, 0.94);
-  --pane-border: rgba(48, 44, 66, 0.6);
-  --chat-shell-shadow: 0 24px 64px -34px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(167, 139, 250, 0.12);
-  --chat-card-shadow: 0 16px 32px -24px rgba(0, 0, 0, 0.7);
-  --chat-composer-shadow: 0 -12px 30px -26px rgba(0, 0, 0, 0.7);
-  --chat-glass-bg: rgba(20, 18, 32, 0.75);
-  --chat-glass-border: rgba(255, 255, 255, 0.08);
-  --chat-glass-highlight: rgba(255, 255, 255, 0.10);
-  --chat-glass-lowlight: rgba(10, 8, 18, 0.34);
-  --chat-glass-sheen: rgba(167, 139, 250, 0.10);
-  --chat-panel-bg: rgba(20, 18, 32, 0.85);
-  --chat-panel-border: rgba(255, 255, 255, 0.10);
-  --chat-panel-bg-strong: rgba(28, 25, 38, 0.92);
-  --chat-streaming-shimmer: linear-gradient(90deg, transparent, rgba(255,255,255,0.07), transparent);
-  --chat-block-bg: rgba(0, 0, 0, 0.25);
-  --chat-block-border: rgba(255, 255, 255, 0.06);
-  --chat-inline-code-bg: rgba(0, 0, 0, 0.30);
-  --chat-table-border: rgba(255, 255, 255, 0.08);
-  --chat-copy-button-bg: rgba(255, 255, 255, 0.03);
-  --chat-copy-button-border: rgba(255, 255, 255, 0.08);
-  --chat-copy-button-fg: rgba(240, 240, 242, 0.45);
-  --chat-copy-button-hover-bg: rgba(255, 255, 255, 0.05);
-  --chat-copy-button-hover-border: rgba(255, 255, 255, 0.14);
-  --chat-copy-button-hover-fg: rgba(240, 240, 242, 0.72);
-  --color-success: #22c55e;
-  --color-warning: #f59e0b;
-  --color-error: #ef4444;
-  --color-info: #3b82f6;
-  --color-diff-add: #22c55e;
-  --color-diff-del: #ef4444;
-  --color-diff-hunk: #3b82f6;
-  /* Muted "passed/green" for PR checks — desaturated so green reads as a quiet
-     status, not a neon highlight. Resolves per-theme via var() at use time. */
-  --color-check-pass: color-mix(in srgb, var(--color-success) 60%, var(--color-muted-fg));
-
-  /* PRs tab surfaces (premium overhaul): neutral near-black tab + thread cards,
-     faintly-violet floating side panels. */
-  --pr-surface: rgb(15, 16, 16);
-  --pr-thread-card: rgb(23, 23, 24);
-  --pr-panel-card: rgb(24, 23, 43);
-
-  /* App shell primitives (shared contract for TopBar + sidebar) */
-  --shell-header-height: 32px;
-  --shell-header-padding-start: 14px;
-  --shell-header-padding-end: 14px;
-  --shell-header-bg: rgba(12, 11, 16, 0.82);
-  --shell-header-fg: var(--color-fg);
-  --shell-header-border: rgba(255, 255, 255, 0.04);
-  --shell-header-divider: rgba(255, 255, 255, 0.04);
-
-  --shell-sidebar-bg: linear-gradient(180deg, rgba(22, 20, 30, 0.88) 0%, rgba(12, 11, 16, 0.92) 100%);
-  --shell-sidebar-border: rgba(255, 255, 255, 0.04);
-  --shell-sidebar-item-fg: rgba(255, 255, 255, 0.45);
-  --shell-sidebar-item-hover-fg: rgba(255, 255, 255, 0.85);
-  --shell-sidebar-item-hover-bg: rgba(255, 255, 255, 0.05);
-  --shell-sidebar-item-active-fg: var(--color-accent);
-  --shell-sidebar-item-active-bg: rgba(167, 139, 250, 0.1);
-
-  --shell-sidebar-item-active-rail: var(--color-accent);
-  --shell-sidebar-separator: rgba(255, 255, 255, 0.04);
-
-  --shell-project-tab-bg: transparent;
-  --shell-project-tab-fg: rgba(255, 255, 255, 0.45);
-  --shell-project-tab-hover-bg: rgba(255, 255, 255, 0.06);
-  --shell-project-tab-hover-fg: rgba(255, 255, 255, 0.85);
-  --shell-project-tab-hover-border: rgba(255, 255, 255, 0.08);
-  --shell-project-tab-active-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 22%, rgba(255, 255, 255, 0.03));
-  --shell-project-tab-active-fg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 24%, #ffffff);
-  --shell-project-tab-active-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 44%, transparent);
-  --shell-project-tab-missing-bg: rgba(239, 68, 68, 0.08);
-  --shell-project-tab-missing-fg: color-mix(in srgb, var(--color-error) 82%, var(--color-fg) 18%);
-  --shell-project-tab-missing-border: rgba(239, 68, 68, 0.2);
-  --shell-project-tab-open-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 14%, transparent);
-  --shell-project-tab-open-fg: rgba(255, 255, 255, 0.85);
-  --shell-project-tab-open-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 32%, transparent);
-  --shell-project-tab-focus-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 12%, transparent);
-  --shell-project-tab-focus-fg: rgba(255, 255, 255, 0.85);
-  --shell-project-tab-focus-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 32%, transparent);
-  --shell-project-tab-focus-ring: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 24%, transparent);
-  --shell-project-tab-font-family: var(--font-sans);
-  --shell-project-tab-font-size: 12px;
-  --shell-project-tab-letter-spacing: 0;
-  --shell-project-tab-height: 22px;
-
-  --shell-control-bg: rgba(255, 255, 255, 0.03);
-  --shell-control-fg: rgba(255, 255, 255, 0.5);
-  --shell-control-border: rgba(255, 255, 255, 0.06);
-  --shell-control-hover-bg: rgba(255, 255, 255, 0.06);
-  --shell-control-hover-fg: rgba(255, 255, 255, 0.85);
-  --shell-control-hover-border: rgba(255, 255, 255, 0.1);
-  --shell-control-open-bg: rgba(167, 139, 250, 0.1);
-  --shell-control-open-fg: rgba(255, 255, 255, 0.9);
-  --shell-control-open-border: rgba(167, 139, 250, 0.2);
-  --shell-control-focus-bg: rgba(255, 255, 255, 0.06);
-  --shell-control-focus-fg: rgba(255, 255, 255, 0.85);
-  --shell-control-focus-border: rgba(167, 139, 250, 0.2);
-  --shell-control-focus-ring: rgba(167, 139, 250, 0.12);
-  --shell-control-kbd-bg: rgba(255, 255, 255, 0.04);
-  --shell-control-kbd-fg: rgba(255, 255, 255, 0.4);
-
-  --shell-status-running: #34d399;
-  --shell-status-attention: #fbbf24;
-
-  /* Work tab (sessions + view panes) */
-  --work-chrome-surface: var(--chat-canvas-bg, var(--color-card));
-  --work-pane-border: rgba(255, 255, 255, 0.06);
-  --work-pane-header-bg: rgba(255, 255, 255, 0.03);
-  --work-sidebar-bg: #161618;
-  --work-session-sidebar-bg: rgb(11, 11, 16);
-
-  /* Work tab combobox / popover */
-  --work-popover-bg: rgba(22, 20, 30, 0.96);
-  --work-popover-border: rgba(255, 255, 255, 0.10);
-  --work-popover-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.06);
-  --work-popover-item-hover: rgba(255, 255, 255, 0.06);
-  --work-popover-item-active: rgba(255, 255, 255, 0.08);
-}
-
-/* ═══════════════════════════════════════════════════════════
-   Native title-bar insets (platform chrome clearance)
-   ═══════════════════════════════════════════════════════════
-
-   The OS draws its own window controls on top of the title bar: the traffic
-   lights at the start on macOS, the caption buttons at the end on Windows. The
-   shell header has to leave room for whichever applies.
-
-   These deliberately do NOT live in the theme token block above. `data-theme`
-   is set on <html>, <body>, AND the shell wrapper (see App.tsx), so every one
-   of those elements re-declares the `--shell-header-padding-*` defaults — which
-   would shadow a platform value inherited from <html> long before it reached
-   the header. Only <html> carries `data-ade-platform`, so a dedicated property
-   name declared here survives all the way down.
-
-   Both values are only the pre-paint fallback. `applyShellHeaderInset()`
-   (renderer/lib/zoom.ts) and `trackWindowsCaptionInset()`
-   (renderer/lib/windowControlsOverlay.ts) overwrite them with live geometry,
-   because the native controls are a fixed physical size that does not follow
-   the renderer's zoom factor. */
-
-:root[data-ade-platform="darwin"] {
-  --shell-header-inset-start: 80px;
-}
-
-:root[data-ade-platform="win32"] {
-  /* Three 46 DIP caption buttons plus an 8px gutter. */
-  --shell-header-inset-end: 146px;
-}
-
-/* ═══════════════════════════════════════════════════════════
-   Light Theme
-   ═══════════════════════════════════════════════════════════ */
-
-[data-theme="light"] {
-  --ade-work-chrome-rail-border: rgba(26, 26, 30, 0.1);
-  --color-bg: #f5f3f0;
-  --chat-canvas-bg: #f5f3f0;
-  --color-fg: #1a1a1e;
-  --color-surface: #faf8f5;
-  --color-card: #ffffff;
-  --color-card-fg: #1a1a1e;
-  --color-card-rgb: 255, 255, 255;
-  --color-secondary: #e8e5e0;
-  --color-secondary-fg: #52525b;
-  --color-muted: #ece9e4;
-  --color-muted-fg: #636370;
-  --color-border: #d6d3ce;
-  --color-accent: #049068;
-  --color-accent-fg: #ffffff;
-  --color-accent-muted: rgba(4, 144, 104, 0.10);
-  /* Light never defined these, so every light surface that reached for them —
-     the tools picker backdrop among them — silently got the DARK theme's
-     violets on a green page. */
-  --color-accent-bright: #4FC49B;
-  --color-accent-deep: #0E9A72;
-  --color-surface-raised: #ffffff;
-  --color-surface-recessed: #eae7e2;
-  --color-surface-overlay: rgba(255, 255, 255, 0.92);
-  --shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.06);
-  --shadow-separator: inset 0 0 4px 0 rgba(0, 0, 0, 0.06);
-  --shadow-panel: 0 4px 16px -4px rgba(0, 0, 0, 0.08), 0 1px 3px -1px rgba(0, 0, 0, 0.05);
-  --color-separator: #e8e5e0;
-  --color-separator-active: #049068;
-  --border-separator: #d6d3ce;
-  --gradient-surface: linear-gradient(180deg, #faf8f5, #f5f3f0);
-  --gradient-panel: linear-gradient(180deg, #ffffff 0%, #faf8f5 100%);
-  --color-glow: rgba(4, 144, 104, 0.12);
-  --pane-bg: rgba(255, 255, 255, 0.88);
-  --pane-border: rgba(212, 209, 204, 0.5);
-  --chat-shell-shadow: 0 18px 42px -28px rgba(15, 23, 42, 0.18), 0 0 0 1px rgba(4, 144, 104, 0.1);
-  --chat-card-shadow: 0 14px 28px -24px rgba(15, 23, 42, 0.14);
-  --chat-composer-shadow: 0 -12px 22px -24px rgba(15, 23, 42, 0.12);
-  --chat-glass-bg: rgba(255, 255, 255, 0.76);
-  --chat-glass-border: rgba(26, 26, 30, 0.08);
-  --chat-glass-highlight: rgba(255, 255, 255, 0.65);
-  --chat-glass-lowlight: rgba(182, 190, 204, 0.14);
-  --chat-glass-sheen: rgba(4, 144, 104, 0.08);
-  --chat-panel-bg: rgba(255, 255, 255, 0.82);
-  --chat-panel-border: rgba(26, 26, 30, 0.10);
-  --chat-panel-bg-strong: rgba(255, 255, 255, 0.92);
-  --chat-streaming-shimmer: linear-gradient(90deg, transparent, rgba(26,26,30,0.08), transparent);
-  --chat-block-bg: rgba(15, 23, 42, 0.04);
-  --chat-block-border: rgba(15, 23, 42, 0.08);
-  --chat-inline-code-bg: rgba(15, 23, 42, 0.06);
-  --chat-table-border: rgba(15, 23, 42, 0.10);
-  --chat-copy-button-bg: rgba(15, 23, 42, 0.04);
-  --chat-copy-button-border: rgba(15, 23, 42, 0.10);
-  --chat-copy-button-fg: rgba(26, 26, 30, 0.55);
-  --chat-copy-button-hover-bg: rgba(15, 23, 42, 0.07);
-  --chat-copy-button-hover-border: rgba(15, 23, 42, 0.18);
-  --chat-copy-button-hover-fg: rgba(26, 26, 30, 0.80);
-  --color-success: #16a34a;
-  --color-warning: #d97706;
-  --color-error: #dc2626;
-  --color-info: #2563eb;
-  --color-diff-add: #16a34a;
-  --color-diff-del: #dc2626;
-  --color-diff-hunk: #2563eb;
-  /* PRs tab surfaces — light-theme equivalents. */
-  --pr-surface: var(--color-bg);
-  --pr-thread-card: var(--color-card);
-  --pr-panel-card: color-mix(in srgb, var(--color-accent) 6%, var(--color-card));
-
-  --shell-header-bg: color-mix(in srgb, var(--color-surface-raised) 90%, var(--color-bg));
-  --shell-header-fg: var(--color-fg);
-  --shell-header-border: color-mix(in srgb, var(--color-border) 78%, transparent);
-  --shell-header-divider: color-mix(in srgb, var(--color-border) 60%, transparent);
-
-  --shell-sidebar-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(245, 243, 240, 0.98) 100%);
-  --shell-sidebar-border: color-mix(in srgb, var(--color-border) 72%, transparent);
-  --shell-sidebar-item-fg: color-mix(in srgb, var(--color-muted-fg) 86%, var(--color-fg) 14%);
-  --shell-sidebar-item-hover-fg: var(--color-fg);
-  --shell-sidebar-item-hover-bg: color-mix(in srgb, var(--color-muted) 86%, transparent);
-  --shell-sidebar-item-active-fg: var(--color-accent);
-  --shell-sidebar-item-active-bg: color-mix(in srgb, var(--color-accent) 10%, transparent);
-  --shell-sidebar-item-active-rail: var(--color-accent);
-  --shell-sidebar-separator: color-mix(in srgb, var(--color-border) 62%, transparent);
-
-  --shell-project-tab-bg: transparent;
-  --shell-project-tab-fg: color-mix(in srgb, var(--color-muted-fg) 86%, var(--color-fg) 14%);
-  --shell-project-tab-hover-bg: color-mix(in srgb, var(--color-muted) 86%, transparent);
-  --shell-project-tab-hover-fg: var(--color-fg);
-  --shell-project-tab-hover-border: color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
-  --shell-project-tab-active-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 18%, var(--color-surface-raised));
-  --shell-project-tab-active-fg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 34%, var(--color-fg));
-  --shell-project-tab-active-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 48%, transparent);
-  --shell-project-tab-missing-bg: color-mix(in srgb, var(--color-error) 9%, transparent);
-  --shell-project-tab-missing-fg: color-mix(in srgb, var(--color-error) 86%, var(--color-fg) 14%);
-  --shell-project-tab-missing-border: color-mix(in srgb, var(--color-error) 38%, transparent);
-  --shell-project-tab-open-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 12%, transparent);
-  --shell-project-tab-open-fg: var(--color-fg);
-  --shell-project-tab-open-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 42%, var(--color-border));
-  --shell-project-tab-focus-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 10%, transparent);
-  --shell-project-tab-focus-fg: var(--color-fg);
-  --shell-project-tab-focus-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 36%, var(--color-border));
-  --shell-project-tab-focus-ring: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 26%, transparent);
-
-  --shell-control-bg: var(--color-surface-recessed);
-  --shell-control-fg: color-mix(in srgb, var(--color-muted-fg) 86%, var(--color-fg) 14%);
-  --shell-control-border: color-mix(in srgb, var(--color-border) 84%, var(--color-muted-fg) 16%);
-  --shell-control-hover-bg: var(--color-surface-recessed);
-  --shell-control-hover-fg: var(--color-fg);
-  --shell-control-hover-border: color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
-  --shell-control-open-bg: color-mix(in srgb, var(--color-accent) 10%, var(--shell-control-bg));
-  --shell-control-open-fg: var(--color-fg);
-  --shell-control-open-border: color-mix(in srgb, var(--color-accent) 40%, var(--shell-control-border));
-  --shell-control-focus-bg: var(--shell-control-hover-bg);
-  --shell-control-focus-fg: var(--shell-control-hover-fg);
-  --shell-control-focus-border: color-mix(in srgb, var(--color-accent) 32%, var(--shell-control-border));
-  --shell-control-focus-ring: color-mix(in srgb, var(--color-accent) 26%, transparent);
-  --shell-control-kbd-bg: color-mix(in srgb, var(--color-surface) 80%, var(--color-bg));
-  --shell-control-kbd-fg: color-mix(in srgb, var(--color-muted-fg) 84%, var(--color-fg) 16%);
-
-  --shell-status-running: #10b981;
-  --shell-status-attention: #d97706;
-
-  --work-pane-border: color-mix(in srgb, var(--color-border) 70%, transparent);
-  --work-pane-header-bg: color-mix(in srgb, var(--color-card) 88%, transparent);
-  --work-sidebar-bg: color-mix(in srgb, var(--color-card) 60%, var(--color-bg));
-  --work-session-sidebar-bg: var(--work-sidebar-bg);
-
-  --work-popover-bg: color-mix(in srgb, var(--color-card) 96%, white);
-  --work-popover-border: color-mix(in srgb, var(--color-border) 90%, transparent);
-  --work-popover-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.15), 0 0 0 1px color-mix(in srgb, var(--color-border) 88%, transparent);
-  --work-popover-item-hover: color-mix(in srgb, var(--color-muted) 70%, transparent);
-  --work-popover-item-active: color-mix(in srgb, var(--color-fg) 8%, var(--color-card));
-}
-
-/* ═══════════════════════════════════════════════════════════
-   Per-Tab Tint System
-   ═══════════════════════════════════════════════════════════ */
-
-.tab-tint-project { --tab-tint-rgb: 167, 139, 250; }
-.tab-tint-lanes { --tab-tint-rgb: 245, 158, 11; }
-.tab-tint-files { --tab-tint-rgb: 113, 113, 122; }
-/* Neutral zinc — work surface matches rest of UI, not a second brand tint. */
-.tab-tint-work { --tab-tint-rgb: 113, 113, 122; }
-.tab-tint-conflicts { --tab-tint-rgb: 239, 68, 68; }
-.tab-tint-prs { --tab-tint-rgb: 167, 139, 250; }
-.tab-tint-history { --tab-tint-rgb: 217, 119, 6; }
-.tab-tint-automations { --tab-tint-rgb: 249, 115, 22; }
-.tab-tint-cto { --tab-tint-rgb: 59, 130, 246; }
-.tab-tint-settings { --tab-tint-rgb: 113, 113, 122; }
-
-/* ═══════════════════════════════════════════════════════════
-   Base Styles
-   ═══════════════════════════════════════════════════════════ */
-
-html,
-body {
-  height: 100%;
-}
-
-body {
-  margin: 0;
-  color: var(--color-fg);
-  background-color: var(--color-bg);
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
-  font-feature-settings: "ss01";
-  letter-spacing: 0;
-}
-
-button,
-input,
-textarea,
-select,
-option {
-  font-family: var(--font-sans);
-}
-
-code,
-pre,
-kbd,
-samp {
-  font-family: var(--font-mono);
+/* The app's text selection color. Chromium inherits ::selection from the
+   parent's ::selection, so one rule on the app root colors every descendant,
+   and a nested `selection:` class still wins for its own subtree. Tailwind's
+   `selection:bg-accent/30` compiles to `.x *::selection`, a descendant rule
+   matched against every element on every restyle, so do not use the variant
+   on a large container. The accent resolves on the root; nothing below it
+   overrides --color-accent. */
+.ade-app-selection::selection {
+  background-color: color-mix(in oklab, var(--color-accent) 30%, transparent);
 }
 
 /* Keep xterm glyph metrics isolated from global typography rules. */
@@ -597,7 +186,7 @@ h6 {
   color: var(--shell-project-tab-fg);
   background: var(--shell-project-tab-bg);
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   outline: none;
   transition: color 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }
@@ -644,7 +233,7 @@ h6 {
   color: var(--shell-control-fg);
   background: var(--shell-control-bg);
   border: 1px solid var(--shell-control-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   outline: none;
   transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
 }
@@ -1027,7 +616,7 @@ h6 {
   align-items: center;
   justify-content: center;
   height: 24px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--shell-sidebar-item-fg);
   background: transparent;
   outline: none;
@@ -1499,7 +1088,7 @@ body.ade-project-sidebar-resizing {
   height: 24px;
   margin-right: -4px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-muted-fg);
   cursor: pointer;
@@ -1542,7 +1131,7 @@ body.ade-project-sidebar-resizing {
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-size: 11px;
   font-weight: 400;
   color: var(--color-fg);
@@ -1655,7 +1244,7 @@ body.ade-project-sidebar-resizing {
   align-items: center;
   gap: 1px;
   padding: 2px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--work-pane-border);
 }
@@ -1665,7 +1254,7 @@ body.ade-project-sidebar-resizing {
   align-items: center;
   justify-content: center;
   padding: 3px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: none;
   background: transparent;
   font-size: 10px;
@@ -1691,6 +1280,358 @@ body.ade-project-sidebar-resizing {
 [data-theme="light"] .ade-work-segmented-item[data-active="true"] {
   color: var(--color-fg);
   background: color-mix(in srgb, var(--color-fg) 8%, var(--color-card));
+}
+
+/* Focus pill: the Work sidebar's Focus toggle with the Focus-grid half
+   attached. Same height, radius and border as `.ade-work-segmented` beside it,
+   so the bar reads as one row of one family of controls. The accent marks
+   "on" and nothing else. */
+.ade-work-focus-pill {
+  display: inline-flex;
+  align-items: stretch;
+  height: 22px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--work-pane-border);
+  background: rgba(255, 255, 255, 0.03);
+  overflow: hidden;
+  transition: border-color 120ms ease, background 120ms ease, opacity 120ms ease;
+}
+
+.ade-work-focus-pill[data-on="true"] {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.ade-work-focus-pill[data-disabled="true"] {
+  opacity: 0.4;
+}
+
+.ade-work-focus-pill-main,
+.ade-work-focus-pill-grid {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--color-muted-fg);
+  font-size: 10px;
+  cursor: pointer;
+  outline: none;
+  transition: color 100ms ease, background 100ms ease, width 140ms ease;
+}
+
+.ade-work-focus-pill-main {
+  gap: 4px;
+  padding: 0 7px;
+}
+
+.ade-work-focus-pill-main:hover,
+.ade-work-focus-pill-grid:hover {
+  color: var(--color-fg);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.ade-work-focus-pill-main:focus-visible,
+.ade-work-focus-pill-grid:focus-visible {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 35%, transparent);
+}
+
+.ade-work-focus-pill[data-on="true"] .ade-work-focus-pill-main {
+  color: var(--color-fg);
+  font-weight: 500;
+}
+
+.ade-work-focus-pill-count {
+  min-width: 14px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-accent) 32%, transparent);
+}
+
+/* The grid half exists only while Focus is on; it slides out of the pill. */
+.ade-work-focus-pill-grid {
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+  border-left: 1px solid transparent;
+}
+
+.ade-work-focus-pill[data-on="true"]:not([data-disabled="true"]) .ade-work-focus-pill-grid {
+  width: 24px;
+  border-left-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+.ade-work-focus-pill[data-grid="true"] .ade-work-focus-pill-grid {
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-accent) 26%, transparent);
+}
+
+/* Focus grid roster: every waiting chat, grouped by page. Same height (41px
+   with its rule) and top rule as `.ade-project-sidebar-footer`, so the bottom
+   edge of the sidebar and of the grid line up as one. */
+.ade-focus-roster {
+  container-type: inline-size;
+  container-name: focus-roster;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 41px;
+  flex-shrink: 0;
+  padding: 0 8px;
+  border-top: 1px solid var(--shell-sidebar-separator, var(--work-pane-border));
+}
+
+.ade-focus-roster-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  /* A chip cut by the edge fades out instead of ending in a hard line, which
+     also says "there is more to scroll to". */
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 8px, #000 calc(100% - 28px), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 8px, #000 calc(100% - 28px), transparent 100%);
+}
+
+.ade-focus-roster-strip::-webkit-scrollbar {
+  display: none;
+}
+
+/* One group per page. The page on screen carries a quiet accent wash so the
+   eye finds "where am I" without reading. */
+.ade-focus-roster-page {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 2px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.ade-focus-roster-page[data-active="true"] {
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 28%, transparent);
+}
+
+.ade-focus-roster-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  max-width: 190px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-muted-fg);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+/* Wider windows give each chat's name more room before it truncates. */
+@container focus-roster (min-width: 1100px) {
+  .ade-focus-roster-chip { max-width: 240px; }
+}
+
+@container focus-roster (min-width: 1500px) {
+  .ade-focus-roster-chip { max-width: 300px; }
+}
+
+@container focus-roster (min-width: 1900px) {
+  .ade-focus-roster-chip { max-width: 380px; }
+}
+
+.ade-focus-roster-chip:hover {
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  color: var(--color-fg);
+}
+
+.ade-focus-roster-page[data-active="true"] .ade-focus-roster-chip {
+  color: color-mix(in srgb, var(--color-fg) 85%, transparent);
+}
+
+.ade-focus-roster-chip[data-focused="true"] {
+  background: color-mix(in srgb, var(--color-fg) 9%, transparent);
+  color: var(--color-fg);
+}
+
+.ade-focus-roster-chip[data-unseen="true"]::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--color-accent);
+}
+
+.ade-focus-roster-chip:focus-visible,
+.ade-focus-roster-arrow:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-fg) 35%, transparent);
+}
+
+.ade-focus-roster-summary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ade-focus-roster-arrow {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-muted-fg);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, opacity 120ms ease;
+}
+
+.ade-focus-roster-arrow:hover {
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  color: var(--color-fg);
+}
+
+.ade-focus-roster-arrow:disabled {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+/* One short slide in the direction of travel when the page changes. It runs
+   once and stops; nothing loops. */
+@keyframes ade-focus-page-next {
+  from { opacity: 0; transform: translateX(24px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes ade-focus-page-previous {
+  from { opacity: 0; transform: translateX(-24px); }
+  to { opacity: 1; transform: none; }
+}
+
+.ade-focus-page-enter-next {
+  animation: ade-focus-page-next 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.ade-focus-page-enter-previous {
+  animation: ade-focus-page-previous 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-focus-page-enter-next,
+  .ade-focus-page-enter-previous {
+    animation: none;
+  }
+
+  .ade-focus-roster-page,
+  .ade-focus-roster-chip,
+  .ade-focus-roster-arrow {
+    transition: none;
+  }
+}
+
+/* Focus pager in the sidebar toolbar: one control, the pill's height and
+   border, so the row stays one family of controls. */
+.ade-focus-toolbar-pager {
+  display: inline-flex;
+  align-items: stretch;
+  height: 22px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--work-pane-border);
+  background: rgba(255, 255, 255, 0.03);
+  overflow: hidden;
+}
+
+.ade-focus-toolbar-pager-arrow {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  border: none;
+  background: transparent;
+  color: var(--color-muted-fg);
+  cursor: pointer;
+  transition: color 100ms ease, background 100ms ease;
+}
+
+.ade-focus-toolbar-pager-arrow:hover {
+  color: var(--color-fg);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.ade-focus-toolbar-pager-arrow:disabled {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+.ade-focus-toolbar-pager-arrow:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 35%, transparent);
+}
+
+.ade-focus-toolbar-pager-label {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 2px;
+  font-size: 10px;
+  color: var(--color-fg);
+}
+
+.ade-focus-toolbar-pager-new {
+  position: absolute;
+  top: 3px;
+  right: 2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-accent);
+}
+
+[data-theme="light"] .ade-focus-toolbar-pager {
+  background: color-mix(in srgb, var(--color-fg) 3%, var(--color-card));
+}
+
+[data-theme="light"] .ade-work-focus-pill {
+  background: color-mix(in srgb, var(--color-fg) 3%, var(--color-card));
+}
+
+[data-theme="light"] .ade-work-focus-pill[data-on="true"] {
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-work-focus-pill,
+  .ade-work-focus-pill-main,
+  .ade-work-focus-pill-grid {
+    transition: none;
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1996,7 +1937,7 @@ body.ade-project-sidebar-resizing {
 
 /* Smaller radii + thinner borders for density */
 .ade-lane-column .ade-floating-pane {
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 /* Narrower pane gutters in dense mode */
@@ -2159,14 +2100,18 @@ input.ade-palette-search:focus-visible {
   to { opacity: 0; transform: scaleY(0.96); }
 }
 
-[data-radix-popper-content-wrapper] [data-state="open"],
+/* The wrapper's child only. A descendant selector also caught every nested
+   Radix part that carries `data-state` (each model row's context-menu
+   trigger, switches, tooltip triggers): on every open they faded to nothing
+   and snapped back, and restyled the whole popover on each frame. */
+[data-radix-popper-content-wrapper] > [data-state="open"],
 [data-radix-select-content][data-state="open"],
 [data-radix-dropdown-menu-content][data-state="open"] {
   transform-origin: var(--radix-popper-transform-origin, top);
   animation: ade-popover-in 150ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-[data-radix-popper-content-wrapper] [data-state="closed"],
+[data-radix-popper-content-wrapper] > [data-state="closed"],
 [data-radix-select-content][data-state="closed"],
 [data-radix-dropdown-menu-content][data-state="closed"] {
   animation: ade-popover-out 100ms ease-in;
@@ -2193,125 +2138,13 @@ button, [role="button"] {
   background: transparent;
   color: inherit;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   text-align: left;
   font: inherit;
   cursor: pointer;
 }
 .ade-help-menu-item:hover {
   background: color-mix(in srgb, var(--color-fg) 6%, transparent);
-}
-
-/* ═══════════════════════════════════════════════════════════
-   Smart Tooltips
-   ═══════════════════════════════════════════════════════════ */
-
-.ade-smart-tooltip {
-  width: max-content;
-  max-width: min(280px, calc(100vw - 24px));
-  background: var(--color-popup-bg, #151325);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
-  padding: 7px 10px 8px;
-  box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  animation: ade-stt-in 120ms ease forwards;
-}
-
-@keyframes ade-stt-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-/* ── head row ── */
-.ade-stt-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.ade-stt-label {
-  font-family: var(--font-sans);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--color-fg, #F0F0F2);
-  line-height: 1.3;
-}
-
-.ade-stt-kbd {
-  flex-shrink: 0;
-  font-family: var(--font-sans);
-  font-size: 9px;
-  line-height: 1;
-  color: var(--color-muted-fg, #908FA0);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 3px;
-  padding: 2px 5px;
-}
-
-/* ── description ── */
-.ade-stt-desc {
-  margin: 2px 0 0;
-  font-family: var(--font-sans);
-  font-size: 10.5px;
-  line-height: 1.45;
-  color: var(--color-muted-fg, #908FA0);
-}
-
-/* ── extra section (cmd / effect / warning) ── */
-.ade-stt-extra {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin-top: 5px;
-  padding-top: 5px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.ade-stt-cmd {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  line-height: 1.35;
-  color: var(--color-accent, #A78BFA);
-  word-break: break-all;
-}
-
-.ade-stt-effect {
-  font-family: var(--font-sans);
-  font-size: 10.5px;
-  line-height: 1.35;
-  color: var(--color-success, #22c55e);
-}
-
-.ade-stt-warn {
-  font-family: var(--font-sans);
-  font-size: 10.5px;
-  line-height: 1.35;
-  color: var(--color-warning, #f59e0b);
-}
-
-/* Docs deep-link: same weight as .ade-stt-extra, underlined to hint interactivity. */
-.ade-stt-doc {
-  display: inline-block;
-  margin-top: 5px;
-  padding-top: 5px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  font-family: var(--font-sans);
-  font-size: 10.5px;
-  line-height: 1.35;
-  color: var(--color-accent, #A78BFA);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  cursor: pointer;
-}
-
-.ade-stt-doc:hover,
-.ade-stt-doc:focus-visible {
-  color: var(--color-accent-strong, #C4B5FD);
-  outline: none;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -2354,22 +2187,56 @@ button, [role="button"] {
 /* The Work sidebar's "Working" status label breathes — the one row state that
    is actively changing under you gets the only ambient motion in the list.
    Amplitude is deliberately small: this is a sign of life, not an alert, and
-   `motion-safe:` gates it away entirely for reduced-motion users. */
+   `motion-safe:` gates it away entirely for reduced-motion users.
+
+   The breathe is an `ease-in-out` 1 -> 0.62 -> 1 opacity cycle held at
+   0.02-opacity steps, derived the same way as `activity-hdr-pulse`: each stop is
+   the time where cubic-bezier(0.42, 0, 0.58, 1), rounded to the nearest 0.02,
+   changes value. The `step-end` timing in SessionStatusLabel is load-bearing: a
+   smooth opacity animation makes the compositor draw every display frame. To
+   change the range, re-derive the stops from the same curve. */
 @keyframes ade-session-working-breathe {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.62;
-  }
+  0% { opacity: 1.00; }
+  5.76% { opacity: 0.98; }
+  9.84% { opacity: 0.96; }
+  12.61% { opacity: 0.94; }
+  14.87% { opacity: 0.92; }
+  16.85% { opacity: 0.90; }
+  18.64% { opacity: 0.88; }
+  20.32% { opacity: 0.86; }
+  21.92% { opacity: 0.84; }
+  23.47% { opacity: 0.82; }
+  25% { opacity: 0.80; }
+  26.53% { opacity: 0.78; }
+  28.08% { opacity: 0.76; }
+  29.68% { opacity: 0.74; }
+  31.36% { opacity: 0.72; }
+  33.15% { opacity: 0.70; }
+  35.13% { opacity: 0.68; }
+  37.39% { opacity: 0.66; }
+  40.16% { opacity: 0.64; }
+  44.24% { opacity: 0.62; }
+  55.76% { opacity: 0.64; }
+  59.84% { opacity: 0.66; }
+  62.61% { opacity: 0.68; }
+  64.87% { opacity: 0.70; }
+  66.85% { opacity: 0.72; }
+  68.64% { opacity: 0.74; }
+  70.32% { opacity: 0.76; }
+  71.92% { opacity: 0.78; }
+  73.47% { opacity: 0.80; }
+  75% { opacity: 0.82; }
+  76.53% { opacity: 0.84; }
+  78.08% { opacity: 0.86; }
+  79.68% { opacity: 0.88; }
+  81.36% { opacity: 0.90; }
+  83.15% { opacity: 0.92; }
+  85.13% { opacity: 0.94; }
+  87.39% { opacity: 0.96; }
+  90.16% { opacity: 0.98; }
+  94.24% { opacity: 1.00; }
 }
 
-/* Session row detail tooltips render a key/value list, one pair per line.
-   Only strings that actually contain newlines are affected. */
-.ade-smart-tooltip .ade-stt-desc {
-  white-space: pre-line;
-}
 
 /* Status motion is intentionally duty-cycled. Long flat holds let Chromium
    skip compositor frames while preserving a clear active/working signal. */
@@ -2545,56 +2412,6 @@ button, [role="button"] {
   }
 }
 
-/* Work tools picker: a shader backdrop with cards floating on it.
-
-   The backdrop is a <canvas> (or, with no WebGL, this same box painted as a
-   static gradient) pinned behind the column and untouchable — a canvas that
-   swallowed a click meant for a card would be a decoration breaking the page
-   it decorates. */
-.ade-tool-picker-backdrop {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-/* The no-WebGL fallback: the same corner light, flat. A software-rendered mesh
-   would be the most expensive thing in the window. */
-.ade-tool-picker-static {
-  background:
-    radial-gradient(
-      130% 100% at 18% 12%,
-      color-mix(in srgb, #6366F1 28%, transparent),
-      transparent 64%
-    ),
-    radial-gradient(
-      120% 90% at 82% 78%,
-      color-mix(in srgb, var(--color-accent) 22%, transparent),
-      transparent 62%
-    ),
-    var(--color-bg);
-}
-
-/* A window-field part: the flat fallback is fixed to the window too, so
-   separate parts still read as one gradient without WebGL. */
-.ade-tool-picker-backdrop[data-field="window"] .ade-tool-picker-static {
-  background-attachment: fixed;
-}
-
-[data-theme="light"] .ade-tool-picker-static {
-  background:
-    radial-gradient(
-      130% 100% at 18% 12%,
-      color-mix(in srgb, #A5B4FC 30%, transparent),
-      transparent 64%
-    ),
-    radial-gradient(
-      120% 90% at 82% 78%,
-      color-mix(in srgb, var(--color-accent-bright) 22%, transparent),
-      transparent 62%
-    ),
-    var(--color-surface);
-}
-
 /* The card: a piece of glass standing on the gradient, not a flat rectangle
    punched out of it.
 
@@ -2624,7 +2441,7 @@ button, [role="button"] {
    just never animates. */
 .ade-tool-card {
   position: relative;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
   background: color-mix(in srgb, var(--color-card) 82%, transparent);
   box-shadow:
@@ -3091,7 +2908,7 @@ button, [role="button"] {
   height: 200px;
   border: 2px dashed rgba(249, 115, 22, 0.06);
   border-radius: 50%;
-  animation: ade-gear-spin 20s linear infinite;
+  animation: ade-gear-spin 20s steps(600) infinite;
   opacity: 0.4;
 }
 
@@ -3104,7 +2921,7 @@ button, [role="button"] {
   height: 140px;
   border: 2px dashed rgba(249, 115, 22, 0.05);
   border-radius: 50%;
-  animation: ade-gear-spin-reverse 15s linear infinite;
+  animation: ade-gear-spin-reverse 15s steps(450) infinite;
   opacity: 0.35;
 }
 
@@ -3229,22 +3046,6 @@ button, [role="button"] {
   box-shadow: 0 0 6px 2px rgba(56, 189, 248, 0.3), 0 0 2px 1px rgba(56, 189, 248, 0.15);
 }
 
-/* Glass card for conflict/PR panels */
-.ade-glass-card {
-  background: rgba(var(--color-card-rgb, 19, 16, 26), 0.5);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  border: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
-  transition: border-color 150ms ease, box-shadow 200ms ease, transform 150ms ease;
-}
-
-.ade-glass-card:hover {
-  border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.22);
-  box-shadow: var(--shadow-card-hover);
-}
-
 /*
  * Launch shelf beneath the new-chat composer.
  *
@@ -3264,13 +3065,27 @@ button, [role="button"] {
   border: 1px solid var(--chat-glass-border);
   border-top: 0;
   border-radius: 0 0 var(--chat-radius-shell) var(--chat-radius-shell);
+  /* A drawer tucked under the composer: frosted like the composer so it reads
+     on a picture as well as on the gradient, a touch darker so it sits behind
+     it, and a soft shadow at its top edge where the composer overlaps it. */
   background:
     linear-gradient(
       to bottom,
-      color-mix(in srgb, var(--chat-glass-bg) 76%, transparent) 0%,
-      color-mix(in srgb, var(--chat-panel-bg) 48%, transparent) 100%
+      color-mix(in srgb, var(--chat-panel-bg) 86%, transparent) 0%,
+      color-mix(in srgb, var(--chat-panel-bg) 72%, transparent) 100%
     );
-  box-shadow: 0 14px 32px -18px rgb(0 0 0 / 75%);
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  box-shadow:
+    inset 0 14px 14px -14px rgb(0 0 0 / 55%),
+    inset 0 -1px 0 color-mix(in srgb, var(--chat-glass-highlight, white) 60%, transparent),
+    0 18px 36px -22px rgb(0 0 0 / 70%);
+}
+
+[data-theme="light"] .ade-chat-launch-shelf {
+  box-shadow:
+    inset 0 14px 14px -14px rgb(0 0 0 / 14%),
+    0 14px 30px -22px rgb(0 0 0 / 30%);
 }
 
 .ade-liquid-glass {
@@ -3322,6 +3137,30 @@ button, [role="button"] {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
     0 18px 44px -30px rgba(0, 0, 0, 0.72);
+}
+
+/* The composer floats over the bottom of the transcript (ChatSurfaceShell
+   `overlayFooter`). Only its own controls take the pointer: the gaps around and
+   between them leave the thread underneath selectable and clickable. */
+[data-chat-composer-overlay] {
+  pointer-events: none;
+  /* Docked banners in the stack float over transcript text, so their card is
+     mixed over the canvas instead of over transparency (noticeTones.ts). */
+  --notice-docked-bg: color-mix(in srgb, var(--color-card) 72%, var(--chat-canvas-bg));
+}
+[data-chat-composer-overlay] [data-chat-composer-dock] > * {
+  pointer-events: auto;
+}
+[data-chat-composer-overlay] [data-chat-composer-chip-row],
+[data-chat-composer-overlay] [data-status-strip] {
+  pointer-events: none;
+}
+/* Status chips (and the docked Jump to Latest pill) float over transcript text
+   there, so each gets an opaque plate under its tint instead of reading
+   through to the words behind it. */
+[data-chat-composer-overlay] [data-overlay-plate] {
+  background-color: var(--chat-canvas-bg);
+  background-image: linear-gradient(var(--status-chip-fill), var(--status-chip-fill));
 }
 
 /* New-chat prompt + shelf sit a step darker than in-session composer chrome. */
@@ -3385,8 +3224,72 @@ button, [role="button"] {
   }
 }
 
+/* Send, merged with the pending-comments pill (ComposerThreadCommentsButton).
+   Every Send variant marks its round wrapper `data-send-control` and its
+   buttons `data-send-part`, so one rule set covers all of them: square the
+   left edge where the comments half meets Send, and take the accent fill. */
+.ade-send-cluster[data-carrying-comments="true"] [data-send-control],
+.ade-send-cluster[data-carrying-comments="true"] [data-send-part] {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.ade-send-cluster[data-carrying-comments="true"] [data-send-part]:not(:disabled) {
+  background-color: var(--chat-accent, #8b5cf6);
+  border-color: rgb(0 0 0 / 0.15);
+  color: #fff;
+}
+
+.ade-send-cluster[data-carrying-comments="true"] [data-send-part]:not(:disabled):hover {
+  filter: brightness(1.1);
+}
+
+/* Thread comments: painted by the CSS Custom Highlight API (ThreadCommentLayer),
+   so the reply's DOM is never changed. Pending = goes with the next send;
+   held = kept but not sent; active = the one being read or edited. */
+::highlight(ade-thread-comment) {
+  background-color: color-mix(in srgb, var(--chat-accent, #8b5cf6) 22%, transparent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--chat-accent, #8b5cf6) 75%, transparent);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+
+::highlight(ade-thread-comment-held) {
+  background-color: color-mix(in srgb, var(--chat-accent, #8b5cf6) 9%, transparent);
+  text-decoration: underline dashed;
+  text-decoration-color: color-mix(in srgb, var(--chat-accent, #8b5cf6) 45%, transparent);
+  text-underline-offset: 3px;
+}
+
+::highlight(ade-thread-comment-active) {
+  background-color: color-mix(in srgb, var(--chat-accent, #8b5cf6) 38%, transparent);
+  text-decoration: underline;
+  text-decoration-color: var(--chat-accent, #8b5cf6);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+/* Find (⌘F) in a chat or a diff: every match amber, the current one gold with
+   dark text, so neither reads as a code tint or a comment highlight. Diffs
+   repeat these two rules inside their shadow roots (AdeDiffViewer). */
+:root {
+  --ade-find-match: rgba(253, 184, 51, 0.3);
+  --ade-find-current: #eea52b;
+  --ade-find-current-fg: #1a1206;
+}
+
+::highlight(ade-find) {
+  background-color: var(--ade-find-match);
+}
+
+::highlight(ade-find-active) {
+  background-color: var(--ade-find-current);
+  color: var(--ade-find-current-fg);
+}
+
 .ade-liquid-glass-menu {
-  border-radius: 16px;
+  border-radius: var(--radius-xl);
   border: 1px solid var(--work-popover-border, var(--chat-panel-border));
   background: linear-gradient(
     180deg,
@@ -3430,6 +3333,11 @@ button, [role="button"] {
 }
 
 .ade-chat-message-card-user {
+  /* The bubble is the accent colour on every theme, so what sits on it keeps
+     the dark-page ink and chip backing. */
+  --chat-ink: #ffffff;
+  --chat-inline-code-bg: rgba(0, 0, 0, 0.30);
+  --chat-table-bg: rgba(10, 9, 14, 0.6);
   /* Kept in sync with CHAT_USER_BUBBLE_GRADIENT_DEFAULT in chatSurfaceTheme.ts. */
   background: var(--chat-user-bubble-gradient,
     linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 76%, #ffffff 6%) 0%, color-mix(in srgb, var(--chat-accent) 60%, #7c3aed 40%) 50%, color-mix(in srgb, var(--chat-accent) 58%, #4c1d95 42%) 100%));
@@ -3655,7 +3563,7 @@ button, [role="button"] {
   min-width: calc(var(--ade-work-header-side-h, 28px) * 2);
   height: var(--ade-work-header-side-h, 28px);
   min-height: var(--ade-work-header-side-h, 28px);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: 1px solid color-mix(in srgb, white 8%, transparent);
   background: transparent;
   box-shadow: 0 1px 2px -1px rgba(0, 0, 0, 0.14);
@@ -3815,6 +3723,96 @@ button, [role="button"] {
 
 .ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent.drop-target {
   opacity: 1;
+}
+
+/*
+  Work grid: tiles meet edge to edge, like the chat and the tools pane do.
+
+  The generic pane gutter is an 8px band with a short pill, and each tile had a
+  rounded border and a shadow, so a grid showed a dark gap between chats and a
+  frame of empty space at the window edges. Here the splitter takes no layout
+  width: a 1px line is the resting divider, the hit area overlays both edges,
+  and the line turns accent while hovered or dragged — the same gesture as
+  `.ade-tool-gutter`. Tiles are square and borderless; the lane tint stays on
+  the header, which is what separates one chat from the next.
+*/
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.vertical {
+  width: 0 !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  z-index: 20;
+  background: transparent !important;
+  border-radius: 0 !important;
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.horizontal {
+  height: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  z-index: 20;
+  background: transparent !important;
+  border-radius: 0 !important;
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.vertical::after {
+  inset: 0 -4px;
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.horizontal::after {
+  inset: -4px 0;
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter::before {
+  opacity: 1;
+  border-radius: 0;
+  background: var(--work-pane-border);
+  box-shadow: none;
+  transition: background-color 0.12s ease;
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.vertical::before {
+  top: 0;
+  width: 1px;
+  height: 100%;
+  transform: translateX(-50%);
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.horizontal::before {
+  left: 0;
+  width: 100%;
+  height: 1px;
+  transform: translateY(-50%);
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter:hover::before,
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter[data-resize-handle-active]::before {
+  background: var(--color-accent);
+  box-shadow: none;
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.vertical:hover::before,
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.vertical[data-resize-handle-active]::before {
+  width: 2px;
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.horizontal:hover::before,
+.ade-work-surface .ade-work-grid-tiling .ade-pane-gutter.horizontal[data-resize-handle-active]::before {
+  height: 2px;
+}
+
+.ade-work-surface .ade-work-grid-tiling .ade-floating-pane,
+.ade-work-surface .ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent,
+.ade-work-surface .ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent:hover,
+.ade-work-surface .ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent:focus-within {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* Drag and drop still needs to show where a tile will land. */
+.ade-work-surface .ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent.dragging,
+.ade-work-surface .ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent.drop-target {
+  box-shadow: inset 0 0 0 1px var(--color-accent);
 }
 
 /* Thin header strip inside a tile */
@@ -4075,7 +4073,7 @@ button, [role="button"] {
   min-width: 0;
   max-width: 180px;
   padding: 0 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: none;
   background: color-mix(in srgb, var(--lane-band-color, var(--color-fg)) 10%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lane-band-color, var(--color-fg)) 18%, transparent);
@@ -4149,6 +4147,19 @@ button, [role="button"] {
   min-height: var(--ade-work-header-side-h);
 }
 
+/* Work surface header: in a narrow grid tile, labelled header links collapse
+   to their icon (the tooltip keeps the words), so the chat title keeps room. */
+.ade-work-surface-header {
+  container-type: inline-size;
+  container-name: work-surface-header;
+}
+
+@container work-surface-header (max-width: 640px) {
+  .ade-header-collapsible-label {
+    display: none;
+  }
+}
+
 /* Session list sidebar toolbar — search hides when pane is narrow; New Chat + Filter stay visible */
 .ade-session-list-toolbar {
   container-type: inline-size;
@@ -4170,6 +4181,15 @@ button, [role="button"] {
   min-width: 3.25rem;
 }
 
+/* With Focus in the row, a default-width sidebar has no room for the word.
+   Drop the word, keep the glyph and the shortcut, so the control never shows a
+   clipped "S". */
+@container session-list-toolbar (max-width: 360px) {
+  .ade-session-list-toolbar-search-label {
+    display: none;
+  }
+}
+
 /* Chat composer footer — permission preset collapses to dot-only in narrow grid tiles */
 .ade-chat-composer-footer {
   container-type: inline-size;
@@ -4189,7 +4209,7 @@ button, [role="button"] {
   font-size: 11px;
   line-height: 1;
   border-color: transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   box-shadow: none;
   padding-inline: 6px;
@@ -4239,7 +4259,7 @@ button, [role="button"] {
   font-size: 9px;
   line-height: 1;
   border-color: transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   box-shadow: none;
 }
@@ -4412,7 +4432,7 @@ button, [role="button"] {
   height: var(--ade-work-header-side-h, 36px);
   margin-left: 4px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-muted-fg);
   cursor: pointer;
@@ -4509,6 +4529,42 @@ button, [role="button"] {
   z-index: 1;
 }
 
+/*
+ * Opaque variant for chat menus that float over the transcript (the model chip's
+ * option list, the `@` / `/` command menu). The glass background is 88–92% alpha
+ * and its backdrop blur does not take effect in these portaled menus, so
+ * transcript text showed through. Flatten `--work-popover-bg` over `--color-bg`
+ * for an opaque plate that works in both themes; do not change the glass itself,
+ * other surfaces rely on it.
+ */
+.ade-chat-drawer-solid {
+  background-color: var(--color-bg);
+  background-image: linear-gradient(var(--work-popover-bg), var(--work-popover-bg));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Work filter panel: the lane dropdown shares the chips' edge in both themes. */
+.ade-work-filter-panel .ade-lane-trigger {
+  border-color: var(--work-pane-border);
+}
+
+.ade-work-filter-panel .ade-lane-trigger:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-fg) 35%, transparent);
+}
+
+/* A chosen lane reads "on", like a chip. */
+.ade-work-filter-panel [data-on="true"] > .ade-lane-trigger {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+}
+
+/* The lane popover takes focus only to route arrow keys; its highlighted row is the focus cue. */
+.ade-lane-popover:focus {
+  outline: none;
+}
+
 /* Row in a chat drawer — glass-on-glass avoidance: flat rows, accent on hover */
 .ade-chat-drawer-row {
   transition: background 140ms ease, color 140ms ease;
@@ -4555,7 +4611,7 @@ button, [role="button"] {
 /* Task row — flat base, accent fill only when in-progress */
 .ade-chat-task-row {
   position: relative;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   transition: background 140ms ease, color 140ms ease;
 }
 
@@ -4607,7 +4663,7 @@ button, [role="button"] {
 
 /* Running status indicator spin */
 .ade-timeline-running-spin {
-  animation: ade-running-spin 1.2s linear infinite;
+  animation: ade-running-spin 1.2s steps(36) infinite;
 }
 
 @keyframes ade-running-spin {
@@ -4715,7 +4771,7 @@ button, [role="button"] {
   content: "";
   position: absolute;
   inset: -2px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   box-shadow: 0 0 8px 2px rgba(59, 130, 246, 0.22);
   pointer-events: none;
 }
@@ -4855,6 +4911,13 @@ button, [role="button"] {
 .ade-prose-themed.ade-thought-text,
 .ade-prose-themed.ade-thought-text :is(p, h1, h2, h3, h4, h5, h6, li, strong, em, td, th, blockquote, dd, dt, figcaption) {
   color: color-mix(in srgb, var(--color-fg) 62%, transparent);
+}
+
+/* A markdown brief inside the user's message bubble (MarkdownBlock
+   tone="bubble"). The bubble is the accent colour, so text stays white. */
+.ade-prose-themed.ade-bubble-prose,
+.ade-prose-themed.ade-bubble-prose :is(p, h1, h2, h3, h4, h5, h6, li, strong, em, td, th, blockquote, dd, dt, figcaption) {
+  color: rgba(255, 255, 255, 0.95);
 }
 
 /* The live block's viewport. Its font size and line height match the thought
@@ -5076,12 +5139,6 @@ button, [role="button"] {
   .ade-welcome-card__poster:hover .ade-welcome-card__play { transform: translate(-50%, -50%); }
 }
 
-/* Bottom-right toast viewport (ToastViewport): cards animate through motion;
-   the viewport itself only glides when it lifts above the CTO call HUD. */
-.ade-toast-viewport {
-  transition: bottom 180ms cubic-bezier(0.2, 0, 0, 1);
-}
-
 /* New-lane launches. A launched chat's sidebar row slides in once; the
    launch progress rail (thread card + Launches slide-out) sheens its running
    segment. Both are transform/opacity only. */
@@ -5111,7 +5168,10 @@ button, [role="button"] {
   width: 40%;
   border-radius: 9999px;
   background: linear-gradient(90deg, transparent 0%, rgba(221, 214, 254, 0.7) 50%, transparent 100%);
-  animation: ade-launch-rail-sheen 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  /* steps = 1.5s x 30. A smooth sweep re-runs full-window paint at the display
+     rate; quantized it is ~3x cheaper (traced: 3 sheens over 8s, 206-256ms of
+     compositor draw smooth, 65-68ms stepped). The easing is traded for that. */
+  animation: ade-launch-rail-sheen 1.5s steps(45) infinite;
   will-change: transform;
   pointer-events: none;
 }
@@ -5142,7 +5202,7 @@ button, [role="button"] {
   .ade-launch-rail-sheen { animation: none; opacity: 0; }
 }
 
-/* Model reasoning slider: progressive fill, active-tier pulse, and drag state. */
+/* Reasoning effort track: label roll, sliding segment indicator, and drag state. */
 @keyframes ade-reasoning-effort-word-roll-up {
   0% { opacity: 0; transform: translateY(65%) perspective(90px) rotateX(-78deg); filter: blur(2px); }
   72% { opacity: 1; transform: translateY(-4%) perspective(90px) rotateX(6deg); filter: blur(0); }
@@ -5153,12 +5213,6 @@ button, [role="button"] {
   0% { opacity: 0; transform: translateY(-65%) perspective(90px) rotateX(78deg); filter: blur(2px); }
   72% { opacity: 1; transform: translateY(4%) perspective(90px) rotateX(-6deg); filter: blur(0); }
   100% { opacity: 1; transform: translateY(0) perspective(90px) rotateX(0); filter: blur(0); }
-}
-
-@keyframes ade-reasoning-fill-sheen {
-  0% { transform: translateX(-80%); opacity: 0; }
-  35% { opacity: 0.55; }
-  100% { transform: translateX(80%); opacity: 0; }
 }
 
 .ade-reasoning-effort-word {
@@ -5174,28 +5228,20 @@ button, [role="button"] {
   animation: ade-reasoning-effort-word-roll-down 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.ade-reasoning-slider-fill {
-  background: var(--reasoning-progressive-gradient);
-  clip-path: inset(0 calc(100% - var(--reasoning-slider-fill-position)) 0 0);
-  box-shadow: 0 0 18px rgba(var(--reasoning-fill-rgb), 0.24);
-  transition: clip-path 220ms cubic-bezier(0.2, 0.8, 0.2, 1), background 220ms ease, box-shadow 220ms ease;
+/* The indicator takes the current tier's tone; it slides between segments. */
+.ade-reasoning-slider-thumb {
+  background: rgba(var(--reasoning-fill-rgb) / 0.16);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--reasoning-fill-rgb) / 0.34),
+    0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), background-color 200ms ease, box-shadow 200ms ease;
 }
 
-.ade-reasoning-slider-fill::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.22) 50%, transparent 78%);
-  animation: ade-reasoning-fill-sheen 700ms ease-out 1;
-}
-
-.ade-reasoning-slider-fill-max {
-  background:
-    radial-gradient(circle at center, rgba(255, 255, 255, 0.20) 0 0.8px, transparent 1px),
-    var(--reasoning-progressive-gradient);
-  background-size: 4px 4px, 100% 100%;
-  box-shadow: 0 0 24px rgba(167, 139, 250, 0.34);
+/* Permission menu: one highlight follows the pointed mode, tinted by it. */
+.ade-permission-mode-highlight {
+  background: rgba(var(--permission-mode-rgb) / 0.13);
+  box-shadow: inset 0 0 0 1px rgba(var(--permission-mode-rgb) / 0.3);
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1), background-color 160ms ease, box-shadow 160ms ease;
 }
 
 @keyframes ade-reasoning-ultra-sheen {
@@ -5232,7 +5278,8 @@ button, [role="button"] {
   background-size: auto, auto, 220% 100%;
   background-position: center, center, 0 0;
   background-repeat: no-repeat;
-  animation: ade-reasoning-ultra-sheen 3.8s ease-in-out infinite;
+  /* steps = 3.8s x 30; see the note on `ade-launch-rail-sheen`. */
+  animation: ade-reasoning-ultra-sheen 3.8s steps(114) infinite;
 }
 
 .ade-reasoning-effort-trigger-ultra > *,
@@ -5253,10 +5300,11 @@ button, [role="button"] {
     0 0 42px rgba(34, 211, 238, 0.08);
 }
 
-.ade-reasoning-effort-content-ultra .ade-reasoning-slider-fill-max {
+.ade-reasoning-effort-content-ultra .ade-reasoning-slider-thumb {
   box-shadow:
-    0 0 24px rgba(232, 121, 249, 0.44),
-    0 0 12px rgba(34, 211, 238, 0.24);
+    inset 0 0 0 1px rgba(232, 121, 249, 0.5),
+    0 0 14px rgba(232, 121, 249, 0.36),
+    0 0 8px rgba(34, 211, 238, 0.2);
 }
 
 /* Workflow activity card: one restrained sweep keeps a live orchestration
@@ -5274,38 +5322,25 @@ button, [role="button"] {
   pointer-events: none;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.12), transparent);
   filter: blur(4px);
-  animation: ade-workflow-card-sheen 3.8s ease-in-out infinite;
+  /* steps = 3.8s x 30; see the note on `ade-launch-rail-sheen`. */
+  animation: ade-workflow-card-sheen 3.8s steps(114) infinite;
 }
 
-/* Project and route surfaces stay mounted for fast switching. Pause their CSS
-   animations while parked so hidden keep-alive trees cannot keep rendering. */
-[data-ade-animation-state="paused"],
-[data-ade-animation-state="paused"] *,
-[data-ade-animation-state="paused"]::before,
-[data-ade-animation-state="paused"]::after,
-[data-ade-animation-state="paused"] *::before,
-[data-ade-animation-state="paused"] *::after {
-  animation-play-state: paused !important;
-}
-
-.ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-fill,
 .ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-thumb {
   transition: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ade-toast-viewport { transition: none; }
   .ade-reasoning-effort-word,
   .ade-reasoning-effort-word[data-direction="up"],
   .ade-reasoning-effort-word[data-direction="down"],
-  .ade-reasoning-slider-fill::after,
-  .ade-reasoning-slider-fill-max,
   .ade-workflow-active-card__sheen,
   .ade-reasoning-effort-trigger-ultra::after,
   .ade-reasoning-effort-content-ultra::after {
     animation: none;
   }
-  .ade-reasoning-slider-fill { transition: none; }
+  .ade-reasoning-slider-thumb,
+  .ade-permission-mode-highlight { transition: none; }
 }
 
 /*
@@ -5322,4 +5357,1056 @@ button, [role="button"] {
 }
 [data-radix-popper-content-wrapper] > * {
   zoom: var(--ade-web-zoom-factor, 1);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Settings — grouped rows and the Appearance page
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ade-settings-panel {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-card) 55%, var(--color-bg) 45%);
+  overflow: hidden;
+}
+
+.ade-settings-row {
+  padding: 14px 16px;
+}
+
+.ade-settings-row + .ade-settings-row {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+.ade-settings-toolbar {
+  display: inline-flex;
+  align-items: stretch;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
+}
+
+.ade-settings-toolbar > :first-child,
+.ade-settings-toolbar > :first-child > .ade-settings-section-action {
+  border-top-left-radius: 7px;
+  border-bottom-left-radius: 7px;
+}
+
+.ade-settings-toolbar > :last-child,
+.ade-settings-toolbar > :last-child > .ade-settings-section-action {
+  border-top-right-radius: 7px;
+  border-bottom-right-radius: 7px;
+}
+
+.ade-settings-toolbar > * + * {
+  border-left: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+}
+
+.ade-settings-section-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  min-width: 30px;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  color: var(--color-secondary-fg);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.ade-settings-section-action:hover {
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  color: var(--color-fg);
+}
+
+.ade-settings-section-action:focus-visible,
+.ade-theme-mode-option:focus-visible,
+.ade-swatch-half:focus-visible,
+.ade-swatch-single:focus-visible,
+.ade-swatch-name:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* The theme stage: the active theme large on the left, its spec sheet on the
+   right. */
+.ade-theme-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+  border-radius: var(--radius-xl);
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-card) 55%, var(--color-bg) 45%);
+  overflow: hidden;
+}
+
+.ade-theme-stage-canvas {
+  padding: 22px;
+  border-right: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  transition: background 300ms ease;
+}
+
+.ade-theme-stage-preview {
+  border-radius: 10px;
+  box-shadow: 0 24px 48px -28px rgba(0, 0, 0, 0.7);
+  animation: ade-theme-stage-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes ade-theme-stage-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.99); }
+  to { opacity: 1; transform: none; }
+}
+
+.ade-theme-stage-spec {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 22px 22px 20px;
+}
+
+.ade-theme-chip {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 14%, transparent);
+}
+
+.ade-theme-mode {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+.ade-theme-mode-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-muted-fg);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+
+.ade-theme-mode-option:hover {
+  color: var(--color-fg);
+}
+
+.ade-theme-mode-option[aria-checked="true"] {
+  background: var(--color-card);
+  color: var(--color-fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 1px color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+
+/* A short label for one non-colour part of a theme (corners, depth, type). */
+.ade-theme-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--radius-full);
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  color: var(--color-muted-fg);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+
+/* The theme search field above the gallery. */
+.ade-theme-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-recessed);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-border) 70%, transparent);
+  color: var(--color-muted-fg);
+}
+
+.ade-theme-search:focus-within {
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+
+.ade-theme-search input {
+  all: unset;
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  color: var(--color-fg);
+}
+
+.ade-theme-search input::placeholder {
+  color: var(--color-muted-fg);
+}
+
+/* The family grid: a swatch split on the diagonal, light over dark. */
+.ade-swatch-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 14px 12px;
+}
+
+@container settings-column (max-width: 640px) {
+  .ade-swatch-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.ade-swatch-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ade-swatch {
+  position: relative;
+  height: 76px;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-border) 80%, transparent);
+  transition: box-shadow 150ms ease, transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.ade-swatch-tile:hover .ade-swatch {
+  transform: translateY(-2px);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-fg) 22%, var(--color-border)), 0 12px 24px -16px rgba(0, 0, 0, 0.6);
+}
+
+.ade-swatch-tile[data-active="true"] .ade-swatch {
+  box-shadow: 0 0 0 2px var(--color-accent), 0 12px 28px -16px var(--color-accent);
+}
+
+.ade-swatch-half,
+.ade-swatch-single {
+  position: absolute;
+  inset: 0;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.ade-swatch-half[data-side="light"] {
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+
+.ade-swatch-half[data-side="dark"] {
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+}
+
+/* A hairline of light along the diagonal, so the two halves meet on a seam
+   instead of a hard cut. `to bottom right` puts the 50% line through the
+   top-right and bottom-left corners, which is exactly where the halves meet. */
+.ade-swatch::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom right,
+    transparent calc(50% - 1px),
+    rgba(255, 255, 255, 0.22) 50%,
+    transparent calc(50% + 1px)
+  );
+}
+
+.ade-swatch:has(> .ade-swatch-single)::after {
+  display: none;
+}
+
+.ade-swatch-hint {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  pointer-events: none;
+}
+
+.ade-swatch-mark {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 30%, transparent);
+  pointer-events: none;
+}
+
+.ade-swatch-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ade-swatch-tile[data-active="true"] .ade-swatch-name {
+  font-weight: 600;
+}
+
+.ade-swatch-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-fg) 12%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-swatch,
+  .ade-swatch-tile:hover .ade-swatch,
+  .ade-theme-stage-canvas,
+  .ade-theme-stage-preview,
+  .ade-settings-slider::-webkit-slider-thumb,
+  .ade-settings-slider:hover::-webkit-slider-thumb {
+    transition: none;
+    transform: none;
+    animation: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .ade-theme-stage {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ade-theme-stage-canvas {
+    border-right: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  }
+}
+
+/* The settings select draws its own chevron so it matches the other controls
+   instead of the platform's default arrow. */
+.ade-settings-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: color-mix(in srgb, var(--color-fg) 3%, transparent);
+  /* A mid grey reads on both dark and light surfaces. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238b8b96' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: calc(100% - 11px) 50%;
+  background-size: 10px 6px;
+  background-repeat: no-repeat;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.ade-settings-select:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+
+.ade-settings-select:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.ade-settings-select option {
+  background: var(--color-popup-bg);
+  color: var(--color-fg);
+}
+
+/* The settings segmented control: the checked option lifts as a card, the
+   same treatment as the Appearance mode switch. */
+.ade-settings-segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+.ade-settings-segmented-option {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-muted-fg);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+
+.ade-settings-segmented-option:hover:not(:disabled) {
+  color: var(--color-fg);
+}
+
+.ade-settings-segmented-option[aria-checked="true"] {
+  background: var(--color-card);
+  color: var(--color-fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 1px color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+
+.ade-settings-segmented-option:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* The centred column every redesigned settings page sits in. A wide column
+   is a size container: below the split width its children keep the narrow
+   measure, above it `.ade-settings-split` puts sections side by side. */
+.ade-settings-column {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding-bottom: 32px;
+}
+
+.ade-settings-column--wide {
+  max-width: 1440px;
+  container: settings-column / inline-size;
+}
+
+.ade-settings-split {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.ade-settings-split-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  min-width: 0;
+}
+
+@container settings-column (max-width: 999px) {
+  /* The rail layout keeps the full width it was given — capping it would put
+     the rail and the content in a column narrower than the page. Every other
+     child keeps the narrow measure. */
+  .ade-settings-column--wide > :not(.ade-settings-layout) {
+    width: 100%;
+    max-width: 860px;
+    margin-inline: auto;
+  }
+}
+
+@container settings-column (min-width: 1000px) {
+  .ade-settings-split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+    gap: 32px 28px;
+  }
+  .ade-settings-split[data-ratio="start-wide"] {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  }
+  .ade-settings-split-stack[data-sticky] {
+    position: sticky;
+    top: 12px;
+  }
+}
+
+/* Settings → Chat preview: one thread on a stage, capped in height and faded
+   at the foot so it reads as a window onto the chat, not a wall. */
+.ade-chat-preview-stage {
+  position: relative;
+  padding: 22px 22px 0;
+  border-radius: var(--radius-xl);
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background:
+    radial-gradient(90% 70% at 50% 0%, color-mix(in srgb, var(--color-accent) 14%, transparent), transparent 70%),
+    color-mix(in srgb, var(--color-card) 40%, var(--color-bg) 60%);
+  overflow: hidden;
+}
+
+.ade-chat-preview-frame {
+  max-height: 460px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 78%, transparent);
+  mask-image: linear-gradient(to bottom, #000 78%, transparent);
+}
+
+/* The small menu settings pickers open. */
+.ade-settings-menu {
+  min-width: 180px;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  background: var(--color-popup-bg);
+  box-shadow: var(--shadow-popup);
+}
+
+.ade-settings-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-fg);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ade-settings-menu-item:hover,
+.ade-settings-menu-item:focus-visible {
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  outline: none;
+}
+
+/* The settings slider: a thin track filled to the value in the accent, and a
+   round thumb. `--fill` comes from the component. */
+.ade-settings-slider {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--color-accent) 0,
+    var(--color-accent) var(--fill, 0%),
+    color-mix(in srgb, var(--color-fg) 14%, transparent) var(--fill, 0%)
+  );
+  cursor: pointer;
+}
+
+.ade-settings-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--color-fg);
+  border: 3px solid var(--color-accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  transition: transform 120ms ease;
+}
+
+.ade-settings-slider:hover::-webkit-slider-thumb {
+  transform: scale(1.1);
+}
+
+.ade-settings-slider:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 4px;
+}
+
+/* Appearance: the theme stage and the swatches stack, and sit side by side on
+   a wide column. */
+.ade-theme-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+@container settings-column (min-width: 1000px) {
+  .ade-theme-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    align-items: start;
+    gap: 24px;
+  }
+  /* The gallery is long, so the stage stays in view while you browse it. */
+  .ade-theme-stage {
+    position: sticky;
+    top: 8px;
+  }
+  /* Beside the stage the preview gets the height the page has. */
+  .ade-chat-preview-frame {
+    max-height: calc(100vh - 230px);
+  }
+}
+
+/* A group of rows that shares one search anchor (a machine list, a job list). */
+.ade-settings-row-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.ade-settings-row-group + .ade-settings-row,
+.ade-settings-row + .ade-settings-row-group {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+/* A small square icon button beside a row's control (preview, cancel). */
+.ade-settings-icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
+  color: var(--color-fg);
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.ade-settings-icon-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+
+.ade-settings-icon-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ade-settings-icon-button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* A quiet inline note at the top of a page (signed out, load errors). */
+.ade-settings-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
+  color: var(--color-muted-fg);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+}
+
+/* A status chip in a section's toolbar ("6 of 11 notify", "Saved"). */
+.ade-settings-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  color: var(--color-muted-fg);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.ade-settings-time {
+  height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color-scheme: inherit;
+}
+
+/* Usage → live limits: one card per window, several to a row. */
+.ade-limit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.ade-limit-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-card) 55%, var(--color-bg) 45%);
+  min-width: 0;
+}
+
+/* Usage → the spend stage: the total and its split beside the daily chart. */
+.ade-usage-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+  padding: 22px;
+  border-radius: var(--radius-xl);
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-card) 55%, var(--color-bg) 45%);
+}
+
+@container settings-column (min-width: 760px) {
+  .ade-usage-stage {
+    grid-template-columns: minmax(0, 19rem) minmax(0, 1fr);
+  }
+}
+
+/* Usage → totals: figures in a row, divided by hairlines, no boxes. */
+.ade-usage-totals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-card) 55%, var(--color-bg) 45%);
+  overflow: hidden;
+}
+
+.ade-usage-total {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 14px 16px;
+  min-width: 0;
+  box-shadow: -1px 0 0 color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+/* A section action that is its own control (a segmented switch, a note) and
+   needs no toolbar frame around it. */
+.ade-settings-toolbar:has(> .ade-settings-toolbar-plain) {
+  border: none;
+  background: transparent;
+}
+
+/* A label row at the top of a panel, naming the rows beneath it. */
+.ade-settings-panel-head {
+  padding: 10px 16px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-muted-fg);
+  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+/* The page wrapper for tabs built on the centred column: the same measure as
+   `.ade-settings-column--wide`, and the narrow measure below the split width,
+   so the title and search box line up with the content under them. */
+.ade-settings-page--column {
+  max-width: 1440px;
+  margin: 0 auto;
+  container: settings-page / inline-size;
+}
+
+@container settings-page (max-width: 999px) {
+  .ade-settings-page--column > .ade-settings-page-header {
+    max-width: 860px;
+    margin-inline: auto;
+  }
+}
+
+/* The tinted tile a settings row can lead with. */
+.ade-settings-row-icon {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  color: var(--tone);
+  background: color-mix(in srgb, var(--tone) 15%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone) 22%, transparent);
+}
+
+/* Section pages (General, Lanes, Integrations, Diagnostics): one column of
+   named blocks. A block is led by a quiet mono label on a hairline, then its
+   sections run at the modern settings rhythm (44px apart, see
+   settingsModern.css). */
+.ade-settings-flow {
+  container: modernpage / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 56px;
+  min-width: 0;
+}
+
+.ade-settings-group-block {
+  display: flex;
+  flex-direction: column;
+  gap: 44px;
+  scroll-margin-top: 12px;
+  min-width: 0;
+}
+
+.ade-settings-group-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: -22px;
+}
+
+.ade-settings-group-head::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+
+.ade-settings-group-title {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--kit-text-3);
+}
+
+/* The danger zone says so before anything in it is read. */
+.ade-settings-group-block[data-tone="red"] .ade-settings-group-title {
+  color: var(--color-error);
+}
+
+.ade-settings-group-block[data-tone="red"] .ade-settings-group-head::after {
+  background: color-mix(in srgb, var(--color-error) 30%, transparent);
+}
+
+.ade-settings-rail svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ade-settings-flow-item {
+  display: flex;
+  flex-direction: column;
+  gap: 44px;
+  min-width: 0;
+}
+
+/* A sticky list of the page's own sections, beside the content on a page wide
+   enough for it. Below that width the list is not drawn at all. */
+.ade-settings-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.ade-settings-rail {
+  display: none;
+}
+
+@container settings-column (min-width: 900px) {
+  .ade-settings-layout {
+    display: grid;
+    grid-template-columns: 176px minmax(0, 1fr);
+    align-items: start;
+    gap: 40px;
+  }
+  .ade-settings-rail {
+    display: block;
+    position: sticky;
+    top: 8px;
+  }
+}
+
+/* Settings buttons: sized to their label, one height (30px) everywhere. */
+.ade-settings-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.ade-settings-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+
+.ade-settings-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ade-settings-button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.ade-settings-button[data-variant="primary"] {
+  border-color: transparent;
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+}
+
+.ade-settings-button[data-variant="primary"]:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 88%, var(--color-fg));
+}
+
+.ade-settings-button[data-variant="danger"] {
+  border-color: transparent;
+  background: var(--color-error);
+  color: #fff;
+}
+
+/* A borderless icon button for row actions. */
+.ade-settings-ghost-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-muted-fg);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.ade-settings-ghost-icon:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+  color: var(--color-fg);
+}
+
+.ade-settings-ghost-icon[data-tone="danger"]:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-error) 14%, transparent);
+  color: var(--color-error);
+}
+
+.ade-settings-ghost-icon[data-tone="success"] {
+  color: var(--color-success);
+}
+
+.ade-settings-ghost-icon:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ade-settings-ghost-icon:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* A labelled form field inside a settings panel. */
+.ade-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ade-settings-field > span {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-muted-fg);
+}
+
+.ade-settings-input {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+  background: color-mix(in srgb, var(--color-bg) 60%, transparent);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  outline: none;
+  min-width: 0;
+  transition: border-color 120ms ease;
+}
+
+.ade-settings-input:focus {
+  border-color: color-mix(in srgb, var(--color-accent) 70%, transparent);
+}
+
+.ade-settings-input[data-mono] {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* A small quiet chip in a row ("Account", "This device"). */
+.ade-settings-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  color: var(--color-muted-fg);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Settings → Secrets: one row per secret. */
+.ade-secret-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ade-settings-button[data-variant="ghost"] {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-muted-fg);
+}
+/* The Work import hint keeps its full label and sheds provider marks as the
+   window narrows. */
+.import-chat-pill {
+  width: max-content;
+  max-width: 100%;
+}
+
+.import-chat-pill__action {
+  flex-wrap: nowrap;
+}
+
+.import-chat-pill__label {
+  white-space: nowrap;
+}
+
+.import-chat-pill__container {
+  container-name: import-chat-pill;
+  container-type: inline-size;
+}
+
+@container import-chat-pill (max-width: 620px) {
+  .import-chat-pill__provider:nth-child(n + 8) { display: none; }
+}
+
+@container import-chat-pill (max-width: 520px) {
+  .import-chat-pill__provider:nth-child(n + 6) { display: none; }
+}
+
+@container import-chat-pill (max-width: 440px) {
+  .import-chat-pill__provider:nth-child(n + 4) { display: none; }
+}
+
+@container import-chat-pill (max-width: 360px) {
+  .import-chat-pill__provider { display: none; }
 }

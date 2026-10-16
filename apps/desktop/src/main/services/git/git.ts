@@ -1,9 +1,13 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import type { ConflictFileType } from "../../../shared/types";
+import { GIT_UNTRUSTED_FOLDER_CODE } from "../../../shared/codedError";
+import { GIT_READ_ENV } from "./gitReadEnv";
 import { terminateProcessTree } from "../shared/processExecution";
+import { offThreadSpawnEnabled, OffThreadChild, spawnOffThread, terminateOffThreadChildTree } from "../shared/offThreadSpawn";
 import { pathKey } from "../shared/pathCompare";
 import {
   resolveExecutableCandidatesFromKnownLocations,
@@ -15,6 +19,16 @@ import {
   isRefAffectingGitCommand,
   type GitRepoCacheClass,
 } from "./gitRepoCache";
+import {
+  gitOwnershipMessage,
+  gitOwnershipReason,
+  gitSafeDirectorySpec,
+  gitSafeDirectorySpecsEqual,
+  parseGitOwnershipError,
+  type GitOwnershipProblem,
+} from "../../../../../ade-cli/src/services/projects/gitOwnership";
+
+export { gitOwnershipReason, gitSafeDirectorySpec, parseGitOwnershipError, type GitOwnershipProblem };
 
 // Electron apps launched from Finder/Dock can have a stripped PATH that misses
 // where the user actually installed git (e.g. /opt/homebrew/bin on Apple
@@ -126,6 +140,8 @@ export type GitRunOptions = {
   onStderrLine?: (line: string) => void;
   /** Aborting kills the git process tree; the result reports exit code 130. */
   signal?: AbortSignal;
+  /** Written to git's stdin, which is then closed (e.g. `check-ignore --stdin`). */
+  stdin?: string;
 };
 
 export type GitRunResult = {
@@ -248,6 +264,20 @@ function appendChunkWithCap(args: {
   };
 }
 
+/** What runGitOnce needs from a child; ChildProcess and OffThreadChild both fit. */
+type GitChild = {
+  pid?: number;
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
+  kill(signal?: NodeJS.Signals): boolean;
+  stdout: { on(event: "data", listener: (data: Buffer | string) => void): unknown };
+  stderr: { on(event: "data", listener: (data: Buffer | string) => void): unknown };
+  stdin: { on(event: "error", listener: () => void): unknown; end(text: string): unknown };
+  on(event: "error", listener: (error: Error) => void): unknown;
+  on(event: "close", listener: (code: number | null) => void): unknown;
+  once(event: "spawn", listener: () => void): unknown;
+};
+
 async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const maxOutputBytes = Number.isFinite(opts.maxOutputBytes)
@@ -261,17 +291,39 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
   }
   const executable = await resolveGitExecutable();
   return await new Promise<GitRunResult>((resolve) => {
-    const child = spawn(executable, args, {
-      cwd: opts.cwd,
-      env: { ...process.env, ...(opts.env ?? {}) },
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    if (typeof child.pid === "number" && child.pid > 0) {
-      activeGitPids.add(child.pid);
-    }
+    // A caller's env wins over GIT_READ_ENV.
+    const envPatch = { ...GIT_READ_ENV, ...(opts.env ?? {}) };
+    // On Windows, CreateProcess runs on the calling thread, so a git spawned
+    // here blocks the event loop for 5-1,000 ms. See offThreadSpawn.ts.
+    const child: GitChild = offThreadSpawnEnabled()
+      ? spawnOffThread(executable, args, {
+        cwd: opts.cwd,
+        envPatch,
+      })
+      : spawn(executable, args, {
+        cwd: opts.cwd,
+        env: { ...process.env, ...envPatch },
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      });
+    const terminateChildTree = () => {
+      if (child instanceof OffThreadChild) terminateOffThreadChildTree(child, "SIGKILL");
+      else terminateProcessTree(child, "SIGKILL");
+    };
+    // An off-thread child learns its pid with the "spawn" event; a direct one
+    // has it already. Adding it twice is harmless.
+    const trackPid = () => {
+      if (!settled && typeof child.pid === "number" && child.pid > 0) activeGitPids.add(child.pid);
+    };
+    child.once("spawn", trackPid);
+    // Closed at once: git sees EOF on stdin exactly as it did with "ignore",
+    // unless the caller has input for it (`check-ignore --stdin`). EPIPE when
+    // git exits before reading it all is reported by the exit code instead.
+    child.stdin.on("error", () => {});
+    child.stdin.end(opts.stdin ?? "");
 
     let settled = false;
+    trackPid();
     let stdout = "";
     let stderr = "";
     let stdoutBytes = 0;
@@ -279,10 +331,13 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
+    let terminationReason: "timeout" | "abort" | null = null;
+    let terminationFallback: NodeJS.Timeout | null = null;
     const finish = (result: GitRunResult) => {
       if (settled) return;
       settled = true;
       clearTimeout(onTimeout);
+      if (terminationFallback) clearTimeout(terminationFallback);
       opts.signal?.removeEventListener("abort", onAbort);
       if (typeof child.pid === "number" && child.pid > 0) {
         activeGitPids.delete(child.pid);
@@ -290,17 +345,31 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
       resolve(result);
     };
 
-    const onTimeout = setTimeout(() => {
-      terminateProcessTree(child, "SIGKILL");
-      finish({
-        exitCode: 124,
-        stdout,
-        stderr: stderr.length ? stderr : "git timed out",
-        timedOut: true,
-        stdoutTruncated,
-        stderrTruncated
-      });
-    }, timeoutMs);
+    const finishTermination = () => finish({
+      exitCode: terminationReason === "timeout" ? 124 : 130,
+      stdout,
+      stderr: stderr.length ? stderr : terminationReason === "timeout" ? "git timed out" : "git was cancelled",
+      ...(terminationReason === "timeout" ? { timedOut: true } : {}),
+      stdoutTruncated,
+      stderrTruncated,
+    });
+
+    const terminateAndWait = (reason: "timeout" | "abort") => {
+      if (terminationReason) return;
+      terminationReason = reason;
+      clearTimeout(onTimeout);
+      // The off-thread worker does the Windows taskkill synchronously, then
+      // reports close. Do not let callers clean up a worktree while Git may
+      // still be writing to it. The fallback covers a stuck worker/taskkill.
+      terminateChildTree();
+      if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) {
+        finishTermination();
+        return;
+      }
+      terminationFallback = setTimeout(finishTermination, 5_000);
+    };
+
+    const onTimeout = setTimeout(() => terminateAndWait("timeout"), timeoutMs);
 
     child.stdout.on("data", (d: Buffer | string) => {
       if (stdoutTruncated) return;
@@ -345,26 +414,8 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
       stderrTruncated = next.truncated;
     });
 
-    // Resolve only once the killed git has actually exited (or after a short
-    // safety window): a caller that cleans up after a cancelled `worktree add`
-    // must not race a git that is still writing files into the worktree.
-    let aborted = false;
-    const finishAborted = () => finish({
-      exitCode: 130,
-      stdout,
-      stderr: stderr.length ? stderr : "git was cancelled",
-      stdoutTruncated,
-      stderrTruncated
-    });
     const onAbort = () => {
-      if (aborted) return;
-      aborted = true;
-      terminateProcessTree(child, "SIGKILL");
-      if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) {
-        finishAborted();
-        return;
-      }
-      setTimeout(finishAborted, 2_000).unref?.();
+      terminateAndWait("abort");
     };
     if (opts.signal) {
       if (opts.signal.aborted) onAbort();
@@ -372,6 +423,10 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     }
 
     child.on("error", (error) => {
+      if (terminationReason) {
+        finishTermination();
+        return;
+      }
       const friendlyMessage = gitSpawnErrorMessage(error as NodeJS.ErrnoException, opts, executable);
       finish({
         exitCode: 1,
@@ -383,8 +438,8 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     });
 
     child.on("close", (code) => {
-      if (aborted) {
-        finishAborted();
+      if (terminationReason) {
+        finishTermination();
         return;
       }
       finish({
@@ -432,6 +487,30 @@ function releaseGitSlot(): void {
   const next = gitProcessQueue.shift();
   if (next) next();
   else runningGitProcesses -= 1;
+}
+
+/**
+ * The records of `git diff --name-status -z`, in order. A rename or copy
+ * (`R100`, `C75`) carries its source in `oldPath`; every other status names
+ * one path.
+ */
+export function parseNameStatusRecords(stdout: string): Array<{ letter: string; path: string; oldPath: string | null }> {
+  const tokens = stdout.split("\0");
+  const records: Array<{ letter: string; path: string; oldPath: string | null }> = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const letter = (tokens[index] ?? "").trim().charAt(0);
+    if (!letter) continue;
+    const first = tokens[index + 1] ?? "";
+    index += 1;
+    if (letter === "R" || letter === "C") {
+      const destination = tokens[index + 1] ?? "";
+      index += 1;
+      if (destination) records.push({ letter, path: destination, oldPath: first });
+      continue;
+    }
+    if (first) records.push({ letter, path: first, oldPath: null });
+  }
+  return records;
 }
 
 export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
@@ -575,14 +654,81 @@ export async function runGitOrThrow(args: string[], opts: GitRunOptions): Promis
   const res = await runGit(args, opts);
   if (res.exitCode !== 0) {
     const raw = res.stderr.trim() || res.stdout.trim() || `git ${args.join(" ")} failed`;
+    const ownership = describeGitOwnershipProblem(raw);
+    if (ownership) throw new GitUntrustedFolderError(ownership);
     throw new Error(formatGitExecutionError(raw));
   }
   return res.stdout;
 }
 
 export function formatGitExecutionError(raw: string): string {
+  const ownership = describeGitOwnershipProblem(raw);
+  if (ownership) return gitOwnershipMessage(ownership);
   if (!/not agreed to the Xcode license agreements/i.test(raw)) return raw;
   return "ADE needs Git to open and manage this project. macOS blocked Apple's Git because the Xcode license has not been accepted. This is a Git requirement, not an ADE iOS Simulator or code-signing requirement. In Terminal, run `sudo xcodebuild -license`, or install Git separately (for example with Homebrew) and restart ADE.";
+}
+
+/**
+ * Git refused a repository whose folder belongs to another account. Carries
+ * the folder so the one flow allowed to fix it — the user opening that folder —
+ * can ask them and call {@link trustGitSafeDirectory}. Everything else only
+ * shows the message.
+ */
+export class GitUntrustedFolderError extends Error {
+  readonly code = GIT_UNTRUSTED_FOLDER_CODE;
+  readonly problem: GitOwnershipProblem;
+  constructor(problem: GitOwnershipProblem) {
+    super(gitOwnershipMessage(problem));
+    this.name = "GitUntrustedFolderError";
+    this.problem = problem;
+  }
+}
+
+export function gitUntrustedFolderProblem(error: unknown): GitOwnershipProblem | null {
+  if (error instanceof GitUntrustedFolderError) return error.problem;
+  return null;
+}
+
+/**
+ * {@link parseGitOwnershipError}, plus the owner POSIX git leaves out when it
+ * is cheap to know: a folder owned by root (made with sudo) says so. Only a
+ * stat — no user-database or PowerShell lookup on this path.
+ */
+export function describeGitOwnershipProblem(raw: string): GitOwnershipProblem | null {
+  const problem = parseGitOwnershipError(raw);
+  if (!problem || problem.owner || process.platform === "win32") return problem;
+  try {
+    if (fs.statSync(problem.path).uid === 0) return { ...problem, owner: "root" };
+  } catch {
+    // The folder is gone or unreadable; git's path is still the answer.
+  }
+  return problem;
+}
+
+/**
+ * Add one folder to the user's global `safe.directory` list — only ever called
+ * after the user said yes to trusting that folder. Idempotent: an entry that
+ * already names it (case-insensitively for Windows paths) is left alone rather
+ * than duplicated. Runs from the home directory, never inside the refused repo.
+ */
+export async function trustGitSafeDirectory(repoPath: string): Promise<{ spec: string; added: boolean }> {
+  const spec = gitSafeDirectorySpec(repoPath);
+  if (!spec || spec === "*") throw new Error("ADE only trusts a specific folder.");
+  const opts: GitRunOptions = { cwd: os.homedir(), timeoutMs: 10_000 };
+  const listed = await runGit(["config", "--global", "--get-all", "safe.directory"], opts);
+  // Exit 1 means the key is not set at all, which is fine.
+  if (listed.exitCode !== 0 && listed.exitCode !== 1) {
+    throw new Error(`ADE could not read your Git settings: ${listed.stderr.trim() || `exit ${listed.exitCode}`}`);
+  }
+  const existing = listed.stdout.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
+  if (existing.some((entry) => gitSafeDirectorySpecsEqual(entry, spec))) {
+    return { spec, added: false };
+  }
+  const added = await runGit(["config", "--global", "--add", "safe.directory", spec], opts);
+  if (added.exitCode !== 0) {
+    throw new Error(`ADE could not update your Git settings: ${added.stderr.trim() || `exit ${added.exitCode}`}`);
+  }
+  return { spec, added: true };
 }
 
 /**

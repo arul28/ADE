@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildSceneDocument,
   hasOpenSceneFence,
+  openFence,
+  openFenceLanguage,
   isSceneParseFailure,
   parseSceneFence,
   parseSceneHostMessage,
@@ -12,6 +13,7 @@ import {
   sceneScopeKeyFor,
   summarizeSceneFence,
 } from "./chatScene";
+import { buildSceneDocument } from "./chatSceneDocument";
 
 describe("parseSceneFence", () => {
   it("reads the title off the marker line and keeps the markup", () => {
@@ -177,8 +179,6 @@ describe("parseSceneHostMessage", () => {
   it("carries a usable nonce through and drops an unusable one", () => {
     expect(parseSceneHostMessage({ __adeScene: 1, type: "settled", nonce: "doc-7", payload: {} }))
       .toEqual({ nonce: "doc-7", type: "settled", payload: { height: undefined } });
-    expect(parseSceneHostMessage({ __adeScene: 1, type: "emit", nonce: "doc-7", payload: { name: "go" } }))
-      .toMatchObject({ nonce: "doc-7", type: "emit" });
     // Neither a wrong type nor an empty string may look like a real nonce.
     expect(parseSceneHostMessage({ __adeScene: 1, type: "ready", nonce: 7, payload: {} }))
       .not.toHaveProperty("nonce");
@@ -190,8 +190,7 @@ describe("parseSceneHostMessage", () => {
     expect(long?.nonce?.length).toBe(120);
   });
 
-  it("drops an emit with no name and truncates a long error", () => {
-    expect(parseSceneHostMessage({ __adeScene: 1, type: "emit", payload: {} })).toBeNull();
+  it("truncates a long error", () => {
     const err = parseSceneHostMessage({ __adeScene: 1, type: "error", payload: { message: "e".repeat(900) } });
     expect(err?.type).toBe("error");
     expect(err && "message" in err.payload ? err.payload.message.length : 0).toBe(500);
@@ -206,6 +205,28 @@ describe("hasOpenSceneFence", () => {
     // A ``` inside an open ts block closes that block; it does not open a scene.
     expect(hasOpenSceneFence("```ts\nconst a = 1;\n```\n```scene\n<p>")).toBe(true);
     expect(hasOpenSceneFence("no fences here")).toBe(false);
+  });
+
+  it.each([
+    { markdown: "```mermaid\nflowchart LR\n  A --> B", open: "mermaid" },
+    { markdown: "```mermaid\nflowchart LR\n```\nafter", open: null },
+    { markdown: "```mermaid\nA-->B\n```\n```ts\nconst a", open: "ts" },
+    { markdown: "text only", open: null },
+    // Only a bare run of the opener's character, at least as long, closes it.
+    { markdown: "```mermaid\nA-->B\n~~~\nC-->D", open: "mermaid" },
+    { markdown: "````mermaid\nA-->B\n```\nC-->D", open: "mermaid" },
+    { markdown: "~~~scene\n<p>\n~~~~", open: null },
+    // A backtick in a backtick fence's info string makes the line text.
+    { markdown: "````scene`x\n<p>", open: null },
+  ])("names the open fence's language ($open)", ({ markdown, open }) => {
+    expect(openFenceLanguage(markdown)).toBe(open);
+  });
+
+  it("returns the open fence's body, so only the diagram still arriving is held", () => {
+    const markdown = "```mermaid\nflowchart LR\n  A --> B\n```\nThen:\n```mermaid\nflowchart TD\n  C --> D";
+    expect(openFence(markdown)).toEqual({ language: "mermaid", body: "flowchart TD\n  C --> D" });
+    expect(openFence("```mermaid\nA-->B\n```")).toBeNull();
+    expect(openFence("~~~scene\n<p>")).toEqual({ language: "scene", body: "<p>" });
   });
 });
 

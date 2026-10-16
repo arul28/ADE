@@ -405,6 +405,59 @@ describe("WorkToolPickerBackdrop context lifecycle", () => {
     });
     expect(rect.mock.calls.length - baseline).toBe(1);
   });
+
+  it("reads no layout while out of view, then measures once when it comes back", async () => {
+    const { gl } = stubGl();
+    useStubGl(gl);
+    vi.spyOn(window, "matchMedia").mockImplementation(((query: string) => ({
+      matches: query.includes("hover") || query.includes("pointer"),
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia);
+    let reportIntersection: ((isIntersecting: boolean) => void) | null = null;
+    class CapturingObserver {
+      constructor(callback: IntersectionObserverCallback) {
+        reportIntersection = (isIntersecting) =>
+          callback([{ isIntersecting } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+      }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    vi.stubGlobal("IntersectionObserver", CapturingObserver);
+    const nextFrame = () => act(async () => {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
+    const rect = vi.spyOn(HTMLCanvasElement.prototype, "getBoundingClientRect")
+      .mockReturnValue(RECT);
+
+    try {
+      render(<WorkToolPickerBackdrop theme="dark" />);
+      expect(reportIntersection, "setup precondition").not.toBeNull();
+      // A parked project surface: reading the rect would render the hidden pane.
+      act(() => reportIntersection!(false));
+      await nextFrame();
+      const baseline = rect.mock.calls.length;
+
+      for (let i = 0; i < 12; i += 1) window.dispatchEvent(new Event("scroll"));
+      window.dispatchEvent(new Event("resize"));
+      await nextFrame();
+      expect(rect.mock.calls.length).toBe(baseline);
+
+      act(() => reportIntersection!(true));
+      await nextFrame();
+      expect(rect.mock.calls.length - baseline).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe("WorkToolPickerBackdrop frame scheduling", () => {

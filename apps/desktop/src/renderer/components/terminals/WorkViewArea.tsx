@@ -1,3 +1,4 @@
+import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { useMemo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { STANDARD_EASE } from "../../lib/motion";
@@ -25,6 +26,7 @@ import { useAppStore, type WorkDraftKind, type WorkGridSet } from "../../state/a
 import { findGridSetForSession } from "../../lib/workGrid";
 import type { DropEdge } from "../ui/paneTreeOps";
 import { WorkGridView, SingleSessionGridDropZone } from "./WorkGridView";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
 import { TerminalView } from "./TerminalView";
@@ -43,6 +45,7 @@ import { resolveModelDescriptorWithRuntimeCatalog, createUnknownModelPlaceholder
 import { WorkStartSurface } from "./WorkStartSurface";
 import { hasPendingComposerDock } from "../chat/launch/chatLaunchDock";
 import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
+import { useBackgroundContextMenu } from "../../scene/BackgroundContextMenu";
 import { CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
 import { isChatToolType, primarySessionLabel, providerFromChatToolType, stripTerminalLabelControls, formatToolTypeLabel } from "../../lib/sessions";
@@ -278,7 +281,7 @@ function TerminalSnapshotTranscript({ rows }: { rows: TerminalSnapshotRow[] }) {
   })), [rows]);
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto rounded-md border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-fg/75">
+    <div className="min-h-0 flex-1 overflow-auto rounded-md border border-fg/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-fg/75">
       {renderedRows.map((row) => (
         <div key={row.key} className="min-h-[1.25em] whitespace-pre">
           {row.runs.map(({ item: run, key }) => (
@@ -314,6 +317,7 @@ function continuationProviderLabel(provider: TerminalResumeProvider | null): str
   if (provider === "codex") return "Codex";
   if (provider === "cursor") return "Cursor Agent";
   if (provider === "droid") return "Droid";
+  if (provider === "muse") return PROVIDER_DISPLAY_NAME.muse;
   if (provider === "opencode") return "OpenCode";
   return "agent CLI";
 }
@@ -518,7 +522,7 @@ function WorkCliContinuationComposer({
           <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 px-2.5 py-1.5">
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               {modelDescriptor ? (
-                <span className="inline-flex min-w-0 max-w-[min(12rem,42vw)] items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[11px] text-fg/80">
+                <span className="inline-flex min-w-0 max-w-[min(12rem,42vw)] items-center gap-1.5 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-2 py-1 text-[11px] text-fg/80">
                   <ModelRowLogo
                     modelFamily={modelDescriptor.family}
                     cliCommand={modelDescriptor.cliCommand}
@@ -533,7 +537,7 @@ function WorkCliContinuationComposer({
                 <span className="min-w-0 shrink truncate px-1 text-[11px] font-medium text-fg/70">{providerLabel}</span>
               )}
               {resolvedLaunch?.reasoningEffort ? (
-                <span className="rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5 py-1 text-[10px] font-semibold uppercase text-fg/65">
+                <span className="rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5 py-1 text-[10px] font-semibold uppercase text-fg/65">
                   {resolvedLaunch.reasoningEffort}
                 </span>
               ) : null}
@@ -543,7 +547,7 @@ function WorkCliContinuationComposer({
                 </span>
               ) : null}
               {permissionLabel ? (
-                <span className="rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5 py-1 text-[10px] text-fg/60">
+                <span className="rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5 py-1 text-[10px] text-fg/60">
                   {permissionLabel}
                 </span>
               ) : null}
@@ -556,7 +560,7 @@ function WorkCliContinuationComposer({
               className={cn(
                 "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all",
                 sending || !draft.trim()
-                  ? "bg-white/[0.06] text-muted-fg/20"
+                  ? "bg-fg/[0.06] text-muted-fg/20"
                   : "bg-white/90 text-zinc-900 hover:bg-white",
               )}
             >
@@ -618,11 +622,13 @@ function ClosedCliSessionSurface({
   onResume,
   onToggleToolsPane,
   toolsPaneOpen,
+  onOpenFullView,
 }: {
   session: TerminalSessionSummary;
   lanes: LaneSummary[];
   runtimePin?: OpenProjectBinding | null;
   layoutVariant: "standard" | "grid-tile";
+  onOpenFullView?: () => void;
   onInfoClick?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onContextMenu?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onContinue?: (
@@ -698,10 +704,11 @@ function ClosedCliSessionSurface({
           onContextMenu={onContextMenu}
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
+          onOpenFullView={onOpenFullView}
         />
       ) : null}
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 py-3">
-        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.06] pb-2">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-fg/[0.06] pb-2">
           <div className="min-w-0 truncate text-[11px] text-muted-fg/60">
             {endedLabel}
             {exitLabel ? ` · ${exitLabel}` : ""}
@@ -726,7 +733,7 @@ function ClosedCliSessionSurface({
         {useSnapshotPreview ? (
           <TerminalSnapshotTranscript rows={snapshotRows} />
         ) : (
-          <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-md border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-fg/75">
+          <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-md border border-fg/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-fg/75">
             {transcriptText}
           </pre>
         )}
@@ -760,8 +767,10 @@ function CliSessionSurface({
   onStopRunningSession,
   onToggleToolsPane,
   toolsPaneOpen,
+  onOpenFullView,
 }: {
   session: TerminalSessionSummary & { ptyId: string };
+  onOpenFullView?: () => void;
   lanes: LaneSummary[];
   /** See `SessionSurface.runtimePin`. */
   runtimePin?: OpenProjectBinding | null;
@@ -789,6 +798,7 @@ function CliSessionSurface({
           onStopRunningSession={onStopRunningSession}
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
+          onOpenFullView={onOpenFullView}
           onTogglePrPane={session.laneId ? () => workSidebar.setTool("pr") : undefined}
           prPaneOpen={workSidebar.tool === "pr"}
           runtimePin={runtimePin}
@@ -812,7 +822,7 @@ function CliSessionSurface({
   );
 }
 
-function SessionSurface({
+export function SessionSurface({
   session,
   sessionTitleById,
   lanes,
@@ -834,6 +844,7 @@ function SessionSurface({
   onToggleTerminalPane,
   onOpenTerminalPane,
   terminalPaneOpen,
+  onOpenFullView,
 }: {
   session: TerminalSessionSummary;
   sessionTitleById?: ReadonlyMap<string, string>;
@@ -867,6 +878,8 @@ function SessionSurface({
   onToggleTerminalPane?: () => void;
   onOpenTerminalPane?: () => void;
   terminalPaneOpen?: boolean;
+  /** Focus grid: "open in full view" replaces the Tools toggle in the header. */
+  onOpenFullView?: () => void;
 }) {
   const isChat = isChatToolType(session.toolType);
   const surfaceActive = pageActive && isActive;
@@ -896,6 +909,7 @@ function SessionSurface({
         shouldAutofocusComposer={surfaceActive && shouldAutofocus}
         onToggleToolsPane={onToggleToolsPane}
         toolsPaneOpen={toolsPaneOpen}
+        onOpenFullView={onOpenFullView}
         onToggleTerminalPane={onToggleTerminalPane}
         onOpenTerminalPane={onOpenTerminalPane}
         terminalPaneOpen={terminalPaneOpen}
@@ -919,6 +933,7 @@ function SessionSurface({
           onStopRunningSession={onStopRunningSession}
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
+          onOpenFullView={onOpenFullView}
         />
       );
     }
@@ -939,6 +954,7 @@ function SessionSurface({
             onStopRunningSession={onStopRunningSession}
             onToggleToolsPane={onToggleToolsPane}
             toolsPaneOpen={toolsPaneOpen}
+            onOpenFullView={onOpenFullView}
             runtimePin={runtimePin}
           />
         ) : null}
@@ -971,6 +987,7 @@ function SessionSurface({
         onResume={onResumeCliSession}
         onToggleToolsPane={onToggleToolsPane}
         toolsPaneOpen={toolsPaneOpen}
+        onOpenFullView={onOpenFullView}
       />
     );
   }
@@ -989,13 +1006,13 @@ function SessionSurface({
     <div
       className="flex h-full w-full items-center justify-center px-6"
       style={{
-        background: "radial-gradient(circle at top, color-mix(in srgb, var(--color-fg) 5%, transparent) 0%, transparent 42%), var(--color-card)",
+        background: `radial-gradient(circle at top, ${fgTint(5)} 0%, transparent 42%), var(--color-card)`,
       }}
     >
       <div className="ade-liquid-glass-menu flex w-full max-w-md flex-col gap-4 rounded-lg px-5 py-5">
         {/* Header: tool logo + session name */}
         <div className="flex items-start gap-3">
-          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md" style={{ background: "rgba(255,255,255,0.05)" }}>
+          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md" style={{ background: fgTint(5) }}>
             <ToolLogo toolType={session.toolType} size={16} />
           </div>
           <div className="min-w-0 flex-1">
@@ -1211,6 +1228,8 @@ export function WorkViewArea({
 }) {
   const { menu: laneContextMenuPortal } = useWorkLaneContextMenu();
   const theme = useAppStore((s) => s.theme);
+  // Right-click on the new chat page's empty background.
+  const draftBackgroundMenu = useBackgroundContextMenu();
   const sessionsById = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary>();
     for (const session of sessions) map.set(session.id, session);
@@ -1251,8 +1270,20 @@ export function WorkViewArea({
       onOpenChatSession={onOpenChatSession}
       onContinueCliSession={onContinueCliSession}
       onResumeCliSession={onResumeCliSession}
-      onToggleToolsPane={onToggleWorkSidebar}
-      toolsPaneOpen={workSidebarOpen}
+      // One Tools pane serves the focused tile. Only that tile's toggle reads
+      // open; another tile's toggle moves the pane to that chat rather than
+      // closing it.
+      onToggleToolsPane={onToggleWorkSidebar
+        ? () => {
+          if (session.id === activeItemId || !workSidebarOpen) {
+            if (session.id !== activeItemId) onSelectItem(session.id);
+            onToggleWorkSidebar();
+            return;
+          }
+          onSelectItem(session.id);
+        }
+        : undefined}
+      toolsPaneOpen={workSidebarOpen && session.id === activeItemId}
       onToggleTerminalPane={onToggleTerminalPane}
       onOpenTerminalPane={onOpenTerminalPane}
       terminalPaneOpen={terminalPaneOpen}
@@ -1278,7 +1309,7 @@ export function WorkViewArea({
         onFocusSession={onSelectItem}
         onAddSessionToGrid={(dragged, target, edge) => onAddSessionToGrid?.(dragged, target, edge)}
         onRemoveFromGrid={(sessionId) => onRemoveSessionFromGrid?.(sessionId)}
-        className="ade-work-grid-tiling h-full min-h-0 px-2 pb-2"
+        className="ade-work-grid-tiling h-full min-h-0"
       />
     ) : workAreaMode === "single" && activeSession ? (
       <SingleSessionGridDropZone
@@ -1308,7 +1339,12 @@ export function WorkViewArea({
         />
       </SingleSessionGridDropZone>
     ) : (
-      <div className="relative flex h-full min-h-0 flex-col overflow-hidden" data-work-draft-surface="">
+      <div
+        className="relative flex h-full min-h-0 flex-col overflow-hidden"
+        data-work-draft-surface=""
+        onContextMenu={draftBackgroundMenu.onContextMenu}
+      >
+        {draftBackgroundMenu.menu}
         {/* The new chat pane is part of the window gradient, so the top bar above
             flows into it with no seam. */}
         <WorkToolPickerBackdrop theme={theme} playing={pageActive} field="window" />

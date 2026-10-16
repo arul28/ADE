@@ -24,6 +24,7 @@ import type {
   MacDesktopPermissions,
   MacDesktopStreamSummary,
   MacDesktopWindow,
+  WindowsDesktopStatus,
 } from "./macDesktop";
 
 /**
@@ -40,7 +41,9 @@ export const WORK_TOOL_IDS = [
   "app-control",
   "browser",
   "mac-desktop",
+  "windows-desktop",
   "pr",
+  "issues",
 ] as const;
 
 export type WorkToolId = (typeof WORK_TOOL_IDS)[number];
@@ -218,6 +221,12 @@ export type WorkToolsMacDesktopState = {
   lease: MacDesktopLeaseState | null;
   stream: MacDesktopStreamSummary | null;
   permissions: MacDesktopPermissions;
+  /**
+   * The Windows host facts, when the seat is a Windows one. Optional on the
+   * wire and null on a Mac host, so a mirror renders the held/locked/setup
+   * cards only where they apply.
+   */
+  windowsDesktop?: WindowsDesktopStatus | null;
   /**
    * The newest observation, flattened. The full `MacDesktopObservation` carries
    * an element tree a read-only client has no use for, and a state broadcast

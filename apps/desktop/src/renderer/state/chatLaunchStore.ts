@@ -417,6 +417,86 @@ export function removeChatLaunch(launchId: string): void {
   });
 }
 
+const refreshingLaunchIds = new Set<string>();
+
+/**
+ * Re-read one launch from its host and apply it. Used when something else
+ * (the transcript's finished setup card, the chat's own messages) says the
+ * held snapshot is behind — a lost live event must not freeze the card, the
+ * Work row and the slide-out. At most one read per launch is in flight. A
+ * host that no longer has the launch (its retention ran out) drops the entry,
+ * the same as a list re-read would.
+ */
+export function refreshChatLaunch(launchId: string | null | undefined): void {
+  const entry = launchId ? chatLaunchStore.getState().entries[launchId] : undefined;
+  const api = typeof window !== "undefined" ? window.ade?.chatLaunch : undefined;
+  if (!entry || !entry.hostSeen || !api?.get || refreshingLaunchIds.has(entry.launchId)) return;
+  const id = entry.launchId;
+  refreshingLaunchIds.add(id);
+  let request: Promise<ChatLaunchSnapshot | null>;
+  try {
+    request = api.get({ launchId: id }, entry.binding ?? undefined);
+  } catch {
+    refreshingLaunchIds.delete(id);
+    return;
+  }
+  void Promise.resolve(request).then((snapshot) => {
+    const current = chatLaunchStore.getState().entries[id];
+    if (!current) return;
+    if (snapshot) applyChatLaunchSnapshot(current.binding, snapshot);
+    else if (current.hostSeen) removeChatLaunch(id);
+  }).catch(() => {
+    // The next list re-read (resync, visibility) corrects it instead.
+  }).finally(() => {
+    refreshingLaunchIds.delete(id);
+  });
+}
+
+const hydratingLaunchIds = new Set<string>();
+/** Last `get` attempt per launch, so an unreachable machine is retried, not hammered. */
+const hydrateAttemptedAt = new Map<string, number>();
+/** Minimum gap between `chat.getLaunch` asks for one launch (store and card both use it). */
+export const CHAT_LAUNCH_HYDRATE_RETRY_MS = 20_000;
+
+/**
+ * Learn about a launch this window did not start — a chat opened from another
+ * device, whose setup card arrived in the synced transcript with no snapshot
+ * to drive it. Without this the transcript card is a dead end: a truncated
+ * error and no Retry. The owning machine still holds the failed record (only
+ * completed and cancelled launches expire), so one `chat.getLaunch` against
+ * the chat's own binding turns the payload card back into the live one.
+ *
+ * Idempotent and bounded: at most one read in flight, no read while an entry
+ * already exists, and a short cooldown after a failed read so a card that
+ * re-renders while the machine is offline does not poll.
+ */
+export function hydrateChatLaunchFromHost(launchId: string | null | undefined, binding: OpenProjectBinding | null): void {
+  if (!launchId || chatLaunchStore.getState().entries[launchId] || hydratingLaunchIds.has(launchId)) return;
+  const api = typeof window !== "undefined" ? window.ade?.chatLaunch : undefined;
+  if (!api?.get) return;
+  const last = hydrateAttemptedAt.get(launchId);
+  if (last != null && Date.now() - last < CHAT_LAUNCH_HYDRATE_RETRY_MS) return;
+  hydratingLaunchIds.add(launchId);
+  hydrateAttemptedAt.set(launchId, Date.now());
+  let request: Promise<ChatLaunchSnapshot | null>;
+  try {
+    request = api.get({ launchId }, binding ?? undefined);
+  } catch {
+    hydratingLaunchIds.delete(launchId);
+    return;
+  }
+  void Promise.resolve(request).then((snapshot) => {
+    // A concurrent snapshot may have landed first; `applyChatLaunchSnapshot`
+    // merges, so the host's copy still wins when it is newer.
+    if (snapshot) applyChatLaunchSnapshot(binding, snapshot);
+  }).catch(() => {
+    // The chat's machine is unreachable, or predates `chat.getLaunch`: the
+    // payload card keeps its place and the cooldown lets a later render retry.
+  }).finally(() => {
+    hydratingLaunchIds.delete(launchId);
+  });
+}
+
 export function dismissChatLaunches(launchIds: readonly string[]): void {
   if (launchIds.length === 0) return;
   chatLaunchStore.setState((state) => {
@@ -455,6 +535,9 @@ export function resetChatLaunchStoreForTests(): void {
   chatLaunchStore.setState({ entries: {}, dismissed: {} });
   localRecords.clear();
   unsentQueuedMessages.clear();
+  refreshingLaunchIds.clear();
+  hydratingLaunchIds.clear();
+  hydrateAttemptedAt.clear();
   cachedOriginClientId = null;
 }
 
@@ -634,6 +717,39 @@ export function useChatLaunchRowState(sessionId: string | null | undefined): Cha
     const pending = snapshot.kind === "chat" && isChatLaunchPending(snapshot);
     return { startedAt: snapshot.startedAt, pending, failed: pending && snapshot.phase === "failed" };
   }, sameRowState);
+}
+
+export type ChatLaunchQueuedState = {
+  /** Messages still waiting to reach the chat. */
+  count: number;
+  /** At least one is being delivered right now (agent started, none failed). */
+  sending: boolean;
+  /** At least one failed its last delivery attempt. */
+  failed: boolean;
+};
+
+function sameQueuedState(a: ChatLaunchQueuedState, b: ChatLaunchQueuedState): boolean {
+  return a.count === b.count && a.sending === b.sending && a.failed === b.failed;
+}
+
+/**
+ * The outbox state a session row shows: how many messages a launch still owes
+ * this chat, whether delivery is in flight, and whether it failed. Structurally
+ * shared, so a row re-renders only when one of those three changes — not on
+ * every stage tick.
+ */
+export function useChatLaunchQueuedState(sessionId: string | null | undefined): ChatLaunchQueuedState {
+  return useChatLaunchSelector((state) => {
+    const snapshot = sessionId ? state.entries[sessionId]?.snapshot : undefined;
+    const queued = snapshot?.queuedMessages ?? [];
+    return {
+      count: queued.length,
+      sending: queued.length > 0
+        && queued.every((message) => !message.deliveryError)
+        && snapshot?.agentStarted === true,
+      failed: queued.some((message) => Boolean(message.deliveryError)),
+    };
+  }, sameQueuedState);
 }
 
 /** The launch's one-line status ("Checking out files · 62%"); re-renders only when the text changes. */

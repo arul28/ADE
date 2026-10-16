@@ -60,7 +60,7 @@ vi.mock("electron", () => ({
   app: {
     getPath: vi.fn(() => "/tmp"),
     getVersion: vi.fn(() => "1.0.0"),
-    isPackaged: false,
+    isPackaged: true,
     // registerIpc disposes the Mac Desktop Escape hotkey on will-quit.
     once: vi.fn(),
   },
@@ -129,6 +129,7 @@ vi.mock("../remoteRuntime/remoteConnectionPool", () => ({
     streamEventsForTarget: remoteStreamEventsForTargetMock,
     subscribeEventsForTarget: remoteSubscribeEventsForTargetMock,
     disconnect: remoteDisconnectMock,
+    onEntryConnected: vi.fn(() => () => {}),
     onEntryEvicted: vi.fn(() => () => {}),
     onPortForwardsInvalidated: onPortForwardsInvalidatedMock,
   })),
@@ -914,47 +915,12 @@ describe("registerRuntimeBridge", () => {
       expect(active.webContents.send).toHaveBeenCalledTimes(3);
     });
 
-    function voiceEvent(id: number) {
-      return {
-        id,
-        timestamp: "2026-08-01T00:00:00.000Z",
-        category: "cto_voice" as const,
-        payload: { type: "cto_voice_state", phase: "listening", caption: "the user said something" },
-      };
-    }
-
-    /**
-     * The `cto_voice` exclusion is written in four places and two of them had
-     * no test at all. It is not one rule checked once: refusing the
-     * SUBSCRIPTION name still lets an uncategorised subscription carry voice
-     * events, and the poller takes a different route out of main than the push
-     * does. Each door is asserted on its own, because each is written to stand
-     * alone rather than trust the one before it.
-     */
-    it("never pushes cto_voice events to a renderer, even on an uncategorised subscription", async () => {
-      const { subscriptions, pool } = recordingLocalRuntimePool();
-      const stream = registerWithPool(pool);
-      const active = destroyableSender(240);
-
-      await stream(eventForSender(active.webContents), {
-        rootPath: "/repo",
-        request: activePumpRequest,
-      });
-
-      subscriptions[0].emit(voiceEvent(1), "epoch-1");
-      expect(active.webContents.send).not.toHaveBeenCalled();
-
-      // ...and the subscription is still live for everything else.
-      subscriptions[0].emit(ptyEvent(2), "epoch-1");
-      expect(active.webContents.send).toHaveBeenCalledTimes(1);
-    });
-
     it("refuses a subscription that names a category a renderer may not have", async () => {
       const { pool } = recordingLocalRuntimePool();
       const stream = registerWithPool(pool);
       const active = destroyableSender(242);
 
-      for (const category of ["cto_voice", "not_a_category"]) {
+      for (const category of ["not_a_category"]) {
         await expect(
           stream(eventForSender(active.webContents), {
             rootPath: "/repo",
@@ -1125,50 +1091,48 @@ describe("registerRuntimeBridge", () => {
       expect(subscriptions[0].cleanup).toHaveBeenCalledTimes(1);
     });
 
-    it("releases both replay variants a remote pinned pump accumulated", async () => {
+    it("keeps one remote push stream once a pinned pump is caught up, and reopens it after it ends", async () => {
       remoteRegistryGetMock.mockReturnValue(target);
-      const cleanups: Array<ReturnType<typeof vi.fn>> = [];
+      const subscriptions: Array<{ cleanup: ReturnType<typeof vi.fn>; end: () => void }> = [];
       remoteSubscribeEventsForTargetMock.mockImplementation(
         async (
           _target: unknown,
           _projectId: string,
           _request: unknown,
           _onEvent: unknown,
-          _onEnded: unknown,
+          onEnded: () => void,
           onSubscribed?: (result: Record<string, unknown>) => void,
         ) => {
           const cleanup = vi.fn();
           onSubscribed?.({ nextCursor: 0, hasMore: false });
-          cleanups.push(cleanup);
+          subscriptions.push({ cleanup, end: onEnded });
           return cleanup;
         },
       );
+      remoteStreamEventsForTargetMock.mockResolvedValue({ events: [], nextCursor: 5, hasMore: false });
       const { pool } = recordingLocalRuntimePool();
       registerWithPool(pool);
       const streamRemote = ipcHandlers.get(IPC.remoteRuntimeStreamEvents)!;
       const release = ipcHandlers.get(IPC.runtimeEventsRelease)!;
       const active = destroyableSender(216);
+      const poll = (request: Record<string, unknown>) =>
+        streamRemote(eventForSender(active.webContents), { id: target.id, projectId: "project-1", request });
+      const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-      // A pinned pump suppresses replay on its first poll and stops suppressing
-      // once caught up, so it owns both request-key variants over its life.
-      await streamRemote(eventForSender(active.webContents), {
-        id: target.id,
-        projectId: "project-1",
-        request: { cursor: 0, limit: 200, category: "pty", replay: false },
-      });
-      remoteStreamEventsForTargetMock.mockResolvedValue({
-        events: [],
-        nextCursor: 5,
-        hasMore: false,
-      });
-      await streamRemote(eventForSender(active.webContents), {
-        id: target.id,
-        projectId: "project-1",
-        request: { cursor: 5, limit: 200, category: "pty" },
-      });
-      // The replay-bearing path subscribes fire-and-forget alongside its poll.
-      await new Promise((resolve) => setImmediate(resolve));
-      expect(cleanups).toHaveLength(2);
+      // A pinned pump suppresses replay on its first poll, then polls caught up.
+      // Every event crosses the wire once per subscription, so the caught-up
+      // polls must not open a second, replaying one.
+      await poll({ cursor: 0, limit: 200, category: "pty", replay: false });
+      await poll({ cursor: 5, limit: 200, category: "pty" });
+      await poll({ cursor: 5, limit: 200, category: "pty" });
+      await settle();
+      expect(subscriptions).toHaveLength(1);
+
+      // When that stream ends (a dropped connection), the next poll opens one.
+      subscriptions[0].end();
+      await poll({ cursor: 5, limit: 200, category: "pty" });
+      await settle();
+      expect(subscriptions).toHaveLength(2);
 
       await expect(
         release(eventForSender(active.webContents), {
@@ -1176,9 +1140,8 @@ describe("registerRuntimeBridge", () => {
           projectId: "project-1",
           category: "pty",
         }),
-      ).resolves.toEqual({ released: 2 });
-      expect(cleanups[0]).toHaveBeenCalledTimes(1);
-      expect(cleanups[1]).toHaveBeenCalledTimes(1);
+      ).resolves.toEqual({ released: 1 });
+      expect(subscriptions[1].cleanup).toHaveBeenCalledTimes(1);
     });
 
     it("stops the idle sweeper when an ended subscription empties the registry", async () => {
@@ -1210,6 +1173,92 @@ describe("registerRuntimeBridge", () => {
           process.env.ADE_DISABLE_REMOTE_AUTOCONNECT = previous;
         }
       }
+    });
+
+    function pageWithFileWatches(id: number) {
+      const { subscriptions, pool } = recordingLocalRuntimePool();
+      const callActionForRoot = vi.fn(async (_rootPath: string, _request: Record<string, unknown>) => ({ ok: true }));
+      const stream = registerWithPool({ ...pool, callActionForRoot });
+      const listeners = new Map<string, (details?: unknown) => void>();
+      const webContents = {
+        ...sender(id),
+        on: vi.fn((channel: string, handler: (details?: unknown) => void) => {
+          listeners.set(channel, handler);
+        }),
+      } as any;
+      const fileAction = (action: "watchWorkspace" | "stopWatching") =>
+        ipcHandlers.get(IPC.localRuntimeCallAction)!(eventForSender(webContents), {
+          rootPath: "/repo",
+          request: { domain: "file", action, args: { workspaceId: "ws-1" } },
+        });
+      const sent = (action: string) =>
+        callActionForRoot.mock.calls.filter(([, request]) => request.action === action);
+      return {
+        subscriptions,
+        fileAction,
+        sent,
+        poll: () => stream(eventForSender(webContents), { rootPath: "/repo", request: activePumpRequest }),
+        /** A main-frame document committed (a reload or a new URL). */
+        loadNewDocument: () => listeners.get("did-navigate")?.(),
+        closeDuringNextCall: () => {
+          callActionForRoot.mockImplementationOnce(async () => {
+            webContents.isDestroyed.mockReturnValue(true);
+            return { ok: true };
+          });
+        },
+      };
+    }
+
+    it("sends the stops a page still owes when it loads a new document", async () => {
+      const page = pageWithFileWatches(231);
+      await page.fileAction("watchWorkspace");
+      await page.fileAction("watchWorkspace");
+      await page.fileAction("watchWorkspace");
+      await page.fileAction("stopWatching");
+      expect(page.sent("stopWatching")).toHaveLength(1);
+
+      page.loadNewDocument();
+      // Three watches, one stop from the page itself: two are still owed.
+      expect(page.sent("stopWatching")).toHaveLength(3);
+      expect(page.sent("stopWatching")[2]?.[1]).toEqual({
+        domain: "file",
+        action: "stopWatching",
+        args: { workspaceId: "ws-1", __adeRuntimeClientId: 231 },
+      });
+
+      // Nothing is owed twice.
+      page.loadNewDocument();
+      expect(page.sent("stopWatching")).toHaveLength(3);
+
+      // A page that closes while the runtime answers has nobody left to stop that watch.
+      page.closeDuringNextCall();
+      await page.fileAction("watchWorkspace");
+      expect(page.sent("stopWatching")).toHaveLength(4);
+    });
+
+    it("opens a page's file watches again after its runtime connection comes back", async () => {
+      const page = pageWithFileWatches(232);
+      await page.poll();
+      await page.fileAction("watchWorkspace");
+      expect(page.sent("watchWorkspace")).toHaveLength(1);
+
+      // The runtime releases the watches of a connection that closes.
+      page.subscriptions[0].end();
+      expect(page.sent("watchWorkspace")).toHaveLength(1);
+
+      await page.poll();
+      expect(page.subscriptions).toHaveLength(2);
+      expect(page.sent("watchWorkspace")).toHaveLength(2);
+      expect(page.sent("watchWorkspace")[1]?.[1]).toEqual({
+        domain: "file",
+        action: "watchWorkspace",
+        args: { workspaceId: "ws-1", __adeRuntimeClientId: 232 },
+      });
+
+      // A later poll on the live connection opens nothing more.
+      await page.poll();
+      expect(page.sent("watchWorkspace")).toHaveLength(2);
+      expect(page.sent("stopWatching")).toHaveLength(0);
     });
   });
 
@@ -1548,38 +1597,6 @@ describe("registerRuntimeBridge", () => {
       expect.any(Function),
       expect.any(Function),
     );
-  });
-
-  /**
-   * The polled route out of main is not the pushed one: `streamEvents` returns
-   * whatever the buffer drained and the preload casts it rather than
-   * normalizing it, so the subscription guard does not cover this path. Voice
-   * state carries a call's running transcript; nothing in the renderer
-   * consumes it.
-   */
-  it("strips cto_voice events out of a polled batch", async () => {
-    remoteRegistryGetMock.mockReturnValue(target);
-    remoteStreamEventsForTargetMock.mockResolvedValue({
-      events: [
-        { id: 1, timestamp: "2026-08-01T00:00:00.000Z", category: "cto_voice", payload: { caption: "the user said something" } },
-        { id: 2, timestamp: "2026-08-01T00:00:01.000Z", category: "runtime", payload: {} },
-      ],
-      nextCursor: 2,
-      hasMore: false,
-    });
-    registerRuntimeBridge({
-      appVersion: "1.0.0",
-      globalStatePath: "/tmp/ade-state.json",
-    });
-
-    const result = (await ipcHandlers.get(IPC.remoteRuntimeStreamEvents)?.(
-      eventForSender(sender(243)),
-      { id: "target-1", projectId: "project-1", request: { cursor: 0, limit: 100 } },
-    )) as { events: Array<{ id: number }>; nextCursor: number };
-
-    expect(result.events.map((event) => event.id)).toEqual([2]);
-    // The cursor still advances past what was withheld, or the pump stalls.
-    expect(result.nextCursor).toBe(2);
   });
 
   it("cleans a remote event subscription before disconnecting that target", async () => {
@@ -2945,7 +2962,7 @@ describe("registerIpc sync bridge", () => {
     expect(snapshot.availability.message).not.toMatch(/push relay|HTTP 401|account token rejected/i);
   });
 
-  it("reports an old brain Attention contract once instead of returning an empty notch", async () => {
+  it("reports an old brain Attention contract once instead of returning an empty Activity feed", async () => {
     const logger = {
       warn: vi.fn(),
       info: vi.fn(),

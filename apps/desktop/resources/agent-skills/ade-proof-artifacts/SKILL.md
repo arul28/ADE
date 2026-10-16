@@ -11,10 +11,57 @@ When the user asks to capture, send, attach, or provide proof, create evidence w
 
 **Attach, then confirm.** A filing command is not done until you have read its
 confirmation. Run the attach, check that the last line says
-`Attached 1 artifact to lane <id> / chat <id> (<title>)`, then run
+`Attached 1 artifact to lane <id> / chat <id> (<title>)` and copy the `cite:`
+line above it, then run
 `ade proof list --text` and see the row. If the output contains `failed`, or the
 list does not show it, the drawer is empty — fix it now rather than reporting
 proof you did not file.
+
+## Show the proof in your answer
+
+The user reads your answer, not the drawer. Put each proof directly under the
+claim it proves. Every proof command prints a `cite:` line with the artifact id:
+
+```
+cite: ![Preferences shows the new key](ade-proof://3f2c9a41-…)
+```
+
+Paste that line into your final message, on a line of its own (not inside a
+sentence or a list item: the phone shows a citation only on its own line). A picture shows inline, and a video
+plays inline, on the desktop, the web client and the phone.
+
+For a before/after, write a `proof-compare` block. The two pictures show side
+by side:
+
+````
+```proof-compare
+before: <artifact-id> The old sidebar
+after: <artifact-id> The new sidebar
+caption: The rows now use the lane color.
+```
+````
+
+You can also compose a picture yourself (a crop, a side-by-side, an
+annotation), file it with `ade proof attach`, and cite it.
+
+How to write it:
+
+- Put the proof under the claim, not in a pile at the end.
+- Give each item a caption that says what it shows.
+- Add an honest caveat when the picture does not show everything: mock data,
+  a partial state, a step you could not check.
+- Cite as many items as your claims need. There is no limit. Choose the items
+  that show the claim; do not paste every capture.
+- Prefer proof that ADE captured or recorded over a file you made yourself.
+
+A citation of an id ADE does not have shows "ADE has no proof with the id …".
+Copy the id from the `cite:` line; do not type it.
+
+## Put proof on the PR
+
+`ade proof publish --pr <number or URL> <id> <id>` posts the items you pick
+as one PR comment, with each picture and video under its caption, and marks
+them in the drawer. See the **ade-pr-workflows** skill for the limits.
 
 ## Commands
 
@@ -22,15 +69,48 @@ proof you did not file.
 ade proof attach "$TMPDIR/checkout.png" --caption "Checkout completes" --text
 ade proof list --text          # confirm the row is there
 ade proof status --text
-ade proof capture --caption "Checkout confirmation visible" --text     # the user's WHOLE real screen
-ade proof record --seconds 20 --caption "Retry flow recovers" --text  # the user's WHOLE real screen
-ade mac-desktop record start --caption "Note saved in TextEdit" --text # the lane's own screen
-ade mac-desktop record stop --text
-ade mac-desktop proof --caption "Preferences shows the new key" --text
-ade --socket browser proof --tab <tab-id> --caption "Verified" --text
-ade --socket browser proof --browser-session <session-id> --caption "Verified" --text
+ade proof capture --caption "Checkout confirmation visible" --text     # the lane's display
+ade proof record --seconds 20 --caption "Retry flow recovers" --text  # the lane's display
 ade help proof
 ```
+
+Each surface files its own proof. Use the one you worked on:
+
+```bash
+# Apple device (ade apple)
+ade apple proof --caption "Onboarding shows the new step" --text
+ade apple record-start --text
+ade apple record-stop --keep --text
+# Mac Desktop (ade mac-desktop) — the lane's own screen
+ade mac-desktop proof --caption "Preferences shows the new key" --text
+ade mac-desktop record start --caption "Note saved in TextEdit" --text
+ade mac-desktop record stop --text
+# App Control (ade app-control) — the controlled app's own window
+ade app-control proof --caption "Settings saved" --text
+ade app-control record start --caption "Settings save the API key" --text
+ade app-control record stop --text
+# ADE browser (ade browser)
+ade --socket browser proof --tab <tab-id> --caption "Verified" --text
+ade --socket browser proof --browser-session <session-id> --caption "Verified" --text
+ade --socket browser record start --tab <tab-id> --caption "Checkout flow" --text
+ade --socket browser record stop --tab <tab-id> --text
+```
+
+Every recording becomes a **demo** when it stops: still time cut, waits sped
+up, zoom to where the actions happen (a phone only with `--zoom`), a pointer and click rings, under 10 MB (GitHub's
+limit for a PR video). Mark the steps while recording with
+`ade proof step "<what happens next>"`; each one is a caption in the video
+and a chapter in ADE's player. `record start --plain` keeps a recording as it
+was recorded; use it only when the user asks. A recording stops itself after
+5 minutes, or after 2 minutes with no action, so record the flow that proves
+the claim and not the whole task: set up first, start recording, run the
+flow, and stop as soon as the result is on screen. Retries, saving and
+troubleshooting stay out of the video; if the flow went wrong, record again.
+
+`ade proof capture` and `ade proof record` capture the lane's display. They
+refuse the user's real screen unless you pass `--real-screen`. Pass it only
+when the user asks for proof of their own screen. To pick a surface, see the
+**ade-computer-use** skill.
 
 ## Where the file may live
 
@@ -70,8 +150,8 @@ so you can see whether you are looking at your own lane and chat.
 
 Only a proof-named command files a drawer entry. Taking a screenshot is not the same as filing proof:
 
-- `ade proof capture --caption "…"`, `ade proof record`, `ade proof attach <path> --caption "…"`, `ade browser proof`, `ade mac-desktop proof --caption "…"` and a captioned `ade mac-desktop record` **do** file.
-- `ade proof capture` and `ade proof record` capture the user's whole real screen, with whatever else they have open. For desktop app work on a Mac host, work on the lane's own screen (see the **ade-desktop** skill) and record there instead.
+- `ade proof capture --caption "…"`, `ade proof record`, `ade proof attach <path> --caption "…"`, `ade apple proof`, `ade app-control proof`, `ade browser proof`, `ade mac-desktop proof --caption "…"`, a captioned `ade mac-desktop record` and a captioned `ade app-control record` **do** file.
+- `ade proof capture` and `ade proof record` never take the user's real screen unless you pass `--real-screen`. For desktop app work on a Mac host, work on the lane's own screen (see the **ade-computer-use** skill) and record there.
 - A bare `screenshot_environment` / `record_environment` call **does not** — it hands you a scratch file path for your own look at the screen. Promote one with `ade proof attach <that path> --caption "…"` when a reviewer should see it. (There is no `captureScreenshot` tool; if you have seen it named somewhere, it does not exist and calling it fails.)
 
 Artifacts worth filing:
@@ -95,6 +175,22 @@ Proof shows what you did for this request. ADE checks:
   ADE, or attached by the agent. `ade proof attach` of a fresh, unchanged ADE
   capture keeps ADE's label; any other file is "attached by the agent",
   whatever label you pass.
+
+## Keep the drawer clean
+
+Delete proof that is no longer true, with `ade proof rm <id> --text`. Do not
+ask first and do not keep it "just in case": you can always capture it again,
+but a drawer full of old proof hides the proof that matters.
+
+Delete it when:
+
+- a new recording or capture replaces it (you recorded the flow again);
+- it shows a mistake, a failed attempt or a wrong result;
+- the code changed after it, so it no longer shows the current behavior.
+
+Delete only proof of this same work. Proof of other work in the lane is not
+yours to delete. Before your final reply, run `ade proof list --text` and
+delete what is stale; cite only what stays.
 
 ## Gotchas
 

@@ -130,6 +130,21 @@ describe("fold equivalence: text", () => {
     expect(events[0]!.timestamp).toBe(input[2]!.timestamp);
   });
 
+  it("names the whole folded range with sequenceStart, and leaves unfolded rows without it", () => {
+    const input = [
+      textEvent("a ", 10),
+      textEvent("b ", 11),
+      textEvent("c", 12),
+      envelope({ type: "status", turnStatus: "completed", turnId: "turn_1" }, 13),
+    ];
+    const { events } = foldChatEventEnvelopesForReplay(input);
+    expect(events[0]).toMatchObject({ sequenceStart: 10, sequence: 12 });
+    expect(events[1]!.sequenceStart).toBeUndefined();
+    // A single, unfolded delta covers only itself.
+    const single = foldChatEventEnvelopesForReplay([textEvent("solo", 20)]).events[0]!;
+    expect(single.sequenceStart).toBeUndefined();
+  });
+
   it("emits the folded run at the position of its FIRST event", () => {
     const input = [
       envelope({ type: "status", turnStatus: "active", turnId: "turn_1" }, 1),

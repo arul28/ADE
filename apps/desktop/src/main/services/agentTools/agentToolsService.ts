@@ -8,6 +8,7 @@ const TOOL_SPECS: ToolSpec[] = [
   { id: "claude", label: "Claude Code", command: "claude", versionArgs: ["--version"] },
   { id: "codex", label: "Codex", command: "codex", versionArgs: ["--version"] },
   { id: "cursor", label: "Cursor", command: "cursor", versionArgs: ["--version"] },
+  { id: "devin", label: "Devin", command: "devin", versionArgs: ["--version"] },
   { id: "aider", label: "Aider", command: "aider", versionArgs: ["--version"] },
   { id: "continue", label: "Continue", command: "continue", versionArgs: ["--version"] }
 ];

@@ -47,7 +47,7 @@ export default defineConfig([
   },
   {
     define,
-    entry: ["src/electron/preload.ts", "src/electron/renderer.ts"],
+    entry: ["src/electron/preload.ts", "src/electron/renderer.ts", "src/electron/global.ts"],
     outDir: "dist/electron",
     format: ["esm", "cjs"],
     dts: true,
@@ -57,6 +57,22 @@ export default defineConfig([
     target: "es2022",
     platform: "browser",
     noExternal: [],
+    splitting: false,
+  },
+  {
+    define,
+    // The self-running preload. CommonJS only, because Electron loads a preload
+    // as a CommonJS script, and `electron` stays external: it is the one module
+    // a sandboxed preload can `require`, and it is not installed here.
+    entry: ["src/electron/preload-auto.ts"],
+    outDir: "dist/electron",
+    format: ["cjs"],
+    dts: false,
+    clean: false,
+    sourcemap: true,
+    target: "es2022",
+    platform: "browser",
+    external: ["electron"],
     splitting: false,
   },
   {

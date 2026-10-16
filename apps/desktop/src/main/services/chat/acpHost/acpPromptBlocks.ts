@@ -10,13 +10,19 @@
  */
 
 import path from "node:path";
-import type { AgentChatFileRef } from "../../../../shared/types/chat";
+import {
+  attachmentAgentPath,
+  attachmentIsReferenceOnly,
+  attachmentPathHint,
+  type AgentChatFileRef,
+} from "../../../../shared/types/chat";
 import { labelAttachments } from "../../../../shared/attachmentLabels";
 import { hasNullByte } from "../../shared/utils";
 import {
-  exceedsProviderInlineLimit,
+  imageNotInlinedHintPart,
   inlineAttachmentHintPart,
 } from "../attachmentInlineGuard";
+import { fitImageForProviderInline } from "../providerInlineImage";
 import type { AcpImagePromptBehavior } from "./acpHostTypes";
 import type { AcpContentBlock } from "./acpProtocolTypes";
 
@@ -91,24 +97,33 @@ export async function buildAcpPromptBlocks(
       continue;
     }
 
+    // `hydrate: false`: the bytes are never read; the agent gets the path.
+    if (attachmentIsReferenceOnly(attachment)) {
+      blocks.push(textBlock(`\n${attachmentPathHint(attachment)}`));
+      continue;
+    }
+
     try {
       const bytes = await args.readAttachmentBytes(attachment);
       if (attachment.type === "image") {
         if (!args.agentSupportsImages || !args.imagePrompt) {
           blocks.push(textBlock(`\nImage attachment omitted: ${attachment.path} (this provider does not support image prompts).`));
-        } else if (exceedsProviderInlineLimit(bytes.byteLength)) {
-          blocks.push(inlineAttachmentHintPart(attachment.path, bytes.byteLength));
         } else {
-          blocks.push(args.imagePrompt({
-            base64Data: bytes.toString("base64"),
-            mimeType: imageMimeType(attachment._resolvedPath || attachment.path),
-          }));
+          // ACP agents may route to an Anthropic model, which rejects an image
+          // over 5 MB of base64, so images are fitted before they are inlined.
+          const fitted = await fitImageForProviderInline(bytes, imageMimeType(attachmentAgentPath(attachment)), { provider: "acp" });
+          blocks.push(fitted.kind === "omit"
+            ? imageNotInlinedHintPart(attachment.path, fitted.reason)
+            : args.imagePrompt({
+              base64Data: fitted.data.toString("base64"),
+              mimeType: fitted.mediaType,
+            }));
         }
         continue;
       }
 
       if (bytes.byteLength > MAX_INLINE_TEXT_BYTES) {
-        blocks.push(inlineAttachmentHintPart(attachment.path, bytes.byteLength));
+        blocks.push(inlineAttachmentHintPart(attachment.path, bytes.byteLength, MAX_INLINE_TEXT_BYTES));
       } else if (hasNullByte(bytes)) {
         blocks.push(textBlock(`\nAttachment omitted: ${attachment.path} (binary or unsupported file).`));
       } else {

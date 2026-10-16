@@ -4,12 +4,14 @@ import type { AdeSyncClient } from "../sync";
 import { BrowserAccountClient } from "../account/client";
 import { createAccountNamespace, createAccountSettingsNamespace } from "./account";
 import { createAgentChatNamespace } from "./agentChat";
+import { createArchiveNamespace } from "./archive";
 import { createChatLaunchNamespace } from "./chatLaunch";
 import { createAnalyticsNamespace } from "./analytics";
 import { createAttentionNamespace } from "./attention";
 import { createAppNamespace, webKeepAwakeMethods, webUpdateMethods } from "./app";
 import { createFilesNamespace } from "./files";
 import { createGitNamespaces } from "./git";
+import { createJiraNamespace } from "./jira";
 import { CommandCaller } from "./infra/commandCaller";
 import { EventBus } from "./infra/eventBus";
 import { createInvalidationScheduler } from "./infra/invalidation";
@@ -19,6 +21,7 @@ import { createProjectState } from "./infra/projectState";
 import { withFallbackProxy } from "./infra/proxy";
 import { TerminalRegistry } from "./infra/registries";
 import { createLanesNamespace } from "./lanes";
+import { createAppControlNamespace } from "./appControl";
 import { createMacDesktopNamespace } from "./macDesktop";
 import { createMiscNamespaces } from "./misc";
 import { createProjectNamespace } from "./project";
@@ -115,6 +118,7 @@ export function createAdeWebAdapter(
     project: createProjectNamespace(infra),
     remoteRuntime: createRemoteRuntimeNamespace(infra),
     lanes: createLanesNamespace(infra),
+    archive: createArchiveNamespace(infra),
     sessions,
     agentChat: createAgentChatNamespace(infra),
     chatLaunch: createChatLaunchNamespace(infra),
@@ -133,10 +137,12 @@ export function createAdeWebAdapter(
     transcription: misc.transcription,
     modelPicker: misc.modelPicker,
     agentTools: misc.agentTools,
+    cloudAgents: misc.cloudAgents,
     adeCli: misc.adeCli,
     devTools: misc.devTools,
     onboarding: misc.onboarding,
     github: misc.github,
+    jira: createJiraNamespace(infra),
     rebase: misc.rebase,
     history: misc.history,
     zoom: misc.zoom,
@@ -148,12 +154,14 @@ export function createAdeWebAdapter(
     cto: misc.cto,
     computerUse: misc.computerUse,
     iosSimulator: misc.iosSimulator,
-    appControl: misc.appControl,
+    // Watch-only App Control: status and live frames from the host.
+    appControl: createAppControlNamespace(infra) as unknown as Window["ade"]["appControl"],
     // Live, read-only Mac Desktop view. The Electron namespace carries the
     // desktop-only members; this surface implements the live-view cut.
     macDesktop: createMacDesktopNamespace(infra),
     builtInBrowser: misc.builtInBrowser,
     usage: misc.usage,
+    providerInstances: misc.providerInstances,
     automations: misc.automations,
     feedback: misc.feedback,
     updateCheckForUpdates: async () => undefined,
@@ -167,6 +175,7 @@ export function createAdeWebAdapter(
     updateQuitAndInstall: webUpdateMethods.updateQuitAndInstall,
     updateCancelAutoApply: webUpdateMethods.updateCancelAutoApply,
     updateDismissInstalledNotice: async () => undefined,
+    updateRelaunchApp: async () => false,
     onUpdateEvent: () => () => {},
     perf: {
       getConfig: async () => ({

@@ -2,9 +2,9 @@ import type { UsagePacing, UsagePacingStatus } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
 const PACING_STYLES: Record<string, { bg: string; border: string; text: string; label: string }> = {
-  "far-behind":     { bg: "rgba(113,113,122,0.08)", border: "rgba(113,113,122,0.25)", text: "#71717A", label: "FAR BEHIND" },
-  "behind":         { bg: "rgba(113,113,122,0.08)", border: "rgba(113,113,122,0.25)", text: "#A1A1AA", label: "BEHIND" },
-  "slightly-behind":{ bg: "rgba(34,197,94,0.06)",   border: "rgba(34,197,94,0.20)",   text: "#71717A", label: "SLIGHTLY BEHIND" },
+  "far-behind":     { bg: "rgba(113,113,122,0.08)", border: "rgba(113,113,122,0.25)", text: "var(--color-muted-fg)", label: "FAR BEHIND" },
+  "behind":         { bg: "rgba(113,113,122,0.08)", border: "rgba(113,113,122,0.25)", text: "var(--color-secondary-fg)", label: "BEHIND" },
+  "slightly-behind":{ bg: "rgba(34,197,94,0.06)",   border: "rgba(34,197,94,0.20)",   text: "var(--color-muted-fg)", label: "SLIGHTLY BEHIND" },
   "on-track":       { bg: "rgba(34,197,94,0.10)",   border: "rgba(34,197,94,0.30)",   text: "#22C55E", label: "ON TRACK" },
   "slightly-ahead": { bg: "rgba(245,158,11,0.08)",  border: "rgba(245,158,11,0.25)",  text: "#F59E0B", label: "SLIGHTLY AHEAD" },
   "ahead":          { bg: "rgba(245,158,11,0.10)",   border: "rgba(245,158,11,0.30)",  text: "#F59E0B", label: "AHEAD" },
@@ -60,7 +60,7 @@ export function UsagePacingBadge({
 
       {/* Detailed pacing info */}
       {pacing && pacing.weekElapsedPercent > 0 && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[9px] text-[#8B8B9A]">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[9px] text-muted-fg">
           {/* Expected vs actual */}
           <span>
             {pacing.deltaPercent > 0 ? "+" : ""}{pacing.deltaPercent.toFixed(1)}% vs expected

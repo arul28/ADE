@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { IosSimulatorStreamStatus, OpenProjectBinding } from "../../../shared/types";
-import type { IosSimH264Status } from "../chat/IosSimH264Video";
+import type { H264StreamStatus } from "../chat/h264StreamPlayer";
 import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import { useAppStore } from "../../state/appStore";
 import {
@@ -128,11 +128,11 @@ export type AppleDeviceStream = {
   /** Increments once per decoded frame; the 3D presenter re-uploads on change. */
   frameVersion: number;
   streamStatus: IosSimulatorStreamStatus | null;
-  /** Wire to `IosSimH264Video`'s `onStatus`. */
-  handleReaderStatus: (status: IosSimH264Status, error: string | null) => void;
-  /** Wire to `IosSimH264Video`'s `onDimensions`. */
+  /** Wire to `H264StreamView`'s `onStatus`. */
+  handleReaderStatus: (status: H264StreamStatus, error: string | null) => void;
+  /** Wire to `H264StreamView`'s `onDimensions`. */
   handleDimensions: (size: { width: number; height: number }) => void;
-  /** Wire to `IosSimH264Video`'s `onFrame`. The watchdogs live on this call. */
+  /** Wire to `H264StreamView`'s `onFrame`. The watchdogs live on this call. */
   noteFrame: () => void;
   /** New stream, new address, new token. The Reconnect action on every viewer. */
   reconnect: () => void;
@@ -202,6 +202,8 @@ export function useAppleDeviceStream({
    * and the one going away always releases after the one arriving has started.
    */
   const leaseEpochRef = useRef<number | null>(null);
+  /** Cleanup targets the runtime that acquired the lease, even if props move on. */
+  const leaseRuntimePinRef = useRef<OpenProjectBinding | null>(null);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
@@ -221,10 +223,11 @@ export function useAppleDeviceStream({
     const key = leaseKeyRef.current;
     if (!key) return;
     const epoch = leaseEpochRef.current ?? undefined;
+    const pin = leaseRuntimePinRef.current;
     leaseKeyRef.current = null;
     leaseEpochRef.current = null;
+    leaseRuntimePinRef.current = null;
     if (!releaseAppleStreamLease(key, epoch).last) return;
-    const pin = runtimePinRef.current;
     window.setTimeout(() => {
       // Somebody took the lane's stream up in the meantime, on this device or
       // another one (a swap): theirs now. The stop is lane-scoped, so it would
@@ -234,7 +237,7 @@ export function useAppleDeviceStream({
         .stopStream(pin, { laneId: scope.laneId, chatSessionId: scope.chatSessionId })
         .catch(() => {});
     }, APPLE_STREAM_STOP_GRACE_MS);
-  }, [runtimePinRef]);
+  }, []);
 
   const reconnect = useCallback(() => {
     sawFrameRef.current = false;
@@ -339,6 +342,7 @@ export function useAppleDeviceStream({
       const { epoch } = acquireAppleStreamLease(leaseKey, { laneId, deviceUdid, pinKey });
       leaseKeyRef.current = leaseKey;
       leaseEpochRef.current = epoch;
+      leaseRuntimePinRef.current = pin ?? bound;
     }
 
     let cancelled = false;
@@ -443,7 +447,7 @@ export function useAppleDeviceStream({
     setState((current) => (current === "live" ? current : "live"));
   }, []);
 
-  const handleReaderStatus = useCallback((next: IosSimH264Status, nextError: string | null) => {
+  const handleReaderStatus = useCallback((next: H264StreamStatus, nextError: string | null) => {
     if (next === "error") {
       setState("error");
       forwardError(nextError);
@@ -465,8 +469,8 @@ export function useAppleDeviceStream({
       if (wantedRef.current) scheduleRecover();
       return;
     }
-    // `playing` means the decoder accepted a chunk, not that a frame was drawn.
-    // `noteFrame` is what promotes the column to `live`.
+    // `playing` is reported once per stream; `noteFrame`, called per drawn
+    // frame, is what promotes the column to `live` and feeds the watchdogs.
   }, [forwardError, scheduleRecover]);
 
   const handleDimensions = useCallback((next: { width: number; height: number }) => {

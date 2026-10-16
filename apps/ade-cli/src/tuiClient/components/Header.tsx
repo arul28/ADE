@@ -12,12 +12,14 @@ function HeaderComponent({
   chatTitle,
   remoteLabel,
   accountLabel,
+  prLabel,
 }: {
   projectName: string;
   lane: LaneSummary | null;
   chatTitle?: string | null;
   remoteLabel?: string | null;
   accountLabel?: string | null;
+  prLabel?: string | null;
 }) {
   const laneColor = theme.lane(lane);
   const normalizedProject = projectName.trim().toLowerCase();
@@ -33,6 +35,7 @@ function HeaderComponent({
   );
   const showProject = Boolean(normalizedProject && normalizedProject !== "ade" && !projectRepeatsBranch);
   const chatLabel = chatTitle?.trim() || null;
+  const prs = prLabel?.trim() || null;
   const remote = remoteLabel?.trim() || null;
   const account = accountLabel?.trim() || null;
   return (
@@ -77,6 +80,13 @@ function HeaderComponent({
               <Text>{"    "}</Text>
               <Text color={theme.color.t4}>chat </Text>
               <Text color={theme.color.fg}>{chatLabel}</Text>
+            </>
+          ) : null}
+          {prs ? (
+            <>
+              <Text>{"    "}</Text>
+              <Text color={theme.color.t4}>pr </Text>
+              <Text color={theme.color.violet}>{prs}</Text>
             </>
           ) : null}
         </Text>

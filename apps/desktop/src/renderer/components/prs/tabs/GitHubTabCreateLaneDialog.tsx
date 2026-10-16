@@ -8,6 +8,7 @@ import type {
   GitHubPrListItem,
   GitHubPrSnapshot,
   LaneSummary,
+  OpenProjectBinding,
 } from "../../../../shared/types";
 import {
   COLORS,
@@ -22,9 +23,11 @@ import { prRouteCoordinatesEqual, prRouteCoordinatesKey } from "../prsRouteState
 type CreateLaneFromPrBranchApi = {
   preflightCreateLaneFromPrBranch: (
     args: CreateLaneFromPrBranchArgs,
+    pin?: OpenProjectBinding | null,
   ) => Promise<CreateLaneFromPrBranchPreflightResult>;
   createLaneFromPrBranch: (
     args: CreateLaneFromPrBranchArgs,
+    pin?: OpenProjectBinding | null,
   ) => Promise<CreateLaneFromPrBranchResult>;
 };
 
@@ -131,7 +134,11 @@ export function upsertLaneSummary(lanes: LaneSummary[], lane: LaneSummary): Lane
   return next;
 }
 
-export function canCreateLaneFromPrBranch(item: GitHubPrListItem, lanes: LaneSummary[]): boolean {
+/**
+ * `lanes` should be every machine's lanes: a lane for this branch on any
+ * machine means the PR already has a home, and a second checkout would fork it.
+ */
+export function canCreateLaneFromPrBranch(item: GitHubPrListItem, lanes: readonly LaneSummary[]): boolean {
   if (item.linkedPrId || item.scope !== "repo") return false;
   if (item.state !== "open" && item.state !== "draft") return false;
   const headBranch = branchNameFromRef(item.headBranch);
@@ -188,8 +195,11 @@ export function CreateLaneFromPrBranchDialog({
   error,
   onCancel,
   onConfirm,
+  machineName = null,
 }: {
   item: GitHubPrListItem;
+  /** The machine the lane will be created on, when there was a choice. */
+  machineName?: string | null;
   preflight: CreateLaneFromPrBranchPreflight | null;
   loading: boolean;
   busy: boolean;
@@ -227,6 +237,7 @@ export function CreateLaneFromPrBranchDialog({
   const sourceBranch = preflightRemoteBranch(preflight, item);
   const importRef = preflightImportRef(preflight);
   const rows = [
+    ...(machineName ? [["Machine", machineName] as const] : []),
     ["PR", `#${preflightPrNumber(preflight, item)} ${preflightTitle(preflight, item)}`],
     ["Source branch", sourceBranch],
     ...(importRef && importRef !== sourceBranch ? [["Import ref", importRef] as const] : []),

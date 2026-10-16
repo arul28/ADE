@@ -13,7 +13,28 @@ import Foundation
 final class DeepLinkRouter {
   static let shared = DeepLinkRouter()
 
+  /// Counts every link this router acted on. `handle` compares it before and
+  /// after routing, so a link that reached no branch can land on the Hub with a
+  /// notice instead of doing nothing.
+  private var routedCount = 0
+
   private init() {}
+
+  /// Every tap must land somewhere visible: an ADE link this build cannot act
+  /// on opens the Hub and says so.
+  private func landOnHub(_ notice: String) {
+    routedCount += 1
+    SyncService.shared?.landOnHub(notice: notice)
+  }
+
+  /// Is this a link meant for ADE? Other URLs (an auth callback, a stray
+  /// scheme) are not ours to complain about.
+  private static func isADELink(_ url: URL) -> Bool {
+    if url.scheme?.lowercased() == "ade" { return true }
+    guard url.scheme?.lowercased() == "https",
+          let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+    return ADEDeepLinkURLParsing.isADEWebHost(components.host)
+  }
 
   /// Parse and dispatch an incoming URL or synthesised deep-link from a
   /// notification response. Supports the legacy `ade://session/<id>` and
@@ -30,9 +51,18 @@ final class DeepLinkRouter {
   /// Also accepts the web mirror used by CLI / agent handoff output:
   /// `https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue>&...`.
   ///
-  /// Unknown hosts are ignored rather than crashing on malformed input.
+  /// Malformed input never crashes. An ADE link that reaches no route opens the
+  /// Hub with a short notice, so the tap is never a silent no-op.
   func handle(_ url: URL, attentionItemId: String? = nil) {
+    let before = routedCount
+    route(url, attentionItemId: attentionItemId)
+    guard routedCount == before, Self.isADELink(url) else { return }
+    landOnHub("ADE could not open that link.")
+  }
+
+  private func route(_ url: URL, attentionItemId: String?) {
     if routePairingURL(url) { return }
+    if routeDeviceSignInURL(url) { return }
     if routeHttpsOpenURL(url, attentionItemId: attentionItemId) { return }
     guard url.scheme?.lowercased() == "ade" else { return }
     let host = url.host?.lowercased()
@@ -132,6 +162,11 @@ final class DeepLinkRouter {
             isValidLinearIssueBranch(url: url)
       else { return }
       routeLinearIssue(identifier: identifier, url: url)
+    case "workspace", "linear-oauth":
+      // `ade://workspace` is the widgets' "just open ADE" link, and the Linear
+      // OAuth callback is captured by its own web session. Opening the app is
+      // the whole job; neither is a failed link.
+      routedCount += 1
     case "activity":
       // `ade://activity[?state=<group>]` — the lock-screen widget's fallback
       // when nothing in particular is asking for you. Bare, it opens the drawer
@@ -148,7 +183,19 @@ final class DeepLinkRouter {
         .queryItems?
         .first { $0.name == "state" }?
         .value
-        .flatMap { ActivityStateGroup(wireValue: $0) }
+        .flatMap { value in
+          // A Live Activity or widget from an older build links to one of the
+          // six old groups; land it on the column that group now files under.
+          ActivityBoardColumn(wireValue: value)
+            ?? ActivityStateGroup(wireValue: value).map { group in
+              switch group {
+              case .needsYou, .failed: return .needsYou
+              case .planning, .working: return .working
+              case .idle, .done: return .done
+              }
+            }
+        }
+      routedCount += 1
       SyncService.shared?.attentionDrawer.stateFilter = requestedState
       SyncService.shared?.attentionDrawerPresented = true
       NotificationCenter.default.post(
@@ -162,9 +209,12 @@ final class DeepLinkRouter {
   }
 
   /// Routes a scanned/opened pairing URL — `https://ade-app.dev/pair#<payload>`
-  /// or `ade://pair#<payload>` — into the pairing flow. The payload rides the
-  /// fragment; we hand the whole URL to `SyncService` for the settings screen
-  /// to parse and present (reconnect for a known machine, PIN for a new one).
+  /// — into the pairing flow. The payload rides the fragment; we hand the whole
+  /// URL to `SyncService` for the settings screen to parse and present
+  /// (reconnect for a known machine, PIN for a new one). `ade://pair#…` is
+  /// claimed too, so no other handler acts on it, but `PairingQrPayload`
+  /// accepts only the https form: any app can open a custom-scheme link, and a
+  /// known machine's routes must not be re-pointed by one.
   private func routePairingURL(_ url: URL) -> Bool {
     guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
     let scheme = components.scheme?.lowercased()
@@ -176,6 +226,7 @@ final class DeepLinkRouter {
     // A pairing URL with no fragment carries no payload — swallow it so it
     // doesn't fall through to other handlers, but there's nothing to present.
     guard components.fragment?.isEmpty == false else { return true }
+    routedCount += 1
     ProductAnalytics.shared.captureFeature(
       .deepLink,
       outcome: .opened,
@@ -186,6 +237,20 @@ final class DeepLinkRouter {
       name: .adeDeepLinkRequested,
       object: nil,
       userInfo: ["kind": "pairing", "identifier": url.absoluteString]
+    )
+    return true
+  }
+
+  /// The sign-in link of another computer (`https://ade-app.dev/device?user_code=…`,
+  /// the QR code that `ade connect` shows). The presentation layer asks before
+  /// anything is approved.
+  private func routeDeviceSignInURL(_ url: URL) -> Bool {
+    guard DeviceSignInRequest(url: url) != nil else { return false }
+    routedCount += 1
+    NotificationCenter.default.post(
+      name: .adeDeviceSignInRequested,
+      object: nil,
+      userInfo: ["url": url.absoluteString]
     )
     return true
   }
@@ -283,6 +348,19 @@ final class DeepLinkRouter {
   /// `prNumber` keys. Used when the user taps the notification body or a
   /// default action we do not special-case into a remote command.
   func handleNotificationUserInfo(_ userInfo: [AnyHashable: Any]) {
+    let before = routedCount
+    routeNotificationUserInfo(userInfo)
+    guard routedCount == before else { return }
+    landOnHub("ADE could not find what that notification points to.")
+  }
+
+  private func routeNotificationUserInfo(_ userInfo: [AnyHashable: Any]) {
+    // A custom push (`ade notify`) with no link points nowhere on purpose:
+    // opening ADE is the whole job, not a failed tap.
+    if userInfo["customNotification"] as? Bool == true, userInfo["deepLink"] == nil {
+      routedCount += 1
+      return
+    }
     let attentionItemId = stringValue(from: userInfo["attentionItemId"])
     if let raw = userInfo["deepLink"] as? String, let url = URL(string: raw) {
       handle(url, attentionItemId: attentionItemId)
@@ -348,6 +426,7 @@ final class DeepLinkRouter {
     event: Int? = nil,
     offset: Int? = nil
   ) {
+    routedCount += 1
     let analyticsSource: ADEAnalyticsSource?
     switch kind {
     case "session": analyticsSource = .sessionLink
@@ -617,6 +696,7 @@ final class DeepLinkRouter {
   /// to the paired Mac, which owns the workspace's lane↔issue mapping.
   private func routeLinearIssue(identifier: String, url: URL) {
     if SyncService.shared?.activeProjectId != nil {
+      routedCount += 1
       ProductAnalytics.shared.captureFeature(
         .deepLink,
         outcome: .opened,
@@ -636,6 +716,7 @@ final class DeepLinkRouter {
     url: URL,
     analyticsSource: ADEAnalyticsSource = .sendToMacLink
   ) {
+    routedCount += 1
     ProductAnalytics.shared.captureFeature(
       .deepLink,
       outcome: .opened,
@@ -700,4 +781,7 @@ extension Notification.Name {
   /// branch / linear-issue) that the mobile client can't open directly.
   /// `userInfo["url"]` carries the original `ade://...` URL string.
   static let adeSendToMacRequested = Notification.Name("ade.sendToMacRequested")
+  /// Posted when the phone opens the sign-in link of another computer.
+  /// `userInfo["url"]` is the link; `DeviceSignInRequest(url:)` reads its code.
+  static let adeDeviceSignInRequested = Notification.Name("ade.deviceSignInRequested")
 }

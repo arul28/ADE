@@ -41,7 +41,7 @@ const MISSION_STATE_TONE: Record<string, string> = {
 function MissionStateChip({ state }: { state: AgentChatMissionState | null }) {
   const key = state ?? "";
   const label = MISSION_STATE_LABEL[key] ?? (state ? state.replace(/_/g, " ") : "Idle");
-  const tone = MISSION_STATE_TONE[key] ?? "text-fg/60 bg-white/[0.05] ring-white/10";
+  const tone = MISSION_STATE_TONE[key] ?? "text-fg/60 bg-fg/[0.05] ring-fg/10";
   const live = key === "running" || key === "orchestrator_turn";
   return (
     <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10.5px] font-medium ring-1 ring-inset", tone)}>
@@ -82,7 +82,7 @@ function FeatureRow({
   const worker = feature.currentWorkerSessionId?.trim() || null;
   const canKill = feature.status === "in_progress" && Boolean(worker) && Boolean(onKillWorker);
   return (
-    <div className="group flex items-start gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-white/[0.03]">
+    <div className="group flex items-start gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-fg/[0.03]">
       <span className="mt-[1px] flex h-3.5 w-3.5 shrink-0 items-center justify-center">
         <FeatureGlyph status={feature.status} />
       </span>
@@ -100,7 +100,7 @@ function FeatureRow({
         </div>
         {(feature.skillName || feature.milestone || worker) ? (
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-sans text-[10px] text-fg/40">
-            {feature.skillName ? <span className="rounded-sm bg-white/[0.05] px-1 py-px tracking-[0.02em]">{feature.skillName}</span> : null}
+            {feature.skillName ? <span className="rounded-sm bg-fg/[0.05] px-1 py-px tracking-[0.02em]">{feature.skillName}</span> : null}
             {feature.milestone ? <span className="text-amber-300/55">{feature.milestone}</span> : null}
             {worker ? <span className="tabular-nums">worker {worker.slice(-6)}</span> : null}
           </div>
@@ -138,7 +138,7 @@ function ProgressLog({ entries }: { entries: MissionSnapshot["progress"] }) {
   // Latest first.
   const ordered = [...entries].reverse();
   return (
-    <section className="border-t border-white/[0.04] pb-2">
+    <section className="border-t border-fg/[0.04] pb-2">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -194,7 +194,7 @@ export function MissionControlPanel({
   return (
     <div className={cn("flex flex-col font-sans", className)}>
       {/* Header */}
-      <div className="flex items-center justify-between gap-2 border-b border-white/[0.04] px-3.5 py-2.5">
+      <div className="flex items-center justify-between gap-2 border-b border-fg/[0.04] px-3.5 py-2.5">
         <span className="flex items-center gap-2 font-sans text-[12.5px] font-medium text-fg/80">
           <Rocket aria-hidden size={15} weight="duotone" className="text-[color:var(--color-accent,#A78BFA)]" />
           Mission

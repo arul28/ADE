@@ -341,14 +341,21 @@ export function accountMachineInstallLabel(machine: AdeAccountMachine): string |
  */
 export function accountMachineRowLabel(machine: AdeAccountMachine): string | null {
   const install = accountMachineInstallLabel(machine);
-  const custom = machine.customName?.trim();
-  const reported = machine.name?.trim();
-  if (!install) return custom || reported || null;
-  const suffix = machine.channel ? packageChannelNameSuffix(machine.channel) : "";
-  const base = custom
-    || (reported && suffix && reported.endsWith(suffix) ? reported.slice(0, -suffix.length) : reported)
-    || null;
+  if (!install) return accountMachineDisplayName(machine);
+  const base = accountMachineRowName(machine);
   return base ? `${base} · ${install}` : install;
+}
+
+/**
+ * The name part of a row label: the display name without the channel suffix
+ * the host folded into it, for a row that names the install separately.
+ */
+export function accountMachineRowName(machine: AdeAccountMachine): string | null {
+  const custom = machine.customName?.trim();
+  if (custom) return custom;
+  const reported = machine.name?.trim();
+  const suffix = machine.channel ? packageChannelNameSuffix(machine.channel) : "";
+  return (reported && suffix && reported.endsWith(suffix) ? reported.slice(0, -suffix.length) : reported) || null;
 }
 
 /** A Remove warns when the machine reported in within this window. */
@@ -836,6 +843,11 @@ export function accountMachineAdoptionRoutes(
   ];
 }
 
+/** The query names more than one machine; the message lists them by key. */
+export class AmbiguousAccountMachineError extends Error {
+  readonly code = "machine_ambiguous";
+}
+
 export function selectAccountMachine(
   machines: AdeAccountMachine[],
   query: string,
@@ -852,7 +864,7 @@ export function selectAccountMachine(
     const choices = byStableId.map(
       (machine) => `${accountMachineDisplayName(machine) ?? "Unnamed machine"} (${machine.machineKey})`,
     );
-    throw new Error(`Machine identifier '${query}' is ambiguous. Choose one of: ${choices.join(", ")}.`);
+    throw new AmbiguousAccountMachineError(`Machine identifier '${query}' is ambiguous. Choose one of: ${choices.join(", ")}.`);
   }
 
   const byName = machines.filter((machine) =>
@@ -865,7 +877,7 @@ export function selectAccountMachine(
     const choices = byName.map(
       (machine) => `${accountMachineDisplayName(machine) ?? "Unnamed machine"} (${machine.machineKey})`,
     );
-    throw new Error(`Machine name '${query}' is ambiguous. Choose one of: ${choices.join(", ")}.`);
+    throw new AmbiguousAccountMachineError(`Machine name '${query}' is ambiguous. Choose one of: ${choices.join(", ")}.`);
   }
   throw new Error(`Account machine not found: ${query}`);
 }

@@ -73,9 +73,12 @@ const MEANINGFUL_ACTIONS = new Set([
   "chat.approve",
   "chat.respondToInput",
   "chat.restart",
+  // A fresh provider process for a chat, keeping its conversation. One row
+  // per press; it is how often people reach for it that matters.
+  "chat.restartSession",
   "chat.handoff",
   "chat.rewindFiles",
-  "chat.createPromptStash",
+  "chat.createDraft",
   "chat.createScheduledWork",
   "chat.cancelScheduledWork",
   "chat.delete",
@@ -145,6 +148,10 @@ const MEANINGFUL_ACTIONS = new Set([
   // asks for is exactly what this ledger is for. One row per click on a
   // terminal PR — as low-frequency as an action gets.
   "prs.cleanupBranch",
+  // Turning PR Watch / Ship on, switching it, or off for a chat. A person's
+  // choice (an agent arming its own watch goes through the same action); the
+  // watch's own wakes are not mutations and never land here.
+  "prs.setChatWatch",
   "automations.triggerManually",
 ]);
 
@@ -178,7 +185,7 @@ export function usageActionFromIpcChannel(channel: string): string {
   if (action.startsWith("agentChat.")) {
     const chatAction = action.slice("agentChat.".length);
     const aliases: Record<string, string> = {
-      "promptStashes.create": "createPromptStash",
+      "drafts.create": "createDraft",
       "scheduledWork.create": "createScheduledWork",
       "scheduledWork.cancel": "cancelScheduledWork",
     };
@@ -354,6 +361,7 @@ function providerFromToolType(toolType: unknown): string {
   if (value.includes("cursor")) return "cursor";
   if (value.includes("opencode")) return "opencode";
   if (value.includes("droid")) return "droid";
+  if (value.includes("muse")) return "muse";
   return value.includes("shell") ? "shell" : "other";
 }
 

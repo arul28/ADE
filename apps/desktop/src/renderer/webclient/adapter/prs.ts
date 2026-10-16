@@ -5,8 +5,10 @@ import type {
   PrDetailBundle,
   PrSummary,
   PrWithConflicts,
+  StackLinkOffer,
 } from "../../../shared/types";
 import { EMPTY_PR_DETAIL_BUNDLE, settlePrDetailBundle } from "../../../shared/prDetailBundle";
+import type { PrChatWatchSummary } from "../../../shared/prWatch";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { createCoalescingReadCache } from "./infra/coalescingReadCache";
 import { unavailableOnHost } from "./misc";
@@ -196,6 +198,13 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     createLaneFromPrBranch: (args: unknown) => call("prs.createLaneFromPrBranch", args, null, false),
     getForLane: async (laneId: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.getForLane", pin, infra);
+      // Prefer the host's own answer: it prefers the current-branch PR, and it
+      // answers null for a primary lane parked on its base branch — the exact
+      // contract every lane link is written against (the local fallback can
+      // only approximate it by recency, and would still name the ancient PR).
+      if (commands.hasAction("prs.getForLane")) {
+        return await read<PrSummary | null>("prs.getForLane", { laneId }, null);
+      }
       return (await listPrs()).find((pr) => pr.laneId === laneId) ?? null;
     },
     // Manual ⟳ PR-sync (ChatGitToolbar) — force a fresh reconcile for one lane.
@@ -213,6 +222,11 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     // uses (`pr.reconcileOnFocus` with `{ force: true }`).
     reconcileNow: async () => {
       await call("prs.reconcileOnFocus", { force: true }, undefined, false);
+      invalidatePrsReads();
+    },
+    reconcileOnFocus: async (pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("prs.reconcileOnFocus", pin, infra);
+      await call("prs.reconcileOnFocus", {}, undefined, false);
       invalidatePrsReads();
     },
     listAll: async (pin?: RuntimePinArg) => {
@@ -305,6 +319,72 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       invalidatePrsReads();
       return result;
     },
+    linkChatSession: async (args: unknown) => {
+      const result = await call("prs.linkChatSession", args, { ok: false }, false);
+      invalidatePrsReads();
+      return result;
+    },
+    unlinkChatSession: async (args: unknown) => {
+      const result = await call("prs.unlinkChatSession", args, { ok: false }, false);
+      invalidatePrsReads();
+      return result;
+    },
+    linkChatStack: async (args: unknown) => {
+      if (commands.hasAction("prs.linkChatStack")) {
+        const result = await call("prs.linkChatStack", args, { ok: false, linked: 0 }, false);
+        invalidatePrsReads();
+        return result;
+      }
+      // Old-host shim: a host predating `prs.linkChatStack` has no server-side
+      // stack-link action, so the adapter re-derives "unclaimed siblings, roll
+      // back on failure" from the offer. Keep it a thin per-PR loop — the offer
+      // is the owner; do not grow policy here.
+      const record = asRecord(args);
+      const sessionId = String(record.sessionId ?? "");
+      const stackNumber = Number(record.stackNumber);
+      const offer = await read<StackLinkOffer | null>(
+        "prs.getStackLinkOffer",
+        { sessionId, prId: record.prId },
+        null,
+      );
+      if (!offer || offer.stackNumber !== stackNumber) return { ok: false, linked: 0 };
+      const unclaimed = offer.siblings.filter((sibling) => !sibling.claimedByOtherChat);
+      const linkedIds: string[] = [];
+      for (const sibling of unclaimed) {
+        const result = await call<{ ok: boolean }>("prs.linkChatSession", {
+          prId: sibling.prId,
+          sessionId: offer.sessionId,
+          allowCrossLane: true,
+        }, { ok: false }, false);
+        if (!result.ok) {
+          for (const prId of [...linkedIds].reverse()) {
+            // `dismiss: false`: these were linked by this attempt, and the offer
+            // only lists siblings this chat had not unlinked, so nothing needs
+            // its tombstone restored. Match the server's failure shape.
+            await call<{ ok: boolean }>("prs.unlinkChatSession", {
+              prId,
+              sessionId: offer.sessionId,
+              dismiss: false,
+            }, { ok: false }, false);
+          }
+          invalidatePrsReads();
+          return { ok: false, linked: 0 };
+        }
+        linkedIds.push(sibling.prId);
+      }
+      invalidatePrsReads();
+      return { ok: true, linked: linkedIds.length };
+    },
+    listChatSessionsForPr: (args: unknown) => read("prs.listChatSessionsForPr", args, []),
+    setChatWatch: async (args: unknown) => {
+      // A host without PR Watch must say so; a null result reads as "turned off".
+      if (!commands.hasAction("prs.setChatWatch")) throw new Error("This machine's ADE does not have PR Watch yet. Update it to use Watch and Ship.");
+      const result = await call<PrChatWatchSummary | null>("prs.setChatWatch", args, null, false);
+      invalidatePrsReads();
+      return result;
+    },
+    getChatWatches: (args: unknown) => read("prs.getChatWatches", args, []),
+    getStackLinkOffer: (args: unknown) => read("prs.getStackLinkOffer", args, null),
     listIntegrationWorkflows: (args?: unknown) => call("prs.listIntegrationWorkflows", args, []),
     onEvent: (listener: (event: unknown) => void, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.onEvent", pin, infra);

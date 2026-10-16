@@ -1,0 +1,18 @@
+---
+title: "v1.2.90"
+description: "Release notes for ADE v1.2.90 - October 5, 2026"
+---
+
+ADE 1.2.90 lets agents wake themselves for PRs and long waits, lets you switch a chat's account, and makes the desktop app smoother.
+
+## Agents and chats
+
+- Agents can watch or ship a PR and wake when it changes, resume after a crash, wait on goals, and offer stop choices; you can restart a session, and MCP calls have timeouts (#1454).
+- Switch a running Claude or Codex chat to another signed-in account from the chat actions drawer. The chat keeps its thread (#1456).
+- Self-paced wake-up loops show one row per schedule instead of three, and the composer has a status strip (#1458).
+- Lanes follow the branch their agent switches to (#1458).
+
+## Performance
+
+- Project switches with a long chat open no longer freeze the app, and a chat scrolled into its history keeps its place (#1457).
+- Cheaper looping animations, streaming code blocks, and terminals rendered with WebGL (#1457).

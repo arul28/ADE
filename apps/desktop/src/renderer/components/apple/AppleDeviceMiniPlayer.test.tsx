@@ -114,7 +114,8 @@ beforeEach(() => {
     observe() {}
     disconnect() {}
   };
-  (window as unknown as { ade: unknown }).ade = { iosSimulator: { tap: vi.fn() } };
+  const onEvent = vi.fn((_listener: (event: unknown) => void, _pin?: unknown) => vi.fn());
+  (window as unknown as { ade: unknown }).ade = { iosSimulator: { tap: vi.fn(), onEvent } };
 });
 
 afterEach(() => {
@@ -141,6 +142,28 @@ describe("appleMiniPlayerStore", () => {
 });
 
 describe("AppleDeviceMiniPlayer", () => {
+  it("resubscribes when its runtime pin changes without changing devices", () => {
+    const localPin = { kind: "local" as const, key: "local:/repo", rootPath: "/repo", displayName: "Repo" };
+    const remotePin = {
+      kind: "remote" as const,
+      key: "remote:target:project",
+      targetId: "target",
+      runtimeName: "Other Mac",
+      projectId: "project",
+      rootPath: "/repo",
+      displayName: "Repo",
+    };
+    const view = render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
+    act(() => openAppleMiniPlayer({ ...TARGET, runtimePin: localPin }));
+    const onEvent = (window as unknown as { ade: { iosSimulator: { onEvent: ReturnType<typeof vi.fn> } } }).ade.iosSimulator.onEvent;
+    expect(onEvent).toHaveBeenCalledTimes(1);
+
+    act(() => openAppleMiniPlayer({ ...TARGET, runtimePin: remotePin }));
+
+    expect(onEvent).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+
   it("renders nothing until a device is floated", () => {
     const { container } = render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
     expect(container.firstChild).toBeNull();

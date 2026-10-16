@@ -104,7 +104,7 @@ Review-comment fixes routinely introduce new CI failures (different file gets to
 Therefore:
 
 - **Wait for both signals to be terminal** before doing any fix work. CI terminal = every required check has a final conclusion. Review-bots terminal = every bot with current-head start evidence has posted or settled; bots with zero evidence after the grace window are inactive/terminal-neutral. If only one signal is back, sleep — don't iterate.
-- **Decide holistically.** Read the failing CI list AND the new-comments list together before deciding what to change. A review comment that asks for "guard against null at line 42" and a CI failure in a test asserting null-handling on the same function are *one* fix, not two.
+- **Decide holistically.** Read the whole poll together before deciding what to change: failing CI, open review threads, review-body findings, and new comments. A review comment that asks for "guard against null at line 42" and a CI failure in a test asserting null-handling on the same function are *one* fix, not two.
 - **Dispatch `ci-fix-agent` and `review-fix-agent` in parallel** (Phase 3b.3), each with its own minimum scope but in the same iteration.
 - **One commit, one push.** The lead reviews the combined diff, runs the narrow checks below, and pushes once. Never one push for CI and a second push for review feedback in the same iteration.
 
@@ -129,13 +129,19 @@ Therefore, when verifying a fix:
 
 Pick the richest available and **use it fully**:
 
-1. **Agent teams** (e.g., Claude Code `TeamCreate` with `AGENT_TEAMS` enabled): **MANDATORY when available.** Spawn a team with a lead and role-specific sub-agents (poll, rebase, ci-fix, review-fix, conflict-resolver). Sub-agents return structured summaries so the lead's context never ingests full CI logs or comment threads.
-2. **Parallel subagents** (e.g., Claude Code `Agent` tool, other CLIs with parallel task spawning): fall back here if teams aren't available. Spawn discrete subagents for poll, ci-fix, review-fix within a single iteration. Same context-keeping rules apply.
+1. **Agent teams** (e.g., Claude Code `TeamCreate` with `AGENT_TEAMS` enabled): **MANDATORY when available.** Spawn a team with a lead and role-specific sub-agents (rebase, ci-fix, review-fix, conflict-resolver). Sub-agents return structured summaries so the lead's context never ingests full CI logs or comment threads.
+2. **Parallel subagents** (e.g., Claude Code `Agent` tool, other CLIs with parallel task spawning): fall back here if teams aren't available. Spawn discrete subagents for ci-fix and review-fix within a single iteration. Same context-keeping rules apply.
 3. **Serial** (any CLI): absolute last resort. Run phases in order, in-process. Compact aggressively.
 
-**Rule:** the lead reads poll-agent summaries, not raw API output. Fix agents receive minimum scope (failing test paths + error snippets, or comment bodies + file anchors) and return patches or direct edits. The lead commits and pushes; fix agents do not.
+**Subagent limits:** follow the **Subagents** rules in `AGENTS.md`. Every
+fix, rebase and conflict agent is a leaf: it does not start subagents,
+and its brief says so. Start a helper only when the work is real and batch
+fixes into one agent per iteration; a small fix is the lead's own work. When
+the user has asked to limit agents, run the loop serially (option 3).
 
-**Waiting rule:** agents never stay alive just to wait. A poll-agent performs one bounded poll and exits. Fix agents perform one bounded fix task and exit. The lead schedules a wake-up or records a blocked/done state, then exits the active turn.
+**Rule:** the lead runs the poll itself (`node scripts/ship-poll.mjs`); its output is already the structured summary, so no poll agent is needed, and the lead never reads raw API output instead. Fix agents receive minimum scope (failing test paths + error snippets, or comment bodies + file anchors) and return patches or direct edits. The lead commits and pushes; fix agents do not.
+
+**Waiting rule:** agents never stay alive just to wait. Fix agents perform one bounded fix task and exit. The lead schedules a wake-up or records a blocked/done state, then exits the active turn.
 
 ## Common failure modes
 
@@ -171,7 +177,14 @@ These are operational mistakes this playbook explicitly guards against:
    coordinator handoff. Reserve `stack-coordinator-*` for a restack, a base
    retarget, a fix that belongs to a lower layer, or an exhausted iteration
    budget.
-8. **Do not record `ready-stacked` over a known gap.** A mandatory proof
+8. **Bot status belongs to one head.** A "rate limited", "usage limit",
+   "skipped" or "trial expired" notice describes the head it was posted on,
+   not the PR. Classify every bot again on each poll from current-head
+   evidence. A bot that was rate-limited on the first push can review the
+   third one, and that review is work like any other.
+9. **Never merge over an open review thread.** Phase 3c reads the unresolved
+   threads one last time before merging; see 3c's pre-merge check.
+10. **Do not record `ready-stacked` over a known gap.** A mandatory proof
    scenario is satisfied by a captured artifact bound to the validated head, or
    it is missing. "Ready, except the clean-host run is still outstanding" is
    `blocked` with the scenario id, not a caveat on a terminal success.
@@ -195,6 +208,7 @@ Path: `.ade/shipLane/<sanitized-branch>.json` (sanitize by replacing `/` with `_
   "qualityReviewedSha": "abc123...",
   "localAhead": false,
   "addressedCommentIds": [987654, 987655],
+  "addressedReviewFindings": ["cr:f1685e92a4e564f3b6f98c88"],
   "harvests": [
     { "point": "quality", "headSha": "0a1b2c...", "failedJobs": ["test-desktop (3)"],
       "commentsFixed": 2, "commentsStale": 5, "pendingReviewBots": [] }
@@ -211,6 +225,9 @@ Path: `.ade/shipLane/<sanitized-branch>.json` (sanitize by replacing `/` with `_
 `/ship` has not started yet. `qualityReviewedSha` is the last commit a clean
 quality pass covered; every later review looks only at the delta from it.
 `localAhead` is true while reviewed commits are held back by the push rule.
+`addressedReviewFindings` holds the keys of review-body findings (for example
+`cr:<id>`) that a fix or a rejection already handled; the poll stops reporting
+them.
 `lastPushAt` is the UTC time of the last push; the push rule's 12-minute grace
 window counts from it. Every push in any phase updates both `lastPushSha` and
 `lastPushAt`. `mode` is `merge` for ordinary `/ship` and `stack` only when
@@ -317,12 +334,14 @@ post-rebase, Phase 3b, and force-finalize supply only their commit message, diff
 base, narrow test targets, and push command; they do not restate this algorithm.
 
 1. Clear `qualityValidatedSha`, `qualityValidatedTree`, and
-   `qualityValidatedBaseSha` before editing. Fetch the intended base, set
-   `QUALITY_VALIDATED_BASE_SHA` to that fetched commit, and require it to be an
-   ancestor of the candidate head. If it is not, preserve the work, route
-   through Phase 3a, and restart this procedure after the rebase; do not bind a
-   behind-base tree. This works before PR creation; Phase 0 uses `main` in
-   ordinary mode and the persisted direct parent in stack mode. In stack mode,
+   `qualityValidatedBaseSha` before editing. Fetch the intended base and set
+   `QUALITY_VALIDATED_BASE_SHA` to that fetched commit; it records what the
+   review saw and is not a gate. In ordinary mode a head that is behind the base
+   is fine: route through Phase 3a only when the head conflicts with the base
+   (`git merge-tree --write-tree "$QUALITY_VALIDATED_BASE_SHA" HEAD` exits
+   non-zero), then restart this procedure after the rebase. This works before
+   PR creation; Phase 0 uses `main` in ordinary mode and the persisted direct
+   parent in stack mode. In stack mode,
    pushing this lane's own layer branch is part of the procedure, but rebasing
    it is not: if the fetched direct parent is not an ancestor of the candidate
    head, stop here and exit `stack-coordinator-sync-required` instead of routing
@@ -381,14 +400,14 @@ base, narrow test targets, and push command; they do not restate this algorithm.
 
 5. Push with the phase-appropriate command and verify the remote branch head
    equals `QUALITY_VALIDATED_SHA`. If a PR already exists, also require its
-   `headRefOid` and `baseRefOid` to equal `QUALITY_VALIDATED_SHA` and
-   `QUALITY_VALIDATED_BASE_SHA`. Before the PR exists, retain the fetched
-   intended base as a provisional binding; Phase 0.5 performs the PR-field
-   verification immediately after creation. In both modes, require the base to
-   be an ancestor of the head and `HEAD^{tree}` to still equal
-   `QUALITY_VALIDATED_TREE` before writing all three values to ship state. Also
-   set `qualityReviewedSha` to `QUALITY_VALIDATED_SHA`. Any later edit, head
-   mismatch, or base movement clears the binding and restarts this procedure.
+   `headRefOid` to equal `QUALITY_VALIDATED_SHA`; its `baseRefOid` moves every
+   time another PR lands and is not compared. Phase 0.5 performs the PR-field
+   verification immediately after creation. Require `HEAD^{tree}` to still equal
+   `QUALITY_VALIDATED_TREE` before writing all three values to ship state (in
+   stack mode, also require the direct parent to be an ancestor of the head).
+   Also set `qualityReviewedSha` to `QUALITY_VALIDATED_SHA`. Any later edit,
+   head mismatch, or conflict with the base clears the binding and restarts
+   this procedure. Base movement without a conflict does not.
 
 **Held commits.** Step 5 pushes only when the push rule in **Early PR and
 harvests** allows it. When a review bot is still in flight on the remote head,
@@ -405,10 +424,11 @@ tree rather than claiming to know or validate that future commit OID.
 ### Validate the current quality binding
 
 This is the only pre-merge binding check. Read the three values from ship state,
-then require the local head SHA/tree and the PR head/base SHAs to match them,
-require the base to be an ancestor of HEAD, and require the quality gate to be
-explicitly empty. Any mismatch clears the binding and routes back through the
-canonical revalidation procedure (via Phase 3a first when the base moved).
+then require the local head SHA/tree and the PR head SHA to match them, require
+the PR not to conflict with its base (`mergeStateStatus` is not `DIRTY`), and
+require the quality gate to be explicitly empty. A PR that is only behind its
+base passes. Any mismatch clears the binding and routes back through the
+canonical revalidation procedure (via Phase 3a first when it conflicts).
 
 ### Confirm the validated merge result
 
@@ -450,8 +470,10 @@ The timeline for an ordinary lane:
 3. If no PR exists, open one with the **Discovery protocol** (ADE CLI first,
    `gh` fallback) against `main`, or against the resolved direct parent in stack
    mode. Open it **ready for review, not as a draft** — review bots can skip
-   drafts, and a skipped round 1 defeats the purpose. Use the PR body house
-   style, with Verification reading `pending /quality and /test`.
+   drafts, and a skipped round 1 defeats the purpose. Write the PR text as a
+   Brief. Its Evidence part lists what you already checked and names the
+   checks still to run (`/quality`, `/test`); those phases replace that line
+   with their results.
 4. Post the Phase 4 pings only for a >250-file diff.
 5. Write the state file. The checkpoint was not reviewed, so it binds nothing.
    - **No state file yet:** write `status: "prepping"`, `mode`, `baseBranch`,
@@ -471,8 +493,8 @@ Do not wait for anything. Start the quality review immediately.
 
 ### Harvest (end of `/quality`, end of `/test`)
 
-One bounded poll — the Phase 1.1–1.3 calls through a poll-agent — then act on
-whatever has finished. Do not wait for anything still running.
+One run of `node scripts/ship-poll.mjs --pr <n>` (the Phase 1 poll), then act
+on whatever has finished. Do not wait for anything still running.
 
 Fixing here on a partial signal is allowed. Fix discipline §1 forbids
 *pushing* on a partial signal, and the push rule below still enforces that.
@@ -482,6 +504,9 @@ Harvest fixes stay local until every signal on the remote head is terminal.
   finished job is final for that head.
 - **Posted bot reviews and comments** are final for that head. A bot still in
   flight is recorded under `pendingReviewBots` and read at the next harvest.
+  Read them from the open review threads (Phase 1.2's `ade prs comments`
+  query), not only from comments newer than the last push, and do not carry a
+  bot's "rate limited" status over to a later harvest (failure mode 8).
 - **Drop what the phase already fixed.** For each comment, check the current
   working tree: if the requested change is present or the line is gone, record
   the id in `addressedCommentIds` as stale and move on. Most round-1 comments
@@ -515,6 +540,11 @@ A push cancels and restarts an in-flight Greptile review. So, after a harvest:
 - **Hold** otherwise. Commit locally, set `localAhead: true`, and continue to
   the next phase. The next harvest or `/ship` pushes the held commits together
   with its own fixes, in one push.
+- Before any push — a fix, a rebase, held commits, or a rerun of a flaky job
+  that ends in a rebase — run the poll again and act on everything it reports.
+  A push made from a CI-only check carries open review work past the loop: on
+  PR #1469 a CodeRabbit finding and seven unanswered threads stayed open that
+  way until the user asked about them.
 - Before any push, run **Commit-bound quality revalidation**. It reviews the
   delta since `qualityReviewedSha`. At the end of `/quality` that delta is
   usually empty, so this is only the bind and the push; a fix that the review
@@ -527,6 +557,13 @@ A push cancels and restarts an in-flight Greptile review. So, after a harvest:
 binding. It skips PR creation and skips revalidation when the binding matches
 HEAD, the remote head, and the PR head. Held commits are fix work for Phase 2,
 so the first ship push carries them together with any new fixes.
+
+### Visual proof on the PR
+
+When the lane changes something a person can see, the PR carries the proof
+before it merges: `ade proof publish --pr <n> <artifact-id>...` with the items
+the final answer cites (see the **ade-pr-workflows** skill). Post it once, near
+the end; a later push does not need a new post unless the UI changed again.
 
 ---
 
@@ -637,15 +674,18 @@ revalidate again.
 
 **PR creation: prefer the ADE CLI.** Opening the PR via `ade` registers it in ADE's PR tracking (lane ↔ PR link, check/comment inventory, review-thread state). `gh pr create` is the fallback, not the default. Falling back too eagerly defeats the purpose — do it only after you've genuinely confirmed the ADE path is broken.
 
-**PR body house style (both creation paths — never rely on `--fill` alone).** Write the body in this order, per the AGENTS.md "Pull requests" section:
+**PR text (both creation paths — never rely on `--fill` alone).** Write the text as a Brief, per the AGENTS.md "Pull requests" section and the **ade-pr-workflows** skill:
 
-1. **Problem** — one or two sentences.
-2. **Cause** — when known; omit the heading otherwise.
-3. **Change and boundary** — what moved, and what deliberately did not.
-4. **Verification** — the exact focused tests/typechecks run and their counts (mirror the quality/test summaries).
-5. Final line — the model and harness that did the work (e.g. `Authored with <model> via <harness>.`).
+1. **Why** — the problem, one or two plain sentences.
+2. **What changed** — what is different for the person who uses it, and what deliberately did not move.
+3. **Evidence** — how you checked it and what you saw: the exact focused tests/typechecks and their counts (mirror the quality/test summaries), and the checks in the running app.
+4. **Not checked** — what you could not check, or "Nothing".
+5. **Choices I made** — only when you settled a trade-off alone.
+6. Final line — the model and harness that did the work (e.g. `Authored with <model> via <harness>.`).
 
-UI changes attach before/after images; motion attaches a short video. Upload evidence to GitHub — never commit it to the repo.
+Cite proof in the text (`![caption](ade-proof://<id>)`, or a `proof-compare` block for before and after); `ade prs create` and `ade prs body` upload it into the text. Never commit evidence to the repo.
+
+The Evidence part must be true when a person reads it. The early PR opens before `/quality` and `/test` finish, so it says so; **the phase that finishes a check replaces that line** with the result (`ade prs body <pr> --body-file <file>`). A PR never merges with a placeholder in its text.
 
 ### Discovery protocol (for the agent — not a script)
 
@@ -687,9 +727,8 @@ lane's to address.
 
 ### 0.5 Write initial state
 
-After PR creation, verify its `headRefOid` and `baseRefOid` match the quality
-binding. If either differs, clear all quality binding fields and revalidate the
-actual PR head and base.
+After PR creation, verify its `headRefOid` matches the quality binding. If it
+differs, clear all quality binding fields and revalidate the actual PR head.
 
 ```json
 {
@@ -741,7 +780,25 @@ Runs instead of 0.1–0.5 when the state file says `status: "prepping"`.
 
 ## Phase 1 — Poll
 
-Runs on every wake-up. Delegate to a **poll-agent** so the lead's context stays clean. The poll-agent runs these calls and returns a single structured summary.
+Runs on every wake-up, and before every push. The poll is one command:
+
+```bash
+node scripts/ship-poll.mjs --pr "$PR_NUMBER"          # JSON summary (1.3)
+node scripts/ship-poll.mjs --pr "$PR_NUMBER" --text   # the same, readable
+```
+
+It reads every surface on each run: CI, review-bot checks, every open review
+thread whatever its age, findings that bots put in a review body instead of a
+thread (CodeRabbit's "Outside diff range comments"), new comments since the
+last push, bot notices (a bot that could not run, or has no reviews left this
+hour), base movement, and held local commits. Its `next` field is the Phase 2
+route: `wait`, `fix`, `rebase`, `resolve-threads`, `merge`, `merged`.
+
+Do not hand-write a poll, and do not act on part of one. A poll that read CI
+and a time-filtered comment list is how this loop missed a CodeRabbit review
+that landed while CI ran, and a review-body finding that no thread query
+returns. Sections 1.1 and 1.2 describe what the script reads; use them by hand
+only when the script cannot run, and then run all of them.
 
 This is a one-shot poll. Do not use `gh pr checks --watch`, shell `while` loops, repeated sleeps, or minute-by-minute status checks. If CI/review is still pending, return `ciRunning: true` or `reviewBotsRunning: true` respectively, then let Phase 5 schedule the next wake.
 
@@ -801,33 +858,69 @@ gh api "repos/{owner}/{repo}/pulls/$PR_NUMBER/reviews" \
 
 Filter out any comment whose `id` is in `addressedCommentIds`.
 
+**Then read every open review thread, whatever its age.** The `SINCE` filter
+only finds what is new. A review that lands while you wait on CI is older than
+the next push (a docs fix, a rebase), so the next poll's `SINCE` drops it as
+old — and nothing answers it. PR #1410 merged over seven CodeRabbit comments
+this way. Every poll also lists the unresolved threads:
+
+```bash
+ade prs comments "$PR_NUMBER" --text      # "open" rows are unresolved threads
+# gh fallback:
+gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved isOutdated comments(first:1){nodes{databaseId author{login} path body}}}}}}}' \
+  -F o="$OWNER" -F r="$REPO" -F n="$PR_NUMBER" \
+  -q '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not)'
+```
+
+An unresolved thread whose first comment id is not in `addressedCommentIds`
+is fix work, even when the code it points at moved ("outdated" is not
+"answered"). It goes to Phase 3b: fix it, or reply with the reason it is
+rejected, then resolve the thread. A thread whose id is already in
+`addressedCommentIds` but is still open was fixed and never answered: reply
+with the fix commit and the test that pins it, then resolve it.
+
+**Then read the bots' review bodies.** A finding on a line outside the diff
+cannot be an inline comment, so CodeRabbit lists it in the review body under
+"Outside diff range comments", with a `cr-comment:v1:<id>` marker. No thread
+query returns it. Each one is fix work until its key is in
+`addressedReviewFindings`. Read bot notices too: Cursor Bugbot's "couldn't run
+– usage limit reached" means it reviewed nothing, and Devin's "flag not posted
+on this PR" means a finding exists only in the Devin app. Name both in the
+summary instead of reporting the bot as clean.
+
 ### 1.3 Return structured summary
+
+`scripts/ship-poll.mjs` prints this summary:
 
 ```json
 {
-  "merged": false,
-  "behindBase": true,
+  "next": "fix",
+  "headSha": "<current PR head sha>",
   "baseBranch": "<SHIP_BASE_BRANCH>",
-  "baseSha": "<current fetched base sha>",
-  "isDraft": false,
-  "ciRunning": false,
-  "reviewBotsRunning": false,
-  "pendingReviewBots": [],
-  "inactiveReviewBots": ["Greptile"],
+  "merged": false,
+  "behindBase": false,
+  "conflicting": false,
+  "ciRunning": [],
   "ciFailed": [
     { "name": "test-desktop (3)", "link": "https://github.com/.../runs/123" }
   ],
-  "newComments": [
-    {
-      "id": 987700,
-      "author": "human-reviewer",
-      "body": "Consider guarding against null here.",
-      "path": "apps/desktop/src/main/services/x.ts",
-      "line": 42,
-      "type": "diff-line"
-    }
+  "reviewBotsRunning": false,
+  "pendingReviewBots": [],
+  "openThreads": [
+    { "threadId": "PRRT_…", "commentId": 4186812976, "author": "coderabbitai",
+      "path": "apps/desktop/src/main/services/x.ts", "outdated": false, "addressed": false }
   ],
-  "pollHeadSha": "<current PR head sha>",
+  "reviewFindings": [
+    { "key": "cr:f1685e92a4e564f3b6f98c88", "author": "coderabbitai[bot]",
+      "path": "apps/desktop/src/main/services/search/searchService.ts", "line": 948,
+      "title": "Invalidate the PR summary cache when a PR changes during a pass." }
+  ],
+  "newComments": [
+    { "id": 987700, "author": "human-reviewer", "type": "issue", "body": "Consider guarding against null here." }
+  ],
+  "botNotices": [
+    { "bot": "cursor[bot]", "notice": "Bugbot couldn't run - usage limit reached" }
+  ],
   "localAhead": false
 }
 ```
@@ -835,16 +928,17 @@ Filter out any comment whose `id` is in `addressedCommentIds`.
 `localAhead` is `true` when local HEAD has commits that the remote branch does
 not (`git rev-list --count "origin/$CURRENT_BRANCH"..HEAD` is non-zero).
 
-`reviewBotsRunning` is `true` whenever `pendingReviewBots` is non-empty.
+`reviewBotsRunning` is `true` whenever `pendingReviewBots` is non-empty. CI is
+running while `ciRunning` lists any check.
 Populate `pendingReviewBots` only for bots with explicit current-head in-flight
 evidence. Populate `inactiveReviewBots` when the 12-minute grace window has
 elapsed and every available surface has zero evidence for that bot. Do not infer
 that a bot is running merely because it is usually expected in this repository.
 
-`behindBase` is the canonical poll field. It is derived from `mergeStateStatus`
-being `BEHIND` or `DIRTY`, or
-from `git merge-base --is-ancestor "origin/$SHIP_BASE_BRANCH" HEAD` returning
-non-zero. When resuming an older ordinary-mode state file only, map its legacy
+`conflicting` (`mergeStateStatus` is `DIRTY`) is the only poll field that sends
+the loop to Phase 3a. `behindBase` is informational: it is true when the base has
+moved past the branch (`BEHIND`, `DIRTY`, or a non-ancestor base), which is the
+normal state while other PRs land, and it never triggers a rebase on its own. When resuming an older ordinary-mode state file only, map its legacy
 `behindMain` value to `behindBase`; never emit both fields, and never use the
 legacy field for stack state.
 
@@ -858,7 +952,7 @@ Pure logic on the poll summary:
 | --- | --- |
 | `mode == "stack"` (evaluate before every ordinary row) | If externally merged, report `stack-coordinator-merged` without running merge confirmation/deletion. If the parent, base, or head moved outside this lane, clear this and upstack bindings and exit `stack-coordinator-sync-required`. If CI or review is still in flight, schedule the next wake. If both signals are terminal and fix work exists on this layer, go to **Phase 3b** and fix it. If terminal-green with nothing outstanding, go to **3c.0** only. Never enter 3a, 3c.1–3c.5, or 3d. |
 | `merged == true` | Run **Confirm the validated merge result**; exit `done-clean` only when it succeeds. |
-| `behindBase == true` | In ordinary mode, go to Phase 3a (rebase), apply the rebase budget rebate, then schedule/poll according to Phase 5. In stack mode this is external movement and the stack row above already routed it to `stack-coordinator-sync-required`. |
+| `conflicting == true` | In ordinary mode, go to Phase 3a (rebase), apply the rebase budget rebate, then schedule/poll according to Phase 5. In stack mode this is external movement and the stack row above already routed it to `stack-coordinator-sync-required`. A PR that is only behind its base (`behindBase` without `conflicting`) does not come here; it continues down this table. |
 | `ciRunning == true` OR `reviewBotsRunning == true` | Do NOT iterate on a partial signal. Go to Phase 5 (schedule next wake). This applies even if the other signal already shows failures/comments — pushing a fix now means the next CI+review cycle races the fix and you likely re-push for the other half. |
 | `ciFailed` empty, `newComments` empty, `localAhead == false`, `ciRunning == false`, `reviewBotsRunning == false` | Go to **Phase 3c**. Done-clean does not mean "stop and leave for human" — it means everything is green, and the lane should land on `main`. |
 | Otherwise (both signals terminal, fix work exists) | Go to Phase 3b (fix). Fix CI failures and review comments **in the same iteration / same push**. Held commits (`localAhead == true`) are fix work: when nothing else needs fixing, 3b still runs to push them. A 3b pass that only pushes held commits does not increment `iteration`. |
@@ -1046,6 +1140,16 @@ Post bot pings (Phase 4), update state (Phase 5), and schedule the next wake. Do
 
 Runs when Phase 2 routes here (everything terminal, no fix work, not behind, not already merged). The point of this playbook is "PR-to-merge", not "PR-to-green" — once green, the lane lands.
 
+**Pre-merge check: the poll says `merge`.** Immediately before the merge, run
+`node scripts/ship-poll.mjs` again — fresh, not from an earlier poll or a
+remembered bot status — and merge only when `next` is `merge`. That means no
+open review thread, no unhandled review-body finding, no new comment, and no
+running or failed check on the head you are about to merge. Every
+thread must be fixed, or answered with the reason it is rejected and then
+resolved. One open thread routes back to Phase 3b; it is never "noise", never
+"rate-limited", and never disclosed after the merge instead. The summary lists
+each thread with its outcome (fixed in `<sha>` / rejected: `<reason>`).
+
 Before resolving merge style, run the canonical **Validate the current quality
 binding** procedure. A missing or mismatched binding means a later head or base
 invalidated the result: rebase when needed, then return to quality revalidation
@@ -1120,7 +1224,7 @@ gh pr merge "$PR_NUMBER" --squash --match-head-commit "$QUALITY_VALIDATED_SHA"
 
 ### 3c.3 Handle branch protection
 
-If `gh pr merge` fails with `the base branch policy prohibits the merge` (typical when the repo requires a CODEOWNER review that the loop can't produce on its own), retry with admin override **only if the running user has admin rights on the repo**:
+If `gh pr merge` fails with `the base branch policy prohibits the merge` (typical when the repo requires a CODEOWNER review that the loop can't produce on its own, or when the ruleset requires branches to be up to date with the base and the PR is only behind), retry with admin override **only if the running user has admin rights on the repo**:
 
 ```bash
 gh pr merge "$PR_NUMBER" --squash --admin --match-head-commit "$QUALITY_VALIDATED_SHA"
@@ -1231,7 +1335,7 @@ Schedule the next wake at the normal post-push cadence (270s if CI hasn't starte
 When the next wake polls:
 
 - `merged == true` → run **Confirm the validated merge result**; exit `done-clean` only when it succeeds.
-- `behindBase == true` → run Phase 3a (rebase) once, push, schedule next wake. Do NOT count it as a new iteration; force-finalize already ran.
+- `conflicting == true` → run Phase 3a (rebase) once, push, schedule next wake. Do NOT count it as a new iteration; force-finalize already ran.
 - CI terminal AND green → route **immediately** through Phase 3c. Do NOT wait on review bots; review is intentionally bypassed in this phase.
 - CI terminal AND any required check still failing → exit `blocked`, `exitReason: "force-finalize-ci-failed"`, post a PR comment listing the failing job names + links. Do not start a seventh iteration.
 - CI still running → sleep on the normal cadence; do not act on a partial signal.

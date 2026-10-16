@@ -11,6 +11,10 @@ struct ConnectionSettingsView: View {
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
 
   @StateObject private var presentationModel = SettingsConnectionPresentationModel()
+  @StateObject private var machineController = SettingsMachineController()
+  @EnvironmentObject private var machineFleet: MachineFleet
+  @ObservedObject private var account = AccountService.shared
+  @State private var signInPresented = false
   @State private var presentedSheet: SettingsPairSheetRoute?
   @State private var pinPreset: PinPreset?
   @State private var pinSetupRoute: PinSetupRoute?
@@ -35,31 +39,19 @@ struct ConnectionSettingsView: View {
 
   var body: some View {
     NavigationStack {
-      ScrollView {
-        LazyVStack(spacing: 18) {
-          if pairingOnly {
+      Group {
+        if pairingOnly {
+          ScrollView {
             pairingOnlyGroup
-          } else {
-            // Settings is organised by SCOPE, in the same four groups and the
-            // same order as the desktop app: Account, Preferences, this
-            // repository, this device. The group name is the answer to "where
-            // does this save", said once, instead of a badge on every row.
-            //
-            // Connection sits ABOVE the groups rather than inside one. It is
-            // not a scope — it is the thing you open Settings to fix when it
-            // breaks — so burying it under a heading would put the most urgent
-            // row behind the least urgent question.
-            connectionHeaderGroup
-            accountGroup
-            preferencesGroup
-            deviceGroup
+              .padding(.horizontal, 16)
+              .padding(.top, 8)
+              .padding(.bottom, 36)
           }
-
-          Spacer(minLength: 20)
+          .background(ADEColor.pageBackground.ignoresSafeArea())
+        } else {
+          settingsList
         }
-        .padding(.vertical, 12)
       }
-      .background(SettingsAuroraBackground().ignoresSafeArea())
       .adeNavigationGlass()
       .navigationTitle(pairingOnly ? "Connect a computer" : "Settings")
       .toolbar {
@@ -107,7 +99,30 @@ struct ConnectionSettingsView: View {
         }
       }
       .animation(.spring(response: 0.35, dampingFraction: 0.86), value: syncService.accountConnectSuccessLabel)
+      .adeToast($machineController.toast)
+      .sheet(isPresented: $signInPresented) {
+        AccountSignInView(onConnect: connectToAccountMachine)
+      }
+      .confirmationDialog(
+        machineController.limitPrompt.map { "Connect \($0.target.name)?" } ?? "",
+        isPresented: Binding(
+          get: { machineController.limitPrompt != nil },
+          set: { if !$0 { machineController.limitPrompt = nil } }
+        ),
+        titleVisibility: .visible,
+        presenting: machineController.limitPrompt
+      ) { prompt in
+        ForEach(prompt.candidates, id: \.key) { candidate in
+          Button("Disconnect \(candidate.name)") {
+            machineController.resolveLimit(disconnecting: candidate.key, then: prompt.target)
+          }
+        }
+        Button("Cancel", role: .cancel) {}
+      } message: { _ in
+        Text("The phone keeps \(MachineFleet.liveMachineLimit) machines live at a time. Pick one to disconnect.")
+      }
       .onAppear {
+        machineController.bind(syncService: syncService, fleet: machineFleet)
         presentationModel.bind(to: syncService)
         if let request = syncService.requestedPairingQrNavigation {
           syncService.requestedPairingQrNavigation = nil
@@ -126,166 +141,138 @@ struct ConnectionSettingsView: View {
   /// the pair actions, nothing else.
   @ViewBuilder
   private var pairingOnlyGroup: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      SettingsSectionHeader(label: "CONNECTION", hint: "Your computer connection")
-
-      SettingsConnectionHeader(
-        snapshot: presentationModel.connectionSnapshot,
-        onDisconnect: { syncService.disconnectForUserConnectionChange() },
-        onReconnect: {
-          Task { await syncService.reconnectForUserConnectionChange() }
-        },
-        onPairWithPin: {
-          if let host = syncService.accountPairingPinFallbackHost {
-            pinPreset = .discover(host)
-          }
-        },
-        onWake: wakeAsleepMachine
-      )
-
-      SettingsPairingSection(
-        snapshot: presentationModel.pairingSnapshot,
-        presentedSheet: $presentedSheet,
-        initiallyExpanded: true
-      )
-    }
-    .padding(.horizontal, 16)
-    .padding(.top, 4)
-  }
-
-  @ViewBuilder
-  private var connectionHeaderGroup: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      SettingsConnectionHeader(
-        snapshot: presentationModel.connectionSnapshot,
-        onDisconnect: { syncService.disconnectForUserConnectionChange() },
-        onReconnect: {
-          Task { await syncService.reconnectForUserConnectionChange() }
-        },
-        onPairWithPin: {
-          if let host = syncService.accountPairingPinFallbackHost {
-            pinPreset = .discover(host)
-          }
-        },
-        onWake: wakeAsleepMachine
-      )
-    }
-    .padding(.horizontal, 16)
-    .padding(.top, 4)
-  }
-
-  // ── ACCOUNT ────────────────────────────────────────────────────────────
-  @ViewBuilder
-  private var accountGroup: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      SettingsSectionHeader(label: "ACCOUNT")
-
-      // Identity. Self-hides when there is no Clerk key configured.
-      AccountConnectionsSection(onConnectMachine: connectToAccountMachine)
-
-      SettingsMachinesSection(
-        syncService: syncService,
-        onPairWithPin: { host in
-          pinPreset = .discover(host)
-        }
-      )
+    VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
+      ADESettingsSection("Connection") {
+        SettingsConnectionHeader(
+          snapshot: presentationModel.connectionSnapshot,
+          onDisconnect: { syncService.disconnectForUserConnectionChange() },
+          onReconnect: {
+            Task { await syncService.reconnectForUserConnectionChange() }
+          },
+          onPairWithPin: {
+            if let host = syncService.accountPairingPinFallbackHost {
+              pinPreset = .discover(host)
+            }
+          },
+          onWake: wakeAsleepMachine
+        )
+      }
 
       SettingsPairingSection(
         snapshot: presentationModel.pairingSnapshot,
         presentedSheet: $presentedSheet
       )
-
-      SettingsNavigationRow(
-        title: "Usage",
-        subtitle: "Cost, activity, and live limits",
-        systemImage: "chart.line.uptrend.xyaxis"
-      ) {
-        SettingsUsagePage(syncService: syncService)
-      }
     }
-    .padding(.horizontal, 16)
   }
 
-  // ── PREFERENCES ────────────────────────────────────────────────────────
-  // Only what this device can act on. A phone showing a terminal font size or
-  // a lane rebase rule would be offering a control whose result it cannot
-  // show you.
-  @ViewBuilder
-  private var preferencesGroup: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      SettingsSectionHeader(
-        label: "PREFERENCES",
-        hint: "Saved on this \(UIDevice.current.model)"
-      )
-
-      SettingsAppearanceSection()
-
-      SettingsNavigationRow(
-        title: "Notifications",
-        subtitle: "Alerts and Live Activities",
-        systemImage: "bell.badge"
-      ) {
-        SettingsDestinationPage(title: "Notifications") {
-          SettingsPushDeliverySection(
-            snapshot: presentationModel.pushDeliverySnapshot,
-            pushService: PushNotificationService.shared
-          )
+  private var settingsList: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
+        accountSection
+        SettingsMachineSections(
+          syncService: syncService,
+          controller: machineController,
+          presentedSheet: $presentedSheet
+        )
+        ADESettingsSection("App") {
+          ADESettingsRows {
+            ADESettingsLink(title: "Appearance", symbol: "circle.lefthalf.filled", value: colorSchemeChoice.label) {
+              ADESettingsPage(title: "Appearance") { SettingsAppearanceSection() }
+            }
+            ADESettingsLink(title: "Notifications", symbol: "bell") {
+              ADESettingsPage(title: "Notifications") {
+                SettingsPushDeliverySection(
+                  snapshot: presentationModel.pushDeliverySnapshot,
+                  pushService: PushNotificationService.shared
+                )
+              }
+            }
+            ADESettingsLink(title: "Usage", symbol: "chart.bar") {
+              SettingsUsagePage(syncService: syncService)
+            }
+            ADESettingsLink(title: "Webhooks", symbol: "link") {
+              SettingsWebhooksPage(syncService: syncService)
+            }
+            ADESettingsLink(title: "AI accounts", symbol: "person.2") {
+              SettingsProviderAccountsPage(syncService: syncService)
+            }
+          }
+        }
+        ADESettingsSection("About") {
+          ADESettingsRows {
+            ADESettingsLink(title: "Connection details", symbol: "point.3.connected.trianglepath.dotted") {
+              ADESettingsPage(title: "Connection details") {
+                SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot, content: .connection)
+              }
+            }
+            ADESettingsLink(title: "Delivery diagnostics", symbol: "stethoscope") {
+              ADESettingsPage(title: "Delivery diagnostics") {
+                SettingsPushDeliverySection(
+                  snapshot: presentationModel.pushDeliverySnapshot,
+                  pushService: PushNotificationService.shared,
+                  content: .diagnostics
+                )
+              }
+            }
+            ADESettingsLink(title: "About \(thisDeviceGroupLabel.replacingOccurrences(of: "This ", with: "this "))", symbol: "info.circle") {
+              ADESettingsPage(title: "About") {
+                SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot, content: .about)
+              }
+            }
+          }
         }
       }
+      .padding(.horizontal, 16)
+      .padding(.top, 8)
+      .padding(.bottom, 36)
     }
-    .padding(.horizontal, 16)
+    .background(ADEColor.pageBackground.ignoresSafeArea())
   }
 
-  // ── THIS DEVICE ────────────────────────────────────────────────────────
-  // Named from the device, never spelled out, for the same reason the desktop
-  // group is sourced rather than hardcoded: an iPad reading "This iPhone" is a
-  // small lie the user notices.
+  /// The signed-in account as the page's header row, or Sign in.
   @ViewBuilder
-  private var deviceGroup: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      SettingsSectionHeader(label: thisDeviceGroupLabel.uppercased())
-
-      SettingsNavigationRow(
-        title: "Connection details",
-        subtitle: "Route and connection performance",
-        systemImage: "point.3.connected.trianglepath.dotted"
-      ) {
-        SettingsDestinationPage(title: "Connection details") {
-          SettingsDiagnosticsSection(
-            snapshot: presentationModel.diagnosticsSnapshot,
-            content: .connection
-          )
-        }
-      }
-
-      SettingsNavigationRow(
-        title: "Delivery diagnostics",
-        subtitle: "Push registration and relay status",
-        systemImage: "stethoscope"
-      ) {
-        SettingsDestinationPage(title: "Delivery diagnostics") {
-          SettingsPushDeliverySection(
-            snapshot: presentationModel.pushDeliverySnapshot,
-            pushService: PushNotificationService.shared,
-            content: .diagnostics
-          )
-        }
-      }
-
-      SettingsNavigationRow(
-        title: "About",
-        subtitle: "App, machine, and device information",
-        systemImage: "info.circle"
-      ) {
-        SettingsDestinationPage(title: "About") {
-          SettingsDiagnosticsSection(
-            snapshot: presentationModel.diagnosticsSnapshot,
-            content: .about
-          )
+  private var accountSection: some View {
+    if account.isConfigured {
+      ADESettingsRows {
+        switch account.phase {
+        case .signedIn:
+          if let identity = account.identity {
+            NavigationLink {
+              SettingsAccountPage()
+            } label: {
+              HStack(spacing: 12) {
+                AccountAvatar(identity: identity)
+                VStack(alignment: .leading, spacing: 2) {
+                  Text(identity.displayName)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(ADEColor.textPrimary)
+                    .lineLimit(1)
+                  if let email = identity.email {
+                    Text(email)
+                      .font(.system(size: 12.5))
+                      .foregroundStyle(ADEColor.textSecondary)
+                      .lineLimit(1)
+                      .truncationMode(.middle)
+                  }
+                }
+                Spacer(minLength: 8)
+                ADESettingsChevron()
+              }
+              .padding(.horizontal, ADEKit.inset)
+              .padding(.vertical, 12)
+            }
+            .buttonStyle(ADEKitRowButtonStyle())
+          }
+        case .loading:
+          ProgressView()
+            .frame(maxWidth: .infinity, minHeight: 64)
+        default:
+          ADESettingsActionRow(title: "Sign in to ADE", symbol: "person.crop.circle.badge.plus") {
+            signInPresented = true
+          }
         }
       }
     }
-    .padding(.horizontal, 16)
   }
 
   @ViewBuilder
@@ -369,73 +356,6 @@ struct ConnectionSettingsView: View {
         pinPreset = .qr(payload)
       }
     }
-  }
-}
-
-private struct SettingsNavigationRow<Destination: View>: View {
-  let title: String
-  let subtitle: String
-  let systemImage: String
-  @ViewBuilder let destination: () -> Destination
-
-  var body: some View {
-    NavigationLink(destination: destination) {
-      HStack(spacing: 14) {
-        Image(systemName: systemImage)
-          .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(ADEColor.purpleAccent)
-          .frame(width: 34, height: 34)
-          .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-              .fill(ADEColor.purpleAccent.opacity(0.14))
-          )
-
-        VStack(alignment: .leading, spacing: 2) {
-          Text(title)
-            .font(.body.weight(.medium))
-            .foregroundStyle(ADEColor.textPrimary)
-          Text(subtitle)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-
-        Spacer(minLength: 8)
-
-        Image(systemName: "chevron.right")
-          .font(.system(size: 12, weight: .semibold))
-          .foregroundStyle(ADEColor.purpleAccent.opacity(0.65))
-      }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 12)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .fill(ADEColor.surfaceBackground.opacity(0.5))
-      )
-      .glassEffect(in: .rect(cornerRadius: 14))
-      .overlay(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.75)
-      )
-    }
-    .buttonStyle(ADEScaleButtonStyle())
-  }
-}
-
-private struct SettingsDestinationPage<Content: View>: View {
-  let title: String
-  @ViewBuilder let content: () -> Content
-
-  var body: some View {
-    ScrollView {
-      content()
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-    }
-    .background(SettingsAuroraBackground().ignoresSafeArea())
-    .adeNavigationGlass()
-    .navigationTitle(title)
-    .navigationBarTitleDisplayMode(.inline)
   }
 }
 
@@ -756,436 +676,47 @@ func settingsMachineRowErrorsRetiring(
   return remaining
 }
 
-/// The CONNECTIONS machine list: a unified, deduplicated roster of the computers a
-/// phone can reach — machines on the signed-in account plus previously-paired
-/// machines — ranked current → online → offline. Shows the top three inline
-/// with a "See all machines" sheet for the rest. Offline machines render grayed
-/// and non-tappable (desktop-style). A failed connect surfaces inline on the
-/// tapped row (M14) rather than in a separate lower banner.
-struct SettingsMachinesSection: View {
-  let syncService: SyncService
-  let onPairWithPin: (DiscoveredSyncHost) -> Void
+/// Settings > Account: who is signed in, and Sign out.
+struct SettingsAccountPage: View {
   @ObservedObject private var account = AccountService.shared
-
-  @State private var seeAllPresented = false
-  @State private var renamingMachine: AccountMachine?
-  @State private var connectingId: String?
-  @State private var rowErrors: [String: String] = [:]
-
-  struct Entry: Identifiable {
-    enum Kind {
-      case account(AccountMachine)
-      case saved(DiscoveredSyncHost)
-    }
-    let id: String
-    let name: String
-    let routeHint: String
-    let online: Bool
-    /// The machine said it was asleep, or has been silent long enough that
-    /// asleep is the only honest reading. Turns "Connect" into "Wake".
-    let isAsleep: Bool
-    /// This phone holds a socket to it. Still true for a machine that has since
-    /// announced a suspend — the socket does not report itself closed — which
-    /// is why it is not what the row RENDERS.
-    let isCurrent: Bool
-    let kind: Kind
-
-    /// What the row is allowed to show as connected. An announced sleep
-    /// outranks the socket: a green CONNECTED pill on a Mac that told us it was
-    /// going dark is the claim this whole pass exists to stop making.
-    var presentsAsConnected: Bool { isCurrent && !isAsleep }
-  }
-
-  private var isConnected: Bool {
-    syncService.connectionState == .connected
-  }
-
-  /// Row id of the machine currently attached, so its stale failure — and only
-  /// its — can be retired the moment it is disproven.
-  private var currentEntryId: String? {
-    entries.first(where: \.isCurrent)?.id
-  }
-
-  private var currentIdentity: String? {
-    let value = syncService.activeHostProfile?.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
-    return (value?.isEmpty == false) ? value : nil
-  }
-
-  private var currentHostName: String? {
-    let value = syncService.hostName?.trimmingCharacters(in: .whitespacesAndNewlines)
-    return (value?.isEmpty == false) ? value : nil
-  }
-
-  private var entries: [Entry] {
-    var result: [Entry] = []
-    var seen = Set<String>()
-
-    let accountEntries = account.machines.map { machine in
-      let current = if let currentIdentity, let deviceId = machine.deviceId {
-        isConnected && deviceId.caseInsensitiveCompare(currentIdentity) == .orderedSame
-      } else {
-        false
-      }
-      let lastSeen = machineLastSeenDate(epochMilliseconds: machine.lastSeenAt)
-      // An announced sleep beats attached, not the other way round. A channel
-      // to a sleeping machine does not report itself closed — the socket simply
-      // stops answering — so `current` is the flag that has not found out yet,
-      // and the machine's own "I'm going to sleep now" is the better evidence.
-      // Saying "Connected" to a Mac that had been asleep for three minutes is
-      // the bug this ordering exists to fix.
-      let asleep = syncMachinePresence(
-        connected: current,
-        online: machine.online,
-        sleepState: machine.sleepState,
-        sleepStateAt: machineLastSeenDate(epochMilliseconds: machine.sleepStateAt),
-        lastSeenAt: lastSeen
-      ) == .asleep
-      return (
-        key: (machine.deviceId ?? machine.machineKey).lowercased(),
-        entry: Entry(
-          id: "account-\(machine.id)",
-          name: machine.rowLabel,
-          // Route-neutral to match the saved rows below; the route kind stays
-          // in the Connection details section, never on the primary list.
-          routeHint: accountMachineDetailLine(
-            isConnected: current && !asleep,
-            isAsleep: asleep,
-            directoryOnline: machine.online,
-            lastSeenAt: lastSeen,
-            power: machine.power
-          ),
-          online: machine.online,
-          isAsleep: asleep,
-          isCurrent: current,
-          kind: .account(machine)
-        )
-      )
-    }
-
-    // Reachable account routes are preferred, but stale directory rows must
-    // not hide a currently-discovered saved route for the same Mac.
-    for candidate in accountEntries {
-      guard seen.insert(candidate.key).inserted else { continue }
-      result.append(candidate.entry)
-    }
-
-    let live = syncService.discoveredHosts
-    for host in syncService.savedReconnectHosts {
-      let identity = host.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
-      let key = identity.flatMap { $0.isEmpty ? nil : $0.lowercased() }
-        ?? "name:\(host.hostName.lowercased())"
-      guard seen.insert(key).inserted else { continue }
-      let online = live.contains { sameSyncHost(host, $0) }
-      let identityMatches = if let currentIdentity, let identity {
-        currentIdentity.caseInsensitiveCompare(identity) == .orderedSame
-      } else {
-        false
-      }
-      let nameMatchesWithoutStableIdentity = currentIdentity == nil
-        && identity == nil
-        && currentHostName?.caseInsensitiveCompare(host.hostName) == .orderedSame
-      let current = isConnected && (identityMatches || nameMatchesWithoutStableIdentity)
-      result.append(Entry(
-        id: "saved-\(host.id)",
-        name: host.hostName,
-        routeHint: machineReachabilityText(
-          isConnected: current,
-          directoryOnline: online,
-          lastSeenAt: machineLastSeenDate(iso8601: host.lastResolvedAt)
-        ),
-        online: online,
-        // A directly-paired host publishes no power or sleep state, so it keeps
-        // exactly the row it had before any of this existed.
-        isAsleep: false,
-        isCurrent: current,
-        kind: .saved(host)
-      ))
-    }
-
-    return result.sorted { lhs, rhs in
-      if lhs.isCurrent != rhs.isCurrent { return lhs.isCurrent }
-      if lhs.online != rhs.online { return lhs.online }
-      return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-    }
-  }
+  @State private var confirmSignOut = false
 
   var body: some View {
-    let all = entries
-    VStack(alignment: .leading, spacing: 12) {
-      SettingsSectionHeader(label: "MACHINES")
-
-      if all.isEmpty {
-        Text("No machines yet. Add one below.")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(14)
-          .background(ADEColor.surfaceBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-          .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.5))
-      } else {
-        VStack(spacing: 8) {
-          ForEach(all.prefix(3)) { entry in
-            machineRow(entry)
-          }
-        }
-
-        if all.count > 3 {
-          Button {
-            seeAllPresented = true
-          } label: {
-            HStack(spacing: 6) {
-              Text("See all machines")
-                .font(.subheadline.weight(.semibold))
-              Text("\(all.count)")
-                .font(.caption.weight(.semibold).monospacedDigit())
-                .foregroundStyle(ADEColor.textMuted)
-              Spacer(minLength: 0)
-              Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
+    ADESettingsPage(title: "Account") {
+      if let identity = account.identity {
+        ADESettingsRows {
+          HStack(spacing: 14) {
+            AccountAvatar(identity: identity)
+            VStack(alignment: .leading, spacing: 3) {
+              Text(identity.displayName)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+              if let email = identity.email {
+                Text(email)
+                  .font(.system(size: 13))
+                  .foregroundStyle(ADEColor.textSecondary)
+                  .truncationMode(.middle)
+              }
             }
-            .foregroundStyle(ADEColor.accent)
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .padding(.horizontal, 4)
+            Spacer(minLength: 8)
+            ADEKitTag(text: identity.providerLabel)
           }
-          .buttonStyle(.plain)
+          .padding(ADEKit.inset)
+        }
+      }
+      ADESettingsRows {
+        ADESettingsActionRow(title: "Sign out", destructive: true) {
+          confirmSignOut = true
         }
       }
     }
-    .task { await account.loadMachines() }
-    .onChange(of: currentEntryId) { _, entryId in
-      rowErrors = settingsMachineRowErrorsRetiring(rowErrors, attachedEntryId: entryId)
-    }
-    .sheet(isPresented: $seeAllPresented) {
-      allMachinesSheet
-    }
-    .sheet(item: $renamingMachine) { machine in
-      SettingsMachineRenameSheet(machine: machine)
-        .presentationDetents([.medium, .large])
-    }
-  }
-
-  private var allMachinesSheet: some View {
-    NavigationStack {
-      ScrollView {
-        LazyVStack(spacing: 8) {
-          ForEach(entries) { entry in
-            machineRow(entry)
-          }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+    .confirmationDialog("Sign out of ADE?", isPresented: $confirmSignOut, titleVisibility: .visible) {
+      Button("Sign out", role: .destructive) {
+        Task { await account.signOut() }
       }
-      .adeScreenBackground()
-      .adeNavigationGlass()
-      .navigationTitle("All machines")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Done") { seeAllPresented = false }
-        }
-      }
-    }
-  }
-
-  @ViewBuilder
-  private func machineRow(_ entry: Entry) -> some View {
-    let isConnecting = connectingId == entry.id
-    // Follows what the row PRESENTS, not the socket: a machine that announced a
-    // suspend while we still held a channel keeps its Wake, and keeps it
-    // tappable, for the seconds it takes that channel to notice.
-    let tappable = !entry.presentsAsConnected && connectingId == nil
-
-    VStack(alignment: .leading, spacing: 0) {
-      Group {
-        if tappable {
-          Button {
-            connect(entry)
-          } label: {
-            machineRowLabel(entry, isConnecting: isConnecting)
-          }
-          .buttonStyle(ADEScaleButtonStyle())
-        } else {
-          machineRowLabel(entry, isConnecting: isConnecting)
-        }
-      }
-      .accessibilityLabel("\(entry.name), \(entry.routeHint)")
-      .accessibilityHint(tappable ? (entry.isAsleep ? "Wake and connect." : "Connect.") : "")
-      .contextMenu {
-        if let machine = accountMachine(from: entry) {
-          Button {
-            renamingMachine = machine
-          } label: {
-            Label("Rename", systemImage: "pencil")
-          }
-        }
-      }
-      .opacity(tappable || entry.isCurrent ? 1 : 0.72)
-
-      if let error = rowErrors[entry.id] {
-        VStack(alignment: .leading, spacing: 7) {
-          Text(error)
-            .font(.caption)
-            .foregroundStyle(ADEColor.danger)
-            .fixedSize(horizontal: false, vertical: true)
-          if let fallbackHost = pinFallbackHost(for: entry) {
-            Button("Pair with PIN instead") {
-              onPairWithPin(fallbackHost)
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.accent)
-            .frame(minHeight: 44)
-            .buttonStyle(.plain)
-          }
-        }
-        .padding(.horizontal, 12)
-        .padding(.top, 6)
-      } else if isConnecting, let stage = syncService.accountConnectStageLabel {
-        Text(stage)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-          .fixedSize(horizontal: false, vertical: true)
-          .padding(.horizontal, 12)
-          .padding(.top, 6)
-      }
-    }
-  }
-
-  private func machineRowLabel(_ entry: Entry, isConnecting: Bool) -> some View {
-    MachineRowView(
-      deviceSymbol: deviceSymbol(entry),
-      title: entry.name,
-      routeHint: entry.routeHint,
-      online: entry.online,
-      isAuthenticatedCurrent: entry.presentsAsConnected,
-      statusPill: entry.presentsAsConnected ? .connected : nil,
-      affordance: rowAffordance(entry, isConnecting: isConnecting),
-      surface: .row
-    )
-  }
-
-  private func accountMachine(from entry: Entry) -> AccountMachine? {
-    guard case .account(let machine) = entry.kind else { return nil }
-    return machine
-  }
-
-  private func rowAffordance(_ entry: Entry, isConnecting: Bool) -> MachineRowView.Affordance {
-    if isConnecting { return .connecting }
-    // Asleep first, for the same reason the pill defers to it: offering a
-    // checkmark on a machine that announced a suspend tells the user the one
-    // thing they cannot act on.
-    if entry.isAsleep { return .wake }
-    if entry.isCurrent { return .connected }
-    return .connect
-  }
-
-  private func deviceSymbol(_ entry: Entry) -> String {
-    switch entry.kind {
-    case .account(let machine):
-      return machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform)
-    case .saved:
-      return machineDeviceSymbol(deviceType: nil, platform: nil)
-    }
-  }
-
-  private func pinFallbackHost(for entry: Entry) -> DiscoveredSyncHost? {
-    guard case .account(let machine) = entry.kind,
-          let fallback = syncService.accountPairingPinFallbackHost,
-          fallback.hostIdentity == machine.deviceId else {
-      return nil
-    }
-    return fallback
-  }
-
-  private func connect(_ entry: Entry) {
-    // Same reading as `tappable`, so a row that offers Wake can take the tap.
-    guard !entry.presentsAsConnected, connectingId == nil else { return }
-    connectingId = entry.id
-    rowErrors = [:]
-    Task { @MainActor in
-      switch entry.kind {
-      case .account(let machine):
-        guard let authorization = AccountService.shared.currentPairingAuthorization else {
-          connectingId = nil
-          rowErrors[entry.id] = "Your account session ended. Sign in again, then choose your computer."
-          return
-        }
-        let connected = await syncService.pairWithAccountMachine(
-          machine,
-          authorization: authorization
-        )
-        connectingId = nil
-        if connected {
-          ADEHaptics.success()
-        } else {
-          ADEHaptics.error()
-          rowErrors[entry.id] = settingsMachineRowErrorMessage(
-            attemptFailure: syncService.lastConnectAttemptFailure,
-            lastError: syncService.lastError,
-            fallback: "ADE could not connect to that computer. Try again."
-          )
-        }
-
-      case .saved(let host):
-        // Ask the call what happened. `connectionState` can be attached here
-        // because a failed attempt restored the PREVIOUS machine, which is not
-        // the same thing as this row succeeding.
-        let reconnected = await syncService.reconnect(toSavedHost: host)
-        connectingId = nil
-        if reconnected {
-          ADEHaptics.success()
-        } else {
-          ADEHaptics.error()
-          rowErrors[entry.id] = settingsMachineRowErrorMessage(
-            attemptFailure: syncService.lastConnectAttemptFailure,
-            lastError: syncService.lastError,
-            fallback: "ADE could not reconnect to \(host.hostName)."
-          )
-        }
-      }
-    }
-  }
-}
-
-private struct SettingsAuroraBackground: View {
-  var body: some View {
-    ZStack {
-      ADEColor.pageBackground
-
-      RadialGradient(
-        colors: [
-          ADEColor.purpleAccent.opacity(0.35),
-          ADEColor.purpleAccent.opacity(0.0),
-        ],
-        center: UnitPoint(x: 0.5, y: -0.05),
-        startRadius: 30,
-        endRadius: 420
-      )
-
-      RadialGradient(
-        colors: [
-          Color(red: 99.0 / 255.0, green: 102.0 / 255.0, blue: 241.0 / 255.0).opacity(0.22),
-          .clear,
-        ],
-        center: UnitPoint(
-          x: 0.92,
-          y: 0.18
-        ),
-        startRadius: 8,
-        endRadius: 280
-      )
-
-      RadialGradient(
-        colors: [
-          Color(red: 236.0 / 255.0, green: 72.0 / 255.0, blue: 153.0 / 255.0).opacity(0.14),
-          .clear,
-        ],
-        center: UnitPoint(
-          x: 0.05,
-          y: 0.32
-        ),
-        startRadius: 6,
-        endRadius: 240
-      )
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("Signing out removes this iPhone's access to your account and its account-connected machines. Devices paired directly with a code stay connected.")
     }
   }
 }

@@ -1,5 +1,7 @@
+import * as Sentry from "@sentry/cloudflare";
 import { handleRequest } from "./directory";
 import { logScheduledCleanupFailure } from "./logging";
+import { sentryOptions, type SentryEnv } from "./sentry";
 import { cleanupExpiredPairingGrants } from "./pairingGrants";
 import { cleanupExpiredDeviceAuthorizations } from "./deviceAuthorization";
 import {
@@ -9,15 +11,26 @@ import {
   type DiagnosticsEnv,
 } from "./diagnostics";
 import {
+  handleModelRegistryRequest,
+  isModelRegistryRequest,
+  runModelRegistryCron,
+  type ModelRegistryEnv,
+} from "./modelRegistry";
+import {
+  handleMusicDeveloperTokenRequest,
+  isMusicDeveloperTokenRequest,
+  type MusicDeveloperTokenEnv,
+} from "./musicDeveloperToken";
+import {
   cleanupUsageResearch,
   handleUsageResearchRequest,
   isUsageResearchRequest,
   type UsageResearchEnv,
 } from "./usageResearch";
 
-type WorkerEnv = DiagnosticsEnv & UsageResearchEnv;
+type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & SentryEnv;
 
-export default {
+export default Sentry.withSentry(sentryOptions, {
   fetch(request: Request, env: WorkerEnv): Promise<Response> {
     // Diagnostics and usage research are matched before the directory because
     // they are the routes here that are not account-scoped: `handleRequest`
@@ -27,6 +40,13 @@ export default {
     const url = new URL(request.url);
     if (isDiagnosticsRequest(url)) return handleDiagnosticsRequest(request, env);
     if (isUsageResearchRequest(url)) return handleUsageResearchRequest(request, env);
+    // The model registry takes an account bearer but is not a directory route:
+    // it answers GET and HEAD only, has no CORS (the ADE brain is the only
+    // caller), and caches with an ETag.
+    if (isModelRegistryRequest(url)) return handleModelRegistryRequest(request, env);
+    // Apple Music developer tokens: same shape as the registry (account bearer,
+    // GET only, no CORS — the desktop main process is the only caller).
+    if (isMusicDeveloperTokenRequest(url)) return handleMusicDeveloperTokenRequest(request, env);
     return handleRequest(request, env);
   },
 
@@ -49,6 +69,10 @@ export default {
       // Usage research: reports past `USAGE_RESEARCH_RETENTION_DAYS` (500 rows
       // a tick), budget rows past a week, identity rows past their day.
       settle("usage_research", () => cleanupUsageResearch(env)),
+      // Model registry: rebuilt from its public sources once the newest
+      // snapshot is a day old; every other tick is one indexed read.
+      // `MODEL_REGISTRY_REFRESH=0` stops the fetches.
+      settle("model_registry", () => runModelRegistryCron(env)),
     ]));
   },
-};
+});

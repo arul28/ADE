@@ -31,6 +31,9 @@ ade lanes archive <lane> --text
 `archive` is destructive to a user's workspace: it retires the lane and its
 worktree, taking any uncommitted work in it with them. Archive a lane only when
 the user asked for cleanup, or a workflow that owns lane lifecycle requires it.
+Archived lanes are listed by `ade archive list --kind lane --text`. The user
+restores or deletes them in Settings → Archive; see the `ade-cli-control-plane`
+skill for the archive commands.
 
 ## ADE-aware Git
 

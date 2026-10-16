@@ -1,6 +1,7 @@
 import React from "react";
 import { ArrowsClockwise, WarningCircle } from "@phosphor-icons/react";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import { captureError } from "../../../shared/sentry/capture";
 import {
   ERROR_PRIMARY_BUTTON,
   ErrorSurfaceCard,
@@ -43,6 +44,12 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
   componentDidCatch(error: unknown, info: React.ErrorInfo): void {
     if (!this.autoReported) {
       this.autoReported = true;
+      captureError(error, {
+        handled: false,
+        level: "fatal",
+        tags: { boundary: "root", route: window.location.hash || window.location.pathname },
+        extra: { componentStack: info.componentStack ?? null },
+      });
       // Main owns the setting and the budget; this is a request, and its answer
       // is deliberately uninteresting to a screen that is already broken.
       void window.ade?.diagnostics?.autoReport({
@@ -74,7 +81,7 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
           <div className="flex min-h-full items-center justify-center px-6 py-10">
           <div className="w-full max-w-[520px]">
             <ErrorSurfaceCard
-              icon={<WarningCircle size={18} weight="fill" aria-hidden="true" />}
+              icon={<WarningCircle size={14} weight="bold" aria-hidden="true" />}
               headline="ADE needs to reload this window"
               body={
                 <>

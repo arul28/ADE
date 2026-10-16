@@ -20,7 +20,9 @@
  * it cannot host a display by *reading*, and a read that throws cannot tell it.
  */
 
-import type { AgentActionTraceEntry, AgentFrame } from "./agentObservation";
+import type { AgentActionTraceEntry, AgentFrame, ComputerUseActionEffect } from "./agentObservation";
+import { PROJECT_SECRET_REQUEST_METADATA_KEY } from "../projectSecretRequest";
+import { MCP_APP_TOOL_CALL_METADATA_KEY } from "../mcpApp";
 
 // ---------------------------------------------------------------------------
 // Error codes
@@ -55,6 +57,31 @@ export const MAC_DESKTOP_RECORDING_NOT_RUNNING_CODE = "MAC_DESKTOP_RECORDING_NOT
 export const MAC_DESKTOP_STREAM_SUBSCRIPTION_ID_TOO_LONG_CODE = "MAC_DESKTOP_STREAM_SUBSCRIPTION_ID_TOO_LONG" as const;
 export const MAC_DESKTOP_STREAM_SUBSCRIPTION_LIMIT_CODE = "MAC_DESKTOP_STREAM_SUBSCRIPTION_LIMIT" as const;
 
+/**
+ * The Windows-only codes.
+ *
+ * The Windows driver owns these (`apps/desktop/native/ADEDesktopDriverWin`
+ * mirrors them in `common.h`), and the service maps them onto its own errors
+ * unchanged so the CLI's hint table and the panel's copy key off the same
+ * string. They are declared here, not in a separate windows file, for the same
+ * reason every other code is: one contract, one file, and the native side
+ * already points at this path.
+ */
+export const WINDOWS_DESKTOP_HELD_CODE = "WINDOWS_DESKTOP_HELD" as const;
+export const WINDOWS_DESKTOP_SETUP_REQUIRED_CODE = "WINDOWS_DESKTOP_SETUP_REQUIRED" as const;
+export const WINDOWS_DESKTOP_LOCKED_CODE = "WINDOWS_DESKTOP_LOCKED" as const;
+export const WINDOWS_DESKTOP_NOT_CONSOLE_SESSION_CODE = "WINDOWS_DESKTOP_NOT_CONSOLE_SESSION" as const;
+export const WINDOWS_DESKTOP_SIGN_IN_FAILED_CODE = "WINDOWS_DESKTOP_SIGN_IN_FAILED" as const;
+export const WINDOWS_DESKTOP_WRONG_PASSWORD_CODE = "WINDOWS_DESKTOP_WRONG_PASSWORD" as const;
+export const WINDOWS_DESKTOP_CANCELLED_CODE = "WINDOWS_DESKTOP_CANCELLED" as const;
+/**
+ * Service-enforced, not driver-produced: a `shared` seat was asked for without
+ * the user's consent. The driver also refuses it, but the service is the
+ * boundary that must not let an agent turn the user's own desktop into a lane
+ * screen by silence.
+ */
+export const WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE = "WINDOWS_DESKTOP_CONSENT_REQUIRED" as const;
+
 export type MacDesktopErrorCode =
   | typeof MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE
   | typeof MAC_DESKTOP_DRIVER_UNAVAILABLE_CODE
@@ -71,11 +98,30 @@ export type MacDesktopErrorCode =
   | typeof MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE
   | typeof MAC_DESKTOP_RECORDING_NOT_RUNNING_CODE
   | typeof MAC_DESKTOP_STREAM_SUBSCRIPTION_ID_TOO_LONG_CODE
-  | typeof MAC_DESKTOP_STREAM_SUBSCRIPTION_LIMIT_CODE;
+  | typeof MAC_DESKTOP_STREAM_SUBSCRIPTION_LIMIT_CODE
+  | typeof WINDOWS_DESKTOP_HELD_CODE
+  | typeof WINDOWS_DESKTOP_SETUP_REQUIRED_CODE
+  | typeof WINDOWS_DESKTOP_LOCKED_CODE
+  | typeof WINDOWS_DESKTOP_NOT_CONSOLE_SESSION_CODE
+  | typeof WINDOWS_DESKTOP_SIGN_IN_FAILED_CODE
+  | typeof WINDOWS_DESKTOP_WRONG_PASSWORD_CODE
+  | typeof WINDOWS_DESKTOP_CANCELLED_CODE
+  | typeof WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE;
 
 /** The one sentence every non-macOS rejection carries. */
 export const MAC_DESKTOP_MACOS_ONLY_MESSAGE =
   "A Mac Desktop display is only available on a macOS runtime host.";
+
+/**
+ * What a Linux host says instead. Neither seat exists there: it is not a
+ * wrong-OS mistake to correct, just not built yet.
+ */
+export const LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE =
+  "Lane screens are not supported on Linux yet. Use ade browser for web pages and ade app-control for Electron apps.";
+
+/** The one sentence every non-Windows rejection carries. */
+export const WINDOWS_DESKTOP_WINDOWS_ONLY_MESSAGE =
+  "A Windows Desktop screen is only available on a Windows runtime host.";
 
 // ---------------------------------------------------------------------------
 // Capability and health
@@ -105,8 +151,8 @@ export type MacDesktopPermissions = {
 export type MacDesktopSigningState = "adhoc" | "identity" | "unknown";
 
 /**
- * Helper health, modelled on `AttentionNotchHealth` so the same settings-style
- * recovery verbs reach the UI.
+ * Helper health, in the same shape as `CaptureGestureHealth` so the same
+ * settings-style recovery verbs reach the UI.
  */
 export type MacDesktopDriverState =
   | "running"
@@ -182,6 +228,12 @@ export type MacDesktopDisplay = {
   windowCount: number;
   /** Last time an agent action, an input event, or a viewer touched it. */
   lastActivityAt: string;
+  /**
+   * Windows only: which seat this lane's screen is. `private` is a separate
+   * Windows session of the user's account with its own pointer and keyboard;
+   * `shared` is the user's main desktop. Null or absent on a Mac.
+   */
+  seatMode?: WindowsDesktopSeatMode | null;
 };
 
 export type MacDesktopLaneSummary = {
@@ -191,6 +243,8 @@ export type MacDesktopLaneSummary = {
   displayId: number | null;
   windowCount: number;
   streaming: boolean;
+  /** Windows only: the lane's seat. Absent on a Mac. */
+  seatMode?: WindowsDesktopSeatMode | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -225,7 +279,7 @@ export type MacDesktopWindow = {
   iconPng?: string | null;
 };
 
-export type MacDesktopOpenArgs = {
+export type MacDesktopOpenArgs = MacDesktopTrustedHolderArgs & {
   laneId: string;
   /** An app name, a bundle id, a filesystem path, or a URL. */
   target: string;
@@ -243,6 +297,37 @@ export type MacDesktopOpenResult = {
   windows: MacDesktopWindow[];
   /** True when the driver is still watching this pid for late windows. */
   watching: boolean;
+  /**
+   * Windows: the launched process exited without a window, because it handed
+   * the request to an instance that was already running. Absent from an older
+   * driver and from the Mac driver.
+   */
+  handedOff?: boolean;
+  /** One plain sentence explaining `handedOff`, or null. */
+  message?: string | null;
+  /** Windows private seat: the lane-private browser profile the driver added. */
+  profileDir?: string | null;
+  /** Windows: the executable the target resolved to (App Paths), or null. */
+  resolvedPath?: string | null;
+};
+
+/** `ade screen focus|minimize|close --window <id>`. Windows hosts only. */
+export type MacDesktopWindowAction = "focus" | "minimize" | "close";
+
+export type MacDesktopWindowActionArgs = MacDesktopTrustedHolderArgs & {
+  laneId: string;
+  windowId: number;
+  chatSessionId?: string | null;
+};
+
+export type MacDesktopWindowActionResult = {
+  laneId: string;
+  windowId: number;
+  action: MacDesktopWindowAction;
+  /** `close` only: false when the window is still there (a save prompt, say). */
+  closed?: boolean;
+  /** The lane's windows after the action. */
+  windows: MacDesktopWindow[];
 };
 
 export type MacDesktopClaimArgs = {
@@ -255,6 +340,21 @@ export type MacDesktopReleaseArgs = {
   laneId: string;
   /** Omit to release every window this lane holds. */
   windowId?: number | null;
+};
+
+/**
+ * Quits apps the lane opened, when the user asks: the ones it still holds and
+ * the ones it opened and then released to the user. `stop` and the idle close
+ * never quit a released app; this does.
+ */
+export type MacDesktopQuitAppArgs = {
+  laneId: string;
+  /** An app name, bundle id or pid. Omit to quit every app the lane opened. */
+  app?: string | null;
+};
+
+export type MacDesktopQuitAppResult = {
+  quit: Array<{ pid: number; appName: string; bundleId: string | null; released: boolean }>;
 };
 
 // ---------------------------------------------------------------------------
@@ -322,6 +422,10 @@ export type MacDesktopObservation = {
   stalledApps?: string[];
   /** One line describing what produced this frame, e.g. "click · Sign in". */
   caption: string | null;
+  /** The host that captured it, so text output can name the right screen. */
+  platform?: NodeJS.Platform;
+  /** Windows only: the seat this lane's screen is. */
+  seatMode?: WindowsDesktopSeatMode | null;
 };
 
 /** `WalkStop` in the driver, by its wire spelling. */
@@ -346,10 +450,21 @@ export type MacDesktopObserveArgs = {
  * How an input command reaches the app.
  *
  * `accessibility` is the default and needs no lease: it performs an action on
- * one element in one process and moves no pointer. `real` posts a `CGEvent`,
- * which is global to the machine, so it is the one capability behind the lease.
+ * one element in one process and moves no pointer. `background` delivers
+ * pointer events (a click at a point, a right or double click, a scroll, a
+ * drag) to the process that owns the lane window under the point and nowhere
+ * else, so it moves no pointer either and needs no lease; it is what a point
+ * target gets on a Mac. `real` posts a `CGEvent` through the window server,
+ * which moves the user's one pointer, so it is the one capability behind the
+ * lease. A hover is real-only.
  */
-export type MacDesktopInputMode = "accessibility" | "real";
+export const MAC_DESKTOP_INPUT_MODES = ["accessibility", "background", "real"] as const;
+
+export type MacDesktopInputMode = (typeof MAC_DESKTOP_INPUT_MODES)[number];
+
+export function isMacDesktopInputMode(value: unknown): value is MacDesktopInputMode {
+  return typeof value === "string" && (MAC_DESKTOP_INPUT_MODES as readonly string[]).includes(value);
+}
 
 /** One way of naming what to act on, in the order the service resolves them. */
 export type MacDesktopTarget = {
@@ -357,7 +472,7 @@ export type MacDesktopTarget = {
   handle?: string | null;
   /** Case-insensitive match against an element's title, label, or value. */
   text?: string | null;
-  /** Global screen point. Needs `mode: "real"` unless an element is under it. */
+  /** Global screen point. Delivered as `background` input on a Mac, `real` elsewhere. */
   x?: number | null;
   y?: number | null;
   windowId?: number | null;
@@ -375,9 +490,26 @@ export type MacDesktopTarget = {
  * `chatSessionId` when checking the lease, and it authorizes nothing on its
  * own — an id that does not hold the lease is refused exactly as before.
  */
-export type MacDesktopControllerArgs = {
+export type MacDesktopControllerArgs = MacDesktopTrustedHolderArgs & {
   controllerId?: string | null;
 };
+
+/**
+ * The lease holder a trusted caller with no chat acts as: an `ade` process
+ * with an elevated role (`ade --role cto screen …`) and no chat, run, step or
+ * attempt. The RPC layer sets it ({@link MAC_DESKTOP_USER_CLI_HOLDER_ID}) and
+ * strips `holderId` from every agent caller, bound or not, and the sync input
+ * path strips it too, so an agent cannot wear it. It is one stable holder, so
+ * the per-host shared-seat lease still serialises it against other lanes and a
+ * person who took control in the pane still wins. A caller with no chat and no
+ * holder stays the anonymous holder, which the shared seat refuses.
+ */
+export type MacDesktopTrustedHolderArgs = {
+  holderId?: string | null;
+};
+
+/** The holder id the RPC layer gives a trusted `ade` caller with no chat. */
+export const MAC_DESKTOP_USER_CLI_HOLDER_ID = "ade-cli-user";
 
 /**
  * "Act, and do not look."
@@ -406,6 +538,25 @@ export type MacDesktopClickArgs = MacDesktopTarget & MacDesktopControllerArgs & 
   chatSessionId?: string | null;
 };
 
+/**
+ * Windows types real text one character per `SendInput`, with a pause after
+ * each (a WinUI editor drops batched characters), so a long `type` takes real
+ * time. The driver refuses more than this many characters in one call.
+ */
+export const WINDOWS_DESKTOP_MAX_TYPED_CHARS = 4_000;
+/** The driver budget for one Windows `type`: base plus a per-character cost, capped. */
+export const WINDOWS_DESKTOP_TYPE_BASE_TIMEOUT_MS = 20_000;
+export const WINDOWS_DESKTOP_TYPE_PER_CHAR_MS = 25;
+export const WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS =
+  WINDOWS_DESKTOP_TYPE_BASE_TIMEOUT_MS + WINDOWS_DESKTOP_MAX_TYPED_CHARS * WINDOWS_DESKTOP_TYPE_PER_CHAR_MS;
+
+export function windowsDesktopTypeTimeoutMs(textLength: number): number {
+  return Math.min(
+    WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS,
+    WINDOWS_DESKTOP_TYPE_BASE_TIMEOUT_MS + Math.max(0, textLength) * WINDOWS_DESKTOP_TYPE_PER_CHAR_MS,
+  );
+}
+
 export type MacDesktopTypeArgs = MacDesktopControllerArgs & MacDesktopSilentArgs & {
   laneId: string;
   text: string;
@@ -418,11 +569,20 @@ export type MacDesktopTypeArgs = MacDesktopControllerArgs & MacDesktopSilentArgs
   chatSessionId?: string | null;
 };
 
+/**
+ * Modifier names on the wire. On a Windows host `cmd` is sent as Ctrl and
+ * `option` as Alt (the driver maps them), and `win` is the Windows key; a Mac
+ * host refuses `win`.
+ */
+export type MacDesktopModifier = "cmd" | "shift" | "option" | "control" | "win";
+
+export const MAC_DESKTOP_MODIFIERS: readonly MacDesktopModifier[] = ["cmd", "shift", "option", "control", "win"];
+
 export type MacDesktopPressArgs = MacDesktopControllerArgs & MacDesktopSilentArgs & {
   laneId: string;
   /** A key name (`return`, `tab`, `escape`, `f5`) or a single character. */
   key: string;
-  modifiers?: Array<"cmd" | "shift" | "option" | "control"> | null;
+  modifiers?: MacDesktopModifier[] | null;
   mode?: MacDesktopInputMode | null;
   chatSessionId?: string | null;
 };
@@ -441,7 +601,10 @@ export type MacDesktopDragArgs = MacDesktopControllerArgs & MacDesktopSilentArgs
   from: MacDesktopTarget;
   to: MacDesktopTarget;
   durationMs?: number | null;
-  /** Always `real`: a drag has no accessibility action. Kept for symmetry. */
+  /**
+   * `real` for a drop onto another app or the Dock. Otherwise a drag is a
+   * pointer action: `background` on a Mac seat, `real` on a Windows seat.
+   */
   mode?: MacDesktopInputMode | null;
   chatSessionId?: string | null;
 };
@@ -525,6 +688,11 @@ export type MacDesktopActionResult = {
   resolved: MacDesktopElement | null;
   observation: MacDesktopObservation;
   trace: AgentActionTraceEntry;
+  /**
+   * Whether the accessibility tree changed between the observation the target
+   * was resolved against and the one taken after the action.
+   */
+  effect: ComputerUseActionEffect;
 };
 
 /**
@@ -592,6 +760,21 @@ export type MacDesktopLeaseRequestResult = {
   /** Set when the grant was refused, using one of the codes above. */
   code: MacDesktopErrorCode | null;
   lease: MacDesktopLeaseState | null;
+  /**
+   * True when this screen does not use the lease at all: a Windows private
+   * seat is a separate session with its own pointer and keyboard.
+   */
+  notRequired?: boolean;
+  /** One sentence for the caller, when there is something to say. */
+  message?: string | null;
+};
+
+/** Windows: an agent asks the user, in its chat, to use the main desktop. */
+export type WindowsDesktopRequestSharedArgs = {
+  laneId: string;
+  chatSessionId?: string | null;
+  /** What the agent wants to do there; shown on the ask card. */
+  reason?: string | null;
 };
 
 export type MacDesktopTakeoverArgs = {
@@ -680,7 +863,7 @@ export type MacDesktopStopStreamArgs = {
 };
 
 // ---------------------------------------------------------------------------
-// Recording, proof, and the turn time-lapse
+// Recording and proof
 // ---------------------------------------------------------------------------
 
 export type MacDesktopRecordingStatus = {
@@ -722,9 +905,19 @@ export type MacDesktopRecordingStatus = {
   maxDurationMs?: number | null;
   /** Why it stopped. `cap` means the cap above ran out. */
   stopReason?: MacDesktopRecordingStopReason | null;
+  /** True between the stop and the demo being filed: the demo is being made. */
+  makingDemo?: boolean;
+  /** Set on a recording started with `plain`. */
+  plain?: boolean;
+  /**
+   * Set when the stop filed the recording as it was recorded instead of as a
+   * demo, in the proof's own words ("Filed as recorded: the ADE desktop app
+   * was not connected to make the demo."). Null for a demo.
+   */
+  demoNote?: string | null;
 };
 
-export type MacDesktopRecordingStopReason = "requested" | "cap";
+export type MacDesktopRecordingStopReason = "requested" | "cap" | "idle" | "disk";
 
 /**
  * The caption the pane gives what a person captures from it.
@@ -736,9 +929,11 @@ export type MacDesktopRecordingStopReason = "requested" | "cap";
 export function macDesktopPaneCaption(
   kind: "recording" | "screenshot",
   laneName: string | null | undefined,
+  /** The host's product name (`desktopProductName(status.platform)`). */
+  productName: string,
 ): string {
   const lane = laneName?.trim();
-  const base = `Mac Desktop ${kind}`;
+  const base = `${productName} ${kind}`;
   return lane ? `${base} · ${lane}` : base;
 }
 
@@ -748,26 +943,15 @@ export type MacDesktopRecordStartArgs = {
   caption?: string | null;
   fps?: number | null;
   chatSessionId?: string | null;
-  /** Keep still stretches at wall-clock length (`record start --keep-idle`). */
+  /**
+   * The recording as it was recorded: no cuts, speed-ups, zoom, pointer or
+   * captions (`record start --plain`). Still sized under 10 MB.
+   */
+  plain?: boolean | null;
+  /** Older name for `plain`. */
   keepIdle?: boolean | null;
-  /** Wall-clock cap in seconds. Default: ten minutes for a chat's recording. */
+  /** Wall-clock cap in seconds, at most five minutes (the default). */
   maxSeconds?: number | null;
-};
-
-/**
- * A short clip of what an agent turn did on the desktop.
- *
- * Context, not proof: it never reaches the broker, and it is built from frames
- * the stream already kept rather than from a second capture.
- */
-export type MacDesktopTimeLapse = {
-  laneId: string;
-  chatSessionId: string;
-  turnId: string;
-  filePath: string;
-  durationMs: number;
-  frameCount: number;
-  createdAt: string;
 };
 
 export type MacDesktopScreenshotArgs = {
@@ -836,7 +1020,65 @@ export type MacDesktopStatus = {
   responsibleAppName: string;
   /** How this build was signed; drives the "macOS forgets this grant" note. */
   signing: MacDesktopSigningState;
+  /**
+   * The Windows-side facts, or null on a Mac/Linux host (and on a Windows host
+   * that has not brought its helper up yet). Additive so the Mac surfaces never
+   * read it; the Windows cards are the only readers.
+   */
+  windowsDesktop?: WindowsDesktopStatus | null;
+  /**
+   * What an agent needs to read first: which product and seat this is, whether
+   * real input needs the lease, and the exact next command when something
+   * blocks. Built by {@link describeDesktopSeat}; absent from an older runtime,
+   * whose readers call that function themselves.
+   */
+  seat?: DesktopSeatSummary | null;
 };
+
+/** The host-aware summary at the top of `ade screen status`. */
+export type DesktopSeatSummary = {
+  /** "Mac Desktop" or "Windows Desktop". */
+  product: string;
+  /** `private`/`shared` on Windows, `virtual-display` on a Mac, null with no screen. */
+  seat: WindowsDesktopSeatMode | "virtual-display" | "offscreen-region" | null;
+  /** One sentence saying what the seat is, and whose screen it is. */
+  seatDescription: string | null;
+  /** True when real pointer/keyboard input on this lane's screen needs the lease. */
+  realInputNeedsLease: boolean;
+  /** The real-input rule for this seat, as one sentence, or null with no screen. */
+  realInputSentence: string | null;
+  /** Windows: whether the private seat can start now, and why not. */
+  privateAvailable: boolean | null;
+  privateUnavailable: string | null;
+  /** Windows: the lane holding the private seat when it is not this one. */
+  heldBy: string | null;
+  /** Windows: the one-time setup has been done on this PC. */
+  setupDone: boolean | null;
+  /** Windows: a Windows password is saved for private sign-in. */
+  passwordSaved: boolean | null;
+  locked: boolean | null;
+  /** The exact next command or ask, or null when nothing blocks. */
+  nextStep: string | null;
+};
+
+/**
+ * Which kind of lane screen a host and display describe: a Mac virtual display,
+ * the private Windows child session, or the user's shared Windows desktop.
+ */
+export type DesktopSeatKind = "mac" | "windows-private" | "windows-shared";
+
+// The seat logic (`describeDesktopSeat`, `desktopSeatKind`, the product name,
+// the seat sentences and the next-step table) lives in `../desktopSeat`, and is
+// re-exported here so every existing import keeps working.
+export {
+  WINDOWS_DESKTOP_NEXT_STEP,
+  WINDOWS_DESKTOP_PRIVATE_SEAT_DESCRIPTION,
+  WINDOWS_DESKTOP_SHARED_SEAT_DESCRIPTION,
+  describeDesktopSeat,
+  desktopProductName,
+  desktopSeatKind,
+  windowsDesktopPrivateUnavailableMessage,
+} from "../desktopSeat";
 
 export type MacDesktopGetStatusArgs = {
   laneId?: string | null;
@@ -863,6 +1105,16 @@ export type MacDesktopStartArgs = {
   /** Used for the display name shown in Mission Control. */
   laneName?: string | null;
   chatSessionId?: string | null;
+  /**
+   * Windows only. Defaults to `private` when the host supports it, and never
+   * silently falls back to `shared`: Mode B needs the user's consent below.
+   */
+  seatMode?: WindowsDesktopSeatMode | null;
+  /**
+   * Windows only. The Mode B consent, required before a `shared` seat is
+   * created. Rides the request, never a stored flag, so consent is per-create.
+   */
+  sharedDesktopConsent?: boolean | null;
 };
 
 export type MacDesktopStopArgs = {
@@ -922,7 +1174,6 @@ export type MacDesktopEventPayload =
   | { type: "stream-stopped"; status: MacDesktopStreamStatus }
   | { type: "stream-error"; status: MacDesktopStreamStatus }
   | { type: "recording-changed"; status: MacDesktopRecordingStatus }
-  | { type: "time-lapse"; timeLapse: MacDesktopTimeLapse }
   /**
    * The driver could not park a window on the lane's display.
    *
@@ -932,7 +1183,13 @@ export type MacDesktopEventPayload =
    */
   | { type: "window-not-parked"; laneId: string; windowId: number; reason: string }
   | { type: "permission-changed"; permissions: MacDesktopPermissions }
-  | { type: "driver-health"; health: MacDesktopDriverHealth };
+  | { type: "driver-health"; health: MacDesktopDriverHealth }
+  /**
+   * Windows only: the host's setup/held/locked/seated facts changed. The one
+   * event the driver pushes on its own; the pane re-renders from `status`.
+   * Spelling on the wire: `{"event":"windows-state-changed","status":{…}}`.
+   */
+  | { type: "windows-desktop-changed"; status: WindowsDesktopStatus };
 
 /**
  * A window `window-not-parked` reported, as a client holds it.
@@ -1091,6 +1348,159 @@ export function reduceMacDesktopNotParked(
 // ---------------------------------------------------------------------------
 
 /**
+ * Which backend hosts a lane's screen.
+ *
+ * The union exists so the service, the Work-tools mirror, and the CLI can name
+ * a seat without knowing which driver is behind it. `mac-virtual-display` is
+ * the one implementation that predates Windows; the two Windows values are the
+ * private child session and the shared console desktop, and the driver reports
+ * which it is on every `display.create` reply.
+ */
+export type DesktopSeatProviderId =
+  | "mac-virtual-display"
+  | "windows-child-session"
+  | "windows-shared-desktop";
+
+/** Which Windows seat a lane asked for. */
+export type WindowsDesktopSeatMode = "private" | "shared";
+
+/**
+ * The Windows-side facts a pane needs, none of which macOS has.
+ *
+ * The field names mirror the native `windows.status` reply exactly (the
+ * driver's `common.h` is the other half of this contract); absent fields are
+ * normalized once, in `asWindowsDesktopStatus`. `getStatus` answers it on every
+ * platform, so a Mac or Linux host reports `null` here rather than a zeroed
+ * object.
+ */
+export type WindowsDesktopStatus = {
+  /**
+   * The host's coarse state. The driver emits it; the two derived fields below
+   * (`privateAvailable`, `privateUnavailableReason`) are what the cards read.
+   * Unknown values normalize to `"unknown"` rather than being dropped.
+   */
+  state: WindowsDesktopHostState;
+  locked: boolean;
+  childSessionsEnabled: boolean;
+  remoteDesktopAllowed: boolean;
+  /** A credential saved by the local user in Windows Credential Manager. */
+  passwordSaved: boolean;
+  /**
+   * Windows' own sign-in window is open on the PC and waits for the person to
+   * type the password. Absent from an older driver; the `signing_in` state is
+   * the fallback there.
+   */
+  signInWaiting?: boolean;
+  /** The physical console's session id, or null when it cannot be read. */
+  consoleSessionId: number | null;
+  /** The session the driver host runs in, or null when no host is running. */
+  driverSessionId: number | null;
+  /** False when the brain is not in the console session, so A cannot start. */
+  hostIsConsoleSession: boolean;
+  /** The private child session's id, when one is connected. */
+  childSessionId: number | null;
+  /** Windows edition string, for the "Home can only share" note. */
+  edition: string | null;
+  /** The lane holding the private screen, when it is not the requesting one. */
+  heldByLaneId: string | null;
+  heldByLaneName: string | null;
+  /** The seat the requesting lane holds, or null when it holds none. */
+  seatMode: WindowsDesktopSeatMode | null;
+  /** Derived from `state`: whether the private seat can start right now. */
+  privateAvailable: boolean;
+  /** Derived from `state`; why private is unavailable, for the cards. */
+  privateUnavailableReason: WindowsDesktopPrivateUnavailableReason | null;
+  /**
+   * Where an interactive sign-in stands, from the driver. Absent from an older
+   * driver and null when idle; unknown values normalize to null.
+   */
+  phase?: WindowsDesktopPhase | null;
+  /**
+   * The interactive operation the service is running right now, if any. Set by
+   * the service (not the driver), so a pane that was closed and reopened
+   * mid-operation shows the same progress instead of offering it again.
+   */
+  operation?: WindowsDesktopOperation | null;
+  /** How the most recent interactive operation ended, until the next begins. */
+  lastOperation?: WindowsDesktopOperationResult | null;
+};
+
+/** The driver's interactive sign-in phases. */
+export type WindowsDesktopPhase = "prompt_open" | "verifying" | "starting" | "cleaning_up";
+
+export type WindowsDesktopOperationKind =
+  | "setup"
+  | "save_password"
+  | "forget_password"
+  | "start_private";
+
+export type WindowsDesktopOperation = {
+  kind: WindowsDesktopOperationKind;
+  /** The lane it is for; null for the host-wide setup steps. */
+  laneId: string | null;
+  startedAt: string;
+};
+
+export type WindowsDesktopOperationResult = WindowsDesktopOperation & {
+  outcome: "succeeded" | "failed";
+  endedAt: string;
+  /** The error's `CODE: message` text, when it failed. */
+  error: string | null;
+};
+
+/** The host states the driver names. Unknown values normalize to `unknown`. */
+export type WindowsDesktopHostState =
+  | "unavailable"
+  | "setup_required"
+  | "not_console_session"
+  | "ready"
+  | "signing_in"
+  | "locked"
+  | "held"
+  | "shared"
+  | "unknown";
+
+export type WindowsDesktopPrivateUnavailableReason =
+  | "unsupported_platform"
+  | "not_console_session"
+  | "setup_required"
+  | "held"
+  | "locked";
+
+/** The setup step an agent cannot run: it needs the user's admin prompt. */
+export type WindowsDesktopSetupArgs = {
+  /**
+   * Passed true after approval from a trusted CTO client on any device.
+   * The helper refuses Windows admin/Remote Desktop changes otherwise;
+   * native UAC and password entry still occur on the Windows host.
+   */
+  allowPrompt: boolean;
+  /** Opens a native password dialog and verifies a private sign-in before saving. */
+  savePassword?: boolean;
+  /** Removes only ADE's saved Windows Desktop credential. */
+  forgetPassword?: boolean;
+};
+
+export type WindowsDesktopSetupResult = {
+  /** Setup needs an interactive admin prompt the helper has not raised yet. */
+  requiresAdmin: boolean;
+  status: WindowsDesktopStatus;
+};
+
+/**
+ * The user-approved takeover of the private screen.
+ *
+ * The helper never force-claims (decided with the owner): a held private screen
+ * is refused with {@link WINDOWS_DESKTOP_HELD_CODE}, and only this call — made
+ * from the pane's Take over button or the thread's ask card — signs the old
+ * holder out (a clean slate) and starts a fresh private seat for the new lane.
+ */
+export type WindowsDesktopTakeoverArgs = {
+  laneId: string;
+  chatSessionId?: string | null;
+};
+
+/**
  * A reply the backend passes through for the service to normalize.
  *
  * The service knows the display's size, the lane's name, and the clock; the
@@ -1099,6 +1509,7 @@ export function reduceMacDesktopNotParked(
  * the one normalization lives where the state does.
  */
 export type DesktopSeatReply = Record<string, unknown>;
+
 
 /**
  * What a backend has to be able to do to host a lane's screen.
@@ -1115,9 +1526,23 @@ export type DesktopSeatReply = Record<string, unknown>;
  * service reaches its helper through it and nothing else.
  */
 export type DesktopSeatProvider = {
-  readonly id: "mac-virtual-display";
+  readonly id: DesktopSeatProviderId;
   health(): Promise<DesktopSeatReply>;
-  create(args: { laneId: string; name: string; width: number; height: number; scale: number }): Promise<DesktopSeatReply>;
+  create(args: {
+    laneId: string;
+    name: string;
+    width: number;
+    height: number;
+    scale: number;
+    /** Windows only: which seat to create. Ignored by the Mac backend. */
+    seatMode?: WindowsDesktopSeatMode;
+    /**
+     * Windows only: the Mode B consent. The driver refuses a shared create
+     * without it, so an agent cannot turn the user's own desktop into a lane
+     * screen by silence.
+     */
+    sharedDesktopConsent?: boolean;
+  }): Promise<DesktopSeatReply>;
   destroy(args: { laneId: string }): Promise<DesktopSeatReply>;
   /** Destroys every seat no live lane claims. Runs once per backend start. */
   reconcile(args: { liveLaneIds: string[] }): Promise<void>;
@@ -1145,8 +1570,10 @@ export type DesktopSeatProvider = {
    * quits on stop. With `laneId`, the driver refuses a window another lane
    * holds.
    */
-  unpark(args: { windowId: number; laneId?: string }): Promise<{ releasedWindowIds: number[]; handedOverPid: number | null }>;
+  unpark(args: { windowId: number; laneId?: string }): Promise<{ releasedWindowIds: number[]; handedOverPid: number | null; handedOverPids?: number[] }>;
   launch(args: { laneId: string; target: string; args: string[] }): Promise<DesktopSeatReply>;
+  /** `app.quit`: apps the lane opened, released ones included. */
+  quitApp(args: { laneId: string; app?: string | null }): Promise<DesktopSeatReply>;
   present(args: { laneId: string; destination: "main" | "display" }): Promise<DesktopSeatReply>;
   observe(args: {
     laneId: string;
@@ -1186,6 +1613,21 @@ export type DesktopSeatProvider = {
   /** `keepIdle` true keeps still stretches; absent or false cuts them. */
   startRecording(args: { laneId: string; fps: number; filePath: string; keepIdle?: boolean }): Promise<void>;
   stopRecording(args: { laneId: string }): Promise<DesktopSeatReply>;
+  /**
+   * Windows only: the host's setup, held, locked and edition facts.
+   *
+   * Absent on the Mac backend, and the service only calls it when its seat is
+   * the Windows one. Kept on this interface rather than a second provider type
+   * so the service holds exactly one provider reference.
+   */
+  windowsStatus?(): Promise<WindowsDesktopStatus>;
+  /** Windows only: the wizard's one admin step, prompt honored only on approval. */
+  setupWindows?(args: WindowsDesktopSetupArgs): Promise<WindowsDesktopSetupResult>;
+  /**
+   * Windows only: `window.focus` / `window.minimize` / `window.close` on one of
+   * the lane's windows. Absent on the Mac backend, whose helper has no such op.
+   */
+  windowAction?(args: { laneId: string; windowId: number; action: MacDesktopWindowAction }): Promise<DesktopSeatReply>;
 };
 
 // ---------------------------------------------------------------------------
@@ -1258,10 +1700,52 @@ export const MAC_DESKTOP_PROOF_BACKEND_NAME = "ade-mac-desktop";
  */
 export const AUTOMATION_CHAT_SESSION_PREFIX = "automation:";
 
-export function macDesktopDisplayName(laneName: string | null | undefined): string {
+/** "ADE · <lane>", or "<prefix> · <lane>" for a host that names its screen differently. */
+export function macDesktopDisplayName(laneName: string | null | undefined, prefix = "ADE"): string {
   const trimmed = laneName?.trim();
-  return trimmed?.length ? `ADE · ${trimmed}` : "ADE lane";
+  return trimmed?.length ? `${prefix} · ${trimmed}` : `${prefix} lane`;
 }
+
+/** True for either Windows seat, so one predicate answers "is this Windows?". */
+export function isWindowsDesktopSeatProvider(id: DesktopSeatProviderId): boolean {
+  return id === "windows-child-session" || id === "windows-shared-desktop";
+}
+
+/** The Work tool id a Windows-hosted chat shows, and a Mac-hosted chat hides. */
+export const WINDOWS_DESKTOP_WORK_TOOL_ID = "windows-desktop" as const;
+
+/**
+ * The one sentence the Mode B consent card carries, and the same one the chat
+ * ask card shows. Kept here so the pane and the thread cannot drift.
+ */
+export const WINDOWS_DESKTOP_SHARED_CONSENT_MESSAGE =
+  "The agent works on your main Windows desktop, in windows it opens there. It takes over the window you are using while it acts.";
+
+/** `providerMetadata` key on the shared-seat consent card. */
+export const WINDOWS_DESKTOP_SHARED_CONSENT_METADATA_KEY = "windowsDesktopSharedConsent" as const;
+/** `providerMetadata` key on the real-input lease card. */
+export const MAC_DESKTOP_INPUT_LEASE_METADATA_KEY = "macDesktopInputLease" as const;
+
+/**
+ * True for a pending-input card only the user may answer: the shared-seat
+ * consent, the real-input lease, the private secret card, and an MCP App's
+ * tool call. The answer IS the permission (or the secret), so an agent caller
+ * (session-bound, unbound, or the CTO's tools) is refused.
+ */
+export function isUserOnlyConsentCard(providerMetadata: Record<string, unknown> | null | undefined): boolean {
+  return providerMetadata?.[WINDOWS_DESKTOP_SHARED_CONSENT_METADATA_KEY] === true
+    || providerMetadata?.[MAC_DESKTOP_INPUT_LEASE_METADATA_KEY] === true
+    || providerMetadata?.[MCP_APP_TOOL_CALL_METADATA_KEY] === true
+    || isNonNullRecord(providerMetadata?.[PROJECT_SECRET_REQUEST_METADATA_KEY]);
+}
+
+function isNonNullRecord(value: unknown): boolean {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** What an agent is told when it tries to answer one of those cards. */
+export const USER_ONLY_CONSENT_CARD_REFUSAL =
+  "This card asks the user directly (for a permission or a secret), so only the user can answer it. Wait for the user to answer it in the chat.";
 
 export function isMacDesktopHandle(value: unknown): value is string {
   return typeof value === "string" && /^obs-[A-Za-z0-9_-]+:e:\d+$/.test(value);
@@ -1298,6 +1782,18 @@ export type MacDesktopServiceApi = {
    * explicit click — never for an agent action or a remote client.
    */
   requestPermission(args: MacDesktopRequestPermissionArgs): Promise<MacDesktopPermissions>;
+  /**
+   * Windows only: the wizard's one admin step (child sessions + local Remote
+   * Desktop). Rejects on any other host. `allowPrompt` is honored only when the
+   * service itself passed it for a local user's explicit click.
+   */
+  setupWindowsDesktop(args: WindowsDesktopSetupArgs): Promise<WindowsDesktopSetupResult>;
+  /**
+   * Windows only: the user approved taking the private screen from whichever
+   * lane holds it. Signs the old holder out (a clean slate) and starts a fresh
+   * private seat for this lane. Never called by an agent's own action.
+   */
+  takeoverWindowsDesktop(args: WindowsDesktopTakeoverArgs): Promise<MacDesktopStatus>;
   start(args: MacDesktopStartArgs): Promise<MacDesktopStatus>;
   stop(args: MacDesktopStopArgs): Promise<MacDesktopStopResult>;
   getDisplay(args: { laneId: string }): Promise<MacDesktopDisplay | null>;
@@ -1306,6 +1802,22 @@ export type MacDesktopServiceApi = {
   open(args: MacDesktopOpenArgs): Promise<MacDesktopOpenResult>;
   claimWindow(args: MacDesktopClaimArgs): Promise<MacDesktopWindow>;
   releaseWindow(args: MacDesktopReleaseArgs): Promise<{ released: number }>;
+  /** Quits apps the lane opened, released ones included. Only on the user's request. */
+  quitApp(args: MacDesktopQuitAppArgs): Promise<MacDesktopQuitAppResult>;
+  /**
+   * Windows only: raise, minimize or close one of this lane's own windows.
+   * A Mac host refuses with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
+   */
+  focusWindow(args: MacDesktopWindowActionArgs): Promise<MacDesktopWindowActionResult>;
+  minimizeWindow(args: MacDesktopWindowActionArgs): Promise<MacDesktopWindowActionResult>;
+  closeWindow(args: MacDesktopWindowActionArgs): Promise<MacDesktopWindowActionResult>;
+  /**
+   * Windows only, agent-callable: asks the user with a card in the calling
+   * chat to let this lane use the main desktop, and starts the shared seat
+   * when they allow it. The consent is the user's answer, never the agent's
+   * argument. A chat the user already allowed is not asked again.
+   */
+  requestSharedDesktop(args: WindowsDesktopRequestSharedArgs): Promise<MacDesktopStatus>;
 
   observe(args: MacDesktopObserveArgs): Promise<MacDesktopObservation>;
   click(args: MacDesktopClickArgs): Promise<MacDesktopInputResult>;
@@ -1340,13 +1852,6 @@ export type MacDesktopServiceApi = {
   renewLease(args: { laneId: string; holderId: string }): Promise<MacDesktopLeaseState | null>;
 
   present(args: MacDesktopPresentArgs): Promise<{ moved: number }>;
-
-  /** Called when an agent turn that used the desktop finishes. */
-  noteTurnEnded(args: {
-    laneId: string;
-    chatSessionId: string;
-    turnId: string;
-  }): Promise<MacDesktopTimeLapse | null>;
 
   /** Runs on every platform: a closing chat must drop its lease anywhere. */
   releaseIfOwnedBy(chatSessionId: string | null | undefined): Promise<{ released: boolean }>;

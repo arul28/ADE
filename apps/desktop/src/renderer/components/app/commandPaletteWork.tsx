@@ -29,6 +29,8 @@ import {
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { isSessionSnoozed } from "../../lib/sessionSnooze";
 import { promptDialog } from "../ui/dialog/confirm";
+import { chatDraftMachineId, startChatDraftPatch } from "../../lib/workDraft";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 import {
   canonicalInputFromSummary,
   effectiveSessionFilingBuckets,
@@ -128,7 +130,7 @@ export function WorkFilterBar({
         <button
           key={`${token.key}:${token.value}`}
           type="button"
-          className="inline-flex max-w-[140px] items-center gap-1 rounded-full bg-white/[0.06] px-2 py-0.5 text-[11px] text-[var(--color-fg)] hover:bg-white/[0.1]"
+          className="inline-flex max-w-[140px] items-center gap-1 rounded-full bg-fg/[0.06] px-2 py-0.5 text-[11px] text-[var(--color-fg)] hover:bg-fg/[0.1]"
           aria-label={`Remove ${token.key} filter ${token.value}`}
           onClick={() => onRemove(token)}
         >
@@ -146,8 +148,8 @@ export function WorkFilterBar({
         type="button"
         className={
           filterMenuKey
-            ? "inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-white/[0.06] px-2 text-[11px] text-[var(--color-fg)] transition-colors"
-            : "inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] text-[var(--color-muted-fg)] transition-colors hover:bg-white/[0.04] hover:text-[var(--color-fg)]"
+            ? "inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-fg/[0.06] px-2 text-[11px] text-[var(--color-fg)] transition-colors"
+            : "inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] text-[var(--color-muted-fg)] transition-colors hover:bg-fg/[0.04] hover:text-[var(--color-fg)]"
         }
         aria-label="Add Work filter"
         aria-expanded={filterMenuKey !== null}
@@ -372,8 +374,6 @@ export function useWorkSessionActions({
   projectRoot,
   projectBinding,
   setWorkViewState,
-  switchProjectToPath,
-  switchRemoteProject,
 }: {
   navigate: (path: string) => void;
   onOpenChange: (open: boolean) => void;
@@ -385,52 +385,31 @@ export function useWorkSessionActions({
       | Partial<WorkProjectViewState>
       | ((prev: WorkProjectViewState) => WorkProjectViewState),
   ) => void;
-  switchProjectToPath: (rootPath: string) => Promise<void>;
-  switchRemoteProject: (
-    targetId: string,
-    projectId: string,
-  ) => Promise<OpenProjectBinding>;
 }) {
   return useCallback(
     async (entry: ThreadIndexEntry, action: ThreadRowAction) => {
       const { session, binding } = entry;
       if (action === "new-chat") {
+        if (!entry.machineOnline) return;
         // Persist the draft before navigation. Work can be unmounted while the
         // palette is open, so an ephemeral window event would be lost before
-        // the destination page gets a chance to consume it.
-        const destinationProjectKey = projectStateKeyForBinding(
-          binding,
-          projectRoot,
-        );
+        // the destination page gets a chance to consume it. Every thread here
+        // is this project's, on some machine: the draft names that machine and
+        // the tab stays where it is, since Work routes the new chat there.
         const currentProjectKey = projectStateKeyForBinding(
           projectBinding,
           projectRoot,
         );
-        const switching =
-          !binding || destinationProjectKey === currentProjectKey
-            ? Promise.resolve()
-            : binding.kind === "remote"
-              ? switchRemoteProject(binding.targetId, binding.projectId)
-              : switchProjectToPath(binding.rootPath);
-        try {
-          await switching;
-          setWorkViewState(destinationProjectKey, (previous) => ({
-            ...previous,
-            draftKind: "chat",
-            draftLaneId: session.laneId || null,
-            draftMachineId: binding?.kind === "remote" ? binding.targetId : null,
-            activeItemId: null,
-            selectedItemId: null,
-            workSidebarOpen: false,
-          }));
-          navigate("/work");
-          onOpenChange(false);
-        } catch (error) {
-          console.error("[CommandPalette] new chat target switch failed", {
-            error,
-            sessionId: session.id,
-          });
-        }
+        setWorkViewState(currentProjectKey, (previous) => ({
+          ...previous,
+          ...startChatDraftPatch(
+            session.laneId,
+            chatDraftMachineId(entry.machineId, machineIdForBinding(projectBinding)),
+          ),
+          draftLaneId: session.laneId || null,
+        }));
+        navigate("/work");
+        onOpenChange(false);
         return;
       }
 
@@ -473,8 +452,6 @@ export function useWorkSessionActions({
       projectBinding,
       projectRoot,
       setWorkViewState,
-      switchProjectToPath,
-      switchRemoteProject,
     ],
   );
 }

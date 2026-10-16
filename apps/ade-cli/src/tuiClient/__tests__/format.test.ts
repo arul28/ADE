@@ -9,9 +9,8 @@ import {
   webSearchResultDomain,
   webSearchResultPreviewLines,
 } from "../format";
-import { aggregateChatBlocks } from "../aggregate";
-import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
 import { formatRelativePastTime } from "../relativeTime";
+import { setTuiThreadEntityFacts } from "../threadEntityRuns";
 import { terminalReasonLabel } from "../terminalReason";
 import { spawnParentGoneNoticeMessage } from "../../../../desktop/src/shared/types/chat";
 
@@ -179,6 +178,34 @@ describe("renderChatLines", () => {
     expect(runs[0]).toMatchObject({ text: "bold ", bold: true });
     expect(runs[1]).toMatchObject({ text: "both", bold: true, italic: true });
     expect(runs[2]).toMatchObject({ text: " rest", bold: true });
+  });
+
+  it("draws the ADE entities a reply names as linked runs, once, without bleeding into prose", () => {
+    const laneId = "4c90a638-607c-45fd-80bf-11df1666b8a7";
+    setTuiThreadEntityFacts({
+      lanes: [{ id: laneId, name: "opencode-harness-audit", color: "#f472b6" }],
+      chats: [{ id: "6f595a93-991e-4b6d-bc42-40dc59425cbc", title: "Audit findings" }],
+    });
+    try {
+      const runs = parseInlineRuns(
+        `Lane \`opencode-harness-audit\` (\`${laneId}\`), chat \`6f595a93\`, model \`claude-opus-5-5\`, at \`example.com\` \`2\`, PR #1407 done.`,
+      );
+      const text = runs.map((run) => run.text).join("");
+      // The echoed id collapses into the one lane run; ids become names.
+      expect(text).toBe("Lane opencode-harness-audit, chat Audit findings, model Claude Opus 5.5, at example.com 2, PR #1407 done.");
+      const lane = runs.find((run) => run.text === "opencode-harness-audit")!;
+      expect(lane).toMatchObject({ color: "#f472b6", link: true });
+      expect(lane.href).toContain(laneId);
+      // Prose right after an unlinked entity run (the model) keeps its own style.
+      expect(runs.find((run) => run.text === "Claude Opus 5.5")?.color).toBeTruthy();
+      expect(runs.find((run) => run.text.startsWith(", at"))?.color).toBeUndefined();
+      // A domain is not a file, so the number after it is not a file link; a
+      // repo-less PR gets no link that would open nothing.
+      expect(runs.find((run) => run.text === "2")?.link).toBeFalsy();
+      expect(runs.find((run) => run.text === "#1407")?.link).toBeFalsy();
+    } finally {
+      setTuiThreadEntityFacts({ lanes: [], chats: [] });
+    }
   });
 
   it("labels an approval_request question as a question, not an approval", () => {
@@ -1212,6 +1239,7 @@ describe("renderChatLines", () => {
     const spawnCompleted = (args: {
       childTitle: string;
       childSessionId?: string;
+      childMachineName?: string;
       timestamp: string;
       sequence: number;
     }) => ({
@@ -1224,7 +1252,15 @@ describe("renderChatLines", () => {
         status: "spawn_completed",
         message: `Chat "${args.childTitle}" finished its turn`,
         ...(args.childSessionId
-          ? { detail: { spawnCompletion: { childSessionId: args.childSessionId, childTitle: args.childTitle } } }
+          ? {
+            detail: {
+              spawnCompletion: {
+                childSessionId: args.childSessionId,
+                childTitle: args.childTitle,
+                ...(args.childMachineName ? { childMachineName: args.childMachineName } : {}),
+              },
+            },
+          }
           : {}),
       } as never,
     });
@@ -1274,7 +1310,7 @@ describe("renderChatLines", () => {
       ]);
     });
 
-    it("breaks the run on an intervening line", () => {
+    it("keeps a child's newest finish at its position, counting every turn, across an intervening line", () => {
       const lines = renderChatLines({
         activeSession: null,
         notices: [],
@@ -1293,10 +1329,61 @@ describe("renderChatLines", () => {
       });
 
       expect(lines.map((line) => line.body)).toEqual([
-        'Chat "Docs sweep" finished its turn ×2',
         "keep going",
+        'Chat "Docs sweep" finished its turn ×4',
+      ]);
+    });
+
+    it("drops a child's older finish when another child finishes between its turns", () => {
+      const lines = renderChatLines({
+        activeSession: null,
+        notices: [],
+        events: [
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1 }),
+          spawnCompleted({ childTitle: "Docs rewrite", childSessionId: "c2", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2 }),
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", timestamp: "2026-01-01T12:00:02.000Z", sequence: 3 }),
+        ],
+      });
+
+      expect(lines.map((line) => line.body)).toEqual([
+        'Chat "Docs rewrite" finished its turn',
         'Chat "Docs sweep" finished its turn ×2',
       ]);
+    });
+
+    it("says where a remote child ran, before its turn count", () => {
+      const lines = renderChatLines({
+        activeSession: null,
+        notices: [],
+        events: [
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", childMachineName: "Mac mini", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1 }),
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", childMachineName: "Mac mini", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2 }),
+        ],
+      });
+
+      expect(lines.map((line) => line.body)).toEqual(['Chat "Docs sweep" finished its turn · on Mac mini ×2']);
+    });
+
+    it("draws a legacy 'Peer … turn finished' notice in the current wording", () => {
+      const lines = renderChatLines({
+        activeSession: null,
+        notices: [],
+        events: [
+          {
+            sessionId: "s1",
+            timestamp: "2026-01-01T12:00:00.000Z",
+            sequence: 1,
+            event: {
+              type: "system_notice",
+              noticeKind: "info",
+              status: "spawn_completed",
+              message: 'Peer "Docs sweep" turn finished',
+            } as never,
+          },
+        ],
+      });
+
+      expect(lines.map((line) => line.body)).toEqual(['Chat "Docs sweep" finished its turn']);
     });
 
     it("gives each unidentified completion its own line instead of dropping it", () => {
@@ -1599,7 +1686,7 @@ describe("renderChatLines", () => {
           sessionId: "s1",
           timestamp: "2026-01-01T12:00:02.000Z",
           sequence: 2,
-          event: { type: "tool_call", tool: "shell", args: { command: "git branch" }, itemId: "tool-1" },
+          event: { type: "tool_call", tool: "shell", args: { command: "API_KEY=fake git branch" }, itemId: "tool-1" },
         },
         {
           sessionId: "s1",
@@ -1610,6 +1697,8 @@ describe("renderChatLines", () => {
       ],
     });
     expect(lines.map((line) => line.tone)).toEqual(["assistant", "tool", "assistant"]);
+    expect(lines[1]?.body).toContain("API_KEY=<redacted> git branch");
+    expect(lines[1]?.body).not.toContain("API_KEY=fake");
     expect(lines[0]?.body).toBe("I'll check the branch.");
     expect(lines[2]?.body).toBe("We're on main.");
     expect(lines[2]?.header).toBeUndefined();
@@ -1976,96 +2065,5 @@ describe("ade_card (TUI)", () => {
     expect(body).toContain("report-5.md");
     expect(body).not.toContain("report-6.md");
     expect(body).toContain("+5 more");
-  });
-});
-
-describe("CTO voice call runs", () => {
-  const voiceEnvelope = (
-    sequence: number,
-    timestamp: string,
-    event: AgentChatEvent,
-    callId: string | null,
-  ): AgentChatEventEnvelope => ({
-    sessionId: "cto",
-    timestamp,
-    sequence,
-    event,
-    ...(callId ? { provenance: { voiceCallId: callId } } : {}),
-  });
-
-  const callEvents = (): AgentChatEventEnvelope[] => [
-    voiceEnvelope(1, "2026-01-01T12:00:00.000Z", { type: "user_message", text: "[voice call] long preamble the user never said", displayText: "where is the PR" }, "call-1"),
-    voiceEnvelope(2, "2026-01-01T12:00:05.000Z", { type: "text", text: "It is in review." }, "call-1"),
-    voiceEnvelope(3, "2026-01-01T12:01:12.000Z", { type: "user_message", text: "[voice call] more preamble", displayText: "merge it" }, "call-1"),
-    voiceEnvelope(4, "2026-01-01T12:01:20.000Z", { type: "text", text: "Merged." }, "call-1"),
-  ];
-
-  it("heads a call's turns with one dim line and never prints the spoken preamble", () => {
-    const lines = renderChatLines({ activeSession: null, notices: [], events: callEvents() });
-    const marker = lines.find((line) => line.id === "voice-call:call-1");
-    expect(marker?.tone).toBe("notice");
-    expect(marker?.body).toBe("[voice call] 2 exchanges · 1m 20s");
-    // Exactly one marker for the whole run, not one per turn.
-    expect(lines.filter((line) => line.id === "voice-call:call-1")).toHaveLength(1);
-    // The turns themselves still render, and the model-facing preamble does not.
-    const bodies = lines.map((line) => line.body).join("\n");
-    expect(bodies).toContain("where is the PR");
-    expect(bodies).toContain("It is in review.");
-    expect(bodies).not.toContain("long preamble");
-  });
-
-  it("notes an approval and counts a single exchange in the singular", () => {
-    const lines = renderChatLines({
-      activeSession: null,
-      notices: [],
-      events: [
-        voiceEnvelope(1, "2026-01-01T12:00:00.000Z", { type: "user_message", text: "push it", displayText: "push it" }, "call-2"),
-        voiceEnvelope(2, "2026-01-01T12:00:03.000Z", {
-          type: "approval_request",
-          itemId: "a1",
-          kind: "command",
-          description: "git push",
-        }, "call-2"),
-      ],
-    });
-    expect(lines.find((line) => line.id === "voice-call:call-2")?.body)
-      .toBe("[voice call] 1 exchange · 3.0s · approval");
-  });
-
-  it("gives two calls in one thread their own lines, and typed turns none", () => {
-    const lines = renderChatLines({
-      activeSession: null,
-      notices: [],
-      events: [
-        voiceEnvelope(1, "2026-01-01T12:00:00.000Z", { type: "user_message", text: "call one" }, "call-1"),
-        voiceEnvelope(2, "2026-01-01T12:05:00.000Z", { type: "user_message", text: "typed by hand" }, null),
-        voiceEnvelope(3, "2026-01-01T12:09:00.000Z", { type: "user_message", text: "call two" }, "call-2"),
-      ],
-    });
-    expect(lines.filter((line) => line.id.startsWith("voice-call:")).map((line) => line.id))
-      .toEqual(["voice-call:call-1", "voice-call:call-2"]);
-  });
-
-  it("leaves a chat that was never on a call untouched", () => {
-    const events: AgentChatEventEnvelope[] = [
-      { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "user_message", text: "hello" } },
-      { sessionId: "s1", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2, event: { type: "text", text: "hi" } },
-    ];
-    const lines = renderChatLines({ activeSession: null, notices: [], events });
-    expect(lines.some((line) => line.id.startsWith("voice-call:"))).toBe(false);
-  });
-
-  it("carries the marker into the aggregated blocks ChatView renders", () => {
-    const blocks = aggregateChatBlocks({
-      events: callEvents(),
-      notices: [],
-      activeSession: null,
-    });
-    const marker = blocks.find((block) => block.id === "voice-call:call-1");
-    expect(marker?.kind).toBe("notice");
-    expect(blocks.filter((block) => block.id === "voice-call:call-1")).toHaveLength(1);
-    // The call's own turns are still there — the terminal marks, it does not fold.
-    expect(blocks.some((block) => block.kind === "user-bubble")).toBe(true);
-    expect(blocks.some((block) => block.kind === "assistant-text")).toBe(true);
   });
 });

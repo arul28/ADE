@@ -2,7 +2,7 @@ import React from "react";
 import { ChatText, CheckCircle, CircleDashed, GitBranch, XCircle } from "@phosphor-icons/react";
 
 import type { GitHubPrListItem, PrSummary } from "../../../../shared/types/prs";
-import { COLORS, MONO_FONT, SANS_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, toneText, fgTint } from "../../lanes/laneDesignTokens";
 import { LaneIcon } from "../../ui/vcsIcons";
 import { LaneChip } from "../../terminals/LaneChip";
 import { useAppStore } from "../../../state/appStore";
@@ -15,6 +15,9 @@ import { NO_CI_REASON } from "../../../../shared/prChecksRollup";
 import "./prListRow.css";
 import { PrActionsContextMenu, type PrActionsTarget } from "./PrActionsMenu";
 import { syntheticUnmappedPrId } from "../tabs/githubTabModel";
+import { MachineChip } from "../../shared/MachineChip";
+import { PrRuntimePinProvider, foreignLinkForItem, usePrMachineIndexContext } from "../state/prMachines";
+import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineLanes";
 
 /**
  * Presentation for one row of the GitHub PR list, and the period header that groups
@@ -27,13 +30,13 @@ import { syntheticUnmappedPrId } from "../tabs/githubTabModel";
 function stateColor(state: string): { bg: string; border: string; text: string } {
   switch (state) {
     case "open":
-      return { bg: "rgba(59,130,246,0.10)", border: "rgba(59,130,246,0.20)", text: "#60A5FA" };
+      return { bg: "rgba(59,130,246,0.10)", border: "rgba(59,130,246,0.20)", text: toneText("#60A5FA") };
     case "draft":
-      return { bg: "rgba(245,158,11,0.10)", border: "rgba(245,158,11,0.20)", text: "#FBBF24" };
+      return { bg: "rgba(245,158,11,0.10)", border: "rgba(245,158,11,0.20)", text: toneText("#FBBF24") };
     case "merged":
-      return { bg: "rgba(34,197,94,0.10)", border: "rgba(34,197,94,0.20)", text: "#4ADE80" };
+      return { bg: "rgba(34,197,94,0.10)", border: "rgba(34,197,94,0.20)", text: toneText("#4ADE80") };
     default:
-      return { bg: "rgba(161,161,170,0.08)", border: "rgba(161,161,170,0.15)", text: "#A1A1AA" };
+      return { bg: "rgba(161,161,170,0.08)", border: "rgba(161,161,170,0.15)", text: "var(--color-secondary-fg)" };
   }
 }
 
@@ -123,7 +126,7 @@ function reviewIndicator(linkedPr: PrSummary | null): { color: string; label: st
 /* -- adeKind badge with distinctive styling -- */
 const ADE_KIND_STYLES: Record<string, { color: string; background: string; border: string }> = {
   integration: {
-    color: "#FBBF24",
+    color: toneText("#FBBF24"),
     background: "linear-gradient(135deg, rgba(245,158,11,0.14) 0%, rgba(217,119,6,0.06) 100%)",
     border: "1px solid rgba(245,158,11,0.22)",
   },
@@ -176,21 +179,45 @@ function labelTextColor(hexColor: string): string {
 function PrRowLaneChip({
   item,
   linkedLaneColor,
+  hasLocalPr,
 }: {
   item: GitHubPrListItem;
   linkedLaneColor: string | null;
+  hasLocalPr: boolean;
 }) {
+  const machineIndex = usePrMachineIndexContext();
+  // A lane on another machine: its name, and the machine it lives on. The
+  // tab machine's snapshot can't see it, so this comes from the union.
+  const foreign = foreignLinkForItem(machineIndex, item, hasLocalPr);
+  if (foreign) {
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+        <LaneChip
+          laneName={foreign.lane?.name ?? foreign.pr.headBranch ?? "Lane"}
+          laneColor={foreign.lane?.color ?? null}
+          maxWidth="100%"
+          data-testid="pr-row-lane"
+        />
+        {/* Icon-only beside the lane name, so the lane keeps the width. */}
+        {foreign.chip ? <MachineChip machine={foreign.chip} subject="This lane" compact /> : null}
+      </span>
+    );
+  }
   if (item.linkedLaneName) {
     // The lane's name is a label, not a badge: the shared lane chip draws the
     // branch glyph in the lane's own color, then the name, with no box around
     // it — the same lane identity the Lanes and Work sidebars use.
     return (
-      <LaneChip
-        laneName={item.linkedLaneName}
-        laneColor={linkedLaneColor}
-        maxWidth="100%"
-        data-testid="pr-row-lane"
-      />
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+        <LaneChip
+          laneName={item.linkedLaneName}
+          laneColor={linkedLaneColor}
+          maxWidth="100%"
+          data-testid="pr-row-lane"
+        />
+        {/* The tab can be bound to another Mac; its lanes say so too. */}
+        {machineIndex.boundChip ? <MachineChip machine={machineIndex.boundChip} subject="This lane" compact /> : null}
+      </span>
     );
   }
 
@@ -310,8 +337,8 @@ function PrRowAuthorAvatar({ item, accentBg }: { item: GitHubPrListItem; accentB
       className="ade-pr-row-avatar"
       style={{
         ...base,
-        background: "rgba(255,255,255,0.05)",
-        border: "1px solid rgba(255,255,255,0.08)",
+        background: fgTint(5),
+        border: `1px solid ${fgTint(8)}`,
       }}
     />
   );
@@ -365,14 +392,23 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
   // a merged row down to a headline and a meta line, and stops the list reading as a
   // wall of signals.
   const terminal = isTerminalPrState(item.state);
-  const review = terminal ? null : reviewIndicator(linkedPr);
+  const machineIndex = usePrMachineIndexContext();
+  const foreign = foreignLinkForItem(machineIndex, item, Boolean(linkedPr));
+  // A reachable owner machine answers for its PR: its row backs the menu and
+  // the CI/review signals, and every menu call carries its pin.
+  const foreignPin = foreign?.machine.online ? foreign.machine.pin : null;
+  const ownerPr: PrSummary | null = linkedPr ?? (foreignPin ? foreign!.pr : null);
+  const review = terminal ? null : reviewIndicator(ownerPr);
   const labels = item.labels ?? [];
   const visibleLabels = labels.slice(0, 4);
   const overflowCount = labels.length - 4;
   const rowLinkedLaneColor = useLaneColorById(item.linkedLaneId ?? null);
   const actionTarget = React.useMemo<PrActionsTarget>(() => ({
-    id: linkedPr?.id ?? syntheticUnmappedPrId(item),
-    laneId: linkedPr?.laneId ?? item.linkedLaneId ?? "",
+    id: ownerPr?.id ?? syntheticUnmappedPrId(item),
+    // A foreign lane id only ever travels with its owner's pin. Without a
+    // reachable owner the menu keeps to GitHub-level actions on the tab's
+    // machine and addresses no lane.
+    laneId: foreign && !foreignPin ? "" : ownerPr?.laneId ?? item.linkedLaneId ?? "",
     githubPrNumber: item.githubPrNumber,
     repoOwner: item.repoOwner,
     repoName: item.repoName,
@@ -381,10 +417,16 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
     title: item.title,
     githubUrl: item.githubUrl,
     state: item.isDraft && item.state === "open" ? "draft" : item.state,
-    chatSessionIds: linkedPr?.chatSessionIds,
-  }), [item, linkedPr]);
+    chatSessionIds: ownerPr?.chatSessionIds,
+  }), [foreign, foreignPin, item, linkedPr, ownerPr]);
   return (
-    <PrActionsContextMenu pr={actionTarget} onChanged={() => onActionDone?.(actionTarget.id)} onError={onActionError}>
+    <PrRuntimePinProvider value={foreignPin ?? null}>
+    <PrActionsContextMenu
+      pr={actionTarget}
+      // The owner's row is refreshed through the union, not the tab's PR list.
+      onChanged={() => (foreignPin ? requestCrossMachineLanesForMachine(foreign!.machine.machineId) : onActionDone?.(actionTarget.id))}
+      onError={onActionError}
+    >
     <div className="ade-pr-row" style={{ position: "relative" }}>
       <button
         type="button"
@@ -400,14 +442,14 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
           textAlign: "left",
           border: "none",
           borderLeft: selected ? `3px solid ${sc.text}` : "3px solid transparent",
-          borderBottom: "1px solid rgba(255,255,255,0.04)",
+          borderBottom: `1px solid ${fgTint(4)}`,
           background: selected
-            ? `linear-gradient(90deg, ${sc.bg} 0%, rgba(255,255,255,0.02) 100%)`
+            ? `linear-gradient(90deg, ${sc.bg} 0%, color-mix(in srgb, var(--color-fg) 2%, transparent) 100%)`
             : "transparent",
           cursor: "pointer",
           transition: "background 150ms ease",
         }}
-        onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "rgba(255,255,255,0.025)"; }}
+        onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = fgTint(2.5); }}
         onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
       >
       {/* The author, pinned to the card's top-right gutter and out of the headline's
@@ -439,7 +481,7 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
               padding: "1px 5px",
               marginRight: 5,
               borderRadius: 3,
-              background: "rgba(255,255,255,0.06)",
+              background: COLORS.hoverBg,
               color: COLORS.textDim,
               letterSpacing: "0.3px",
               whiteSpace: "nowrap",
@@ -453,7 +495,7 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
           {item.title}
         </div>
         {terminal ? null : (
-          <PrRowCiStatus status={linkedPr?.checksStatus ?? null} reason={linkedPr?.checksReason ?? null} />
+          <PrRowCiStatus status={ownerPr?.checksStatus ?? null} reason={ownerPr?.checksReason ?? null} />
         )}
       </div>
       {/* Row 2: labels */}
@@ -518,7 +560,7 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
             {item.repoOwner}/{item.repoName}
           </span>
         ) : null}
-        <PrRowLaneChip item={item} linkedLaneColor={rowLinkedLaneColor} />
+        <PrRowLaneChip item={item} linkedLaneColor={rowLinkedLaneColor} hasLocalPr={Boolean(linkedPr)} />
         {review ? (
           <span style={{ display: "inline-flex", alignItems: "center", padding: "2px 6px", fontSize: 10, fontWeight: 500, fontFamily: SANS_FONT, color: review.color, background: `color-mix(in srgb, ${review.color} 6%, transparent)`, borderRadius: 4 }}>
             {review.label}
@@ -558,6 +600,7 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
       </button>
     </div>
     </PrActionsContextMenu>
+    </PrRuntimePinProvider>
   );
 });
 
@@ -577,7 +620,7 @@ export function PrListGroupHeaderRow({ header }: { header: PrListGroupHeaderMode
         gap: 8,
         padding: "6px 14px",
         background: COLORS.prSurface,
-        borderBottom: "1px solid rgba(255,255,255,0.05)",
+        borderBottom: `1px solid ${fgTint(5)}`,
         fontFamily: SANS_FONT,
         fontSize: 10,
         fontWeight: 600,

@@ -27,6 +27,12 @@ export const AI_STATUS_CACHE_UPDATED_EVENT = "ade:ai-status-cache-updated";
 export type AiStatusCacheInvalidatedEventDetail = {
   projectRoot: string | null;
   allProjects: boolean;
+  /**
+   * False when nothing machine-wide can have changed (a project was opened or
+   * switched to), so listeners refill from the brain's caches instead of
+   * forcing it to re-probe every CLI and re-read the login shell's PATH.
+   */
+  force: boolean;
 };
 
 export type AiStatusCacheUpdatedEventDetail = {
@@ -103,7 +109,10 @@ export function peekAiStatusCached(
 
 export async function getAiStatusCached(args: {
   projectRoot: string | null | undefined;
+  /** Skip this cache and make the brain re-probe CLI auth and the shell PATH. */
   force?: boolean;
+  /** Skip this cache only; the brain answers from its own caches. */
+  revalidate?: boolean;
   ttlMs?: number;
   refreshOpenCodeInventory?: boolean;
   pin?: OpenProjectBinding | null;
@@ -114,8 +123,9 @@ export async function getAiStatusCached(args: {
   const existing = aiStatusCache.get(key);
   const requiresOpenCodeInventory = args.refreshOpenCodeInventory === true;
 
+  const bypassCache = args.force === true || args.revalidate === true;
   if (
-    !args.force
+    !bypassCache
     && existing?.value
     && now - existing.timestamp < ttlMs
     && (!requiresOpenCodeInventory || existing.includesOpenCodeInventory)
@@ -123,7 +133,7 @@ export async function getAiStatusCached(args: {
     return existing.value;
   }
   if (
-    !args.force
+    !bypassCache
     && existing?.inFlight
     && (!requiresOpenCodeInventory || existing.inFlightIncludesOpenCodeInventory)
   ) {
@@ -230,11 +240,15 @@ export async function getAgentChatModelsCached(args: {
   return request;
 }
 
-export function invalidateAiDiscoveryCache(projectRoot?: string | null): void {
+export function invalidateAiDiscoveryCache(
+  projectRoot?: string | null,
+  options?: { force?: boolean },
+): void {
+  const force = options?.force !== false;
   if (projectRoot == null) {
     aiStatusCache.clear();
     providerModelsCache.clear();
-    emitAiStatusCacheInvalidated({ projectRoot: null, allProjects: true });
+    emitAiStatusCacheInvalidated({ projectRoot: null, allProjects: true, force });
     return;
   }
 
@@ -252,5 +266,6 @@ export function invalidateAiDiscoveryCache(projectRoot?: string | null): void {
   emitAiStatusCacheInvalidated({
     projectRoot: projectRoot.trim() || null,
     allProjects: false,
+    force,
   });
 }

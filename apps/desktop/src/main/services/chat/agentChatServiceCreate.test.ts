@@ -20,7 +20,6 @@ import {
   fs,
   getDefaultModelDescriptor,
   installClaudeResponseFixture,
-  isOpenCodeExternalDirectoryInsideAdeRoot,
   loadExternalSessionEvents,
   loadQwenUserSettings,
   makeDefaultClaudeSession,
@@ -38,7 +37,6 @@ import {
   replaceDynamicPiModelDescriptors,
   runClaudeStreamFixture,
   spawn,
-  startOpenCodeSession,
   startup,
   streamText,
   tagSession,
@@ -48,6 +46,13 @@ import {
   waitForEvent,
   writePersistedChatState,
 } from "./agentChatService.testHarness";
+import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { createAccountSettingsStore } from "../../../../../ade-cli/src/services/account/accountSettingsStore";
+import { openKvDb } from "../state/kvDb";
+import { createSessionService } from "../sessions/sessionService";
+import { createPrChatLinkStore } from "../prs/prChatLinkStore";
+import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { describe, expect, it, test, vi } from "vitest";
 
 async function settleDirectiveBookkeeping(): Promise<void> {
@@ -78,7 +83,62 @@ async function useRealLineReaderOnce(): Promise<void> {
 }
 
 
+/**
+ * Two Claude Code presets on this machine's account settings: one on a Claude
+ * model through a stored key, and one on a model ADE files under another
+ * provider (DeepSeek), which no Claude thread can be resumed on.
+ */
+function saveClaudePresets(): { savedPreset: HarnessPreset; foreignModelPreset: HarnessPreset } {
+  const adeHome = path.join(tmpHomeRoot, ".ade");
+  fs.mkdirSync(adeHome, { recursive: true });
+  const savedPreset: HarnessPreset = {
+    id: "hp_create_preset",
+    name: "Opus on work",
+    harness: "claude",
+    source: { kind: "key", provider: "anthropic", credentialId: "work", label: "Work key" },
+    model: "claude-opus-4-5",
+    subagentModel: "inherit",
+    agentOverrides: {},
+    agentEfforts: {},
+    accentColor: "#7c5ce0",
+    logo: { kind: "ade" },
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+  const foreignModelPreset: HarnessPreset = { ...savedPreset, id: "hp_create_foreign", model: "deepseek-v4.1-flash" };
+  createAccountSettingsStore({ adeDir: adeHome, relay: null, getAccountUserId: () => "user_create_preset" })
+    .set("all", "harnessPresets", [savedPreset, foreignModelPreset]);
+  return { savedPreset, foreignModelPreset };
+}
+
 describe("createAgentChatService", () => {
+  it("gives a PR origin to the first ordinary persisted chat and cleans up failed claims", async () => {
+    const db = await openKvDb(path.join(tmpRoot, "origin.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const now = new Date().toISOString();
+    let service: ReturnType<typeof createAgentChatService> | undefined;
+    try {
+      db.run("insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values ('proj', ?, 'ADE', 'main', ?, ?)", [tmpRoot, now, now]);
+      db.run("insert into lanes(id, project_id, name, base_ref, branch_ref, worktree_path, status, created_at) values ('lane-1', 'proj', 'lane', 'main', 'lane', ?, 'active', ?)", [tmpRoot, now]);
+      db.run("insert into pull_requests(id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url, state, base_branch, head_branch, created_at, updated_at) values ('pr', 'proj', 'lane-1', 'acme', 'ade', 1, 'https://github.com/acme/ade/pull/1', 'open', 'main', 'lane', ?, ?)", [now, now]);
+      const sessions = createSessionService({ db });
+      const store = createPrChatLinkStore({ db, projectId: "proj", logger: { debug() {}, info() {}, warn() {}, error() {} } as any, knownStackNumberForPr: () => null });
+      expect(store.rememberLanePrChatOrigin({ laneId: "lane-1", prId: "pr" })).toBe(true);
+      service = createService({ sessionService: sessions, prService: store }).service;
+      await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      expect(store.chatSessionIdsByPrId(["pr"]).get("pr")).toBeUndefined();
+      db.run("create trigger fail_chat_claim before insert on pull_request_chat_sessions begin select raise(abort, 'injected claim failure'); end");
+      await expect(service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" })).rejects.toThrow("Could not save the PR link");
+      expect(sessions.list({ laneId: "lane-1", limit: null })).toHaveLength(1);
+      db.run("drop trigger fail_chat_claim");
+      const chat = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      expect(store.chatSessionIdsByPrId(["pr"]).get("pr")).toEqual([chat.id]);
+    } finally {
+      service?.forceDisposeAll();
+      db.close();
+    }
+  });
+
   it("uses the injected GitHub service to enrich smart-link previews", async () => {
     const getIssue = vi.fn().mockResolvedValue({ title: "Keep desktop previews consistent" });
     const { service } = createService({ githubService: { getIssue } });
@@ -187,6 +247,76 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
       });
+      service.forceDisposeAll();
+    });
+
+    const exhaustedDiskMonitor = {
+      canPerform: vi.fn(() => ({
+        allowed: false as const,
+        state: "exhausted" as const,
+        code: "disk_full" as const,
+        message: "Your computer is almost out of storage. ADE paused new agent work to protect your chats and projects. Free up space, then resume.",
+      })),
+    };
+
+    async function createPendingComment(service: ReturnType<typeof createService>["service"], sessionId: string) {
+      return service.createThreadComment({
+        sessionId,
+        messageKey: "message:1",
+        messageExcerpt: "an earlier reply",
+        anchor: { kind: "text", quote: "the quoted part", prefix: "", suffix: "" },
+        body: "my note",
+      });
+    }
+
+    it("keeps pending comments when the send is a provider slash command", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await createPendingComment(service, session.id);
+      mockState.codexRequestPayloads = [];
+
+      // The provider must still see the leading `/`, so the comments ride the
+      // user's next real send instead of this command.
+      await service.sendMessage({ sessionId: session.id, text: "/compact", includeThreadComments: true }).catch(() => undefined);
+
+      expect(service.listThreadComments({ sessionId: session.id })).toHaveLength(1);
+      service.forceDisposeAll();
+    });
+
+    it("keeps pending comments when the disk gate refuses a send that has text", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        diskPressureMonitor: exhaustedDiskMonitor,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await createPendingComment(service, session.id);
+      mockState.codexRequestPayloads = [];
+
+      await service.sendMessage({ sessionId: session.id, text: "Keep going.", includeThreadComments: true });
+
+      // The send's own disk gate reports the refusal; the comments are not spent.
+      expect(service.listThreadComments({ sessionId: session.id })).toHaveLength(1);
+      expect(events.some((entry) =>
+        entry.event.type === "system_notice"
+        && typeof entry.event.detail === "object"
+        && (entry.event.detail as { kind?: string }).kind === "disk_pressure")).toBe(true);
+      service.forceDisposeAll();
+    });
+
+    it("throws rather than silently dropping a comments-only send under disk pressure", async () => {
+      const { service } = createService({ diskPressureMonitor: exhaustedDiskMonitor });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await createPendingComment(service, session.id);
+      mockState.codexRequestPayloads = [];
+
+      await expect(service.sendMessage({
+        sessionId: session.id,
+        text: "",
+        includeThreadComments: true,
+      })).rejects.toThrow(/almost out of storage/i);
+
+      expect(service.listThreadComments({ sessionId: session.id })).toHaveLength(1);
       service.forceDisposeAll();
     });
   });
@@ -497,25 +627,6 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("createSession", () => {
-    it("creates a opencode session with valid model", async () => {
-      const { service, sessionService } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-
-      expect(session).toBeDefined();
-      expect(session.id).toBe("test-uuid-1");
-      expect(session.laneId).toBe("lane-1");
-      expect(session.provider).toBe("opencode");
-      expect(session.status).toBe("idle");
-      expect(session.completion).toBeNull();
-      expect(session.sessionProfile).toBe("workflow");
-      expect(session.surface).toBe("work");
-      expect(sessionService.create).toHaveBeenCalledTimes(1);
-    });
 
     it("persists Copilot chats with Copilot identity and repairs legacy Codex rows", async () => {
       const { service, sessionService } = createService();
@@ -653,6 +764,67 @@ describe("createAgentChatService", () => {
           sessionId: externalSessionId,
         },
       });
+    });
+
+    it("puts an imported Claude conversation in the account the new chat runs on", async () => {
+      const externalSessionId = "22222222-3333-4444-5555-666666666666";
+      const slug = tmpRoot.replace(/[^A-Za-z0-9]/g, "-");
+      const defaultHome = process.env.CLAUDE_CONFIG_DIR?.trim() || path.join(tmpHomeRoot, ".claude");
+      const sourcePath = path.join(defaultHome, "projects", slug, `${externalSessionId}.jsonl`);
+      const transcript = [
+        JSON.stringify({
+          type: "user",
+          uuid: "user-1",
+          timestamp: "2026-07-06T10:00:00.000Z",
+          cwd: tmpRoot,
+          sessionId: externalSessionId,
+          message: { role: "user", content: [{ type: "text", text: "Remember the plan we agreed on." }] },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "assistant-1",
+          timestamp: "2026-07-06T10:00:02.000Z",
+          cwd: tmpRoot,
+          sessionId: externalSessionId,
+          message: { role: "assistant", content: [{ type: "text", text: "Noted: ship the Windows parity work first." }] },
+        }),
+      ].join("\n");
+      fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+      fs.writeFileSync(sourcePath, transcript, "utf8");
+      // The same id, newer, in another project folder (a session moved with
+      // `/cd`): the import must carry the transcript it chose, not the newest.
+      const elsewhere = path.join(defaultHome, "projects", "-somewhere-else", `${externalSessionId}.jsonl`);
+      fs.mkdirSync(path.dirname(elsewhere), { recursive: true });
+      fs.writeFileSync(elsewhere, "{}\n", "utf8");
+      fs.utimesSync(elsewhere, new Date(Date.now() + 60_000), new Date(Date.now() + 60_000));
+      // A second Claude login that new chats start on. Written as the registry
+      // file rather than through `create()`, which also locks the folder down.
+      const workHome = path.join(tmpHomeRoot, "provider-homes", "claude", "work");
+      fs.mkdirSync(workHome, { recursive: true });
+      fs.mkdirSync(resolveMachineAdeDir(), { recursive: true });
+      fs.writeFileSync(path.join(resolveMachineAdeDir(), "provider-instances.json"), JSON.stringify({
+        version: 1,
+        instances: [{ id: "work", provider: "claude", label: "Work", configHome: workHome, createdAt: "2026-07-06T09:00:00.000Z" }],
+        defaults: { claude: "work" },
+        settings: {},
+        presetBindings: [],
+      }), "utf8");
+
+      const { service } = createService();
+      const result = await service.importExternalChatSession({
+        provider: "claude",
+        externalSessionId,
+        laneId: "lane-1",
+        cwd: tmpRoot,
+        fork: false,
+      });
+
+      expect((await service.getSessionSummary(result.chatSessionId))?.instanceId).toBe("work");
+      expect(readPersistedChatState(result.chatSessionId).claudeBackgroundResumeSessionId).toBe(externalSessionId);
+      // The Work login resumes from its own home, so the conversation has to be there.
+      const resumedPath = path.join(workHome, "projects", slug, `${externalSessionId}.jsonl`);
+      expect(fs.readFileSync(resumedPath, "utf8")).toBe(transcript);
+      expect(fs.existsSync(sourcePath)).toBe(true);
     });
 
     it("rejects a cross-provider replay import whose transcript has no messages", async () => {
@@ -990,38 +1162,6 @@ describe("createAgentChatService", () => {
         service.forceDisposeAll();
       });
 
-      it("continues an OpenCode session in place: the runtime opens the external session id", async () => {
-        vi.mocked(loadExternalSessionEvents).mockResolvedValueOnce(
-          importEvents("import-preview", { user: "Refactor the store.", assistant: "Starting." }),
-        );
-        streamText.mockReturnValue({
-          fullStream: (async function* () {
-            yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
-          })(),
-        });
-        const { service } = createService();
-
-        const result = await service.importExternalChatSession({
-          provider: "opencode",
-          externalSessionId: "ses_external1",
-          laneId: "lane-1",
-          cwd: tmpRoot,
-          fork: false,
-          model: "opencode/anthropic/claude-sonnet-5",
-        });
-
-        const persisted = readPersistedChatState(result.chatSessionId);
-        expect(persisted.providerSessionId).toBe("ses_external1");
-        expect(persisted.importedFrom).toMatchObject({ provider: "opencode", mode: "continue" });
-
-        await service.sendMessage({ sessionId: result.chatSessionId, text: "Continue." }, { awaitDispatch: true });
-        await vi.waitFor(() => {
-          expect(vi.mocked(startOpenCodeSession).mock.calls.at(-1)?.[0]).toEqual(
-            expect.objectContaining({ sessionId: "ses_external1", directory: fs.realpathSync(tmpRoot) }),
-          );
-        });
-        service.forceDisposeAll();
-      });
 
       it("continues a Pi session in place by seeding its session id", async () => {
         const piDescriptor = createDynamicPiModelDescriptor("local", "import-continue");
@@ -1124,6 +1264,78 @@ describe("createAgentChatService", () => {
       expect(session.provider).toBe("claude");
       expect(session.modelId).toBe("anthropic/claude-sonnet-5");
       expect(session.model).toBe("claude-sonnet-5");
+    });
+
+    it("adopts a preset's harness and model when the caller sends only a presetId", async () => {
+      // A caller that names only a preset — the CLI, an action bus, a scheduled
+      // wake — must record the harness that will actually launch. Before, the
+      // row kept the caller's default provider (codex) and an empty model while
+      // the runtime launched the preset's Claude Code, so every provider-gated
+      // surface read the wrong provider.
+      const { savedPreset, foreignModelPreset } = saveClaudePresets();
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        presetId: savedPreset.id,
+      } as any);
+
+      expect(session.provider).toBe("claude");
+      expect(session.model).toBe("claude-opus-4-5");
+
+      // Naming the provider too (`--provider claude`) must not let Claude's
+      // default model fill in: the row named Opus while DeepSeek ran.
+      const withProvider = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        presetId: foreignModelPreset.id,
+      } as any);
+      expect(withProvider.model).toBe("deepseek-v4.1-flash");
+      expect(withProvider.modelId ?? null).not.toMatch(/claude/);
+      service.forceDisposeAll();
+    });
+
+    it("moves an open chat onto a preset and off it, starting a fresh thread a foreign model can read", async () => {
+      // Picking a preset on a running chat used to show the preset and run
+      // the old model; a preset whose model cannot read the chat's thread
+      // (DeepSeek after Opus) failed with the endpoint's 422 unless the next
+      // runtime starts a new thread with the transcript replayed, and that has
+      // to hold across a brain restart.
+      const { savedPreset, foreignModelPreset } = saveClaudePresets();
+      const first = createService();
+      const session = await first.service.createSession({ laneId: "lane-1", provider: "claude", model: "claude-sonnet-5" });
+      await first.service.runSessionTurn({ sessionId: session.id, text: "Remember the word MANGO." });
+      await vi.waitFor(() => expect(readPersistedChatState(session.id).sdkSessionId).toBeTruthy());
+      const opusThread = String(readPersistedChatState(session.id).sdkSessionId);
+
+      const onPreset = await first.service.updateSession({ sessionId: session.id, presetId: foreignModelPreset.id });
+      expect(onPreset).toMatchObject({ provider: "claude", model: "deepseek-v4.1-flash", presetId: foreignModelPreset.id });
+      expect(readPersistedChatState(session.id)).toMatchObject({ claudeFreshThreadPending: true, presetId: foreignModelPreset.id });
+      expect(readPersistedChatState(session.id).sdkSessionId).toBeUndefined();
+      first.service.forceDisposeAll();
+
+      // A restarted brain still starts the new thread and still owes the replay.
+      vi.mocked(claudeSdkResumeSessionCompat).mockClear();
+      const freshThread = makeDefaultClaudeSession();
+      vi.mocked(claudeSdkCreateSessionCompat).mockReset().mockReturnValue(freshThread as any);
+      const second = createService();
+      // The pointer table is a database that outlives the brain: it still names the old thread.
+      second.sessionService.upsertClaudeSessionPointer({ sessionId: opusThread, laneId: "lane-1", chatSessionId: session.id });
+      await second.service.runSessionTurn({ sessionId: session.id, text: "What word did I ask you to remember?" });
+      expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      expect((freshThread.send.mock.calls as unknown[][]).map(([message]) => claudeInputText(message)).join("\n")).toContain("MANGO");
+      await vi.waitFor(() => expect(readPersistedChatState(session.id).claudeFreshThreadPending).toBeUndefined());
+
+      // The same model sent again (a settings save) keeps a preset; a plain
+      // model with `presetId: null` leaves it.
+      await second.service.updateSession({ sessionId: session.id, presetId: savedPreset.id });
+      const kept = await second.service.updateSession({ sessionId: session.id, modelId: (await second.service.getSessionSummary(session.id))!.modelId! });
+      expect(kept.presetId).toBe(savedPreset.id);
+      const left = await second.service.updateSession({ sessionId: session.id, modelId: "anthropic/claude-sonnet-5", presetId: null });
+      expect(left.presetId).toBeUndefined();
+      expect(readPersistedChatState(session.id).presetId).toBeUndefined();
+      second.service.forceDisposeAll();
     });
 
     it("maps retired Claude Opus 4.7 1M aliases onto Opus 5", async () => {
@@ -2278,7 +2490,8 @@ describe("createAgentChatService", () => {
       expect(server?.type).toBe("sdk");
       expect(createSdkMcpServer).toHaveBeenCalledWith(expect.objectContaining({
         name: "ade-cto",
-        timeout: 120_000,
+        // The transport only backstops; ADE's own per-tool deadline ends a call.
+        timeout: 65 * 60_000,
       }));
       const toolNames = Object.keys(server?.instance?._registeredTools ?? {});
       expect(toolNames).toContain("spawnChat");
@@ -2659,29 +2872,7 @@ describe("createAgentChatService", () => {
       expect(session.permissionMode).toBe("plan");
     });
 
-    it("normalizes reasoning effort for opencode provider", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-        reasoningEffort: "  HIGH  ",
-      });
 
-      expect(session.reasoningEffort).toBe("high");
-    });
-
-    it("throws when opencode provider has no known model ID", async () => {
-      const { service } = createService();
-      await expect(
-        service.createSession({
-          laneId: "lane-1",
-          provider: "opencode",
-          model: "nonexistent-model-xyz",
-        }),
-      ).rejects.toThrow(/model/i);
-    });
 
     it("persists chat state to disk after creation", async () => {
       const { service } = createService();
@@ -3301,23 +3492,6 @@ describe("createAgentChatService", () => {
       expect(caps.subagent.canViewFullTranscript).toBe(false);
     });
 
-    it("returns capabilities for a opencode session (subagent inspection + transcript, no review)", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-
-      const caps = service.getSessionCapabilities({ sessionId: session.id });
-      // OpenCode child sessions are real sessions → listable with full transcript.
-      expect(caps.supportsSubagentInspection).toBe(true);
-      expect(caps.subagent.canList).toBe(true);
-      expect(caps.subagent.canViewFullTranscript).toBe(true);
-      expect(caps.supportsSubagentControl).toBe(false);
-      expect(caps.supportsReviewMode).toBe(false);
-    });
 
     it("returns capabilities for a claude session (subagent inspection, no review)", async () => {
       const { service } = createService();
@@ -3390,24 +3564,7 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("getAvailableModels", () => {
-    it("keeps OpenCode model discovery passive on a cache miss", async () => {
-      clearOpenCodeInventoryCache();
-      const { service } = createService();
-      const models = await service.getAvailableModels({ provider: "opencode" });
 
-      expect(peekOpenCodeInventoryCache).toHaveBeenCalled();
-      expect(probeOpenCodeProviderInventory).not.toHaveBeenCalled();
-      expect(models).toEqual([]);
-    });
-
-    it("refreshes OpenCode models only when runtime activation is requested", async () => {
-      clearOpenCodeInventoryCache();
-      const { service } = createService();
-      const models = await service.getAvailableModels({ provider: "opencode", activateRuntime: true });
-
-      expect(probeOpenCodeProviderInventory).toHaveBeenCalled();
-      expect(models.map((model) => model.id)).toContain("opencode/openai/gpt-5.4");
-    });
 
     it("pins GPT-6 Astra ahead of GPT-5.6 in filtered and provider-omitted catalogs", async () => {
       mockState.codexResponseOverrides.set("model/list", {
@@ -3659,71 +3816,6 @@ describe("createAgentChatService", () => {
      * status, reach into the mocked session state, and wake the stream's waiters
      * after pushing events. `finish` releases the gate and settles the send.
      */
-    const startOpenCodeTurn = async (
-      promptText: string,
-      sessionOptions: { strictMcpConfig?: boolean; fastMode?: boolean; reasoningEffort?: string } = {},
-    ) => {
-      const events: AgentChatEventEnvelope[] = [];
-      let releaseStream!: () => void;
-      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          await streamGate;
-          yield { type: "finish", usage: {} };
-        })(),
-      }) as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "opencode/openai/gpt-5.4",
-        modelId: "opencode/openai/gpt-5.4",
-        ...sessionOptions,
-      });
-
-      const sendPromise = service.sendMessage({ sessionId: session.id, text: promptText });
-      const started = await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "status" && event.event.turnStatus === "started",
-      );
-
-      const [sessionID, state] = [...mockState.openCodeSessions.entries()][0]!;
-      // The casts live here so no test has to spell `as any` on every event.
-      const pushEvents = (...next: any[]): void => {
-        state.events.push(...next);
-        const waiters = [...state.waiters];
-        state.waiters.length = 0;
-        waiters.forEach((waiter) => waiter());
-      };
-      const joined = (type: "text" | "reasoning"): string => events
-        .filter((event) => event.event.type === type)
-        .map((event) => (event.event as { text: string }).text)
-        .join("");
-      const waitForDone = (): Promise<AgentChatEventEnvelope> => waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "done" && event.event.turnId === started.event.turnId,
-      );
-      const finish = async (): Promise<void> => {
-        releaseStream();
-        await sendPromise;
-      };
-
-      return {
-        service,
-        session,
-        events,
-        sessionID,
-        pushEvents,
-        joined,
-        waitForDone,
-        finish,
-      };
-    };
 
     it("applies automationId and automationRunId when surface is automation", async () => {
       const { service } = createService();
@@ -3754,1091 +3846,33 @@ describe("createAgentChatService", () => {
       expect((await service.getSessionSummary(session.id))?.capabilityMode).toBe(expected);
     });
 
-    it("does not auto-upgrade guarded local opencode sessions into plan mode", async () => {
-      replaceDynamicOpenCodeModelDescriptors([
-        createDynamicOpenCodeModelDescriptor("lmstudio/qwen3.5-9b", {
-          displayName: "qwen3.5-9b",
-          capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
-          openCodeProviderId: "lmstudio",
-          openCodeModelId: "qwen3.5-9b",
-        }),
-      ]);
 
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "LM Studio (Auto)",
-        modelId: "lmstudio/auto",
-      });
 
-      expect(session.permissionMode).toBe("edit");
-      expect(session.opencodePermissionMode).toBe("edit");
-    });
 
-    it("does not force an ADE OpenCode agent when config mode is selected", async () => {
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-        opencodePermissionMode: "config-toml",
-      });
-
-      expect(session.opencodePermissionMode).toBe("config-toml");
-      expect(session.permissionMode).toBe("config-toml");
-
-      await service.sendMessage({ sessionId: session.id, text: "Use configured OpenCode behavior." }, { awaitDispatch: true });
-
-      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
-      expect(openCodeState.promptBodies.at(-1)).toEqual(expect.not.objectContaining({
-        agent: expect.stringMatching(/^ade-/),
-      }));
-    });
-
-    it("sends the fast variant for supported OpenCode models when enabled", async () => {
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-      replaceDynamicOpenCodeModelDescriptors([
-        createDynamicOpenCodeModelDescriptor("", {
-          displayName: "GPT 5.4",
-          capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
-          openCodeProviderId: "openai",
-          openCodeModelId: "gpt-5.4",
-          serviceTiers: ["fast"],
-        }),
-      ]);
-
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-        fastMode: true,
-      });
-
-      expect(session.fastMode).toBe(true);
-
-      await service.sendMessage({ sessionId: session.id, text: "Use OpenCode fast mode." }, { awaitDispatch: true });
-
-      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
-      await vi.waitFor(() => {
-        expect(openCodeState.promptBodies.length).toBeGreaterThan(0);
-      });
-      expect(openCodeState.promptBodies.at(-1)).toEqual(expect.objectContaining({
-        variant: "fast",
-      }));
-    });
-
-    it("sends OpenCode's own variant key for the chosen reasoning tier", async () => {
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-      const descriptor = createDynamicOpenCodeModelDescriptor("", {
-        displayName: "DeepSeek Reasoner",
-        capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
-        openCodeProviderId: "deepseek",
-        openCodeModelId: "deepseek-reasoner",
-        reasoningTiers: ["low", "xhigh"],
-      });
-      // The model's OpenCode config names the tier `extra-high`.
-      descriptor.openCodeVariantKeys = { xhigh: "extra-high" };
-      replaceDynamicOpenCodeModelDescriptors([descriptor]);
-
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/deepseek/deepseek-reasoner",
-        reasoningEffort: "xhigh",
-      });
-
-      await service.sendMessage({ sessionId: session.id, text: "Think hard." }, { awaitDispatch: true });
-
-      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
-      await vi.waitFor(() => {
-        expect(openCodeState.promptBodies.length).toBeGreaterThan(0);
-      });
-      expect(openCodeState.promptBodies.at(-1)).toEqual(expect.objectContaining({
-        variant: "extra-high",
-      }));
-    });
 
     /** GPT-5.4 as the inventory lists it when OpenCode also has its `-fast` sibling. */
-    const registerOpenCodeFastSiblingRow = (): void => {
-      const descriptor = createDynamicOpenCodeModelDescriptor("", {
-        displayName: "GPT-5.4",
-        capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
-        openCodeProviderId: "openai",
-        openCodeModelId: "gpt-5.4",
-        reasoningTiers: ["low", "high"],
-        serviceTiers: ["fast"],
-        reportedTiers: true,
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
       });
-      descriptor.openCodeFast = {
-        withoutEffort: { modelId: "gpt-5.4-fast" },
-        byEffort: {
-          low: { modelId: "gpt-5.4-fast", variant: "low" },
-          high: { modelId: "gpt-5.4-fast", variant: "high" },
-        },
-      };
-      replaceDynamicOpenCodeModelDescriptors([descriptor]);
-    };
-
-    it("runs Fast with an effort as OpenCode's fast sibling model plus the effort variant", async () => {
-      // OpenCode's prompt takes one `variant`. Sending `fast` there dropped the
-      // effort; the sibling model keeps both.
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-      registerOpenCodeFastSiblingRow();
-
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-        fastMode: true,
-        reasoningEffort: "high",
-      });
-
-      await service.sendMessage({ sessionId: session.id, text: "Fast and careful." }, { awaitDispatch: true });
-
-      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
-      await vi.waitFor(() => {
-        expect(openCodeState.promptBodies.length).toBeGreaterThan(0);
-      });
-      expect(openCodeState.promptBodies.at(-1)).toEqual(expect.objectContaining({
-        model: { providerID: "openai", modelID: "gpt-5.4-fast" },
-        variant: "high",
-      }));
-    });
-
-    it("keeps the effort and logs when OpenCode cannot run Fast with it", async () => {
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-      // A plain `fast` variant only: it cannot share the prompt's one `variant`.
-      replaceDynamicOpenCodeModelDescriptors([
-        createDynamicOpenCodeModelDescriptor("", {
-          displayName: "GPT-5.4",
-          capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
-          openCodeProviderId: "openai",
-          openCodeModelId: "gpt-5.4",
-          reasoningTiers: ["low", "high"],
-          serviceTiers: ["fast"],
-          reportedTiers: true,
-        }),
-      ]);
-
-      const { service, logger } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-        fastMode: true,
-        reasoningEffort: "high",
-      });
-
-      await service.sendMessage({ sessionId: session.id, text: "Think hard." }, { awaitDispatch: true });
-
-      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
-      await vi.waitFor(() => {
-        expect(openCodeState.promptBodies.length).toBeGreaterThan(0);
-      });
-      expect(openCodeState.promptBodies.at(-1)).toEqual(expect.objectContaining({
-        model: { providerID: "openai", modelID: "gpt-5.4" },
-        variant: "high",
-      }));
-      const fastNotApplied = vi.mocked(logger.warn).mock.calls
-        .filter(([event]) => event === "agent_chat.opencode_fast_not_applied");
-      expect(fastNotApplied).toHaveLength(1);
-      expect(fastNotApplied[0]![1]).toMatchObject({
-        sessionId: session.id,
-        modelId: "opencode/openai/gpt-5.4",
-        reasoningEffort: "high",
-        reason: "OpenCode cannot run GPT-5.4 in Fast mode at high effort.",
-      });
-    });
-
-    it("lists an OpenCode approval that is blocking the session", async () => {
-      // `hasLivePendingInput` consults five stores and `listPendingInputs` used
-      // to read two, so an OpenCode chat reported `awaitingInput: true` with an
-      // empty request list — "blocked, with nothing to show", which is exactly
-      // the state the pending-inputs action exists to remove. An embedder that
-      // reloads its UI has no other way to redraw the card.
-      const events: AgentChatEventEnvelope[] = [];
-      let releaseStream!: () => void;
-      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          await streamGate;
-          yield { type: "finish", usage: {} };
-        })(),
-      }) as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "opencode/openai/gpt-5.4",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Run something." });
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "status" && event.event.turnStatus === "started",
-      );
-
-      const state = [...mockState.openCodeSessions.values()][0]!;
-      state.events.push({
-        type: "permission.asked",
-        properties: {
-          id: "perm-listable-1",
-          sessionID: "opencode-session-1",
-          permission: "bash",
-          patterns: ["rm -rf /"],
-          metadata: {},
-        },
-      });
-      const waiters = [...state.waiters];
-      state.waiters.length = 0;
-      waiters.forEach((waiter) => waiter());
-
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "approval_request" && event.event.itemId === "perm-listable-1",
-      );
-
-      // The session says it is blocked...
-      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
-        awaitingInput: true,
-      });
-      // ...and can say what by.
-      const pending = service.listPendingInputs({ sessionId: session.id });
-      expect(pending.requests.map((request) => request.itemId)).toContain("perm-listable-1");
-      expect(pending.requests[0]?.source).toBe("opencode");
-
-      releaseStream();
-      await sendPromise.catch(() => {});
-    });
-
-    it("full-auto answers an external_directory ask under the project .ade root without a card", async () => {
-      // The test-drive block: a full-auto OpenCode chat waited eleven minutes
-      // on `external_directory: <project>/.ade/*` — the observations and
-      // artifacts the mac-desktop commands write. Full access has to include
-      // the project's own state root, and answering before a card exists is
-      // what keeps the card and `chat status` from disagreeing later.
-      const events: AgentChatEventEnvelope[] = [];
-      let releaseStream!: () => void;
-      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          await streamGate;
-          yield { type: "finish", usage: {} };
-        })(),
-      }) as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "opencode/openai/gpt-5.4",
-        modelId: "opencode/openai/gpt-5.4",
-        opencodePermissionMode: "full-auto",
-        permissionMode: "full-auto",
-      });
-
-      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Use mac-desktop." });
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "status" && event.event.turnStatus === "started",
-      );
-
-      const state = [...mockState.openCodeSessions.values()][0]!;
-      state.events.push({
-        type: "permission.asked",
-        properties: {
-          id: "perm-ade-1",
-          sessionID: "opencode-session-1",
-          permission: "external_directory",
-          patterns: [`${tmpRoot}/.ade/*`],
-          metadata: {},
-        },
-      });
-      const waiters = [...state.waiters];
-      state.waiters.length = 0;
-      waiters.forEach((waiter) => waiter());
-
-      await vi.waitFor(() => {
-        expect(state.permissionReply).toHaveBeenCalledWith(
-          expect.objectContaining({ requestID: "perm-ade-1", reply: "always" }),
-          expect.anything(),
-        );
-      });
-      // No card was raised, so nothing is left for a later sweep to close
-      // while the session summary still calls the chat blocked.
-      expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
-      const summary = await service.getSessionSummary(session.id);
-      expect(summary?.awaitingInput ?? false).toBe(false);
-
-      releaseStream();
-      await sendPromise.catch(() => {});
-    });
-
-    it("full-auto still raises a card for an external_directory ask outside .ade", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      let releaseStream!: () => void;
-      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          await streamGate;
-          yield { type: "finish", usage: {} };
-        })(),
-      }) as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "opencode/openai/gpt-5.4",
-        modelId: "opencode/openai/gpt-5.4",
-        opencodePermissionMode: "full-auto",
-        permissionMode: "full-auto",
-      });
-
-      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Read /etc." });
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "status" && event.event.turnStatus === "started",
-      );
-
-      const state = [...mockState.openCodeSessions.values()][0]!;
-      state.events.push({
-        type: "permission.asked",
-        properties: {
-          id: "perm-etc-1",
-          sessionID: "opencode-session-1",
-          permission: "external_directory",
-          patterns: ["/etc/*"],
-          metadata: {},
-        },
-      });
-      const waiters = [...state.waiters];
-      state.waiters.length = 0;
-      waiters.forEach((waiter) => waiter());
-
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "approval_request" && event.event.itemId === "perm-etc-1",
-      );
-      expect(state.permissionReply).not.toHaveBeenCalled();
-
-      releaseStream();
-      await sendPromise.catch(() => {});
-    });
-
-    it("scopes the .ade auto-approval to literal paths inside the root", () => {
-      // A glob in the middle cannot be proven inside the root without a glob
-      // engine, and a pattern that escapes it must never be treated as the
-      // project's own state.
-      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`${tmpRoot}/.ade/*`])).toBe(true);
-      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`${tmpRoot}/.ade`])).toBe(true);
-      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`.ade/artifacts/*`])).toBe(true);
-      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, ["/etc/*"])).toBe(false);
-      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`${tmpRoot}/.ade/../secrets/*`])).toBe(false);
-      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`${tmpRoot}/.ade/**/../../*`])).toBe(false);
-      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [])).toBe(false);
-      // One proven path does not vouch for an unproven sibling.
-      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`${tmpRoot}/.ade/*`, "/etc/*"])).toBe(false);
-    });
-
-    it("routes OpenCode reasoning deltas (field \"text\") to reasoning, never to assistant text", async () => {
-      // OpenCode's delta events name the part PROPERTY being appended to, not the
-      // kind of part: a reasoning part's property is also called `text`, so its
-      // deltas arrive with `field: "text"`. Classifying on `field` printed the
-      // whole chain of thought as the assistant's answer, ran it together with
-      // the real reply, and then repeated it inside the "Thought" chip when the
-      // closing full part landed. Classify by the part kind instead.
-      const turn = await startOpenCodeTurn("Think, then answer.");
-      const { sessionID } = turn;
-
-      turn.pushEvents(
-        { type: "message.updated", properties: { info: { id: "msg-a", role: "assistant", sessionID } } },
-        // reasoning-start: an empty reasoning part.
-        { type: "message.part.updated", properties: { part: { id: "prt-r", type: "reasoning", text: "", messageID: "msg-a", sessionID } } },
-        // reasoning-delta: published with field "text", not "reasoning".
-        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-r", field: "text", delta: "Let me weigh " } },
-        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-r", field: "text", delta: "the options." } },
-        // text-start, then the real answer.
-        { type: "message.part.updated", properties: { part: { id: "prt-t", type: "text", text: "", messageID: "msg-a", sessionID } } },
-        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-t", field: "text", delta: "Forty" } },
-        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-t", field: "text", delta: "-two." } },
-      );
-
-      await vi.waitFor(() => { expect(turn.joined("text")).toBe("Forty-two."); });
-      expect(turn.joined("reasoning")).toBe("Let me weigh the options.");
-
-      turn.pushEvents(
-        // The closing full parts must diff to nothing, for both kinds.
-        { type: "message.part.updated", properties: { part: { id: "prt-r", type: "reasoning", text: "Let me weigh the options.", messageID: "msg-a", sessionID } } },
-        { type: "message.part.updated", properties: { part: { id: "prt-t", type: "text", text: "Forty-two.", messageID: "msg-a", sessionID } } },
-        { type: "session.idle", properties: { sessionID } },
-      );
-      await turn.waitForDone();
-
-      expect(turn.joined("reasoning")).toBe("Let me weigh the options.");
-      expect(turn.joined("text")).toBe("Forty-two.");
-
-      // The stored assistant message is the answer alone. Before the fix the
-      // reasoning was appended to it, so the transcript replayed thoughts as
-      // the reply.
-      const transcript = await turn.service.getChatTranscript({ sessionId: turn.session.id });
-      const assistantText = transcript.entries
-        .filter((entry) => entry.role === "assistant")
-        .map((entry) => entry.text)
-        .join("");
-      expect(assistantText).toContain("Forty-two.");
-      expect(assistantText).not.toContain("weigh");
-
-      await turn.finish();
-    });
-
-    it("surfaces OpenCode provider retries as replaceable activity instead of transcript spam", async () => {
-      // OpenCode retries a failing provider with exponential backoff and
-      // publishes nothing but `session.status`. Without this handler the chat
-      // showed a spinner for minutes and looked wedged.
-      const turn = await startOpenCodeTurn("Ask a flaky provider.");
-      const { sessionID } = turn;
-      const providerMessage = "Upstream request failed: Endpoint is unavailable.";
-
-      turn.pushEvents(
-        {
-          type: "session.status",
-          properties: {
-            sessionID,
-            status: {
-              type: "retry",
-              attempt: 1,
-              message: providerMessage,
-              next: Date.now() + 8000,
-              action: { title: { malformed: true }, message: null, link: 42 },
-            },
-          },
-        },
-        // The real sequence: OpenCode reports `busy` between two retry attempts.
-        { type: "session.status", properties: { sessionID, status: { type: "busy" } } },
-        // The second attempt replaces the same inline status in the renderer.
-        {
-          type: "session.status",
-          properties: {
-            sessionID,
-            status: { type: "retry", attempt: 2, message: providerMessage, next: Date.now() + 16000 },
-          },
-        },
-        { type: "session.idle", properties: { sessionID } },
-      );
-      await turn.waitForDone();
-
-      const retryActivities = turn.events
-        .map((event) => event.event)
-        .filter((event) => event.type === "activity" && event.activity === "working") as Array<{
-          detail?: string;
-        }>;
-      expect(retryActivities).toHaveLength(2);
-      expect(retryActivities[0]!.detail).toMatch(/^Retrying OpenCode · attempt 1 · retrying in /);
-      expect(retryActivities[1]!.detail).toMatch(/^Retrying OpenCode · attempt 2 · retrying in /);
-      expect(retryActivities.every((event) => (event as { providerRetry?: true }).providerRetry === true)).toBe(true);
-      expect(turn.events.some((event) => event.event.type === "system_notice" && event.event.noticeKind === "provider_health")).toBe(false);
-
-      await turn.finish();
-    });
-
-    it("keeps an OpenCode auto-compaction summary message out of the assistant's answer", async () => {
-      // Auto-compaction writes its recap into a REAL assistant message flagged
-      // `summary: true` and streams it as ordinary text parts, so the
-      // assistant-role gate alone let a summary of the whole conversation render
-      // as the model's reply. The compaction part and `session.compacted`
-      // already report that compaction happened.
-      const turn = await startOpenCodeTurn("Long conversation.");
-      const { sessionID } = turn;
-
-      turn.pushEvents(
-        // The compaction summary message.
-        { type: "message.updated", properties: { info: { id: "msg-sum", role: "assistant", sessionID, summary: true } } },
-        { type: "message.part.updated", properties: { part: { id: "prt-sum", type: "text", text: "", messageID: "msg-sum", sessionID } } },
-        { type: "message.part.delta", properties: { sessionID, messageID: "msg-sum", partID: "prt-sum", field: "text", delta: "SUMMARY_OF_EVERYTHING" } },
-        { type: "message.part.updated", properties: { part: { id: "prt-sum", type: "text", text: "SUMMARY_OF_EVERYTHING", messageID: "msg-sum", sessionID } } },
-        // The real reply that follows it.
-        { type: "message.updated", properties: { info: { id: "msg-a", role: "assistant", sessionID } } },
-        { type: "message.part.updated", properties: { part: { id: "prt-a", type: "text", text: "", messageID: "msg-a", sessionID } } },
-        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-a", field: "text", delta: "Here is the answer." } },
-        { type: "message.part.updated", properties: { part: { id: "prt-a", type: "text", text: "Here is the answer.", messageID: "msg-a", sessionID } } },
-        { type: "session.idle", properties: { sessionID } },
-      );
-      await turn.waitForDone();
-
-      expect(turn.joined("text")).toBe("Here is the answer.");
-      expect(turn.joined("text")).not.toContain("SUMMARY_OF_EVERYTHING");
-
-      const transcript = await turn.service.getChatTranscript({ sessionId: turn.session.id });
-      const assistantText = transcript.entries
-        .filter((entry) => entry.role === "assistant")
-        .map((entry) => entry.text)
-        .join("");
-      expect(assistantText).not.toContain("SUMMARY_OF_EVERYTHING");
-
-      await turn.finish();
-    });
-
-    it("treats an OpenCode ContextOverflowError as recoverable instead of failing the turn", async () => {
-      // OpenCode usually publishes this error, compacts the conversation itself,
-      // and keeps going — it never idles at that point. Throwing killed a turn
-      // that was about to resume on its own.
-      const turn = await startOpenCodeTurn("Overflow the context.");
-      const { sessionID } = turn;
-
-      turn.pushEvents(
-        {
-          type: "session.error",
-          properties: {
-            sessionID,
-            error: { name: "ContextOverflowError", data: { message: "Context window exceeded." } },
-          },
-        },
-        // OpenCode compacts and carries on in the same turn.
-        { type: "message.updated", properties: { info: { id: "msg-a", role: "assistant", sessionID } } },
-        { type: "message.part.updated", properties: { part: { id: "prt-a", type: "text", text: "", messageID: "msg-a", sessionID } } },
-        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-a", field: "text", delta: "Carried on." } },
-        { type: "session.idle", properties: { sessionID } },
-      );
-      const done = await turn.waitForDone();
-
-      expect((done.event as { status: string }).status).toBe("completed");
-      expect(turn.events.filter((event) => event.event.type === "error")).toHaveLength(0);
-      const notices = turn.events
-        .map((event) => event.event)
-        .filter((event) => event.type === "system_notice") as Array<{ message: string; detail?: unknown }>;
-      expect(notices).toHaveLength(1);
-      expect(notices[0]!.message).toContain("Context limit reached");
-      expect(String(notices[0]!.detail)).toContain("Context window exceeded.");
-
-      await turn.finish();
-    });
-
-    it("fails an OpenCode turn whose context overflow never recovered", async () => {
-      // The overflow is not always recoverable: with `compaction.auto` off
-      // OpenCode idles without compacting, and compaction itself can overflow
-      // again and stop. No further assistant text arrives, and calling that a
-      // completed turn tells the user their question was answered.
-      const turn = await startOpenCodeTurn("Overflow with auto-compaction off.");
-      const { sessionID } = turn;
-
-      turn.pushEvents(
-        {
-          type: "session.error",
-          properties: {
-            sessionID,
-            error: { name: "ContextOverflowError", data: { message: "Context window exceeded." } },
-          },
-        },
-        // No assistant text follows: OpenCode simply goes idle.
-        { type: "session.idle", properties: { sessionID } },
-      );
-      const done = await turn.waitForDone();
-
-      expect((done.event as { status: string }).status).toBe("failed");
-      const errors = turn.events
-        .map((event) => event.event)
-        .filter((event) => event.type === "error") as Array<{ message: string }>;
-      expect(errors).toHaveLength(1);
-      expect(errors[0]!.message).toContain("Context window exceeded.");
-
-      await turn.finish();
-    });
-
-    it("renders an OpenCode abort from another client as an interruption, not a failure", async () => {
-      // The OpenCode TUI or CLI sharing this server can stop a session ADE is
-      // streaming. OpenCode reports that as MessageAbortedError and then idles;
-      // rendering it red made somebody else's stop look like ADE breaking.
-      const turn = await startOpenCodeTurn("Start something long.");
-      const { sessionID } = turn;
-
-      turn.pushEvents(
-        {
-          type: "session.error",
-          properties: {
-            sessionID,
-            error: { name: "MessageAbortedError", data: { message: "aborted" } },
-          },
-        },
-        { type: "session.idle", properties: { sessionID } },
-      );
-      const done = await turn.waitForDone();
-
-      expect((done.event as { status: string }).status).toBe("interrupted");
-      expect(turn.events.filter((event) => event.event.type === "error")).toHaveLength(0);
-
-      await turn.finish();
-    });
-
-    it("keeps draining OpenCode events while a question waits for the user", async () => {
-      // Awaiting the answer inside the event loop stalled the whole stream: while
-      // the modal was open, nothing else drained — no subagent approval, no
-      // streamed text, no tool result — until the person answered.
-      const turn = await startOpenCodeTurn("Ask me something.");
-      const { sessionID } = turn;
-
-      turn.pushEvents(
-        {
-          type: "question.asked",
-          properties: {
-            id: "question-1",
-            sessionID,
-            tool: "ask",
-            questions: [{ question: "Which approach?", header: "Approach", options: [] }],
-          },
-        },
-        // Published while the question is still open.
-        { type: "message.updated", properties: { info: { id: "msg-a", role: "assistant", sessionID } } },
-        { type: "message.part.updated", properties: { part: { id: "prt-a", type: "text", text: "", messageID: "msg-a", sessionID } } },
-        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-a", field: "text", delta: "Streamed while asking." } },
-      );
-
-      const approval = await waitForEvent(
-        turn.events,
-        (event): event is AgentChatEventEnvelope => event.event.type === "approval_request",
-      );
-
-      // This is the assertion that fails when the loop blocks on the answer.
-      await vi.waitFor(() => {
-        expect(turn.joined("text")).toBe("Streamed while asking.");
-      });
-
-      await turn.service.respondToInput({
-        sessionId: turn.session.id,
-        itemId: (approval.event as { itemId: string }).itemId,
-        decision: "decline",
-      });
-
-      turn.pushEvents({ type: "session.idle", properties: { sessionID } });
-      await turn.waitForDone();
-
-      await turn.finish();
-    });
-
-    it("cancels an open OpenCode question when the turn is interrupted", async () => {
-      // `requestChatInput` parks the card in `managed.localPendingInputs`, which
-      // the OpenCode interrupt path never drained. The leftover entry kept the
-      // session reported as blocked, so the next send was refused, and a late
-      // answer would have replied into an aborted session.
-      const turn = await startOpenCodeTurn("Ask me something I will not answer.");
-      const { sessionID } = turn;
-
-      turn.pushEvents({
-        type: "question.asked",
-        properties: {
-          id: "question-1",
-          sessionID,
-          tool: "ask",
-          questions: [{ question: "Which approach?", header: "Approach", options: [] }],
-        },
-      });
-      const approval = await waitForEvent(
-        turn.events,
-        (event): event is AgentChatEventEnvelope => event.event.type === "approval_request",
-      );
-
-      await turn.service.interrupt({ sessionId: turn.session.id });
-
-      // The card is resolved as cancelled rather than left waiting forever.
-      const resolved = await waitForEvent(
-        turn.events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "pending_input_resolved"
-          && (event.event as { itemId?: string }).itemId === (approval.event as { itemId: string }).itemId,
-      );
-      expect((resolved.event as { resolution: string }).resolution).toBe("cancelled");
-
-      // And the session takes a new prompt instead of reporting itself blocked.
-      turn.pushEvents({ type: "session.idle", properties: { sessionID } });
-      await turn.waitForDone();
-      await expect(
-        turn.service.sendMessage({ sessionId: turn.session.id, text: "Next question." }),
-      ).resolves.not.toThrow();
-
-      await turn.finish();
-    });
-
-    it("cancels an open OpenCode question when an external abort ends the turn", async () => {
-      // The other route to an interrupted turn. The OpenCode TUI or CLI on the
-      // same server aborts the session: `session.error` sets `interrupted` and
-      // the loop keeps going to idle, so the turn settles through the shared
-      // completion path rather than ADE's own interrupt branch. That path did not
-      // cancel, so the card survived a turn nobody could answer any more — and
-      // `hasLivePendingInput` then refused the next send.
-      const turn = await startOpenCodeTurn("Ask me something, then get aborted.");
-      const { sessionID } = turn;
-
-      turn.pushEvents({
-        type: "question.asked",
-        properties: {
-          id: "question-1",
-          sessionID,
-          tool: "ask",
-          questions: [{ question: "Which approach?", header: "Approach", options: [] }],
-        },
-      });
-      const approval = await waitForEvent(
-        turn.events,
-        (event): event is AgentChatEventEnvelope => event.event.type === "approval_request",
-      );
-
-      turn.pushEvents(
-        {
-          type: "session.error",
-          properties: {
-            sessionID,
-            error: { name: "MessageAbortedError", data: { message: "aborted" } },
-          },
-        },
-        { type: "session.idle", properties: { sessionID } },
-      );
-
-      const done = await turn.waitForDone();
-      expect((done.event as { status: string }).status).toBe("interrupted");
-
-      const resolved = await waitForEvent(
-        turn.events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "pending_input_resolved"
-          && (event.event as { itemId?: string }).itemId === (approval.event as { itemId: string }).itemId,
-      );
-      expect((resolved.event as { resolution: string }).resolution).toBe("cancelled");
-
-      // And the session is not left reporting itself blocked.
-      await expect(
-        turn.service.sendMessage({ sessionId: turn.session.id, text: "Next question." }),
-      ).resolves.not.toThrow();
-
-      await turn.finish();
-    });
-
-    it("shows generic progress after an OpenCode step finishes", async () => {
-      // Otherwise the activity line keeps naming the step's last tool until the
-      // next step-start, so a long gap between steps reads as a command that
-      // never finished.
-      const turn = await startOpenCodeTurn("Run a step.");
-      const { sessionID } = turn;
-
-      turn.pushEvents(
-        {
-          type: "message.part.updated",
-          properties: {
-            part: {
-              id: "prt-step",
-              type: "step-finish",
-              messageID: "msg-a",
-              sessionID,
-              tokens: { input: 10, output: 5, cache: { read: 0, write: 0 } },
-            },
-          },
-        },
-        { type: "session.idle", properties: { sessionID } },
-      );
-      await turn.waitForDone();
-
-      const activities = turn.events
-        .map((event) => event.event)
-        .filter((event) => event.type === "activity") as Array<{ activity: string }>;
-      expect(activities.some((activity) => activity.activity === "working")).toBe(true);
-
-      await turn.finish();
-    });
-
-    it("reports an OpenCode turn's summed usage, provider cost, and last-step context", async () => {
-      // Every step is one model request. The done event used to carry only the
-      // last step and dropped reasoning and cost; it now sums the turn and keeps
-      // the last step's input side as the context the next request starts from.
-      // OpenCode's auth.json is read from this data dir, never the machine's.
-      const previousXdgDataHome = process.env.XDG_DATA_HOME;
-      const openCodeDataHome = path.join(tmpRoot, "xdg-data");
-      fs.mkdirSync(path.join(openCodeDataHome, "opencode"), { recursive: true });
-      fs.writeFileSync(
-        path.join(openCodeDataHome, "opencode", "auth.json"),
-        JSON.stringify({ openai: { type: "oauth", access: "secret", accountId: "acct-test" } }),
-      );
-      process.env.XDG_DATA_HOME = openCodeDataHome;
-      try {
-        const turn = await startOpenCodeTurn("Use tools for a while.");
-        const { sessionID } = turn;
-        const stepFinish = (id: string, input: number, output: number, reasoning: number, read: number, write: number, cost: number) => ({
-          type: "message.part.updated",
-          properties: {
-            part: {
-              id,
-              type: "step-finish",
-              messageID: "msg-a",
-              sessionID,
-              reason: "tool-calls",
-              cost,
-              tokens: { input, output, reasoning, cache: { read, write } },
-            },
-          },
-        });
-
-        turn.pushEvents(
-          {
-            type: "message.updated",
-            properties: {
-              info: { id: "msg-a", role: "assistant", sessionID, providerID: "openai", modelID: "gpt-5.4-mini" },
-            },
-          },
-          stepFinish("prt-1", 1_000, 100, 40, 5_000, 200, 0.01),
-          stepFinish("prt-2", 300, 50, 10, 6_000, 0, 0.02),
-          stepFinish("prt-3", 200, 80, 0, 6_300, 100, 0.03),
-          { type: "session.idle", properties: { sessionID } },
-        );
-        const done = await turn.waitForDone();
-        const doneEvent = done.event as Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
-        expect(doneEvent.usage).toEqual({
-          inputTokens: 1_500,
-          outputTokens: 230,
-          cacheReadTokens: 17_300,
-          cacheCreationTokens: 300,
-          reasoningTokens: 50,
-          // The model's context limit ADE already has for the descriptor.
-          contextWindow: 200_000,
-          contextTokens: 6_600,
-          requestCount: 3,
-        });
-        expect(doneEvent.costUsd).toBeCloseTo(0.06, 10);
-        expect(doneEvent.costSource).toBe("provider");
-        // The request named openai/gpt-5.4; the assistant message says what answered.
-        expect(doneEvent.servedModel).toBe("opencode/openai/gpt-5.4-mini");
-        // An OAuth login in OpenCode's auth.json is a plan; the token never leaves the file.
-        expect(doneEvent.account).toEqual({
-          provider: "opencode",
-          kind: "subscription",
-          upstream: "openai",
-          accountId: "acct-test",
-        });
-
-        const liveSamples = turn.events
-          .map((event) => event.event)
-          .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "context_usage" }> =>
-            event.type === "context_usage");
-        // One live meter sample per step, each the step's input side.
-        expect(liveSamples.map((sample) => sample.usage.totalTokens)).toEqual([6_200, 6_300, 6_600]);
-        expect(liveSamples.every((sample) => sample.origin === "live" && sample.state === "measured")).toBe(true);
-        expect(liveSamples[2]?.usage.maxTokens).toBe(200_000);
-
-        await turn.finish();
-      } finally {
-        if (previousXdgDataHome === undefined) delete process.env.XDG_DATA_HOME;
-        else process.env.XDG_DATA_HOME = previousXdgDataHome;
-      }
-    });
-
-    it("names a strict-config OpenCode chat's account from its isolated server's store", async () => {
-      // A strict-config chat runs its own OpenCode server on ADE's isolated
-      // XDG_DATA_HOME; the user's login in their own store did not pay.
-      const previousXdgDataHome = process.env.XDG_DATA_HOME;
-      const previousXdgRoot = process.env.ADE_OPENCODE_XDG_ROOT;
-      const userDataHome = path.join(tmpRoot, "user-xdg-data");
-      const isolatedRoot = path.join(tmpRoot, "ade-opencode-runtime");
-      const isolatedStore = path.join(isolatedRoot, "xdg-v1", "data", "opencode");
-      fs.mkdirSync(path.join(userDataHome, "opencode"), { recursive: true });
-      fs.mkdirSync(isolatedStore, { recursive: true });
-      fs.writeFileSync(
-        path.join(userDataHome, "opencode", "auth.json"),
-        JSON.stringify({ openai: { type: "oauth", access: "secret", accountId: "acct-user" } }),
-      );
-      fs.writeFileSync(path.join(isolatedStore, "auth.json"), JSON.stringify({ openai: { type: "api", key: "secret" } }));
-      process.env.XDG_DATA_HOME = userDataHome;
-      process.env.ADE_OPENCODE_XDG_ROOT = isolatedRoot;
-      try {
-        const turn = await startOpenCodeTurn("Answer from the isolated server.", { strictMcpConfig: true });
-        turn.pushEvents({ type: "session.idle", properties: { sessionID: turn.sessionID } });
-        const done = await turn.waitForDone();
-        const doneEvent = done.event as Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
-        expect(doneEvent.account).toEqual({ provider: "opencode", kind: "api_key", upstream: "openai" });
-        await turn.finish();
-      } finally {
-        if (previousXdgDataHome === undefined) delete process.env.XDG_DATA_HOME;
-        else process.env.XDG_DATA_HOME = previousXdgDataHome;
-        if (previousXdgRoot === undefined) delete process.env.ADE_OPENCODE_XDG_ROOT;
-        else process.env.ADE_OPENCODE_XDG_ROOT = previousXdgRoot;
-      }
-    });
-
-    it("reports no served-model change when the fast sibling ADE asked for answers", async () => {
-      registerOpenCodeFastSiblingRow();
-      const turn = await startOpenCodeTurn("Answer fast.", { fastMode: true, reasoningEffort: "high" });
-      const { sessionID } = turn;
-      turn.pushEvents(
-        {
-          type: "message.updated",
-          properties: {
-            info: { id: "msg-a", role: "assistant", sessionID, providerID: "openai", modelID: "gpt-5.4-fast" },
-          },
-        },
-        { type: "session.idle", properties: { sessionID } },
-      );
-      const done = await turn.waitForDone();
-      const doneEvent = done.event as Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
-      expect(doneEvent.status).toBe("completed");
-      expect(doneEvent.servedModel).toBeUndefined();
-      await turn.finish();
-    });
-
-    it("ignores part deltas that belong to a user message", async () => {
-      // The delta stream carries no role, so the same assistant-role gate that
-      // protects `message.part.updated` has to protect this one — otherwise the
-      // user's own prompt echoes back as agent output.
-      const events: AgentChatEventEnvelope[] = [];
-      let releaseStream!: () => void;
-      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          await streamGate;
-          yield { type: "finish", usage: {} };
-        })(),
-      }) as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "opencode/openai/gpt-5.4",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Echo check." });
-      const started = await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "status" && event.event.turnStatus === "started",
-      );
-
-      const state = [...mockState.openCodeSessions.values()][0]!;
-      const sessionID = "opencode-session-1";
-      state.events.push(
-        { type: "message.updated", properties: { info: { id: "msg-u", role: "user", sessionID } } } as any,
-        { type: "message.part.delta", properties: { sessionID, messageID: "msg-u", partID: "prt-u", field: "text", delta: "Echo check." } } as any,
-        // A delta whose message was never announced stays unrendered too.
-        { type: "message.part.delta", properties: { sessionID, messageID: "msg-unknown", partID: "prt-x", field: "text", delta: "orphan" } } as any,
-        { type: "session.idle", properties: { sessionID } } as any,
-      );
-      const waiters = [...state.waiters];
-      state.waiters.length = 0;
-      waiters.forEach((waiter) => waiter());
-
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "done" && event.event.turnId === started.event.turnId,
-      );
-
-      const text = events
-        .filter((event) => event.event.type === "text")
-        .map((event) => (event.event as { text: string }).text)
-        .join("");
-      expect(text).not.toContain("Echo check.");
-      expect(text).not.toContain("orphan");
-      expect(text).toBe("");
-
-      releaseStream();
-      await sendPromise;
-    });
-
-    it("keeps ADE instructions in the system channel on every turn, never in user text", async () => {
-      // The prompt boundary, asserted on the wire ADE actually sends:
-      //  - ADE's instructions ride the first-class `system` field, so OpenCode
-      //    never renders them as a user message (the reported prompt echo);
-      //  - a second turn carries the same contract rather than re-appending the
-      //    instructions to the user's text (the reported reprint);
-      //  - the user's own words stay in `parts` and out of `system`, so nothing
-      //    the user typed can be promoted into privileged instructions.
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      // runSessionTurn awaits completion, so the second turn is a genuine
-      // follow-up rather than a steer queued onto an active one.
-      await service.runSessionTurn({ sessionId: session.id, text: "First request." });
-      await service.runSessionTurn({ sessionId: session.id, text: "Second request." });
-
-      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
-      await vi.waitFor(() => {
-        expect(openCodeState.promptBodies.length).toBe(2);
-      });
-
-      const partsText = (body: any): string => (body.parts ?? [])
-        .map((part: any) => String(part?.text ?? ""))
-        .join("\n");
-
-      // `buildCodingAgentSystemPrompt` is mocked to this sentinel at the top of
-      // the file; what matters is which channel carries its output.
-      for (const body of openCodeState.promptBodies) {
-        expect(typeof body.system).toBe("string");
-        expect(body.system).toContain("system prompt");
-        // The instructions must not also be pasted into the visible message.
-        expect(partsText(body)).not.toContain("system prompt");
-      }
-
-      const [first, second] = openCodeState.promptBodies;
-      expect(second.system).toBe(first.system);
-      expect(partsText(first)).toContain("First request.");
-      expect(partsText(second)).toContain("Second request.");
-      expect(second.system).not.toContain("Second request.");
-      expect(second.system).not.toContain("First request.");
-    });
-  });
 
   // --------------------------------------------------------------------------
   // Session status transitions
@@ -4869,6 +3903,65 @@ describe("createAgentChatService", () => {
         status: "running",
         endedAt: null,
       }));
+    });
+  });
+
+  // The account registry lives under the test's own temp home: `os.homedir()`
+  // is pinned there, and the harness pins ADE_HOME beside it.
+  describe("provider account pinning", () => {
+    it("records the account a new chat starts on, and keeps it when the default changes", async () => {
+      const accounts = getMachineProviderInstanceStore();
+      const work = accounts.create({ provider: "claude", label: "Work" }).instance;
+      const { service } = createService();
+
+      const before = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      expect((await service.getSessionSummary(before.id))?.instanceId).toBe("claude");
+
+      accounts.setDefault(work.id);
+      const after = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      expect((await service.getSessionSummary(after.id))?.instanceId).toBe(work.id);
+      // The chat started before the switch stays on the account it began on.
+      expect((await service.getSessionSummary(before.id))?.instanceId).toBe("claude");
+    });
+
+    it("starts a Claude chat with its own account's subagent cache choice, and no other account's", async () => {
+      const accounts = getMachineProviderInstanceStore();
+      const work = accounts.create({ provider: "claude", label: "Work" }).instance;
+      accounts.setProviderSettings("claude", { subagentPromptCacheTtl: "1h" }, work.id);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-account-cache") as any);
+      const { service } = createService();
+      const envOfLaunch = (index: number) =>
+        (vi.mocked(claudeSdkCreateSessionCompat).mock.calls[index]?.[0] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+
+      await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet", instanceId: work.id });
+      await vi.waitFor(() => expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1));
+      expect(envOfLaunch(0)?.CLAUDE_CONFIG_DIR).toBe(work.configHome);
+      expect(envOfLaunch(0)?.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL).toBe("1h");
+
+      await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(2));
+      expect(envOfLaunch(1), "the default account's launch has an env").toBeTruthy();
+      expect(envOfLaunch(1)?.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL).toBeUndefined();
+    });
+
+    it("moves a chat onto the new provider's default account when it switches provider", async () => {
+      const accounts = getMachineProviderInstanceStore();
+      const work = accounts.create({ provider: "claude", label: "Work" }).instance;
+      const { service } = createService();
+      const created = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        instanceId: work.id,
+      });
+      expect((await service.getSessionSummary(created.id))?.instanceId).toBe(work.id);
+
+      await service.updateSession({ sessionId: created.id, modelId: "gpt-5.4" as never });
+
+      const summary = await service.getSessionSummary(created.id);
+      expect(summary?.provider).toBe("codex");
+      expect(summary?.instanceId).toBe("codex");
     });
   });
 });

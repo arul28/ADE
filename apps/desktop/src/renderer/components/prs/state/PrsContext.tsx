@@ -240,13 +240,14 @@ function readBoolLs(key: string, fallback: boolean): boolean {
 
 type ResolverPermissionFamily = Extract<
   ModelProviderGroup,
-  "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot"
+  "claude" | "codex" | "muse" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin"
 >;
 type ResolverPermissionPreferences = Record<ResolverPermissionFamily, PrAgentPermissionMode>;
 
 const DEFAULT_RESOLVER_PERMISSIONS: ResolverPermissionPreferences = {
   claude: "default",
   codex: "default",
+  muse: "default",
   opencode: "edit",
   cursor: "default",
   droid: "edit",
@@ -255,6 +256,7 @@ const DEFAULT_RESOLVER_PERMISSIONS: ResolverPermissionPreferences = {
   kimi: "default",
   grok: "default",
   copilot: "default",
+  devin: "default",
 };
 
 function normalizeResolverPermissionMode(value: unknown): PrAgentPermissionMode | null {
@@ -279,6 +281,7 @@ function readPersistedResolverPermissions(): ResolverPermissionPreferences {
     return {
       claude: normalizeResolverPermissionMode(parsed?.claude) ?? DEFAULT_RESOLVER_PERMISSIONS.claude,
       codex: normalizeResolverPermissionMode(parsed?.codex) ?? DEFAULT_RESOLVER_PERMISSIONS.codex,
+      muse: normalizeResolverPermissionMode(parsed?.muse) ?? DEFAULT_RESOLVER_PERMISSIONS.muse,
       opencode: normalizeResolverPermissionMode(parsed?.opencode) ?? DEFAULT_RESOLVER_PERMISSIONS.opencode,
       cursor: normalizeResolverPermissionMode(parsed?.cursor) ?? DEFAULT_RESOLVER_PERMISSIONS.cursor,
       droid: normalizeResolverPermissionMode(parsed?.droid) ?? DEFAULT_RESOLVER_PERMISSIONS.droid,
@@ -287,6 +290,7 @@ function readPersistedResolverPermissions(): ResolverPermissionPreferences {
       kimi: normalizeResolverPermissionMode(parsed?.kimi) ?? DEFAULT_RESOLVER_PERMISSIONS.kimi,
       grok: normalizeResolverPermissionMode(parsed?.grok) ?? DEFAULT_RESOLVER_PERMISSIONS.grok,
       copilot: normalizeResolverPermissionMode(parsed?.copilot) ?? DEFAULT_RESOLVER_PERMISSIONS.copilot,
+      devin: normalizeResolverPermissionMode(parsed?.devin) ?? DEFAULT_RESOLVER_PERMISSIONS.devin,
     };
   } catch {
     return DEFAULT_RESOLVER_PERMISSIONS;
@@ -411,6 +415,9 @@ function diffPrIds(prev: PrWithConflicts[], next: PrWithConflicts[]): string[] {
 
   return [...new Set(changed)];
 }
+
+/** PR ids per snapshot warm-up request (keeps each sync reply small). */
+const PR_SNAPSHOT_WARM_BATCH = 25;
 
 export function PrsProvider({ active = true, children }: { active?: boolean; children: React.ReactNode }) {
   const projectRoot = useAppStore(selectActiveProjectRoot);
@@ -622,20 +629,41 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     });
   }, []);
 
-  const prsSnapshotWarmKey = useMemo(() => prs.map((pr) => pr.id).sort().join("|"), [prs]);
+  // Warm only the snapshots the list can show without a click: open and draft
+  // PRs. A merged PR's snapshot (files, checks, comments) loads when it is
+  // opened. Asking for every stored snapshot decoded ~17 MB on a large repo on
+  // every list change, and over sync it exceeds the reply size limit.
+  const prsSnapshotWarmIds = useMemo(
+    () => prs.filter((pr) => pr.state === "open" || pr.state === "draft").map((pr) => pr.id).sort(),
+    [prs],
+  );
+  const prsSnapshotWarmKey = prsSnapshotWarmIds.join("|");
   React.useEffect(() => {
-    if (!active || prsSnapshotWarmKey.length === 0 || typeof window.ade.prs.listSnapshots !== "function") {
+    if (!active || prsSnapshotWarmIds.length === 0 || typeof window.ade.prs.listSnapshots !== "function") {
       return undefined;
     }
     let cancelled = false;
-    void window.ade.prs.listSnapshots({}).then((snapshots) => {
-      if (cancelled) return;
-      const linkedPrIds = new Set(prsRef.current.map((pr) => pr.id));
-      mergeDetailSnapshots(snapshots.filter((snapshot) => linkedPrIds.has(snapshot.prId)));
-    }).catch(() => {});
+    const batches: string[][] = [];
+    for (let index = 0; index < prsSnapshotWarmIds.length; index += PR_SNAPSHOT_WARM_BATCH) {
+      batches.push(prsSnapshotWarmIds.slice(index, index + PR_SNAPSHOT_WARM_BATCH));
+    }
+    void (async () => {
+      for (const prIds of batches) {
+        if (cancelled) return;
+        try {
+          const snapshots = await window.ade.prs.listSnapshots({ prIds });
+          if (cancelled) return;
+          const linkedPrIds = new Set(prsRef.current.map((pr) => pr.id));
+          mergeDetailSnapshots(snapshots.filter((snapshot) => linkedPrIds.has(snapshot.prId)));
+        } catch {
+          // A failed batch leaves those PRs to load on open.
+        }
+      }
+    })();
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the id list's content
   }, [active, mergeDetailSnapshots, prsSnapshotWarmKey]);
 
   const refreshMergeContexts = useCallback(async (prIds: string[]) => {

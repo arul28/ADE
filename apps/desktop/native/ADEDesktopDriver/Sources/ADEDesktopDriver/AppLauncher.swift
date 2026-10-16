@@ -38,12 +38,13 @@ extension WindowControl {
             )
         }
 
+        let documents = Self.documentLaunch(target: url, arguments: arguments, workspace: workspace)
         let configuration = NSWorkspace.OpenConfiguration()
         // A blank copy: no restored windows, tabs or documents. A new Safari
         // instance restored every window the user had open. See `BlankLaunch`.
         configuration.arguments = BlankLaunch.arguments(
-            engine: Self.launchEngine(for: url, workspace: workspace),
-            userArguments: arguments
+            engine: Self.launchEngine(for: documents?.app ?? url, workspace: workspace),
+            userArguments: documents == nil ? arguments : []
         )
         configuration.activates = false
         // A second copy keeps two lanes out of each other's process where the
@@ -68,7 +69,9 @@ extension WindowControl {
             failureBox.set(error)
             settled.set()
         }
-        if url.isFileURL {
+        if let documents {
+            workspace.open(documents.files, withApplicationAt: documents.app, configuration: configuration, completionHandler: completion)
+        } else if url.isFileURL {
             workspace.openApplication(at: url, configuration: configuration, completionHandler: completion)
         } else {
             workspace.open(url, configuration: configuration, completionHandler: completion)
@@ -190,6 +193,91 @@ extension WindowControl {
             windows: parked,
             watching: true
         )
+    }
+
+    /// The files a launch opens as documents, and the app that opens them, or
+    /// nil for a plain app launch.
+    ///
+    /// A file has to reach its app as a document (an open-documents event),
+    /// not as a command-line word: a sandboxed app such as TextEdit may read
+    /// only the files macOS hands it that way. Given `open TextEdit -- <file>`
+    /// as an argument, TextEdit said it had no permission to open the file
+    /// (2026-09-28).
+    ///
+    /// * `open <file>`: the file, in the app macOS picks for it.
+    /// * `open <app> -- <file> [<file>…]`: when every argument is an existing
+    ///   absolute or `~` path. An argument list with anything else in it (a
+    ///   flag, a value) stays a command line.
+    static func documentLaunch(target url: URL, arguments: [String], workspace: NSWorkspace) -> (app: URL, files: [URL])? {
+        guard url.isFileURL else { return nil }
+        if url.pathExtension != "app" {
+            guard let app = workspace.urlForApplication(toOpen: url) else { return nil }
+            return (app, [url])
+        }
+        guard !arguments.isEmpty else { return nil }
+        var files: [URL] = []
+        for argument in arguments {
+            guard argument.hasPrefix("/") || argument.hasPrefix("~") else { return nil }
+            let path = (argument as NSString).expandingTildeInPath
+            guard FileManager.default.fileExists(atPath: path) else { return nil }
+            files.append(URL(fileURLWithPath: path))
+        }
+        return (url, files)
+    }
+
+    /// `app.quit`: quits the app instances this lane opened, on request.
+    ///
+    /// Covers the instances the lane still holds and the ones it opened and
+    /// then released to the user. `stop` and the idle close never quit a
+    /// released app; this does, because the user asked for it ("close what
+    /// you opened"). A held app is quit like `stop` quits it (force-quit after
+    /// `quitGrace`). A released app is only asked to quit: its windows are on
+    /// the user's screen, so a save dialog is where the user can answer it.
+    ///
+    /// `match` is an app name, a bundle id or a pid; nil quits every one.
+    func quitApps(laneId: String, match: String?) throws -> [(app: LaunchedAppRegistry.App, released: Bool)] {
+        let needle = match?.trimmingCharacters(in: .whitespaces).lowercased()
+        let candidates = launchedApps.apps(forLane: laneId).map { (app: $0, released: false) }
+            + launchedApps.releasedApps(forLane: laneId).map { (app: $0, released: true) }
+        let wanted = candidates.filter { candidate in
+            guard let needle, !needle.isEmpty else { return true }
+            return candidate.app.appName.lowercased() == needle
+                || candidate.app.bundleId?.lowercased() == needle
+                || String(candidate.app.pid) == needle
+        }
+        guard !wanted.isEmpty else {
+            throw DriverError(
+                code: DriverErrorCode.invalidArgument,
+                message: match == nil
+                    ? "Lane \(laneId) has no open app that it opened."
+                    : "Lane \(laneId) did not open \"\(match!)\". It quits only apps it opened with `open`."
+            )
+        }
+        var quit: [(app: LaunchedAppRegistry.App, released: Bool)] = []
+        for candidate in wanted {
+            let pid = candidate.app.pid
+            guard let running = NSRunningApplication(processIdentifier: pid),
+                  candidate.app.isStillRunning(
+                    currentBundleId: running.bundleIdentifier,
+                    isTerminated: running.isTerminated,
+                    hasProcess: true
+                  )
+            else {
+                launchedApps.forget(pid: pid)
+                continue
+            }
+            launchedApps.forget(pid: pid)
+            if candidate.released {
+                log("asking \(candidate.app.appName) (pid \(pid)) to quit: the user asked lane \(laneId) to close what it opened")
+                _ = running.terminate()
+            } else {
+                stopWatching(pid: pid)
+                discard(running, reason: "the user asked lane \(laneId) to close it")
+            }
+            quit.append(candidate)
+        }
+        emitWindowsChanged(laneId: laneId)
+        return quit
     }
 
     /// Quits an instance a launch started for a lane that is gone, and

@@ -24,7 +24,7 @@ export function sharedBranchClusterKey(args: {
 export type SharedBranchShelfItem = {
   id: string;
   clusterKey: string | null;
-  shelf: "snoozed" | "settled" | null;
+  shelf: "working" | "snoozed" | "settled" | null;
 };
 
 export function inboxIdsKeptForSharedBranch(

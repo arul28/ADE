@@ -17,8 +17,23 @@ export type RuntimeSignature = {
   signed: boolean;
   /** The signing authority, when readable: a certificate subject or Team ID. */
   authority?: string;
-  /** True when the OS accepts the binary for execution (Gatekeeper / a valid Authenticode chain). */
-  accepted?: boolean;
+  /**
+   * Whether the OS accepts the runtime for execution.
+   *
+   * On macOS this is Gatekeeper's verdict (`spctl --assess --type execute`).
+   * A runtime embedded in an app bundle is assessed through the OUTERMOST
+   * enclosing `.app`, because Gatekeeper judges a nested helper as part of the
+   * app that carries it: assessed on its own, a correctly signed and notarized
+   * embedded binary is "rejected (the code is valid but does not seem to be an
+   * app)". When the binary is not inside a bundle and Gatekeeper answers that
+   * way, the verdict is `null` — not known — never `false`.
+   *
+   * On Windows it is whether the Authenticode chain is valid.
+   *
+   * Absent or null: acceptance could not be determined. Only `false` means
+   * the OS refused it.
+   */
+  accepted?: boolean | null;
 };
 
 export type SignatureCommandResult = {
@@ -110,6 +125,23 @@ function parseCodesign(result: SignatureCommandResult): RuntimeSignature {
   return resolved ? { signed: true, authority: resolved } : { signed: true };
 }
 
+/**
+ * The outermost `*.app` directory a path sits inside, or null.
+ *
+ * Outermost, not nearest: a helper app nested in a host app (a login item, an
+ * Electron helper) is sealed by the host, and the host is what Gatekeeper
+ * notarized.
+ */
+export function enclosingAppBundle(binaryPath: string): string | null {
+  const parts = binaryPath.split("/");
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    if (parts[index]!.toLowerCase().endsWith(".app") && parts[index]!.length > ".app".length) {
+      return parts.slice(0, index + 1).join("/") || null;
+    }
+  }
+  return null;
+}
+
 async function probeMac(
   binaryPath: string,
   run: SignatureCommandRunner,
@@ -130,14 +162,23 @@ async function probeMac(
   const signature = parseCodesign(display);
   if (!signature.signed) return signature;
 
+  const bundle = enclosingAppBundle(binaryPath);
   try {
-    const assess = await run("/usr/sbin/spctl", ["--assess", "--type", "execute", binaryPath], {
+    const assess = await run("/usr/sbin/spctl", ["--assess", "--type", "execute", bundle ?? binaryPath], {
       timeoutMs: PROBE_TIMEOUT_MS,
     });
     // Gatekeeper could not be consulted, so acceptance stays unknown rather
     // than being reported as a rejection.
     if (assess.failed) return signature;
-    return { ...signature, accepted: assess.code === 0 };
+    if (assess.code === 0) return { ...signature, accepted: true };
+    // "the code is valid but does not seem to be an app" is Gatekeeper
+    // declining to judge a bare executable, not refusing it. Reporting it as
+    // `false` told every host with a correctly embedded runtime that its
+    // notarization was broken.
+    if (/does not seem to be an app/i.test(`${assess.stderr}\n${assess.stdout}`)) {
+      return { ...signature, accepted: null };
+    }
+    return { ...signature, accepted: false };
   } catch {
     // Gatekeeper could not be consulted. The signature facts still stand;
     // acceptance is simply unknown, so the field stays absent.

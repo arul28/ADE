@@ -6,6 +6,7 @@ export const CLAUDE_SESSION_QUOTA_CARD_ACTION = "fork-local";
 export const CLAUDE_SESSION_QUOTA_FORK_NOTE = "Continuing after Claude session limit";
 
 export type ClaudeSessionQuotaSnapshot = {
+  limitKind?: "session" | "weekly";
   utilizationPct: number | null;
   resetsAtMs: number | null;
 };
@@ -15,7 +16,7 @@ export type ClaudeRateLimitClassification =
   | { kind: "approaching"; snapshot: ClaudeSessionQuotaSnapshot; status: string }
   | { kind: "rejected"; snapshot: ClaudeSessionQuotaSnapshot; status: string };
 
-const SESSION_LIMIT_RE = /session limit/i;
+const SESSION_LIMIT_RE = /(?:session|weekly) limit/i;
 const RESETS_RE = /\bresets\b/i;
 const COST_LIMIT_RE = /cost limit|spending limit/i;
 const CLOCK_RE = /resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)(?:\s*\(([^)]+)\))?/i;
@@ -29,7 +30,7 @@ export function isClaudeSessionQuotaText(value: string | null | undefined): bool
   if (!text) return false;
   if (COST_LIMIT_RE.test(text)) return true;
   if (SESSION_LIMIT_RE.test(text) && RESETS_RE.test(text)) return true;
-  return /you'?ve hit your session limit/i.test(text);
+  return /you'?ve hit your (?:session|weekly) limit/i.test(text);
 }
 
 export function utilizationToPercent(value: unknown): number | null {
@@ -49,6 +50,7 @@ export function mergeClaudeSessionQuotaSnapshot(
   incoming: ClaudeSessionQuotaSnapshot,
 ): ClaudeSessionQuotaSnapshot {
   return {
+    limitKind: incoming.limitKind ?? previous?.limitKind,
     utilizationPct: incoming.utilizationPct ?? previous?.utilizationPct ?? null,
     resetsAtMs: incoming.resetsAtMs ?? previous?.resetsAtMs ?? null,
   };
@@ -66,6 +68,30 @@ export function classifyClaudeRateLimitInfo(info: Record<string, unknown> | null
   if (status === "allowed_warning") return { kind: "approaching", snapshot, status };
   return { kind: "rejected", snapshot, status };
 }
+
+/**
+ * True when Claude reports that the request drew on extra usage: usage billed
+ * past the plan limit. Such an event has status `allowed`, so the classifier
+ * above ignores it, and Claude Code continues the turn.
+ */
+export function claudeRateLimitInfoUsesExtraUsage(info: Record<string, unknown> | null | undefined): boolean {
+  return info?.isUsingOverage === true || info?.overageInUse === true;
+}
+
+/**
+ * The quota card's numbers for a turn ADE stops for extra usage. Only the plan
+ * window is a reset the owner waits for; an event about the extra-usage window
+ * itself gives no resume time.
+ */
+export function claudeExtraUsageQuotaSnapshot(info: Record<string, unknown>): ClaudeSessionQuotaSnapshot {
+  return {
+    utilizationPct: null,
+    resetsAtMs: info.rateLimitType === "overage" ? null : normalizeResetsAtMs(info.resetsAt),
+  };
+}
+
+export const CLAUDE_EXTRA_USAGE_STOP_NOTICE =
+  "ADE stopped this turn because Claude started to bill extra usage. The last request can be billed. To let turns continue, change Extra usage in this account's settings.";
 
 export function parseClaudeSessionQuotaResetAt(
   text: string,
@@ -108,6 +134,7 @@ export function snapshotFromClaudeSessionQuotaText(
   return {
     utilizationPct: null,
     resetsAtMs: parseClaudeSessionQuotaResetAt(text, nowMs),
+    limitKind: /weekly limit/i.test(text) ? "weekly" : "session",
   };
 }
 
@@ -132,9 +159,10 @@ export function buildClaudeSessionQuotaCard(args: {
   }
   const resetLabel = formatClaudeSessionQuotaResetLabel(args.snapshot.resetsAtMs);
   const percent = args.snapshot.utilizationPct;
+  const limitLabel = `Claude ${args.snapshot.limitKind ?? "session"} limit`;
   const title = resetLabel
-    ? `Claude session limit · resets ${resetLabel}`
-    : "Claude session limit";
+    ? `${limitLabel} · resets ${resetLabel}`
+    : limitLabel;
   const progress = percent == null
     ? null
     : {
@@ -163,8 +191,8 @@ export function buildClaudeSessionQuotaCard(args: {
       kind: "primary" as const,
     }],
     fallbackText: resetLabel
-      ? `Claude session limit · resets ${resetLabel}. Send again after reset, or fork this thread.`
-      : "Claude session limit. Send again after reset, or fork this thread.",
+      ? `${limitLabel} · resets ${resetLabel}. Send again after reset, or fork this thread.`
+      : `${limitLabel}. Send again after reset, or fork this thread.`,
     ...(args.turnId ? { turnId: args.turnId } : {}),
   };
 }

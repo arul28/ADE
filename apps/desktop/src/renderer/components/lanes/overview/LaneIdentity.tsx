@@ -7,6 +7,7 @@ import {
   DotsThree,
   FileCode,
   FolderOpen,
+  GitCommit,
   NotePencil,
 } from "@phosphor-icons/react";
 import type { GitUpstreamSyncStatus, LaneSummary } from "../../../../shared/types";
@@ -14,10 +15,11 @@ import { relativeWhen } from "../../../lib/format";
 import { revealLabel } from "../../../lib/platform";
 import { ProviderLogo } from "../../shared/ProviderLogos";
 import { WorkToolChromeButton } from "../../terminals/workToolChrome";
+import { cn } from "../../ui/cn";
 import { LaneIcon } from "../../ui/vcsIcons";
 import { LaneBranchSwitcher } from "../detail/LaneBranchSwitcher";
 import { LinearIssueBadge } from "../LinearIssueBadge";
-import { COLORS } from "../laneDesignTokens";
+import { COLORS, toneText } from "../laneDesignTokens";
 import { providerDisplayName } from "./laneHistoryModel";
 import { laneStatusItems, type LaneStatusItem, type LaneStatusTone } from "./laneOverviewModel";
 
@@ -47,6 +49,15 @@ const TONE_COLOR: Record<LaneStatusTone, string> = {
   success: COLORS.success,
 };
 
+/**
+ * A fact read off the lane's own git status (ahead/behind its base, uncommitted
+ * work, and the "Up to date" that sums them), as opposed to the upstream
+ * push/pull counts, which come from their own live read.
+ */
+function isLaneStatusFact(item: LaneStatusItem): boolean {
+  return item.key !== "remote" || item.glyph === "check";
+}
+
 function StatusGlyph({ item }: { item: LaneStatusItem }) {
   const color = TONE_COLOR[item.tone];
   if (item.glyph === "up") return <ArrowUp size={12} weight="bold" style={{ color }} aria-hidden />;
@@ -71,11 +82,14 @@ export function LaneIdentity({
   createdBy,
   active,
   canReveal,
+  revealUnavailableReason = null,
   onStartChat,
   onOpenFiles,
+  onOpenHistory,
   onReveal,
   onOpenMenu,
   onSelectLane,
+  statusStale = false,
 }: {
   lane: LaneSummary;
   accent: string;
@@ -86,11 +100,23 @@ export function LaneIdentity({
   createdBy: { provider: string | null; title: string | null } | null;
   active: boolean;
   canReveal: boolean;
+  /**
+   * Why reveal is shown but disabled ("On Mac Studio"): the lane's folder is on
+   * another machine, and reveal only opens this Mac's Finder.
+   */
+  revealUnavailableReason?: string | null;
   onStartChat: (() => void) | null;
   onOpenFiles: () => void;
+  /** History's commit graph, focused on this lane. */
+  onOpenHistory?: () => void;
   onReveal: () => void;
   onOpenMenu: (anchor: DOMRect) => void;
   onSelectLane: (laneId: string) => void;
+  /**
+   * The lane's git status was not measured within the freshness window (a read
+   * is out, or failed): its facts render quietly, never as current.
+   */
+  statusStale?: boolean;
 }) {
   const isPrimary = lane.laneType === "primary";
   const baseLabel = (parentLane?.branchRef ?? lane.baseRef ?? "").replace(/^refs\/heads\//, "") || "base";
@@ -102,7 +128,7 @@ export function LaneIdentity({
       <div className="flex min-w-0 flex-col gap-1">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-2">
-            <span className="flex shrink-0" style={{ color: accent }}>
+            <span className="flex shrink-0" style={{ color: toneText(accent) }}>
               <LaneIcon size={16} />
             </span>
             <h1 className="m-0 truncate text-[16px] font-semibold leading-[24px] tracking-[-0.01em] text-fg" title={lane.name}>
@@ -118,8 +144,22 @@ export function LaneIdentity({
             <WorkToolChromeButton label="Open in Files" onClick={onOpenFiles} testId="lane-open-files">
               <FileCode size={16} />
             </WorkToolChromeButton>
+            {onOpenHistory ? (
+              <WorkToolChromeButton label="Commit history" onClick={onOpenHistory} testId="lane-open-history">
+                <GitCommit size={16} />
+              </WorkToolChromeButton>
+            ) : null}
             {canReveal ? (
               <WorkToolChromeButton label={revealLabel} onClick={onReveal} testId="lane-reveal">
+                <FolderOpen size={16} />
+              </WorkToolChromeButton>
+            ) : revealUnavailableReason ? (
+              <WorkToolChromeButton
+                label={`${revealLabel} · ${revealUnavailableReason}`}
+                onClick={() => {}}
+                disabled
+                testId="lane-reveal"
+              >
                 <FolderOpen size={16} />
               </WorkToolChromeButton>
             ) : null}
@@ -196,7 +236,16 @@ export function LaneIdentity({
       {/* One line; a narrow column clips the last facts rather than wrapping. */}
       <div className="flex min-w-0 items-center gap-x-4 overflow-hidden whitespace-nowrap text-[12.5px] text-fg/75" data-testid="lane-status-line">
         {status.map((item) => (
-          <span key={item.key} className="inline-flex shrink-0 items-center gap-1.5 tabular-nums" title={item.title} data-status={item.key}>
+          <span
+            key={item.key}
+            className={cn(
+              "inline-flex shrink-0 items-center gap-1.5 tabular-nums transition-opacity duration-150",
+              statusStale && isLaneStatusFact(item) && "opacity-50",
+            )}
+            title={item.title}
+            data-status={item.key}
+            data-stale={(statusStale && isLaneStatusFact(item)) || undefined}
+          >
             <StatusGlyph item={item} />
             {item.text}
           </span>

@@ -32,7 +32,7 @@ const fieldStyle: CSSProperties = {
   height: 38,
   borderRadius: 8,
   border: `1px solid ${COLORS.border}`,
-  background: "rgba(255,255,255,0.03)",
+  background: COLORS.cardBg,
   color: COLORS.textPrimary,
   fontFamily: MONO_FONT,
   fontSize: 12,

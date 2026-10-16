@@ -88,6 +88,12 @@ export const TRIGGER_SOURCES: readonly TriggerSourceDef[] = [
       { value: "linear.issue_assigned", label: "Issue assigned" },
       { value: "linear.issue_status_changed", label: "Status changed" },
       { value: "linear.issue_labeled", label: "Issue labeled" },
+      { value: "linear.comment_created", label: "Comment added" },
+      { value: "linear.project_update_posted", label: "Project update posted" },
+      { value: "linear.initiative_update_posted", label: "Initiative update posted" },
+      { value: "linear.user_joined", label: "Member joined" },
+      { value: "linear.agent_delegated", label: "Delegated to ADE" },
+      { value: "linear.agent_mentioned", label: "Mentioned @ADE" },
     ],
   },
   {
@@ -137,12 +143,13 @@ export const TRIGGER_SOURCES: readonly TriggerSourceDef[] = [
     label: "Chat session",
     icon: ChatCircleText,
     accent: "#58A6FF",
-    hint: "When a chat ends, fails, or hits a limit",
+    hint: "When a chat ends, fails, hits a limit, or is settled",
     events: [
       { value: "session-end", label: "Session ended" },
       { value: "session.limit_reached", label: "Usage limit reached" },
       { value: "session.failed", label: "Session failed" },
       { value: "session.ended_without_pr", label: "Ended without a PR" },
+      { value: "session.settled", label: "Chat settled" },
     ],
   },
   {
@@ -150,10 +157,10 @@ export const TRIGGER_SOURCES: readonly TriggerSourceDef[] = [
     label: "Webhook",
     icon: WebhooksLogo,
     accent: "#EC6CB9",
-    hint: "External events",
+    hint: "Any service that can call a URL",
     events: [
-      { value: "github-webhook", label: "GitHub webhook" },
-      { value: "webhook", label: "Custom webhook" },
+      { value: "webhook", label: "Any service (your own URL)" },
+      { value: "github-webhook", label: "GitHub App webhook (local server)" },
     ],
   },
   {
@@ -228,7 +235,7 @@ export function defaultTriggerForSource(source: TriggerSource): AutomationTrigge
     case "session":
       return { type: "session-end" };
     case "webhook":
-      return { type: "github-webhook", event: "pull_request" };
+      return { type: "webhook" };
     case "manual":
       return { type: "manual" };
   }

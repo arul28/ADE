@@ -111,3 +111,107 @@ export function serializedComposerOffsetAt(
   }
   return matchingLength;
 }
+
+/**
+ * Return the DOM point for an offset in the serialized draft text.
+ *
+ * The inverse of `serializedComposerOffsetAt`, for the one case that needs it:
+ * the composer switches from the plain textarea to the rich editor and must put
+ * the caret back where it was. A chip counts as its serialized text, and an
+ * offset inside or at the end of a chip resolves to the point after the chip,
+ * because the caret cannot stand inside a contentEditable="false" node.
+ */
+export function composerDomPointAtSerializedOffset(
+  root: HTMLElement,
+  offset: number,
+): { node: Node; offset: number } {
+  let remaining = Math.max(0, offset);
+  let found: { node: Node; offset: number } | null = null;
+
+  const pointAfter = (node: Node): { node: Node; offset: number } => {
+    const parent = node.parentNode ?? root;
+    return { node: parent, offset: Array.prototype.indexOf.call(parent.childNodes, node) + 1 };
+  };
+
+  const visit = (node: Node) => {
+    if (found) return;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const length = node.textContent?.length ?? 0;
+      if (remaining <= length) {
+        found = { node, offset: remaining };
+        return;
+      }
+      remaining -= length;
+      return;
+    }
+    if (!(node instanceof HTMLElement)) return;
+    const chipText = node.dataset.composerChipText;
+    if (chipText != null) {
+      if (remaining <= chipText.length) {
+        found = pointAfter(node);
+        return;
+      }
+      remaining -= chipText.length;
+      return;
+    }
+    if (node.tagName === "BR") {
+      if (remaining === 0) {
+        found = { node: node.parentNode ?? root, offset: Array.prototype.indexOf.call((node.parentNode ?? root).childNodes, node) };
+        return;
+      }
+      remaining -= 1;
+      return;
+    }
+    node.childNodes.forEach(visit);
+  };
+  root.childNodes.forEach(visit);
+  return found ?? { node: root, offset: root.childNodes.length };
+}
+
+// Loose text inside these is already a chip (or a context card) and is left alone.
+const HYDRATE_SKIP_SELECTOR =
+  "[data-composer-chip], [data-ios-context-id], [data-app-control-context-id], [data-built-in-browser-context-id]";
+
+/**
+ * Turn every serialized block a parser finds in the editor's loose text into
+ * the chip `createNode` builds for it. Returns whether anything changed.
+ */
+export function hydrateTokenChipsInEditor<Match extends { start: number; end: number }>(
+  editor: HTMLElement,
+  options: {
+    has: (text: string) => boolean;
+    parse: (text: string) => Match[];
+    createNode: (match: Match) => HTMLElement;
+  },
+): boolean {
+  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent || parent.closest(HYDRATE_SKIP_SELECTOR)) return NodeFilter.FILTER_REJECT;
+      return options.has(node.textContent ?? "") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const nodes: Text[] = [];
+  let current = walker.nextNode();
+  while (current) {
+    nodes.push(current as Text);
+    current = walker.nextNode();
+  }
+  let changed = false;
+  for (const node of nodes) {
+    const text = node.textContent ?? "";
+    const matches = options.parse(text);
+    if (!matches.length) continue;
+    const fragment = document.createDocumentFragment();
+    let offset = 0;
+    for (const match of matches) {
+      if (match.start > offset) fragment.append(document.createTextNode(text.slice(offset, match.start)));
+      fragment.append(options.createNode(match));
+      offset = match.end;
+    }
+    if (offset < text.length) fragment.append(document.createTextNode(text.slice(offset)));
+    node.replaceWith(fragment);
+    changed = true;
+  }
+  return changed;
+}

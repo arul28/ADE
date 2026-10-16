@@ -1,3 +1,4 @@
+import { fgTint } from "../../lanes/laneDesignTokens";
 /**
  * The one tone palette every notice surface (banners, toasts, callouts, notice
  * dialogs) paints from.
@@ -41,9 +42,9 @@ export function noticeTone(tone: NoticeTone): NoticeToneTokens {
     return {
       color,
       text: "var(--color-fg)",
-      soft: "color-mix(in srgb, var(--color-fg) 6%, transparent)",
-      softHover: "color-mix(in srgb, var(--color-fg) 10%, transparent)",
-      ring: "color-mix(in srgb, var(--color-fg) 14%, transparent)",
+      soft: fgTint(6),
+      softHover: fgTint(10),
+      ring: fgTint(14),
       edge: "var(--color-border)",
     };
   }
@@ -78,7 +79,10 @@ export const NOTICE_FLOAT_SURFACE = {
   boxShadow: "var(--shadow-float)",
 } as const;
 
-/** The in-flow variant (docked / inline banners): same card, no lift. */
+/**
+ * The in-flow variant (docked / inline banners): same card, no lift. A host
+ * that floats banners over content sets `--notice-docked-bg` to an opaque mix.
+ */
 export const NOTICE_DOCKED_SURFACE = {
-  background: "color-mix(in srgb, var(--color-card) 72%, transparent)",
+  background: "var(--notice-docked-bg, color-mix(in srgb, var(--color-card) 72%, transparent))",
 } as const;

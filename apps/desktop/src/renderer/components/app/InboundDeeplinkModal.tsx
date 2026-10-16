@@ -16,7 +16,8 @@ import type {
 } from "../../../shared/types";
 import type { DeeplinkEnvelope } from "../../../shared/deeplinks";
 import { openExternalUrl } from "../../lib/openExternal";
-import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { linearIssueRef } from "../../../shared/issueRefs";
+import { openIssueInSheet } from "../../lib/issueNavigation";
 import { Banner } from "../ui/notice";
 
 export type InboundBranchDeeplink = {
@@ -280,7 +281,8 @@ export function InboundDeeplinkModal({
     const repoLabel = envelope?.repoOwner && envelope.repoName ? `${envelope.repoOwner}/${envelope.repoName}` : null;
     const headline = repoLabel
       ? `This ${currentTarget.entity} lives in ${repoLabel} on another machine.`
-      : `This ${currentTarget.entity} lives on another machine.`;
+      // No repo and no connected machine holds it: do not claim where it lives.
+      : `ADE cannot find this ${currentTarget.entity} on this machine or on a connected machine.`;
     const hasRepo = Boolean(envelope?.repoOwner && envelope.repoName);
     const actions: React.ReactNode[] = [];
     if (hasRepo && envelope?.branch) {
@@ -346,7 +348,8 @@ export function InboundDeeplinkModal({
           key="linear"
           type="button"
           onClick={() => {
-            requestLinearIssueQuickView({ issueIdentifier: envelope.linearIssue!, source: "deeplink" });
+            const ref = linearIssueRef(envelope.linearIssue!);
+            if (ref) openIssueInSheet({ ref, source: "deeplink" });
             onClose();
           }}
           style={outlineButton({ height: 36 })}

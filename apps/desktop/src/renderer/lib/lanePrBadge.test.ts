@@ -8,7 +8,7 @@ import {
   primaryPrStateRank,
   selectPrimaryLanePr,
 } from "./lanePrBadge";
-import { prStateTone, selectPrsForChatInLane } from "./prChatScope";
+import { prStateTone, selectPrsForChatInLane } from "../../shared/prChatScope";
 
 type TestPr = { id: string; state: PrState; updatedAt?: string | null; githubPrNumber: number };
 

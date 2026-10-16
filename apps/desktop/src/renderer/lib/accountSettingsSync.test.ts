@@ -78,6 +78,16 @@ const MACHINE_SETTINGS: readonly AccountSyncedSetting<FakeState>[] = [
   },
 ];
 
+const DEVICE_SETTINGS: readonly AccountSyncedSetting<FakeState>[] = [
+  {
+    key: "theme",
+    scope: "account",
+    perDevice: true,
+    read: (state) => state.theme,
+    apply: (state, value) => state.setTheme(value as string),
+  },
+];
+
 function row(key: string, value: unknown, updatedAt: string, scope = "all"): AccountSettingRow {
   return { scope, key, value, updatedAt, changedAt: updatedAt, writerDeviceId: "other" };
 }
@@ -138,14 +148,20 @@ beforeEach(() => {
 
 describe("accountSettingsSync (renderer)", () => {
   it("registers exactly the account-scoped persisted preferences", () => {
+    // Appearance is per computer, so no theme, custom-theme list, follow-system
+    // flag, interface or terminal preference is synced: a laptop, a desktop and
+    // a browser each keep their own look. The `theme` painted base mode was
+    // never synced either. The `apple.*` keys stay on the account because the
+    // host reads the remote streaming cap from the account store.
     expect(ACCOUNT_SYNCED_SETTINGS.map((entry) => entry.key)).toEqual([
-      "theme",
-      "terminalPreferences",
       "smartTooltipsEnabled",
       "launchPromptClipboardEnabled",
       "launchPromptClipboardNoticeEnabled",
+      // The account field keeps its pre-rename name so an already-saved value
+      // is not orphaned; the setting it maps to is the drafts button.
       "promptStashButtonEnabled",
       "voiceInputEnabled",
+      "codexVoice",
       "codeBlockCopyButtonPosition",
       "agentTurnCompletionSound",
       "agentTurnCompletionSoundVolume",
@@ -192,13 +208,11 @@ describe("accountSettingsSync (renderer)", () => {
       scope: "all",
       key: "theme",
       value: "dark",
-      expectedAccountUserId: "__signed-in__",
     });
     expect(api.set).toHaveBeenCalledWith({
       scope: "all",
       key: "chatFontSizePx",
       value: 14,
-      expectedAccountUserId: "__signed-in__",
     });
     stop();
   });
@@ -241,26 +255,120 @@ describe("accountSettingsSync (renderer)", () => {
       scope: "all",
       key: "theme",
       value: "dark",
-      expectedAccountUserId: "__signed-in__",
     });
     stop();
   });
 
-  it("A1: writes a local change with the expected account owner", async () => {
-    const { store, state } = createStore({ theme: "dark", chatFontSizePx: 14 });
-    const api = createApi();
-    const stop = startAccountSettingsSync(
-      baseOptions({ store, getApi: () => api, isSignedIn: () => true }),
+  it("A1: fences a write with the REAL account id, and with no id when there is none", async () => {
+    // A boolean-only sign-in has no id to fence with. Sending the engine's own
+    // namespace placeholder instead is a claim that is always wrong: the
+    // brain compares it against the owner it really holds and refuses, and the
+    // key stays dirty for as long as the placeholder is what gets sent.
+    const anonymous = createStore({ theme: "dark", chatFontSizePx: 14 });
+    const anonymousApi = createApi();
+    const stopAnonymous = startAccountSettingsSync(
+      baseOptions({ store: anonymous.store, getApi: () => anonymousApi, isSignedIn: () => true }),
     );
     await settle();
-    state.setTheme("light");
+    anonymous.state.setTheme("light");
+    expect(anonymousApi.set).toHaveBeenCalledWith({ scope: "all", key: "theme", value: "light" });
+    stopAnonymous();
+
+    // With a real id, the fence is sent — that is what makes the write's
+    // "ownership changed" answer meaningful.
+    const owned = createStore({ theme: "dark", chatFontSizePx: 14 });
+    const api = createApi();
+    const stop = startAccountSettingsSync(
+      baseOptions({
+        store: owned.store,
+        getApi: () => api,
+        isSignedIn: () => true,
+        getAccountUserId: () => "user_1",
+      }),
+    );
+    await settle();
+    owned.state.setTheme("light");
     expect(api.set).toHaveBeenCalledWith({
       scope: "all",
       key: "theme",
       value: "light",
-      expectedAccountUserId: "__signed-in__",
+      expectedAccountUserId: "user_1",
     });
     stop();
+  });
+
+  it("A1c: does not report a write confirmed after the account changed", async () => {
+    // The acknowledgement belongs to the account the request was sent as. If
+    // someone signs in as another account while it is in flight, that "ok" says
+    // nothing about the account signed in now — so it must not be handed back
+    // as a confirmation a caller can act on, and the value stays queued under
+    // the account it was written for.
+    const { store } = createStore({ theme: "dark" });
+    const storage = createStorage();
+    // Held as a list because a `let` the callback writes is narrowed to `null`
+    // by the time the test calls it (control-flow analysis cannot see the
+    // callback run). The LAST entry is this test's `flushKey` write: the
+    // hydrator's own seeding pushes run before it and are never awaited.
+    const acknowledged: Array<(value: { ok: true; value: null }) => void> = [];
+    const api = createApi();
+    api.set.mockImplementation(async () => await new Promise((resolve) => {
+      acknowledged.push(resolve as (value: { ok: true; value: null }) => void);
+    }));
+    let userId = "user_1";
+    const sync = startAccountSettingsSync(
+      baseOptions({
+        store,
+        storage,
+        getApi: () => api,
+        isSignedIn: () => true,
+        getAccountUserId: () => userId,
+      }),
+    );
+    await settle();
+
+    const pending = sync.flushKey("theme");
+    await settle();
+    // The account switches before the write is acknowledged.
+    userId = "user_2";
+    acknowledged.at(-1)?.({ ok: true, value: null });
+
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    expect(JSON.parse(storage.map.get("ade.accountSettings.dirty.v1") ?? "[]"))
+      .toContain("user_1\u0000theme");
+    sync();
+  });
+
+  it("A1b: flushKey pushes the current value and answers what the brain said", async () => {
+    const { store } = createStore({ theme: "dark", chatFontSizePx: 14 });
+    const api = createApi();
+    const sync = startAccountSettingsSync(
+      baseOptions({ store, getApi: () => api, isSignedIn: () => true, getAccountUserId: () => "user_1" }),
+    );
+    await settle();
+    api.set.mockClear();
+
+    // Nothing changed locally, and the write still goes: a caller awaiting
+    // `flushKey` is saying "make the machine's copy mine before something else
+    // reads it", and a value that is not dirty would never be pushed otherwise.
+    const confirmed = await sync.flushKey("theme");
+    expect(confirmed.ok).toBe(true);
+    expect(api.set).toHaveBeenCalledWith({
+      scope: "all",
+      key: "theme",
+      value: "dark",
+      expectedAccountUserId: "user_1",
+    });
+
+    api.set.mockImplementation(async () => ({
+      ok: false as const,
+      unavailable: true as const,
+      message: "no brain",
+    }));
+    const refused = await sync.flushKey("theme");
+    expect(refused.ok).toBe(false);
+    expect(refused.ok === false && refused.message).toContain("no brain");
+    sync();
   });
 
   it("A2: keeps the dirty key and local stamp when the account write is rejected", async () => {
@@ -317,7 +425,6 @@ describe("accountSettingsSync (renderer)", () => {
       scope: "repo:github.com/ade-dev/ade",
       key: "theme",
       value: "light",
-      expectedAccountUserId: "__signed-in__",
     });
     stop();
 
@@ -357,6 +464,47 @@ describe("accountSettingsSync (renderer)", () => {
     stop();
   });
 
+  // Per-computer settings (Apple devices) live in the account store so the
+  // brain on that computer can read them, but each computer has its own copy:
+  // one machine's edit must never land on another, and nothing is written
+  // until this computer's id is known.
+  it("keeps a per-device setting to this computer, holding edits until its id is known", async () => {
+    const { store, state } = createStore({ theme: "dark" });
+    const api = createApi([
+      row("device.other-mac.theme", "sepia", "2030-01-01T00:00:00.000Z"),
+      row("theme", "light", "2030-01-01T00:00:00.000Z"),
+    ]);
+    let deviceId: string | null = null;
+    const deviceListeners = new Set<() => void>();
+    const stop = startAccountSettingsSync(
+      baseOptions({
+        store,
+        settings: DEVICE_SETTINGS,
+        getApi: () => api,
+        isSignedIn: () => true,
+        getLocalDeviceId: () => deviceId,
+        subscribeLocalDeviceId: (listener) => {
+          deviceListeners.add(listener);
+          return () => deviceListeners.delete(listener);
+        },
+      }),
+    );
+    await settle();
+    // Neither another computer's copy nor an account-wide row applies here.
+    expect(state.theme).toBe("dark");
+
+    state.setTheme("midnight");
+    expect(api.set).not.toHaveBeenCalled();
+
+    deviceId = "this-mac";
+    for (const listener of deviceListeners) listener();
+    await settle();
+    expect(api.set).toHaveBeenCalledWith({ scope: "all", key: "device.this-mac.theme", value: "midnight" });
+    expect(api.set).not.toHaveBeenCalledWith(expect.objectContaining({ key: "theme" }));
+    expect(state.theme).toBe("midnight");
+    stop();
+  });
+
   it("applies a newer row that arrives on the poll", async () => {
     const { store, state } = createStore({ theme: "dark", chatFontSizePx: 14 });
     const rows: AccountSettingRow[] = [];
@@ -393,7 +541,6 @@ describe("accountSettingsSync (renderer)", () => {
       scope: "all",
       key: "theme",
       value: "light",
-      expectedAccountUserId: "__signed-in__",
     });
 
     // The server's copy predates the local edit: a pull must leave it alone.

@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  IOS_SIMULATOR_ACTION_NOT_COMPARED_REASON,
   IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE,
   type IosScreenElement,
   type IosScreenSnapshot,
@@ -922,6 +923,8 @@ describe("iosDeviceHub semantic actions", () => {
     expect(result.ok).toBe(true);
     expect(result.matchCount).toBe(1);
     expect(harness.interactions).toEqual([{ kind: "tap", detail: "60,40" }]);
+    // A tap does not take a second snapshot to compare; it says what to run.
+    expect(result.effect).toEqual({ status: "not_checked", reason: IOS_SIMULATOR_ACTION_NOT_COMPARED_REASON });
 
     const page = await harness.hub.getEventLog({});
     expect(page.rows.at(-1)?.command).toBe('ade ios-sim tap-element label "Continue"');
@@ -944,6 +947,7 @@ describe("iosDeviceHub semantic actions", () => {
     expect(result.message).toContain("Sign out");
     // A tap on a guess is the failure mode the semantic layer exists to remove.
     expect(harness.interactions).toEqual([]);
+    expect(result.effect).toEqual({ status: "not_checked", reason: "nothing was sent" });
   });
 
   it("focuses the field before it types", async () => {

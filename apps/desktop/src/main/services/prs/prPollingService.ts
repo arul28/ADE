@@ -201,11 +201,11 @@ export function createPrPollingService({
   const DEFAULT_INTERVAL_MS = 60_000;
   const MIN_INTERVAL_MS = 5_000;
   const MAX_INTERVAL_MS = 5 * 60_000;
-  const EMPTY_DISCOVERY_MIN_INTERVAL_MS = 10 * 60_000;
-  const RELAY_EMPTY_DISCOVERY_MIN_INTERVAL_MS = 30 * 60_000;
+  const DISCOVERY_MIN_INTERVAL_MS = 10 * 60_000;
+  const RELAY_DISCOVERY_MIN_INTERVAL_MS = 30 * 60_000;
   const RELAY_SAFETY_SWEEP_INTERVAL_MS = 15 * 60_000;
   // Epoch (not "never") so the first tick after start still discovers.
-  let lastEmptyDiscoveryAtMs = 0;
+  let lastDiscoveryAtMs = 0;
 
   const readIntervalMs = (): number => {
     const seconds = projectConfigService.get().effective.github?.prPollingIntervalSeconds;
@@ -215,7 +215,16 @@ export function createPrPollingService({
     return DEFAULT_INTERVAL_MS;
   };
 
+  // The per-PR poll cursor lives in memory, not in the replicated
+  // `pull_requests.last_polled_at` column: nothing reads it remotely, and
+  // cr-sqlite would ship a write per PR per tick to every synced peer (most of
+  // a phone's idle sync traffic on a large project). The column stays; a value
+  // already there still seeds the cursor.
+  const lastPolledAtByPrId = new Map<string, string>();
+
   const getLastPolledAt = (prId: string): string | null => {
+    const inMemory = lastPolledAtByPrId.get(prId);
+    if (inMemory) return inMemory;
     if (!db) return null;
     const row = db.get<{ last_polled_at: string | null }>(
       "select last_polled_at from pull_requests where id = ? limit 1",
@@ -225,15 +234,7 @@ export function createPrPollingService({
   };
 
   const setLastPolledAt = (prId: string, iso: string): void => {
-    if (!db) return;
-    try {
-      db.run("update pull_requests set last_polled_at = ? where id = ?", [iso, prId]);
-    } catch (err) {
-      logger.warn("prs.last_polled_at_update_failed", {
-        prId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    lastPolledAtByPrId.set(prId, iso);
   };
 
   let stopped = false;
@@ -318,21 +319,22 @@ export function createPrPollingService({
       pendingTargetedPrIds.clear();
       const relayHealthy = isGithubRelayHealthy?.() === true;
       let existing = prService.listAll();
-      if (existing.length === 0) {
-        // Discovery force-refreshes the whole repo snapshot, which is far
-        // heavier than a tracked-PR delta poll. With zero tracked PRs (new
-        // users, non-PR projects) run it on a slow cadence instead of every
-        // tick — user-driven surfaces discover PRs on their own reads anyway.
-        const discoveryIntervalMs = relayHealthy
-          ? RELAY_EMPTY_DISCOVERY_MIN_INTERVAL_MS
-          : EMPTY_DISCOVERY_MIN_INTERVAL_MS;
-        if (Date.now() - lastEmptyDiscoveryAtMs >= discoveryIntervalMs) {
-          lastEmptyDiscoveryAtMs = Date.now();
-          try {
-            existing = await prService.discoverLanePullRequests();
-          } catch (error) {
-            logger.warn("prs.discovery_failed", { error: error instanceof Error ? error.message : String(error) });
-          }
+      // Discovery force-refreshes the whole repo snapshot, which is far
+      // heavier than a tracked-PR delta poll, so it runs on a slow cadence
+      // instead of every tick. It also runs when PRs are already tracked: a PR
+      // an agent opens with `gh pr create` has no row until a snapshot maps it
+      // to its lane by branch, and the desktop's focus reconcile only reaches
+      // a project open on this computer. A viewer on another machine (or a
+      // phone) depends on this sweep to see the PR at all.
+      const discoveryIntervalMs = relayHealthy
+        ? RELAY_DISCOVERY_MIN_INTERVAL_MS
+        : DISCOVERY_MIN_INTERVAL_MS;
+      if (Date.now() - lastDiscoveryAtMs >= discoveryIntervalMs) {
+        lastDiscoveryAtMs = Date.now();
+        try {
+          existing = await prService.discoverLanePullRequests();
+        } catch (error) {
+          logger.warn("prs.discovery_failed", { error: error instanceof Error ? error.message : String(error) });
         }
       }
       if (existing.length === 0) {
@@ -524,6 +526,7 @@ export function createPrPollingService({
         if (!seen.has(prId)) {
           lastByPrId.delete(prId);
           lastFingerprintByPrId.delete(prId);
+          lastPolledAtByPrId.delete(prId);
         }
       }
 

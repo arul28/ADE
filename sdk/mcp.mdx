@@ -1,6 +1,6 @@
 ---
 title: "MCP servers"
-description: "Inject caller-owned MCP servers into an SDK thread. Strict isolation is enforced only on Claude — mcpCapability is the honesty report."
+description: "Inject caller-owned MCP servers into an SDK thread, rotate their credentials, and read the honesty report. Strict isolation is enforced only on Claude."
 icon: "plug"
 ---
 
@@ -30,6 +30,8 @@ contain at most 32 servers.
 Supplying `mcpServers` turns on **strict mode** unless you set `loadUserMcpServers: true`. Strict means: withhold the user's and project's own MCP config, and try to load only the servers you supplied.
 
 Both options apply on **create only**. Reopening an existing key re-applies the tool surface that key was created with, and the SDK logs one line when the values passed differ — so do not present "only your tools are loaded" on the strength of a `loadUserMcpServers: false` passed to a resume. See [Threads](/sdk/threads).
+
+The one exception is `refresh.mcpServers`, for a token or a URL that changed. See [Credentials that change](#credentials-that-change).
 
 <Warning>
 Strict mode is **enforced only on Claude**. Codex, Cursor, Droid, and OpenCode are best-effort with a named residual. Pi has no MCP surface — injected servers are refused rather than opening a tool-less thread. Do not tell your users "only your tools are loaded" without checking `thread.mcpCapability`.
@@ -102,6 +104,114 @@ await ade.threads.open("ops", {
 ```
 
 The SDK logs a line at open time naming any server in this shape, and `permissionCapability.residual` lists them. See [Permissions](/sdk/permissions#what-fallback-deny-does-on-claude).
+
+## Credentials that change
+
+An MCP server usually authenticates with a bearer token in `headers.Authorization`. The token changes on sign-out, on an account switch, or when you rotate it. The port in `url` can change when the old one is busy. A thread that keeps the old values fails MCP auth for good.
+
+### Header values are never stored
+
+The SDK does not write MCP header **values** to disk. Its thread store keeps the header **names** only (`headerNames`). The runtime does the same in its own chat state. A thread store that an SDK before 0.3 wrote is migrated when the SDK first reads it: the values are removed, the names are kept, and the file is written again.
+
+So each create, resume, recreate and restart needs the values again. They come from one of three places. The first that has them wins:
+
+1. Headers that you pass in this call (`refresh.mcpServers`, or `mcpServers` on a create).
+2. The client's `mcpHeaders` callback.
+3. Nothing. The server connects **without** its headers, and the SDK logs a line that names the server and the missing header names.
+
+These values are still stored in plain text: the `url` with its query string (the runtime needs it to reconnect), and the `env` values of a `stdio` server. Do not put a secret in either. Put it in a header.
+
+### `mcpHeaders`
+
+```ts
+const ade = await createAdeChat({
+  home,
+  mcpHeaders: (key, serverName) =>
+    serverName === "app" ? { Authorization: `Bearer ${currentToken()}` } : undefined,
+});
+```
+
+The SDK calls it synchronously, each time it needs header values for a server that you passed without headers: at a create, a resume, a recreate and an `autoRestart`. Return `undefined` for a server that needs no headers. The SDK sends the result to the runtime and does not store it.
+
+On a resume, the SDK pushes the resolved servers to the runtime when the stored record names headers. It does this automatically when you pass `mcpHeaders`.
+
+### `refresh.mcpServers`
+
+```ts
+const thread = await ade.threads.open("support", {
+  refresh: {
+    mcpServers: {
+      app: { type: "http", url: `http://127.0.0.1:${port}/mcp`, headers: { Authorization: `Bearer ${token}` } },
+    },
+  },
+});
+```
+
+`refresh.mcpServers` replaces the thread's servers **wholesale**. It is the one option that a resume does not ignore.
+
+| The key is | What `refresh.mcpServers` does |
+|---|---|
+| New | Used when `mcpServers` is absent |
+| Stored, session alive | Sent to the runtime with `updateSession`. The provider uses the new servers on its next turn |
+| Stored, session lost (recreate) | The servers the new session is created with |
+| Already open on this client | Applied with `thread.updateMcpServers()`. A failure is logged, and the thread keeps its old servers |
+
+The stored record is updated each time, with header names only.
+
+### `thread.updateMcpServers()`
+
+```ts
+const report = await thread.updateMcpServers({
+  app: { type: "http", url: newUrl, headers: { Authorization: `Bearer ${newToken}` } },
+});
+```
+
+Replaces the servers of a live thread. It returns the new `mcpCapability`. The provider process restarts, and the next turn uses the new URL and headers. A remote server that you pass without `headers` gets them from `mcpHeaders`.
+
+The same checks as a create apply: provider shape, reserved names, and at most 32 servers.
+
+It throws `invalid_option`:
+
+- While a turn is in flight. Wait for the turn to end, or call `interrupt()`.
+- On a runtime that does not advertise `capabilities.personalChats.updateMcpServers` (before 1.2.81). An older runtime would ignore the servers and keep the old credentials, which is worse than an error.
+
+On that older runtime, a resume with `refresh` or `mcpHeaders` keeps the old servers and logs a warning.
+
+`thread.updateMcpServers` is not on the [Electron bridge](/sdk/electron#what-crosses-the-bridge). Only main may change a thread's servers.
+
+### After a runtime restart
+
+The runtime does not keep header values either. After it restarts, a server whose headers it withheld connects without them. The transcript gets one `system_notice` that asks the host to send the credentials again. With `mcpHeaders`, the SDK sends them again for you: during `autoRestart`, and when you next open the key with a new client.
+
+### Redaction
+
+The runtime removes secrets from MCP error and notice text before it writes them to the transcript or the log: the query string, fragment and user info of a URL, `Bearer` tokens, and the exact header values of the server. This covers Codex MCP startup failures, Codex stderr lines, app-server spawn errors and URL validation errors.
+
+## Resource links
+
+A tool result can carry MCP `resource_link` items. The runtime gives them to you as structured data on the `tool_result` event:
+
+```ts
+thread.on("event", ({ event }) => {
+  if (event.type === "tool_result" && Array.isArray(event.resourceLinks)) {
+    for (const link of event.resourceLinks) {
+      // link.uri, link.name?, link.title?, link.mimeType?
+    }
+  }
+});
+```
+
+| Provider | `resourceLinks` |
+|---|---|
+| codex | Yes, from the `resource_link` items of an MCP tool result |
+| claude | Yes, for MCP tools (`mcp__…`) only |
+| cursor, droid, opencode, pi | No. The field is absent |
+
+The field is absent when the result has no links. `@ade-dev/chat-ui` shows them on tool chips as `row.resourceLinks`. See [Chat UI](/sdk/chat-ui#tool-results).
+
+## Approvals for MCP tools
+
+On Codex, every MCP tool call raises an approval. A permission policy decides it, the same way as on Claude. See [Permissions](/sdk/permissions#codex-mcp-tool-calls).
 
 ## Next
 

@@ -1,11 +1,13 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AppleDeviceDiskUsage,
+  AppleInstalledRuntime,
   AppleInstalledSimulator,
   AppleLaneDevice,
+  AppleNewDeviceSpec,
   AppleSimulatorOwner,
 } from "../../../shared/types/iosSimulator";
 import { AppleDevicePicker } from "./AppleDevicePicker";
@@ -70,11 +72,10 @@ function laneDevice(overrides: Partial<AppleLaneDevice> = {}): AppleLaneDevice {
     laneId: "lane-mine",
     udid: "max",
     name: "iPhone 17 Pro Max",
-    origin: "clone",
+    origin: "created",
     family: "iphone",
     runtime: "iOS 26.2",
     createdAt: "2026-09-21T00:00:00.000Z",
-    templateUdid: "pro",
     ...overrides,
   };
 }
@@ -90,16 +91,44 @@ const DISK: AppleDeviceDiskUsage = {
   measuredAt: "2026-09-21T00:00:00.000Z",
 };
 
+const RUNTIMES: AppleInstalledRuntime[] = [
+  {
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-3",
+    name: "iOS 26.3",
+    version: "26.3",
+    platform: "iOS",
+    deviceTypes: [
+      { identifier: `${T}iPhone-17-Pro`, name: "iPhone 17 Pro", family: "iphone" },
+      { identifier: `${T}iPad-Pro-13-inch-M4-8GB`, name: "iPad Pro 13-inch M4", family: "ipad" },
+    ],
+  },
+  {
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-2",
+    name: "iOS 26.2",
+    version: "26.2",
+    platform: "iOS",
+    deviceTypes: [
+      { identifier: `${T}iPhone-17`, name: "iPhone 17", family: "iphone" },
+    ],
+  },
+];
+
+const DEFAULT_NEW_DEVICE: AppleNewDeviceSpec = {
+  runtime: RUNTIMES[0]!.identifier,
+  deviceType: RUNTIMES[0]!.deviceTypes[0]!.identifier,
+};
+
 function renderPicker(overrides: Partial<React.ComponentProps<typeof AppleDevicePicker>> = {}) {
   const props = {
     installed: INSTALLED,
     owners: [REPRO_OWNER] as readonly AppleSimulatorOwner[],
+    runtimes: RUNTIMES,
+    defaultNewDevice: DEFAULT_NEW_DEVICE,
     laneDevice: null,
     pending: null,
-    lastUsedUdid: null,
     refreshing: false,
     onStart: vi.fn<[string], void>(),
-    onCreate: vi.fn<[string], void>(),
+    onCreate: vi.fn<[AppleNewDeviceSpec], void>(),
     onDelete: vi.fn<[string], void>(),
     onRefresh: vi.fn<[], void>(),
     ...overrides,
@@ -126,15 +155,10 @@ const openMenu = (container: HTMLElement, udid: string) =>
   );
 
 describe("AppleDevicePicker heading", () => {
-  it("leads with Available and drops the round-5 summary box entirely", () => {
+  it("shows the number available after excluding devices held by another lane", () => {
     const { container } = renderPicker({ disk: DISK });
-    // The owner read the box, counted its numbers, and asked for it to go: the
-    // list below says all of it, and a paragraph at the top of a picker sits
-    // between him and the thing he came to click.
-    expect(container.querySelector("[data-apple-inventory-line]")).toBeNull();
-    expect(container.querySelector("[data-apple-inventory-disk]")).toBeNull();
-    expect(screen.queryByText(/One runtime install serves any number/)).toBeNull();
     expect(sectionOf(container, "Available")).toBeTruthy();
+    expect(container.querySelector("[data-apple-available-count]")?.textContent).toBe("4");
   });
 
   it("counts the FREE devices beside the word, not every installed one", () => {
@@ -157,13 +181,12 @@ describe("AppleDevicePicker heading", () => {
     expect(screen.getByText("5 installed, 4 available")).toBeTruthy();
   });
 
-  it("carries the refresh at the top, and nothing at the foot of the page", () => {
+  it("refreshes the inventory when requested", () => {
     const { container, onRefresh } = renderPicker();
     const refresh = container.querySelector("[data-apple-picker-refresh]") as HTMLElement;
     expect(refresh).toBeTruthy();
     fireEvent.click(refresh);
     expect(onRefresh).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText(/Only simulators already installed appear here/)).toBeNull();
   });
 });
 
@@ -261,103 +284,31 @@ describe("AppleDevicePicker the per-device menu", () => {
 });
 
 describe("AppleDevicePicker create a new one", () => {
-  it("sits at the foot of the page and offers only devices a clone can be made FROM", () => {
-    const { container } = renderPicker();
-    const section = sectionOf(container, "Create a new one");
-    expect(section).toBeTruthy();
-    // `simctl clone` fails on a booted device, and a device another lane holds
-    // is not this panel's to copy. Five installed, two booted (one of those
-    // held elsewhere) leaves three.
-    expect(section.querySelectorAll("[data-apple-create-source]")).toHaveLength(3);
-    expect(section.querySelector('[data-apple-create-source="pro"]')).toBeNull();
-    expect(section.querySelector('[data-apple-create-source="repro"]')).toBeNull();
-  });
-
-  it("names the source device plainly, without repeating its own model", () => {
-    const { container } = renderPicker();
-    // `appleDeviceModelLine` renders "iPad Pro 13-inch M4 · iPad Pro 13-inch
-    // M4" when the name already IS the model, which is what the row showed.
-    const row = container.querySelector('[data-apple-create-source="pad"]') as HTMLElement;
-    const label = row.querySelector("span")?.textContent ?? "";
-    expect(label).toBe("iPad Pro 13-inch M4");
-  });
-
-  it("says what a copy costs, and that nothing is downloaded", () => {
-    const { container } = renderPicker({ disk: DISK });
-    // `simctl clone` duplicates the source's data directory, so the source's
-    // measured size IS the estimate. The runtime is not fetched again.
-    expect(
-      (container.querySelector('[data-apple-create-source="pad"]') as HTMLElement).textContent,
-    ).toContain("copy costs about 3.0 GB, no download");
-    // Unmeasured devices still say the part that is certain.
-    expect(
-      (container.querySelector('[data-apple-create-source="max"]') as HTMLElement).textContent,
-    ).toContain("already installed, no download");
-  });
-
-  it("says it is measuring rather than guessing a number", () => {
-    const { container } = renderPicker({ measuringDisk: true });
-    expect(
-      (container.querySelector('[data-apple-create-source="pad"]') as HTMLElement).textContent,
-    ).toContain("measuring…");
-  });
-
-  it("defaults to a template that can actually be cloned, and creates from it", () => {
-    const { container, onCreate } = renderPicker({ lastUsedUdid: "repro" });
-    // "repro" is the last used AND held by another lane, so it is not offered
-    // as a source at all and must not be what Create acts on.
-    expect(container.querySelector('[data-apple-create-source="repro"]')).toBeNull();
-    fireEvent.click(screen.getByLabelText("Create a new simulator for this lane"));
-    expect(onCreate).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(onCreate).mock.calls[0]?.[0]).not.toBe("repro");
-  });
-
-  it("creates from the row the user picked", () => {
+  it("creates an empty device from the service's default runtime and model", () => {
     const { container, onCreate } = renderPicker();
-    fireEvent.click(container.querySelector('[data-apple-create-source="pad"]') as HTMLElement);
+    expect(sectionOf(container, "Create a new one")).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Create a new simulator for this lane"));
-    expect(onCreate).toHaveBeenCalledWith("pad");
+    expect(onCreate).toHaveBeenCalledWith(DEFAULT_NEW_DEVICE);
   });
 
-  it("moves the copy-source selection with arrow keys", () => {
-    const { container, onCreate } = renderPicker();
-    const group = screen.getByRole("radiogroup", { name: "Device to copy" });
-    const radio = (udid: string) =>
-      container.querySelector(`[data-apple-create-source="${udid}"]`) as HTMLElement;
-    const checked = () =>
-      within(group).getAllByRole("radio").find((el) => el.getAttribute("aria-checked") === "true");
-    // Sources by name: pad, max, watch. The default (newest iPhone) is the one Tab stop.
-    expect(radio("max").tabIndex).toBe(0);
-    expect(radio("pad").tabIndex).toBe(-1);
-    expect(radio("watch").tabIndex).toBe(-1);
-
-    fireEvent.keyDown(radio("max"), { key: "ArrowDown" });
-    expect(checked()).toBe(radio("watch"));
-    expect(document.activeElement).toBe(radio("watch"));
-    expect(radio("watch").tabIndex).toBe(0);
-    expect(radio("max").tabIndex).toBe(-1);
-
-    fireEvent.keyDown(radio("watch"), { key: "ArrowDown" });
-    expect(checked()).toBe(radio("pad"));
-    fireEvent.keyDown(radio("pad"), { key: "ArrowUp" });
-    expect(checked()).toBe(radio("watch"));
-    fireEvent.keyDown(radio("watch"), { key: "Home" });
-    expect(checked()).toBe(radio("pad"));
-    expect(document.activeElement).toBe(radio("pad"));
-    fireEvent.keyDown(radio("pad"), { key: "End" });
-    expect(checked()).toBe(radio("watch"));
-
+  it("changes the runtime and chooses a model supported by that runtime", () => {
+    const { onCreate } = renderPicker();
+    fireEvent.keyDown(screen.getByRole("button", { name: "Runtime" }), { key: "Enter" });
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "iOS 26.2" }));
+    fireEvent.keyDown(screen.getByRole("button", { name: "Device model" }), { key: "Enter" });
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "iPhone 17" }));
     fireEvent.click(screen.getByLabelText("Create a new simulator for this lane"));
-    expect(onCreate).toHaveBeenCalledWith("watch");
+    expect(onCreate).toHaveBeenCalledWith({
+      runtime: RUNTIMES[1]!.identifier,
+      deviceType: RUNTIMES[1]!.deviceTypes[0]!.identifier,
+    });
   });
 
   it("says when the lane's registered device is gone, where the fix is", () => {
     const { container } = renderPicker({
-      laneDevice: laneDevice({ udid: "deleted-in-xcode", name: "Old clone" }),
+      laneDevice: laneDevice({ udid: "deleted-in-xcode", name: "Old device" }),
     });
-    expect(
-      container.querySelector("[data-apple-lane-device-missing]")?.textContent,
-    ).toContain("Old clone is registered to this lane but is not installed any more.");
+    expect(container.querySelector("[data-apple-lane-device-missing]")?.textContent).toContain("Old device");
   });
 });
 
@@ -378,10 +329,11 @@ describe("AppleDevicePicker the lane's own device", () => {
 });
 
 describe("AppleDevicePicker page", () => {
-  it("says where simulators come from when there are none", () => {
-    const { container } = renderPicker({ installed: [] });
+  it("shows the empty state when there are neither devices nor installed runtimes", () => {
+    const { container, onCreate } = renderPicker({ installed: [], runtimes: [] });
     expect(container.querySelector("[data-apple-picker-empty]")).toBeTruthy();
-    expect(screen.getByText(/Xcode → Settings → Components/)).toBeTruthy();
+    expect(screen.queryByLabelText("Create a new simulator for this lane")).toBeNull();
+    expect(onCreate).not.toHaveBeenCalled();
   });
 
   it("disables every control while a start is in flight", () => {

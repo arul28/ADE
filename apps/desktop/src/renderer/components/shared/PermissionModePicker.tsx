@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { createPortal } from "react-dom";
 import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
 import {
@@ -16,6 +17,7 @@ import {
 import { cn } from "../ui/cn";
 import { usePortalContainer } from "../ui/portalContainer";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
+import { toneText } from "../lanes/laneDesignTokens";
 
 /**
  * The permission-mode pill from the chat composer, lifted into `shared/` so the
@@ -27,7 +29,8 @@ import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
  * that lets a user choose how a chat starts should render this, not a lookalike.
  */
 
-const PERMISSION_MODE_MENU_WIDTH = 240;
+const PERMISSION_MODE_MENU_WIDTH = 264;
+const PERMISSION_MODE_ROW_HEIGHT = 32;
 
 /**
  * Shared trigger chrome for permission pills. Previously hand-copied into both
@@ -43,7 +46,7 @@ export const PERMISSION_TRIGGER_CLASS = cn(
   // 14px as the fallback the expression is always valid: chat-scaled inside a
   // chat, and the original fixed 10.5px everywhere else.
   "font-sans text-[length:calc(var(--chat-font-size,14px)*9/14)] leading-none transition-colors duration-150",
-  "border-white/[0.06] bg-white/[0.03] text-fg/80",
+  "border-fg/[0.06] bg-fg/[0.03] text-fg/80",
   "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
 );
 
@@ -72,12 +75,15 @@ const PERMISSION_MODE_TONE_STYLES: Record<
      * inside the open popover, where there is room to differentiate.
      */
     trigger: string;
+    /** Space-separated RGB for the sliding highlight and the header word. */
+    rgb: string;
     iconSurface: string;
     rowActive: string;
     rowHover: string;
   }
 > = {
   green: {
+    rgb: "52 211 153",
     dot: "bg-emerald-400",
     trigger: "",
     iconSurface: "border-emerald-300/20 bg-emerald-500/[0.12] text-emerald-200",
@@ -85,6 +91,7 @@ const PERMISSION_MODE_TONE_STYLES: Record<
     rowHover: "hover:bg-emerald-500/[0.08] hover:text-emerald-50",
   },
   amber: {
+    rgb: "251 191 36",
     dot: "bg-amber-400",
     trigger: "",
     iconSurface: "border-amber-300/20 bg-amber-500/[0.12] text-amber-200",
@@ -92,6 +99,7 @@ const PERMISSION_MODE_TONE_STYLES: Record<
     rowHover: "hover:bg-amber-500/[0.08] hover:text-amber-50",
   },
   blue: {
+    rgb: "56 189 248",
     dot: "bg-sky-400",
     trigger: "",
     iconSurface: "border-sky-300/20 bg-sky-500/[0.12] text-sky-200",
@@ -99,6 +107,7 @@ const PERMISSION_MODE_TONE_STYLES: Record<
     rowHover: "hover:bg-sky-500/[0.08] hover:text-sky-50",
   },
   purple: {
+    rgb: "167 139 250",
     dot: "bg-violet-400",
     trigger: "",
     iconSurface: "border-violet-300/20 bg-violet-500/[0.14] text-violet-200",
@@ -106,6 +115,7 @@ const PERMISSION_MODE_TONE_STYLES: Record<
     rowHover: "hover:bg-violet-500/[0.08] hover:text-violet-50",
   },
   red: {
+    rgb: "248 113 113",
     dot: "bg-red-400",
     // The one tone that keeps colour in the toolbar — bypassed permissions are
     // the only setting here that can do damage. It is a tint, not a filled
@@ -116,13 +126,19 @@ const PERMISSION_MODE_TONE_STYLES: Record<
     rowHover: "hover:bg-red-500/[0.08] hover:text-red-50",
   },
   slate: {
+    rgb: "161 161 170",
     dot: "bg-slate-300",
     trigger: "",
-    iconSurface: "border-white/[0.08] bg-white/[0.06] text-fg/72",
-    rowActive: "bg-white/[0.08] text-fg/90",
-    rowHover: "hover:bg-white/[0.055] hover:text-fg/90",
+    iconSurface: "border-fg/[0.08] bg-fg/[0.06] text-fg/72",
+    rowActive: "bg-fg/[0.08] text-fg/90",
+    rowHover: "hover:bg-fg/[0.055] hover:text-fg/90",
   },
 };
+
+/** A tone as space-separated RGB, for tinted fills that match the open menu. */
+export function permissionModeToneRgb(tone: PermissionModeTone): string {
+  return PERMISSION_MODE_TONE_STYLES[tone].rgb;
+}
 
 export function PermissionModeGlyph({
   icon,
@@ -215,8 +231,8 @@ export function PermissionModePicker<Value extends string>({
         className={cn(
           PERMISSION_TRIGGER_CLASS,
           selectedTone.trigger,
-          open && "ring-1 ring-white/[0.06]",
-          (disabled || !onSelect) && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
+          open && "ring-1 ring-fg/[0.06]",
+          (disabled || !onSelect) && "cursor-not-allowed opacity-60 hover:border-fg/[0.06] hover:bg-fg/[0.03]",
         )}
         title={triggerTitle}
       >
@@ -242,58 +258,163 @@ export function PermissionModePicker<Value extends string>({
           const rect = anchor.getBoundingClientRect();
           return (
             <ViewportOverlayHost layer="popover">
-              <div
-                role="listbox"
-                aria-label={ariaLabel}
-                data-permission-mode-picker-dropdown
-                className={cn(
-                  "absolute overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md",
-                )}
+              <PermissionModeMenu
+                ariaLabel={ariaLabel}
+                options={options}
+                selectedValue={selectedValue}
                 style={{
                   ...fixedMenuAboveAnchorStyle(rect, { width: PERMISSION_MODE_MENU_WIDTH }),
                   pointerEvents: "auto",
                 }}
-              >
-              <ul className="py-0.5">
-                {options.map((option) => {
-                  const active = option.value === selectedValue;
-                  const tone = PERMISSION_MODE_TONE_STYLES[option.tone];
-                  return (
-                    <li key={option.value}>
-                      <button
-                        type="button"
-                        role="option"
-                        aria-label={option.label}
-                        aria-selected={active}
-                        onClick={() => {
-                          onSelect?.(option.value);
-                          setOpen(false);
-                        }}
-                        className={cn(
-                          "flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-sans transition-colors",
-                          active ? tone.rowActive : "text-fg/72",
-                          tone.rowHover,
-                        )}
-                        title={option.detail}
-                      >
-                        <span className={cn("inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border", tone.iconSurface)} aria-hidden>
-                          <PermissionModeGlyph icon={option.icon} size={10} />
-                        </span>
-                        <span className="min-w-0 flex-1 truncate text-[length:calc(var(--chat-font-size)*10/14)] font-semibold leading-4">
-                          {option.label}
-                        </span>
-                        {active ? <Check size={12} weight="bold" className="shrink-0 opacity-80" /> : null}
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-              </div>
+                onSelect={(value) => {
+                  onSelect?.(value);
+                  setOpen(false);
+                }}
+              />
             </ViewportOverlayHost>
           );
         })(),
         portalContainer ?? document.body,
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The open list, in the effort picker's style: a header naming the mode, a
+ * recessed track of modes with one highlight that slides to the row under the
+ * pointer (or keyboard focus) in that mode's tone, and a line describing it.
+ * The modes are not a scale, so the track runs down rather than across, which
+ * also leaves room for full names. The highlight moves by transform only.
+ */
+function PermissionModeMenu<Value extends string>({
+  ariaLabel,
+  options,
+  selectedValue,
+  style,
+  onSelect,
+}: {
+  ariaLabel: string;
+  options: Array<PermissionModePickerOption<Value>>;
+  selectedValue: Value;
+  style: React.CSSProperties;
+  onSelect: (value: Value) => void;
+}) {
+  const selectedIndex = Math.max(0, options.findIndex((option) => option.value === selectedValue));
+  const [pointedIndex, setPointedIndex] = useState<number | null>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const shownIndex = pointedIndex ?? selectedIndex;
+  const shown = options[shownIndex] ?? options[0];
+  const selected = options[selectedIndex] ?? options[0];
+  const shownTone = PERMISSION_MODE_TONE_STYLES[shown?.tone ?? "slate"];
+  const selectedTone = PERMISSION_MODE_TONE_STYLES[selected?.tone ?? "slate"];
+
+  // Focus the current mode once, as the menu opens; a later pick closes it.
+  const openedOnIndexRef = useRef(selectedIndex);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => optionRefs.current[openedOnIndexRef.current]?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  const moveFocus = (index: number) => {
+    const next = (index + options.length) % options.length;
+    optionRefs.current[next]?.focus();
+  };
+
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveFocus(index + 1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveFocus(index - 1);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      moveFocus(0);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      moveFocus(options.length - 1);
+    }
+  };
+
+  if (!shown || !selected) return null;
+
+  return (
+    <div
+      data-permission-mode-picker-dropdown
+      className={cn("absolute overflow-hidden rounded-2xl p-2.5", POPOVER_SURFACE_CLASS)}
+      style={style}
+    >
+      <div className="flex items-center gap-2 px-1 pb-2.5 pt-0.5 font-sans text-[12px] leading-none text-muted-fg/72">
+        <span
+          aria-hidden
+          className={cn("inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border", selectedTone.iconSurface)}
+        >
+          <PermissionModeGlyph icon={selected.icon} size={9} />
+        </span>
+        <span>Permissions</span>
+        <span className="truncate font-semibold" style={{ color: toneText(`rgb(${selectedTone.rgb})`) }}>
+          {selected.triggerLabel ?? selected.label}
+        </span>
+      </div>
+      <div
+        role="listbox"
+        aria-label={ariaLabel}
+        className="relative rounded-xl bg-black/25 p-[3px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]"
+        onMouseLeave={() => setPointedIndex(null)}
+      >
+        <div
+          aria-hidden
+          className="ade-permission-mode-highlight pointer-events-none absolute inset-x-[3px] top-[3px] rounded-lg"
+          style={{
+            height: PERMISSION_MODE_ROW_HEIGHT,
+            transform: `translateY(${shownIndex * PERMISSION_MODE_ROW_HEIGHT}px)`,
+            "--permission-mode-rgb": shownTone.rgb,
+          } as React.CSSProperties}
+        />
+        {options.map((option, index) => {
+          const active = option.value === selectedValue;
+          const tone = PERMISSION_MODE_TONE_STYLES[option.tone];
+          const lit = index === shownIndex;
+          return (
+            <button
+              key={option.value}
+              ref={(node) => {
+                optionRefs.current[index] = node;
+              }}
+              type="button"
+              role="option"
+              aria-label={option.label}
+              aria-selected={active}
+              tabIndex={index === selectedIndex ? 0 : -1}
+              onClick={() => onSelect(option.value)}
+              onMouseEnter={() => setPointedIndex(index)}
+              onFocus={() => setPointedIndex(index)}
+              onKeyDown={(event) => handleKeyDown(event, index)}
+              className={cn(
+                "relative z-[1] flex w-full items-center gap-2 rounded-lg px-2 text-left font-sans outline-none transition-colors duration-150",
+                lit ? "text-fg" : "text-fg/65",
+              )}
+              style={{ height: PERMISSION_MODE_ROW_HEIGHT }}
+              title={option.detail}
+            >
+              <span
+                aria-hidden
+                className={cn("inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border", tone.iconSurface)}
+              >
+                <PermissionModeGlyph icon={option.icon} size={10} />
+              </span>
+              <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-4">
+                {option.label}
+              </span>
+              {active ? <Check aria-hidden size={12} weight="bold" className="shrink-0 opacity-80" /> : null}
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-2.5 min-h-8 px-1 font-sans text-[11px] leading-4 text-muted-fg/65">
+        {shown.detail}
+      </p>
     </div>
   );
 }

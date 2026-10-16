@@ -157,9 +157,11 @@ export function deriveConfiguredModelIds(
   for (const auth of status.detectedAuth ?? []) {
     if (auth.type === "cli-subscription") {
       if (!auth.authenticated || auth.cli === "cursor") continue;
-      const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai" };
+      const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai", muse: "muse" };
       const family = auth.cli ? familyMap[auth.cli] : undefined;
       if (family) addKnownModelIds(ids, family, true);
+      // Muse's live `model/list` rows ride `availableModelIds` as `muse/<id>`.
+      if (auth.cli === "muse") addAvailableModelIdsByPrefix(ids, status.availableModelIds, "muse/");
       const acpPrefix = auth.cli ? ACP_MODEL_PREFIX_BY_CLI[auth.cli] : undefined;
       if (acpPrefix) addAvailableModelIdsByPrefix(ids, status.availableModelIds, acpPrefix);
       continue;
@@ -237,14 +239,18 @@ export function deriveConfiguredModelIds(
   const registryOrdered = MODEL_REGISTRY
     .filter((model) => !model.deprecated && ids.has(model.id))
     .map((model) => model.id);
-  const extra = [...ids].filter((id) => !registryOrdered.includes(id));
-  extra.sort((a, b) => {
-    const da = getModelById(a)?.displayName ?? a;
-    const db = getModelById(b)?.displayName ?? b;
-    return da.localeCompare(db, undefined, { sensitivity: "base" });
-  });
-  return [...registryOrdered, ...extra];
+  const inRegistryOrder = new Set<string>(registryOrdered);
+  // One lookup per id, not two per comparison: a dynamic (OpenCode, Pi) id
+  // builds a fresh descriptor on every `getModelById` call.
+  const extra = [...ids]
+    .filter((id) => !inRegistryOrder.has(id))
+    .map((id) => ({ id, label: getModelById(id)?.displayName ?? id }));
+  extra.sort((a, b) => MODEL_LABEL_COLLATOR.compare(a.label, b.label));
+  return [...registryOrdered, ...extra.map((entry) => entry.id)];
 }
+
+/** Same ordering as `localeCompare(b, undefined, { sensitivity: "base" })`, built once. */
+const MODEL_LABEL_COLLATOR = new Intl.Collator(undefined, { sensitivity: "base" });
 
 export function deriveConfiguredModelOptions(
   status: AiSettingsStatus | null | undefined,

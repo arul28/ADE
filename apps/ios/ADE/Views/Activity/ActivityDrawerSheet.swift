@@ -1,11 +1,14 @@
+import ActivityKit
 import AppIntents
 import SwiftUI
+import WidgetKit
 
 /// Account-wide Activity, in two buckets: Sessions and Inbox.
 ///
 /// Sessions is every agent across every signed-in machine, sectioned by the
-/// six canonical states in priority order, with a glyph strip above that both
-/// summarises them and filters to one. Inbox is the traffic that wants an
+/// Work board's four columns (Needs you, Working, Waiting, Done) with Done
+/// folded away, under the same five chips the Hub uses (All plus the four
+/// columns) that both summarise them and filter to one. Inbox is the traffic that wants an
 /// acknowledgement — pull requests, CI, and outcomes nobody has looked at.
 /// Rows carry a swipe to dismiss or mark seen, and the row itself is the tap
 /// target: the per-row "Open" button this sheet used to draw was most of its
@@ -26,15 +29,15 @@ struct ActivityDrawerSheet: View {
         NavigationStack {
             VStack(spacing: 0) {
                 bucketPicker
-                if bucket == .sessions, !drawer.stripCounts.isEmpty {
-                    ActivityStateStrip(
-                        counts: drawer.stripCounts,
-                        selection: drawer.stateFilter,
-                        onSelect: { group in
-                            withAnimation(reduceMotion ? nil : .snappy(duration: 0.18)) {
-                                drawer.stateFilter = drawer.stateFilter == group ? nil : group
-                            }
-                        }
+                if bucket == .sessions, !drawer.sessions.isEmpty {
+                    HubRosterFilterBar(
+                        counts: HubRosterFilter.counts(from: drawer.columnCounts),
+                        selection: Binding(
+                            get: { HubRosterFilter(column: drawer.stateFilter) },
+                            set: { drawer.stateFilter = $0.column }
+                        ),
+                        accessibilityTitle: "Agent states",
+                        accessibilityHintText: "Shows only the sessions in that state."
                     )
                     .padding(.horizontal, 16)
                     .padding(.bottom, 10)
@@ -95,12 +98,11 @@ struct ActivityDrawerSheet: View {
     }
 
     private var bucketPicker: some View {
-        Picker("Activity bucket", selection: $bucket) {
-            ForEach(ActivityBucket.allCases, id: \.self) { value in
-                Text(bucketLabel(value)).tag(value)
-            }
-        }
-        .pickerStyle(.segmented)
+        ADEKitSegmented(
+            selection: $bucket,
+            options: ActivityBucket.allCases.map { (value: $0, title: bucketLabel($0)) }
+        )
+        .accessibilityLabel("Activity bucket")
         .padding(.horizontal, 16)
         .padding(.top, 10)
         .padding(.bottom, 10)
@@ -153,14 +155,22 @@ struct ActivityDrawerSheet: View {
                     // that repeats the same word and the same number is the
                     // third time the reader is told the same thing.
                     if drawer.stateFilter == nil {
-                        ActivitySectionHeader(group: section.group, count: section.count)
+                        ActivitySectionHeader(
+                            column: section.column,
+                            count: section.count,
+                            onCollapse: section.column == .done ? {
+                                withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) {
+                                    drawer.doneExpanded = false
+                                }
+                            } : nil
+                        )
                     }
                 }
             }
-            if let resting = drawer.restingSummary {
-                ActivityRestingSummaryRow(counts: resting) {
+            if let doneCount = drawer.collapsedDoneCount {
+                ActivityCollapsedDoneRow(count: doneCount) {
                     withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) {
-                        drawer.restingExpanded = true
+                        drawer.doneExpanded = true
                     }
                 }
                 .listRowBackground(Color.clear)
@@ -245,7 +255,7 @@ struct ActivityDrawerSheet: View {
 
     private var truncationNote: some View {
         Text("Showing the most recent activity. Older rows stay on their machine.")
-            .font(.system(.caption2, design: .rounded))
+            .font(.system(size: 11.5))
             .foregroundStyle(ADEColor.textMuted)
             .frame(maxWidth: .infinity, alignment: .leading)
             .listRowBackground(Color.clear)
@@ -255,18 +265,17 @@ struct ActivityDrawerSheet: View {
 
     /// Three genuinely different empty states: nothing to reach, nothing to do,
     /// and nothing new. They used to be one grey placeholder.
-    private func filteredEmptyState(_ filter: ActivityStateGroup) -> some View {
+    private func filteredEmptyState(_ filter: ActivityBoardColumn) -> some View {
         VStack(spacing: 12) {
             Spacer()
-            Image(systemName: filter.glyph.systemImage)
-                .font(.system(.title, design: .rounded))
-                .foregroundStyle(activityToneColor(filter.tone).opacity(0.7))
+            Image(systemName: filter.systemImage)
+                .font(.system(size: 24, weight: .regular))
+                .foregroundStyle(activityToneColor(filter.tone))
             Text("Nothing \(filter.label.lowercased())")
-                .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(ADEColor.textPrimary)
             Button("Show all states") { drawer.stateFilter = nil }
-                .font(.system(.footnote, design: .rounded).weight(.medium))
-                .foregroundStyle(ADEColor.accent)
+                .buttonStyle(ADEKitButtonStyle())
             Spacer()
         }
         .frame(maxWidth: .infinity)
@@ -278,33 +287,26 @@ struct ActivityDrawerSheet: View {
         return VStack(spacing: 14) {
             Spacer()
             Image(systemName: copy.symbol)
-                .font(.system(.largeTitle, design: .rounded).weight(.regular))
+                .font(.system(size: 28, weight: .regular))
                 .foregroundStyle(copy.tint)
                 .accessibilityHidden(true)
             VStack(spacing: 5) {
                 Text(copy.title)
-                    .font(.system(.title3, design: .rounded).weight(.semibold))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(ADEColor.textPrimary)
                 Text(copy.body)
-                    .font(.system(.subheadline, design: .rounded))
+                    .font(.system(size: 13.5))
                     .foregroundStyle(ADEColor.textSecondary)
                     .multilineTextAlignment(.center)
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(copy.title). \(copy.body)")
             if drawer.source == .none {
-                Button {
+                Button("Try again") {
                     Task { await accountService.refreshAttentionSnapshot() }
-                } label: {
-                    Text("Try again")
-                        .font(.system(.footnote, design: .rounded).weight(.semibold))
-                        .foregroundStyle(ADEColor.accent)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 9)
-                        .background(ADEColor.accent.opacity(0.14), in: Capsule())
-                        .frame(minWidth: 44, minHeight: 44)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ADEKitButtonStyle())
+                .frame(minHeight: 44)
             }
             Spacer()
             Spacer()
@@ -401,164 +403,67 @@ struct ActivityDrawerSheet: View {
 
 // MARK: - Section header
 
-/// A state heading. Takes the group rather than a hand-written tint, so the
-/// heading, the strip above it and the glyph on every row beneath it are all
-/// reading the same table.
+/// A column heading. Takes the column rather than a hand-written tint, so the
+/// heading, the chips above it and the counts on every other surface read the
+/// same table. The Done heading carries a control that folds it away again.
 private struct ActivitySectionHeader: View {
-    let group: ActivityStateGroup
+    let column: ActivityBoardColumn
     let count: Int
+    var onCollapse: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 7) {
-            Image(systemName: group.glyph.systemImage)
+            Image(systemName: column.systemImage)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(activityToneColor(group.tone))
-            Text(group.label)
-                .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                .foregroundStyle(activityToneColor(column.tone))
+            Text(column.label)
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(ADEColor.textPrimary)
                 .textCase(nil)
             Text("\(count)")
-                .font(.system(.caption, design: .rounded).weight(.semibold).monospacedDigit())
-                .foregroundStyle(activityToneColor(group.tone))
+                .font(.adeMono(11))
+                .foregroundStyle(ADEColor.textMuted)
                 .contentTransition(.numericText())
             Spacer(minLength: 0)
+            if let onCollapse {
+                Button(action: onCollapse) {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(ADEColor.textMuted)
+                        .frame(minWidth: 44, minHeight: 28, alignment: .trailing)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Hide done sessions")
+            }
         }
         .padding(.vertical, 2)
         .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 4, trailing: 16))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(group.label), \(count)")
+        .accessibilityLabel("\(column.label), \(count)")
     }
 }
 
-// MARK: - State strip
+// MARK: - Collapsed Done
 
-/// The six-state summary, which is also the filter.
-///
-/// One control doing both jobs is the point: a separate row of filter chips
-/// would repeat the same six words and counts directly beneath the same six
-/// glyphs, in a sheet whose whole problem was that it was too tall. Tapping a
-/// lit glyph clears the filter.
-///
-/// Single-select on purpose — see `ActivityDrawerModel.stateFilter`.
-struct ActivityStateStrip: View {
-    let counts: [ActivityGroupCount]
-    let selection: ActivityStateGroup?
-    let onSelect: (ActivityStateGroup) -> Void
-
-    /// At accessibility text sizes six glyph+count pairs stop fitting on one
-    /// line, and a strip that wraps to two lines reads as a list rather than a
-    /// summary. The live bands are the ones worth keeping.
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-
-    private var visible: [ActivityGroupCount] {
-        guard dynamicTypeSize.isAccessibilitySize else { return counts }
-        let capped = Array(counts.prefix(3))
-        guard let selection, !capped.contains(where: { $0.group == selection }) else {
-            return capped
-        }
-        guard let selected = counts.first(where: { $0.group == selection }) else {
-            return capped
-        }
-        return Array(capped.dropLast()) + [selected]
-    }
-
-    private var summarySentence: String {
-        counts.map { "\($0.count) \($0.group.label.lowercased())" }
-            .joined(separator: ", ")
-    }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            ForEach(visible) { entry in
-                Button {
-                    onSelect(entry.group)
-                } label: {
-                    ActivityStateStripItem(
-                        entry: entry,
-                        isSelected: selection == entry.group
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(entry.count) \(entry.group.label)")
-                .accessibilityAddTraits(selection == entry.group ? [.isSelected] : [])
-                .accessibilityHint(
-                    selection == entry.group
-                        ? "Double tap to show all states"
-                        : "Double tap to show only \(entry.group.label.lowercased())"
-                )
-            }
-        }
-        // One rotor stop that says the whole state of the account, instead of
-        // six unlabelled buttons the reader has to assemble themselves.
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Agent states: \(summarySentence)")
-    }
-}
-
-/// One chip in the state strip.
-///
-/// Sized and filled like a control rather than drawn as bare glyph+number on
-/// the background. The first version floated three tinted marks in dead space
-/// under the Sessions/Inbox picker with nothing tying them together, so they
-/// read as debug output rather than as the filter they are. Equal widths keep
-/// the row from reflowing as counts cross from one digit to two.
-private struct ActivityStateStripItem: View {
-    let entry: ActivityGroupCount
-    let isSelected: Bool
-
-    private var tint: Color { activityToneColor(entry.group.tone) }
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: entry.group.glyph.systemImage)
-                .font(.system(size: 11, weight: .semibold))
-            Text("\(entry.count)")
-                .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
-                .contentTransition(.numericText())
-        }
-        .foregroundStyle(isSelected ? tint : tint.opacity(0.75))
-        .frame(maxWidth: .infinity)
-        .frame(height: 30)
-        .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(tint.opacity(isSelected ? 0.20 : 0.08))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(tint.opacity(isSelected ? 0.55 : 0), lineWidth: 1)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-    }
-}
-
-// MARK: - Resting summary
-
-/// The collapsed stand-in for idle + done: "◷ 6 idle · ✓ 10 done".
-///
-/// These two bands are most of a real account's feed and none of its urgency.
-/// Rendering them inline is what made the sheet a wall of finished work with
-/// the live rows lost somewhere above it.
-private struct ActivityRestingSummaryRow: View {
-    let counts: [ActivityGroupCount]
+/// The folded Done section: "✓ Done 12 ⌄". Done is most of a real account's
+/// feed and none of its urgency, so it stays closed until the reader opens it.
+private struct ActivityCollapsedDoneRow: View {
+    let count: Int
     let expand: () -> Void
-
-    private var sentence: String {
-        counts.map { "\($0.count) \($0.group.label.lowercased())" }
-            .joined(separator: ", ")
-    }
 
     var body: some View {
         Button(action: expand) {
-            HStack(spacing: 10) {
-                ForEach(counts) { entry in
-                    HStack(spacing: 4) {
-                        Image(systemName: entry.group.glyph.systemImage)
-                            .font(.system(size: 11, weight: .regular))
-                        Text("\(entry.count) \(entry.group.label.lowercased())")
-                            .font(.system(.footnote, design: .rounded))
-                    }
-                    .foregroundStyle(activityToneColor(entry.group.tone).opacity(0.85))
-                }
+            HStack(spacing: 7) {
+                Image(systemName: ActivityBoardColumn.done.systemImage)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(activityToneColor(ActivityBoardColumn.done.tone))
+                Text(ActivityBoardColumn.done.label)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(ADEColor.textPrimary)
+                Text("\(count)")
+                    .font(.adeMono(11))
+                    .foregroundStyle(ADEColor.textMuted)
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 10, weight: .semibold))
@@ -568,7 +473,7 @@ private struct ActivityRestingSummaryRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Resting sessions: \(sentence)")
+        .accessibilityLabel("Done, \(count)")
         .accessibilityHint("Double tap to show them")
     }
 }
@@ -585,18 +490,14 @@ private struct ActivityErrorBanner: View {
                 .foregroundStyle(ADESharedTheme.warningAmber)
                 .accessibilityHidden(true)
             Text(message)
-                .font(.system(.caption, design: .rounded))
-                .foregroundStyle(ADEColor.textPrimary)
+                .font(.system(size: 13))
+                .foregroundStyle(ADEColor.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
-        .background(ADESharedTheme.warningAmber.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(ADESharedTheme.warningAmber.opacity(0.28), lineWidth: 0.7)
-        )
+        .background(ADESharedTheme.warningAmber.opacity(0.08), in: RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Error. \(message)")
     }
@@ -720,17 +621,9 @@ private enum ActivityActionVariant {
 
     var background: Color {
         switch self {
-        case .primary(let tint): return tint.opacity(0.18)
-        case .secondary: return ADEColor.surfaceBackground.opacity(0.72)
-        case .danger: return ADEColor.danger.opacity(0.14)
-        }
-    }
-
-    var stroke: Color {
-        switch self {
-        case .primary(let tint): return tint.opacity(0.32)
-        case .secondary: return ADEColor.glassBorder
-        case .danger: return ADEColor.danger.opacity(0.30)
+        case .primary(let tint): return tint.opacity(0.13)
+        case .secondary: return ADEKit.track
+        case .danger: return ADEColor.danger.opacity(0.11)
         }
     }
 }
@@ -749,21 +642,252 @@ private struct ActivityActionLabel: View {
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: systemImage)
-                .font(.system(.caption2, design: .rounded).weight(.bold))
+                .font(.system(size: 11, weight: .semibold))
                 .accessibilityHidden(true)
             Text(title)
-                .font(.system(.caption, design: .rounded).weight(.semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.76)
         }
         .foregroundStyle(variant.foreground)
-        .frame(maxWidth: .infinity, minHeight: 44)
+        .frame(maxWidth: .infinity, minHeight: 40)
         .padding(.horizontal, 10)
-        .background(variant.background, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(variant.stroke, lineWidth: 0.6)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(variant.background, in: Capsule(style: .continuous))
+        .contentShape(Capsule(style: .continuous))
     }
 }
+
+// MARK: - Fixture screens (DEBUG)
+
+#if DEBUG
+/// Fixture data for the Activity fixture screens (`-adePreviewScreen
+/// activity-hub | activity-drawer | chat-connecting | live-activity`). Lets a
+/// simulator with no sign-in and no machine show the four-state surfaces.
+enum ActivityPreviewData {
+  static let now = Date()
+
+  static func iso(minutesAgo: Double) -> String {
+    ISO8601DateFormatter().string(from: now.addingTimeInterval(-minutesAgo * 60))
+  }
+
+  static let project = MobileProjectSummary(
+    id: "preview-ade",
+    displayName: "ADE",
+    rootPath: "/Users/arul/Projects/ADE",
+    laneCount: 3,
+    isAvailable: true,
+    isCached: true
+  )
+
+  static let lanes = [
+    RemoteRosterLane(id: "lane-main", name: "Primary", color: "#7C8CFF"),
+    RemoteRosterLane(id: "lane-sync", name: "sync-retry", color: "#3FB37F", prWaitingReason: "ci"),
+    RemoteRosterLane(id: "lane-docs", name: "docs-refresh", color: "#E7A23A"),
+  ]
+
+  static func chat(
+    _ id: String,
+    lane: String,
+    title: String,
+    status: RemoteRosterChatStatus,
+    minutesAgo: Double,
+    awaiting: Bool? = nil,
+    snoozedUntil: String? = nil
+  ) -> RemoteRosterChat {
+    var chat = RemoteRosterChat(
+      id: id, laneId: lane, chatSessionId: nil, title: title, provider: "claude",
+      model: "claude-opus-5-5", toolType: "claude-chat", status: status,
+      awaitingInput: awaiting, pinned: nil, archived: nil,
+      lastActivityAt: iso(minutesAgo: minutesAgo), preview: nil
+    )
+    chat.snoozedUntil = snoozedUntil
+    return chat
+  }
+
+  static let roster = RemoteRosterProject(
+    projectId: "preview-ade",
+    rootPath: "/Users/arul/Projects/ADE",
+    displayName: "ADE",
+    booted: true,
+    runningCount: 2,
+    attentionCount: 1,
+    lanes: lanes,
+    chats: [
+      chat("c1", lane: "lane-main", title: "Should I force-push the rebase?", status: .awaiting, minutesAgo: 2, awaiting: true),
+      chat("c2", lane: "lane-main", title: "Credential store hardening", status: .failed, minutesAgo: 9),
+      chat("c3", lane: "lane-main", title: "Explore sync transport", status: .running, minutesAgo: 1),
+      chat("c4", lane: "lane-sync", title: "Fix the sync retry", status: .running, minutesAgo: 3),
+      chat("c5", lane: "lane-docs", title: "Rewrite the pairing guide", status: .idle, minutesAgo: 30,
+           snoozedUntil: ISO8601DateFormatter().string(from: now.addingTimeInterval(3_600))),
+      chat("c6", lane: "lane-docs", title: "Release notes for 1.4", status: .idle, minutesAgo: 120),
+      chat("c7", lane: "lane-main", title: "Widget freshness tag", status: .ended, minutesAgo: 600),
+    ]
+  )
+
+  static let machine = AccountAttentionMachine(
+    machineKey: "studio", accountMachineKey: nil, name: "Arul's Mac Studio", online: true, lastSeenAt: now
+  )
+
+  static func item(
+    _ id: String,
+    title: String,
+    phase: AccountAttentionPhase,
+    tier: String? = nil,
+    column: String? = nil,
+    reason: String? = nil,
+    minutesAgo: Double
+  ) -> AccountAttentionItem {
+    let at = now.addingTimeInterval(-minutesAgo * 60)
+    return AccountAttentionItem(
+      id: "agent:studio:\(id)", revision: 1, fingerprint: id, kind: .agent,
+      eventKind: phase == .needsYou ? .agentNeedsYou : phase == .failed ? .agentFailed : .agentRunning,
+      phase: phase, activityTier: tier, boardColumn: column, waitingReason: reason,
+      statusSince: at, machine: machine,
+      project: AccountAttentionProject(projectId: "preview-ade", name: "ADE"),
+      laneName: "Primary", provider: "claude", model: "claude-opus-5-5",
+      title: title, preview: "", privacyPreview: "An ADE agent", destination: .session(sessionId: id, itemId: nil, eventId: nil),
+      occurredAt: at, updatedAt: at
+    )
+  }
+
+  static let snapshot = AccountAttentionSnapshot(
+    revision: 1,
+    generatedAt: now,
+    machines: [machine],
+    items: [
+      item("c1", title: "Should I force-push the rebase?", phase: .needsYou, column: "needs_you", minutesAgo: 2),
+      item("c2", title: "Credential store hardening", phase: .failed, column: "needs_you", minutesAgo: 9),
+      item("c3", title: "Explore sync transport", phase: .running, column: "working", minutesAgo: 1),
+      item("c4", title: "Fix the sync retry", phase: .running, column: "waiting", reason: "ci", minutesAgo: 3),
+      item("c5", title: "Rewrite the pairing guide", phase: .stale, tier: "idle", column: "waiting", reason: "snoozed", minutesAgo: 30),
+      item("c6", title: "Release notes for 1.4", phase: .completed, tier: "idle", column: "done", minutesAgo: 120),
+      item("c7", title: "Widget freshness tag", phase: .completed, tier: "idle", column: "done", minutesAgo: 600),
+    ]
+  )
+}
+
+/// The Hub's five chips over a fixture project, filtering live.
+struct ActivityHubPreviewHost: View {
+  @State private var filter: HubRosterFilter = .all
+  @State private var collapsedLaneKeys: Set<String> = []
+  @State private var toast: ADEToastMessage?
+
+  private var presentation: HubProjectPresentation {
+    buildHubProjectPresentation(
+      project: ActivityPreviewData.project,
+      roster: ActivityPreviewData.roster,
+      isActive: true,
+      isSwitching: false
+    )
+  }
+
+  var body: some View {
+    let all = presentation
+    VStack(spacing: 0) {
+      HubRosterFilterBar(
+        counts: Dictionary(uniqueKeysWithValues: HubRosterFilter.allCases.map {
+          ($0, hubRosterFilterCount([all], filter: $0))
+        }),
+        selection: $filter
+      )
+      .padding(.horizontal, 16)
+      .padding(.vertical, 8)
+      ScrollView {
+        if let shown = hubProjectPresentation(all, matching: filter) {
+          HubProjectCard(
+            presentation: shown,
+            isCollapsed: false,
+            collapsedLaneKeysSnapshot: collapsedLaneKeys,
+            collapsedLaneKeys: $collapsedLaneKeys,
+            allowsCollapse: false,
+            onToggleCollapse: {}, onOpenProject: {}, onOpenChat: { _, _ in },
+            onViewLaneInWork: { _ in }, onViewLaneInLanes: { _ in },
+            onArchiveChat: { _ in }, onDeleteChat: { _ in }, onForget: {}
+          )
+          .padding(.horizontal, 16)
+        } else {
+          HubRosterFilterEmptyState(filter: filter)
+        }
+      }
+    }
+    .background(ADEColor.pageBackground.ignoresSafeArea())
+    .adeToast($toast)
+    .task {
+      guard ProcessInfo.processInfo.arguments.contains("-adePreviewHubNotice") else { return }
+      try? await Task.sleep(nanoseconds: 600_000_000)
+      toast = ADEToastMessage(text: "Arul's Mac Studio is offline.", kind: .info)
+    }
+  }
+}
+
+/// The real Activity drawer over a fixture account snapshot.
+struct ActivityDrawerPreviewHost: View {
+  @StateObject private var drawer = ActivityDrawerModel(
+    defaults: UserDefaults(suiteName: "ade.preview.activity") ?? .standard
+  )
+
+  var body: some View {
+    ADEColor.pageBackground.ignoresSafeArea()
+      .sheet(isPresented: .constant(true)) {
+        ActivityDrawerSheet()
+          .environmentObject(drawer)
+      }
+      .onAppear {
+        drawer.rebuild(from: ActivityPreviewData.snapshot)
+      }
+  }
+}
+
+/// The chat frame a restored chat shows while it connects.
+struct ChatConnectingPreviewHost: View {
+  var body: some View {
+    NavigationStack {
+      WorkChatConnectingFrame(machineName: "Arul's Mac Studio")
+        .workSessionNavigationChrome(
+          mode: .pushedDetail,
+          title: "Fix the sync retry",
+          subtitle: "Arul's Mac Studio"
+        ) { EmptyView() }
+    }
+  }
+}
+
+/// Starts a local Live Activity with fixture column counts, and writes the
+/// fixture feed for the widgets, so the lock screen, the Dynamic Island and the
+/// widgets can be screenshotted. Machine-scoped so the widget
+/// renders it without an account; `LiveActivityService` does not run in
+/// fixture mode, so nothing ends it.
+struct LiveActivityPreviewHost: View {
+  @State private var status = "Starting the Live Activity…"
+
+  var body: some View {
+    Text(status)
+      .font(.headline)
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .background(ADEColor.pageBackground.ignoresSafeArea())
+      .task {
+        // The widgets read the same fixture feed from the App Group.
+        ADESharedContainer.writeAttentionSnapshot(ActivityPreviewData.snapshot)
+        WidgetCenter.shared.reloadAllTimelines()
+        for activity in Activity<ADEAgentRunsAttributes>.activities {
+          await activity.end(nil, dismissalPolicy: .immediate)
+        }
+        let state = ADEAgentRunsAttributes.ContentState(
+          updatedAt: Date().timeIntervalSince1970,
+          columns: .init(needsYou: 2, working: 5, waiting: 1, done: 12),
+          activeCount: 8,
+          runs: []
+        )
+        do {
+          _ = try Activity.request(
+            attributes: ADEAgentRunsAttributes(machineName: "Preview", accountWide: false),
+            content: ActivityContent(state: state, staleDate: nil)
+          )
+          status = "Live Activity started: 2 need you · 5 working · 1 waiting · 12 done"
+        } catch {
+          status = "Live Activity failed: \(error.localizedDescription)"
+        }
+      }
+  }
+}
+#endif

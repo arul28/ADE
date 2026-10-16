@@ -1,12 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
+import { fileIdentity } from "../projects/fileIdentity";
+import { normalizeGitRemoteIdentity } from "../../../../desktop/src/shared/crossMachineHandoff";
+import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 import { normalizeSessionStatusNote } from "../../../../desktop/src/shared/sessionStatusNote";
 import { normalizeSessionActivityReport } from "../../../../desktop/src/shared/sessionActivity";
-import { isSessionSnoozed } from "../../../../desktop/src/shared/sessionCanonicalState";
+import { isSessionSnoozed, lanePrWaitingReason } from "../../../../desktop/src/shared/sessionCanonicalState";
 import type {
+  AgentChatLogState,
   SyncRosterChat,
   SyncRosterChatStatus,
   SyncRosterLane,
@@ -14,18 +17,16 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
+import {
+  hasColumn,
+  hasTable,
+  openReadOnlyDatabase,
+} from "../../../../desktop/src/main/services/projects/readOnlySqlite";
 import type { SyncForeignChatTranscriptResolver } from "./syncHostService";
 
-// Anchor builtin resolution to the active runtime, mirroring kvDb / the cheap
-// cross-project read in recentProjectSummary.ts. The roster opens each
-// project's `.ade/ade.db` read-only with `node:sqlite` — NO cr-sqlite, NO
-// runtime boot — so an all-projects feed never has to activate every project.
-type DatabaseSyncConstructor = new (
-  dbPath: string,
-  options?: { allowExtension?: boolean; readOnly?: boolean },
-) => DatabaseSyncType;
-const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
-const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
+// The roster opens each project's `.ade/ade.db` read-only with `node:sqlite`
+// (`openReadOnlyDatabase`) — NO cr-sqlite, NO runtime boot — so an
+// all-projects feed never has to activate every project.
 
 const PREVIEW_MAX_CHARS = 120;
 
@@ -45,6 +46,11 @@ export type RosterProjectRecord = {
   projectId: string;
   rootPath: string;
   displayName: string;
+  /**
+   * Raw `origin` URL the project registry captured when the project was
+   * registered (it re-reads only while unset), so the roster never spawns git.
+   */
+  gitOriginUrl?: string | null;
   lastOpenedAt: number;
   catalogVisibility: "recent" | "system";
 };
@@ -66,6 +72,8 @@ export type RosterLiveSession = {
    * so a chat whose subagents are still working is not reported as idle.
    */
   activeBackgroundTaskCount?: number | null;
+  /** The chat's next scheduled wake, if one is parked. */
+  nextWakeAt?: string | null;
   /**
    * Set on CTO/identity chats. Identity sessions are deliberately omitted from
    * the normal project roster, but this marker remains available as a
@@ -82,6 +90,8 @@ export type RosterAgentChatService = {
     laneId?: string,
     options?: { includeArchived?: boolean; includeIdentity?: boolean },
   ): Promise<RosterLiveSession[]>;
+  /** chatLogV2 freshness for a chat; live counter for loaded sessions. */
+  getChatLogState?(sessionId: string): AgentChatLogState | null;
 };
 
 export type RosterPtyService = {
@@ -148,9 +158,18 @@ type TerminalSessionRow = {
   snoozed_at: string | null;
 };
 
+type PullRequestRow = {
+  lane_id: string;
+  state: string;
+  checks_status: string | null;
+  review_status: string | null;
+};
+
 type DiskProjectData = {
   lanes: LaneRow[];
   chats: TerminalSessionRow[];
+  /** Lane id → why a running session there waits on its PR. */
+  prWaitingReasonByLaneId: Map<string, "ci" | "review">;
 };
 
 // --- Helpers -----------------------------------------------------------------
@@ -171,19 +190,35 @@ function laneExistsOnDisk(row: LaneRow, projectRoot: string): boolean {
   return candidate ? fs.existsSync(candidate) : false;
 }
 
-function hasTable(db: DatabaseSyncType, tableName: string): boolean {
-  return Boolean(
-    db
-      .prepare("select 1 as present from sqlite_master where type = 'table' and name = ? limit 1")
-      .get<{ present?: number }>(tableName)?.present,
-  );
-}
-
-function hasColumn(db: DatabaseSyncType, tableName: string, columnName: string): boolean {
-  return db
-    .prepare(`pragma table_info(${tableName})`)
-    .all<{ name?: string }>()
-    .some((row) => row.name === columnName);
+/**
+ * The tool type of one session, read from a project's database on disk, or
+ * null when the project has no such session (or no readable database).
+ *
+ * Answers "does this project own that chat" for a project whose runtime is not
+ * loaded, so an unknown chat id is checked against each project's database
+ * without booting a runtime per project.
+ */
+export function readSessionToolTypeFromDisk(projectRoot: string, sessionId: string): string | null {
+  const dbPath = resolveAdeLayout(projectRoot).dbPath;
+  if (!fs.existsSync(dbPath)) return null;
+  let db: DatabaseSyncType | null = null;
+  try {
+    db = openReadOnlyDatabase(dbPath);
+    db.exec("PRAGMA busy_timeout = 250");
+    if (!hasTable(db, "terminal_sessions")) return null;
+    const row = db
+      .prepare("select tool_type from terminal_sessions where id = ? limit 1")
+      .get<{ tool_type?: string | null }>(sessionId);
+    return typeof row?.tool_type === "string" ? row.tool_type : null;
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // ignore
+    }
+  }
 }
 
 function truncatePreview(text: string | null | undefined): string | null {
@@ -250,19 +285,57 @@ function desktopVisibleRosterRows(rows: TerminalSessionRow[], visibleLaneIds: Se
   });
 }
 
+/** A project with nothing to show; a fresh object each call. */
+const emptyDiskProject = (): DiskProjectData => ({ lanes: [], chats: [], prWaitingReasonByLaneId: new Map() });
+
+/**
+ * Last successful disk read per project database, keyed by the database and
+ * WAL file identities. Every SQLite write changes one of them (WAL append,
+ * checkpoint, or a rollback-journal write to the main file), so an unchanged
+ * signature means the rows are unchanged. The roster is rebuilt every few
+ * seconds while agents work; without this every recent project paid a fresh
+ * connection and a full schema parse (~450 tables) each time, blocking the
+ * brain's event loop, even when nothing in it had moved.
+ */
+const diskProjectCache = new Map<string, { signature: string; at: number; data: DiskProjectData }>();
+/**
+ * Bounds how long a signature alone is trusted. A WAL rewritten from offset 0
+ * at the same size inside one mtime tick (coarse timestamps) looks unchanged.
+ */
+const DISK_PROJECT_CACHE_MAX_AGE_MS = 30_000;
+
 /**
  * Read a project's lanes + chat sessions straight off disk (read-only). Never
  * throws: a missing, locked, or schema-shifted DB yields empty lanes/chats so
  * the project still appears in the roster (just without rows).
  */
 function readProjectFromDisk(projectRoot: string, logger?: Pick<Logger, "warn"> | null): DiskProjectData {
-  const empty: DiskProjectData = { lanes: [], chats: [] };
   const dbPath = resolveAdeLayout(projectRoot).dbPath;
-  if (!fs.existsSync(dbPath)) return empty;
+  const dbIdentity = fileIdentity(dbPath);
+  if (dbIdentity === null) {
+    diskProjectCache.delete(dbPath);
+    return emptyDiskProject();
+  }
+  const signature = `${dbIdentity}|${fileIdentity(`${dbPath}-wal`) ?? "-"}`;
+  const now = Date.now();
+  const cached = diskProjectCache.get(dbPath);
+  if (cached && cached.signature === signature && now - cached.at < DISK_PROJECT_CACHE_MAX_AGE_MS) return cached.data;
+  diskProjectCache.delete(dbPath);
+  const data = readProjectFromDiskUncached(dbPath, projectRoot, logger);
+  if (data) diskProjectCache.set(dbPath, { signature, at: now, data });
+  return data ?? emptyDiskProject();
+}
 
+/** Null when the read failed (locked, unreadable) so the caller retries next time. */
+function readProjectFromDiskUncached(
+  dbPath: string,
+  projectRoot: string,
+  logger?: Pick<Logger, "warn"> | null,
+): DiskProjectData | null {
+  const empty = emptyDiskProject();
   let db: DatabaseSyncType | null = null;
   try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
+    db = openReadOnlyDatabase(dbPath);
     db.exec("PRAGMA busy_timeout = 2000");
     if (!hasTable(db, "lanes")) return empty;
 
@@ -327,13 +400,44 @@ function readProjectFromDisk(projectRoot: string, logger?: Pick<Logger, "warn"> 
         })()
       : [];
 
-    return { lanes, chats };
+    const prWaitingReasonByLaneId = new Map<string, "ci" | "review">();
+    if (hasTable(db, "pull_requests")) {
+      const prsByLaneId = new Map<string, Array<{
+        state: string;
+        checksStatus: string | null;
+        reviewStatus: string | null;
+      }>>();
+      const rows = db
+        .prepare(
+          `
+            select lane_id, state, checks_status, review_status
+            from pull_requests
+            where state in ('open', 'draft')
+          `,
+        )
+        .all<PullRequestRow>();
+      for (const row of rows) {
+        const list = prsByLaneId.get(row.lane_id) ?? [];
+        list.push({
+          state: row.state,
+          checksStatus: row.checks_status,
+          reviewStatus: row.review_status,
+        });
+        prsByLaneId.set(row.lane_id, list);
+      }
+      for (const [laneId, prs] of prsByLaneId) {
+        const reason = lanePrWaitingReason(prs);
+        if (reason) prWaitingReasonByLaneId.set(laneId, reason);
+      }
+    }
+
+    return { lanes, chats, prWaitingReasonByLaneId };
   } catch (error) {
     logger?.warn?.("sync_host.roster_project_read_failed", {
       projectRoot,
       error: error instanceof Error ? error.message : String(error),
     });
-    return empty;
+    return null;
   } finally {
     db?.close();
   }
@@ -345,7 +449,13 @@ type Sidecar = {
   awaitingInput?: boolean;
   /** Persisted CTO/identity marker; see `RosterLiveSession.identityKey`. */
   identityKey?: string | null;
+  /** Persisted chat log freshness (chatLogV2): sequence high-water + generation. */
+  eventSequence?: number | null;
+  historyGeneration?: number | null;
 };
+
+const positiveInteger = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) && value >= 1 ? Math.floor(value) : null;
 
 // Best-effort read of a chat's persisted sidecar for provider/model/awaiting.
 // A missing or unparsable sidecar leaves those fields null — never throws.
@@ -358,6 +468,8 @@ function readChatSidecar(chatSessionsDir: string, sessionId: string): Sidecar | 
       model: typeof parsed.model === "string" ? parsed.model : null,
       awaitingInput: parsed.awaitingInput === true,
       identityKey: typeof parsed.identityKey === "string" ? parsed.identityKey.trim() || null : null,
+      eventSequence: positiveInteger(parsed.eventSequence),
+      historyGeneration: positiveInteger(parsed.historyGeneration),
     };
   } catch {
     return null;
@@ -404,7 +516,19 @@ function liveChatStatus(live: RosterLiveSession): SyncRosterChatStatus {
   return "ended";
 }
 
-function mapLane(row: LaneRow): SyncRosterLane {
+/**
+ * The same normalization the desktop's cross-machine repo match applies
+ * (`normalizeGitRemoteIdentity`), so the phone can compare roster rows from
+ * different machines directly. It also drops any user/token in the URL.
+ */
+function rosterRepoOriginUrl(record: RosterProjectRecord): string | null {
+  return normalizeGitRemoteIdentity(record.gitOriginUrl ?? null);
+}
+
+function mapLane(
+  row: LaneRow,
+  prWaitingReasonByLaneId: ReadonlyMap<string, "ci" | "review">,
+): SyncRosterLane {
   return {
     id: row.id,
     name: row.name,
@@ -412,6 +536,7 @@ function mapLane(row: LaneRow): SyncRosterLane {
     icon: row.icon,
     laneType: row.lane_type,
     branchRef: row.branch_ref,
+    prWaitingReason: prWaitingReasonByLaneId.get(row.id) ?? null,
   };
 }
 
@@ -440,6 +565,7 @@ async function buildRosterProject(
   const liveBySessionId = new Map<string, RosterLiveSession>();
   let booted = false;
   let livePtyService: RosterPtyService | null = null;
+  let liveChatLogState: ((sessionId: string) => AgentChatLogState | null) | null = null;
   try {
     const bootedPromise = scopeRegistry.getIfBooted(record.projectId);
     const scope = bootedPromise
@@ -454,6 +580,9 @@ async function buildRosterProject(
     livePtyService = scope?.runtime.ptyService ?? null;
     if (agentChatService) {
       booted = true;
+      if (typeof agentChatService.getChatLogState === "function") {
+        liveChatLogState = (sessionId) => agentChatService.getChatLogState?.(sessionId) ?? null;
+      }
       const liveSessions = await agentChatService
         .listSessions(undefined, { includeArchived: false, includeIdentity: true })
         .catch(() => [] as RosterLiveSession[]);
@@ -543,6 +672,20 @@ async function buildRosterProject(
       row.started_at,
     );
     const lastActivityAt = latestActivityTimestamp(lifecycleUpdatedAt, activityStatusChangedAt);
+    // chatLogV2 freshness: live counter when the project is booted, else the
+    // persisted sidecar. Agent chats only — CLI rows have neither.
+    let chatLog: AgentChatLogState | null = null;
+    try {
+      chatLog = liveChatLogState?.(row.id) ?? null;
+    } catch {
+      chatLog = null;
+    }
+    if (!chatLog && sidecar) {
+      chatLog = {
+        maxSequence: sidecar.eventSequence ?? 0,
+        historyGeneration: sidecar.historyGeneration ?? 1,
+      };
+    }
     chats.push({
       id: row.id,
       laneId: row.lane_id,
@@ -568,6 +711,10 @@ async function buildRosterProject(
       exitCode: row.exit_code,
       snoozedUntil: row.snoozed_until,
       snoozedAt: row.snoozed_at,
+      ...(live?.nextWakeAt ? { nextWakeAt: live.nextWakeAt } : {}),
+      ...(chatLog
+        ? { maxSequence: chatLog.maxSequence, historyGeneration: chatLog.historyGeneration }
+        : {}),
     });
   }
 
@@ -577,11 +724,12 @@ async function buildRosterProject(
     projectId: record.projectId,
     rootPath: record.rootPath,
     displayName: record.displayName,
+    repoOriginUrl: rosterRepoOriginUrl(record),
     lastOpenedAt: record.lastOpenedAt > 0 ? new Date(record.lastOpenedAt).toISOString() : null,
     booted,
     runningCount,
     attentionCount,
-    lanes: visibleLanes.map(mapLane),
+    lanes: visibleLanes.map((lane) => mapLane(lane, disk.prWaitingReasonByLaneId)),
     chats,
   };
 }
@@ -615,11 +763,19 @@ export function createForeignChatTranscriptResolver(args: {
       const requestedProjectId = typeof projectId === "string" ? projectId.trim() : "";
       const requestedRootPath = normalizePath(projectRootPath);
       const records = args.projectRegistry.list();
-      const record = records.find((entry) => {
-        if (requestedProjectId && entry.projectId === requestedProjectId) return true;
-        if (requestedRootPath && normalizePath(entry.rootPath) === requestedRootPath) return true;
-        return false;
-      });
+      const byId = requestedProjectId
+        ? records.find((entry) => entry.projectId === requestedProjectId)
+        : undefined;
+      // Platform path identity: case-folded on Windows and macOS, so a root
+      // spelled with different casing still names the registered project.
+      const byRoot = requestedRootPath
+        ? records.find((entry) => pathsEqual(entry.rootPath, requestedRootPath))
+        : undefined;
+      // Both selectors given: the project the id names must live at that
+      // root, or a request for one project could be answered from another's
+      // transcripts.
+      if (byId && requestedRootPath && !pathsEqual(byId.rootPath, requestedRootPath)) return null;
+      const record = byId ?? byRoot;
       if (!record) return null;
 
       const layout = resolveAdeLayout(record.rootPath);
@@ -670,6 +826,7 @@ export async function buildRosterSnapshot(args: BuildRosterSnapshotArgs): Promis
           projectId: record.projectId,
           rootPath: record.rootPath,
           displayName: record.displayName,
+          repoOriginUrl: rosterRepoOriginUrl(record),
           lastOpenedAt: record.lastOpenedAt > 0 ? new Date(record.lastOpenedAt).toISOString() : null,
           booted: false,
           runningCount: 0,

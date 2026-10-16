@@ -36,8 +36,8 @@ export function formatSessionBundleMarkdown(sessions: TerminalSessionSummary[]):
   return header + parts.join("\n---\n\n");
 }
 
-export function triggerBrowserDownload(filename: string, text: string) {
-  const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+export function triggerBrowserDownload(filename: string, text: string, mimeType = "text/markdown;charset=utf-8") {
+  const blob = new Blob([text], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   let appended = false;

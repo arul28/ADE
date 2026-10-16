@@ -21,8 +21,12 @@ type ChatHandoffListener = (sessionId: string, intent: ChatHandoffIntent) => voi
 type PendingChatHandoff = {
   sessionId: string;
   intent: ChatHandoffIntent;
+  /** For "remote": the machine to preselect (name or key), from the menu. */
+  machine: string | null;
   queuedAt: number;
 };
+
+export type ChatHandoffRequest = { intent: ChatHandoffIntent; machine: string | null };
 
 const listeners = new Set<ChatHandoffListener>();
 let pending: PendingChatHandoff | null = null;
@@ -46,8 +50,12 @@ const MAX_PENDING_AGE_MS = 30_000;
  * consumes it within a render, so enqueuing for a second session before the
  * first is taken replaces the first rather than accumulating stale commands.
  */
-export function openChatHandoff(sessionId: string, intent: ChatHandoffIntent): void {
-  pending = { sessionId, intent, queuedAt: Date.now() };
+export function openChatHandoff(
+  sessionId: string,
+  intent: ChatHandoffIntent,
+  options?: { machine?: string | null },
+): void {
+  pending = { sessionId, intent, machine: options?.machine?.trim() || null, queuedAt: Date.now() };
   for (const listener of [...listeners]) listener(sessionId, intent);
 }
 
@@ -63,11 +71,16 @@ export function subscribeChatHandoff(listener: ChatHandoffListener): () => void 
  * intent queued for a different session is left in place, not returned.
  */
 export function takeChatHandoff(sessionId: string): ChatHandoffIntent | null {
+  return takeChatHandoffRequest(sessionId)?.intent ?? null;
+}
+
+/** `takeChatHandoff` plus the machine the menu picked, when it picked one. */
+export function takeChatHandoffRequest(sessionId: string): ChatHandoffRequest | null {
   if (!pending || pending.sessionId !== sessionId) return null;
-  const intent = pending.intent;
+  const request = { intent: pending.intent, machine: pending.machine };
   const stale = Date.now() - pending.queuedAt > MAX_PENDING_AGE_MS;
   pending = null;
-  return stale ? null : intent;
+  return stale ? null : request;
 }
 
 /** Test hook; production code never needs to reset the module. */

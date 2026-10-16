@@ -22,6 +22,7 @@ function renderRail(overrides: Partial<React.ComponentProps<typeof AppleDeviceRa
     screenshotPending: false,
     orientation: "portrait",
     onHome: vi.fn(),
+    onHardwareButton: vi.fn(),
     onOrientation: vi.fn(),
     onScreenshot: vi.fn(),
     onToggleTools: vi.fn(),
@@ -64,6 +65,7 @@ describe("AppleDeviceRail", () => {
     const labels = railButtons().map((button) => button.getAttribute("aria-label"));
     expect(labels).toEqual([
       "Home",
+      "Hardware buttons",
       "Orientation: Portrait",
       "Inspect elements",
       "Save screenshot",
@@ -150,6 +152,7 @@ describe("AppleDeviceRail", () => {
     renderRail({ containerWidth: 320 });
     expect(railButtons().map((button) => button.getAttribute("aria-label"))).toEqual([
       "Home",
+      "Hardware buttons",
       "Orientation: Portrait",
       "Device tools",
       "More device actions",
@@ -203,6 +206,67 @@ describe("AppleDeviceRail", () => {
     const items = screen.getAllByRole("menuitem").map((node) => node.textContent);
     expect(screen.getByText("iPhone 17 Pro · iOS 26.2")).toBeTruthy();
     expect(items).toEqual(["Float over chat", "Switch device…", "Power off"]);
+  });
+
+  it("presses the device's other hardware buttons through one menu", () => {
+    const props = renderRail();
+    const cases: Array<[string, string]> = [
+      ["Lock", "lock"],
+      ["Volume up", "volume-up"],
+      ["Volume down", "volume-down"],
+      ["Siri", "siri"],
+      ["App switcher", "app-switcher"],
+    ];
+    for (const [label, name] of cases) {
+      // Radix closes the menu on select, so reopen it for each key.
+      openMenu("Hardware buttons");
+      fireEvent.click(screen.getByRole("menuitem", { name: label }));
+      expect(props.onHardwareButton).toHaveBeenLastCalledWith(name);
+    }
+    // The helper cannot press shake, so the rail must not offer it.
+    expect(screen.queryByRole("menuitem", { name: /shake/i })).toBeNull();
+  });
+
+  it("hides the Duo posture control on a device that does not fold", () => {
+    renderRail();
+    expect(screen.queryByRole("button", { name: /^Duo:/ })).toBeNull();
+  });
+
+  it("lists the Duo postures and reports the chosen one", () => {
+    const onDuoStance = vi.fn();
+    renderRail({
+      duo: { capable: true, angle: 105, stance: "laptop" },
+      onDuoStance,
+      onDuoNudge: vi.fn(),
+    });
+
+    openMenu("Duo: 105°");
+    const labels = screen.getAllByRole("menuitem").map((item) => item.textContent ?? "");
+    expect(labels).toEqual([
+      expect.stringContaining("Open"),
+      expect.stringContaining("Laptop"),
+      expect.stringContaining("Tent"),
+      expect.stringContaining("Closed"),
+      expect.stringContaining("Close hinge"),
+      expect.stringContaining("Open hinge"),
+    ]);
+
+    const tent = screen.getAllByRole("menuitem").find((item) => item.textContent?.includes("Tent"));
+    fireEvent.click(tent!);
+    expect(onDuoStance).toHaveBeenCalledWith("tent");
+  });
+
+  it("nudges the hinge from the Duo menu", () => {
+    const onDuoNudge = vi.fn();
+    renderRail({
+      duo: { capable: true, angle: 90, stance: "tent" },
+      onDuoStance: vi.fn(),
+      onDuoNudge,
+    });
+
+    openMenu("Duo: 90°");
+    fireEvent.click(screen.getByRole("menuitem", { name: /Open hinge/ }));
+    expect(onDuoNudge).toHaveBeenCalledWith(15);
   });
 
 });

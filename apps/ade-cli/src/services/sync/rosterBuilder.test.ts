@@ -352,9 +352,39 @@ describe("buildRosterSnapshot", () => {
     expect(byId.get("cli-end")!.chatSessionId).toBe("chat-run");
   });
 
+  it("carries chat log freshness: sidecar when unbooted, live counter when booted, none for CLI rows", async () => {
+    fs.writeFileSync(
+      path.join(projectRoot, ".ade", "cache", "chat-sessions", "chat-run.json"),
+      JSON.stringify({ provider: "claude", eventSequence: 42, historyGeneration: 3 }),
+    );
+    const fromDisk = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
+    const diskById = new Map(fromDisk[0]!.chats.map((chat) => [chat.id, chat]));
+    expect(diskById.get("chat-run")).toMatchObject({ maxSequence: 42, historyGeneration: 3 });
+    // A sidecar that predates the fields reads as generation 1.
+    expect(diskById.get("chat-await")).toMatchObject({ maxSequence: 0, historyGeneration: 1 });
+    expect(diskById.get("cli-end")?.maxSequence).toBeUndefined();
+
+    const scope: RosterBootedScope = {
+      runtime: {
+        agentChatService: {
+          listSessions: async () => [{ sessionId: "chat-run", status: "active" }],
+          getChatLogState: (sessionId) => (sessionId === "chat-run" ? { maxSequence: 57, historyGeneration: 3 } : null),
+        },
+        ptyService: { hasLivePty: () => false },
+      },
+    };
+    const live = await buildRosterSnapshot({
+      projectRegistry,
+      scopeRegistry: { getIfBooted: (id) => (id === PROJECT_ID ? Promise.resolve(scope) : null) },
+      hostProjectId: PROJECT_ID,
+    });
+    expect(live[0]!.chats.find((chat) => chat.id === "chat-run")).toMatchObject({ maxSequence: 57, historyGeneration: 3 });
+  });
+
   it("overlays live running/awaiting fidelity for a booted scope", async () => {
     const scopeRegistry = bootedScopes([
       { sessionId: "chat-run", status: "active", awaitingInput: false, provider: "claude", model: "opus" },
+      { sessionId: "chat-await", status: "idle", nextWakeAt: "2026-01-04T00:00:00Z" },
     ]);
     const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry, hostProjectId: PROJECT_ID });
     const project = projects[0]!;
@@ -364,6 +394,36 @@ describe("buildRosterSnapshot", () => {
     expect(byId.get("chat-run")!.status).toBe("running");
     expect(byId.get("chat-run")!.provider).toBe("claude");
     expect(project.runningCount).toBe(1);
+    // A parked wake travels so Activity can file the chat under Waiting; a
+    // chat without one carries no field at all.
+    expect(byId.get("chat-await")!.nextWakeAt).toBe("2026-01-04T00:00:00Z");
+    expect(byId.get("chat-run")).not.toHaveProperty("nextWakeAt");
+  });
+
+  it("tells each lane why its running chats wait on the lane's open PR", async () => {
+    const db = new DatabaseSync(path.join(projectRoot, ".ade", "ade.db"));
+    db.exec(`
+      create table pull_requests (
+        id text primary key, lane_id text not null, state text not null,
+        checks_status text, review_status text
+      );
+    `);
+    const insertPr = db.prepare(
+      "insert into pull_requests (id, lane_id, state, checks_status, review_status) values (?, ?, ?, ?, ?)",
+    );
+    // CI in flight on an open PR outranks a requested review on another one.
+    insertPr.run("pr-1", "lane-primary", "open", "pending", "none");
+    insertPr.run("pr-2", "lane-primary", "draft", "passing", "requested");
+    // A merged PR's last check state is history, not a wait.
+    insertPr.run("pr-3", "lane-work", "merged", "pending", "requested");
+    db.close();
+
+    const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
+    const byId = new Map(projects[0]!.lanes.map((lane) => [lane.id, lane]));
+
+    expect(byId.get("lane-primary")!.prWaitingReason).toBe("ci");
+    expect(byId.get("lane-work")!.prWaitingReason).toBeNull();
+    expect([...byId.keys()]).toEqual(["lane-primary", "lane-work"]);
   });
 
   it("reports a chat with live background tasks as running, not idle", async () => {
@@ -444,6 +504,13 @@ describe("buildRosterSnapshot", () => {
     // Resolvable by rootPath too.
     expect(resolver.resolveTranscriptPath({ projectRootPath: projectRoot, sessionId: "chat-run" }))
       .toBe(path.join(expectedDir, "chat-run.jsonl"));
+    // Supplying both selectors is a hard boundary: a valid project id cannot
+    // make the brain serve transcripts from a different requested root.
+    expect(resolver.resolveTranscriptPath({
+      projectId: PROJECT_ID,
+      projectRootPath: path.join(projectRoot, "different-project"),
+      sessionId: "chat-run",
+    })).toBeNull();
 
     // Unknown project → null (not registered).
     expect(resolver.resolveTranscriptPath({ projectId: "project_unknown", sessionId: "chat-run" })).toBeNull();

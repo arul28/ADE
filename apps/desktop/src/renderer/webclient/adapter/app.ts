@@ -7,6 +7,7 @@ import {
   type ProjectInfo,
   type UpdateInstallImpact,
 } from "../../../shared/types";
+import { UNKNOWN_UPDATE_IMPACT } from "../../../shared/updateImpact";
 import {
   INERT_KEEP_AWAKE_SNAPSHOT,
   type KeepAwakeFixResult,
@@ -130,13 +131,24 @@ export function createAppNamespace(infra: AdapterInfra): AdeNamespace<"app"> {
       if (typeof window !== "undefined") window.open(window.location.href, "_blank", "noopener,noreferrer");
       return { windowId: null, project: state.getProject() };
     },
-    async openProjectInNewWindow(rootPath: string) {
+    async openProjectInNewWindow({ rootPath }: { rootPath: string }) {
       if (typeof window !== "undefined") {
         const url = new URL(window.location.href);
         url.searchParams.set("projectRoot", rootPath);
         window.open(url.toString(), "_blank", "noopener,noreferrer");
       }
       return { windowId: null };
+    },
+    // The hosted client has no OS windows, so a tab can only be reordered.
+    async projectTabDragStart() {
+      return { windowId: null };
+    },
+    projectTabDragMove() {},
+    async projectTabDragEnd() {
+      return { merged: false, intoSender: false };
+    },
+    onAdoptProjectTab() {
+      return () => {};
     },
     async closeWindow() {
       if (typeof window !== "undefined") window.close();
@@ -295,9 +307,10 @@ export const webUpdateMethods = {
     return preferences;
   },
   async updateGetInstallImpact(): Promise<UpdateInstallImpact> {
-    return { connectedPhones: [] };
+    // A browser installs nothing and cannot see what a machine is running.
+    return { ...UNKNOWN_UPDATE_IMPACT, connectedPhones: [] };
   },
-  async updateQuitAndInstall() {
+  async updateQuitAndInstall(_options?: { resumeChats?: boolean }) {
     return false;
   },
   async updateCancelAutoApply() {

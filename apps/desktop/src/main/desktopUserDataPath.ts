@@ -19,6 +19,9 @@ function hasEnvValue(value: unknown): boolean {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+// Twin: `electronAppDataPath` in scripts/dev-user-data.mjs (a dev script that
+// cannot import TypeScript). Change both, or the dev launcher and this app
+// disagree about where user data lives.
 export function resolveElectronAppDataPath(args: ElectronAppDataPathArgs): string {
   const env = args.env ?? process.env;
   if (args.platform === "darwin") {
@@ -42,6 +45,7 @@ export function resolveDesktopUserDataPath(args: DesktopUserDataPathArgs): strin
   }
 
   if (!args.isPackaged || hasEnvValue(env.VITE_DEV_SERVER_URL) || hasEnvValue(env.ADE_DEV_RUNTIME_SOCKET_PATH)) {
+    // Twin: BASE_DEV_USER_DATA_NAME in scripts/dev-user-data.mjs.
     return path.join(args.appDataPath, "ade-desktop-dev");
   }
 

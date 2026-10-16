@@ -2,6 +2,10 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import type { FileDiff } from "../../../shared/types";
 import { MONO_FONT } from "./laneDesignTokens";
 import { cn } from "../ui/cn";
+import { applyMonacoTheme } from "../../theme/codeTheme";
+import { useActiveResolvedTheme } from "../../theme/useActiveTheme";
+import { claimAppMenuCommands } from "../../lib/appMenuCommands";
+import { findScopeOwnsTarget, trackFindTargets } from "../../lib/findScope";
 
 export type MonacoDiffHandle = {
   getModifiedValue: () => string | null;
@@ -71,8 +75,11 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
     const editableRef = useRef(editable);
     const [ready, setReady] = useState(false);
     const [failed, setFailed] = useState(false);
-    const monacoTheme = theme === "light" ? "vs" : "vs-dark";
-    const monacoThemeRef = useRef(monacoTheme);
+    const stockTheme = theme === "light" ? "vs" : "vs-dark";
+    const resolvedTheme = useActiveResolvedTheme();
+    const resolvedThemeRef = useRef(resolvedTheme);
+    resolvedThemeRef.current = resolvedTheme;
+    const stockThemeRef = useRef(stockTheme);
 
     useImperativeHandle(ref, () => ({
       getModifiedValue: () => diffEditorRef.current?.getModel()?.modified.getValue() ?? null,
@@ -91,8 +98,28 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
     }, [editable]);
 
     useEffect(() => {
-      monacoThemeRef.current = monacoTheme;
-    }, [monacoTheme]);
+      stockThemeRef.current = stockTheme;
+    }, [stockTheme]);
+
+    /**
+     * ⌘F while this diff is where the user is: Monaco's own find, on the side
+     * that has focus (the modified side otherwise). The native menu consumes
+     * the chord before Monaco's keybinding could see it (see CodeViewer).
+     */
+    const scopeRef = useRef<HTMLDivElement | null>(null);
+    useEffect(() => {
+      trackFindTargets();
+      return claimAppMenuCommands((command) => {
+        if (command !== "find") return false;
+        const scope = scopeRef.current;
+        const editor = diffEditorRef.current;
+        if (!editor || !findScopeOwnsTarget(scope)) return false;
+        const original = editor.getOriginalEditor();
+        const target = original.hasTextFocus() ? original : editor.getModifiedEditor();
+        void target.getAction("actions.find")?.run();
+        return true;
+      });
+    }, []);
 
     useEffect(() => {
       let cancelled = false;
@@ -111,7 +138,7 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
             fontSize: 13,
             lineHeight: 18,
             scrollBeyondLastLine: false,
-            theme: monacoThemeRef.current
+            theme: applyMonacoTheme(monaco, resolvedThemeRef.current, stockThemeRef.current)
           });
 
           diffEditorRef.current = editor;
@@ -179,7 +206,7 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
       loadMonaco()
         .then((monaco) => {
           if (cancelled) return;
-          monaco.editor.setTheme(monacoTheme);
+          monaco.editor.setTheme(applyMonacoTheme(monaco, resolvedTheme, stockTheme));
         })
         .catch(() => {
           if (!cancelled) setFailed(true);
@@ -187,10 +214,14 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
       return () => {
         cancelled = true;
       };
-    }, [monacoTheme]);
+    }, [stockTheme, resolvedTheme]);
 
     return (
-      <div className={cn("relative h-full w-full overflow-hidden rounded-lg border border-border bg-card/60", className)}>
+      <div
+        ref={scopeRef}
+        data-ade-find-scope="diff-editor"
+        className={cn("relative h-full w-full overflow-hidden rounded-lg border border-border bg-card/60", className)}
+      >
         <div ref={containerRef} className={cn("h-full w-full", (failed || diff.isBinary) && "hidden")} />
         {diff.isBinary ? (
           <div className="flex h-full w-full items-center justify-center p-4 text-xs text-muted-fg">
@@ -204,7 +235,7 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
         ) : null}
         {failed && !diff.isBinary ? (
           <div className="h-full w-full overflow-auto p-3 text-xs">
-            <div className="mb-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-900">
+            <div className="mb-2 rounded border border-amber-400/30 bg-amber-500/10 px-2 py-1 text-amber-200">
               Monaco failed to load in dev mode. Showing plain-text diff fallback.
             </div>
             <div className="grid h-[calc(100%-36px)] grid-cols-1 gap-2 md:grid-cols-2">

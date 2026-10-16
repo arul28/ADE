@@ -1,83 +1,14 @@
 import AVFoundation
-import CoreMedia
 import SwiftUI
 import UIKit
 
-/// The per-sample attachment dictionary the display layer actually reads.
-///
-/// `AVSampleBufferDisplayLayer` consults the sample-attachments array, not the
-/// buffer-level attachments `CMSetAttachment` writes. Two keys matter here:
-/// `DisplayImmediately` makes a sample present without a control timebase —
-/// this stream has none, so without it the layer holds every frame forever
-/// while `hasFrame` still flips and the placeholder disappears over black —
-/// and `NotSync` marks a P-frame as a delta frame, so the layer does not treat
-/// a mid-GOP picture as a sync sample. Keyframes need no `NotSync` entry: an
-/// absent key means sync.
-enum MacDesktopSampleAttachments {
-  static func apply(to sampleBuffer: CMSampleBuffer, keyframe: Bool) {
-    guard
-      let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true),
-      CFArrayGetCount(attachments) > 0
-    else { return }
-    let dictionary = unsafeBitCast(
-      CFArrayGetValueAtIndex(attachments, 0),
-      to: CFMutableDictionary.self
-    )
-    CFDictionarySetValue(
-      dictionary,
-      Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
-      Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
-    )
-    if !keyframe {
-      CFDictionarySetValue(
-        dictionary,
-        Unmanaged.passUnretained(kCMSampleAttachmentKey_NotSync).toOpaque(),
-        Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
-      )
-    }
-  }
-}
-
-/// Decides which pushed frames may reach the decoder.
-///
-/// The host may skip frames under backpressure and the contract says it always
-/// resumes at a keyframe, so once a sequence number jumps, every P-frame until
-/// the next keyframe references a picture the decoder never saw. Handing those
-/// to VideoToolbox paints corruption that outlives the drop.
-struct MacDesktopStreamFrameGate {
-  private(set) var lastSeq: Int?
-  private(set) var awaitingKeyframe = true
-
-  mutating func shouldDeliver(keyframe: Bool, seq: Int) -> Bool {
-    if let lastSeq, seq > lastSeq + 1 {
-      awaitingKeyframe = true
-    }
-    lastSeq = seq
-    if awaitingKeyframe {
-      guard keyframe else { return false }
-      awaitingKeyframe = false
-    }
-    return true
-  }
-
-  /// After a flush, a format change, or a decode error the decoder has no
-  /// reference picture, so it waits for the next keyframe again.
-  mutating func requireKeyframe() {
-    awaitingKeyframe = true
-  }
-
-  mutating func reset() {
-    lastSeq = nil
-    awaitingKeyframe = true
-  }
-}
-
 /// One lane's live-view subscription and its decoder.
 ///
-/// Owns the `AVSampleBufferDisplayLayer` relationship, the frame gate, and the
-/// format description. It deliberately does not own the socket: records arrive
-/// through `SyncService.registerMacDesktopStream`, and lifecycle (visible,
-/// foreground, connected) is the sheet's business.
+/// Owns the display layer relationship through an `H264SampleBufferFeeder`,
+/// which holds the frame gate and the format description. It deliberately
+/// does not own the socket: records arrive through
+/// `SyncService.registerMacDesktopStream`, and lifecycle (visible, foreground,
+/// connected) is the sheet's business.
 @MainActor
 final class MacDesktopLiveSession: ObservableObject {
   enum Phase: Equatable {
@@ -107,10 +38,7 @@ final class MacDesktopLiveSession: ObservableObject {
   @Published private(set) var pictureWidth: Int?
   @Published private(set) var pictureHeight: Int?
 
-  private weak var displayLayer: AVSampleBufferDisplayLayer?
-  private var formatDescription: CMVideoFormatDescription?
-  private var parameterSets: [[UInt8]]?
-  private var gate = MacDesktopStreamFrameGate()
+  private let feeder = H264SampleBufferFeeder()
   private var isStarting = false
   /// Bumped by every stop so a subscribe still in flight cannot land its reply
   /// on a session that was torn down while it waited.
@@ -187,25 +115,19 @@ final class MacDesktopLiveSession: ObservableObject {
     }
     phase = .idle
     hasFrame = false
-    formatDescription = nil
-    parameterSets = nil
-    gate.reset()
-    displayLayer?.flushAndRemoveImage()
+    feeder.reset()
   }
 
   // MARK: - Decoder
 
   func attach(_ layer: AVSampleBufferDisplayLayer) {
-    guard displayLayer !== layer else { return }
-    displayLayer = layer
     layer.videoGravity = .resizeAspect
     layer.backgroundColor = UIColor.clear.cgColor
+    feeder.attach(layer)
   }
 
   func detach(_ layer: AVSampleBufferDisplayLayer) {
-    guard displayLayer === layer else { return }
-    layer.flushAndRemoveImage()
-    displayLayer = nil
+    feeder.detach(layer)
   }
 
   func consume(_ record: MacDesktopStreamRecord) {
@@ -248,108 +170,21 @@ final class MacDesktopLiveSession: ObservableObject {
   }
 
   private func noteFrame(_ record: MacDesktopStreamRecord) {
-    let units = MacDesktopAnnexB.nalUnits(in: record.data)
-    if let sets = MacDesktopAnnexB.parameterSets(in: units) {
-      updateFormatDescription(sps: sets.sps, pps: sets.pps)
-    }
-    guard let layer = displayLayer else { return }
-    if layer.status == .failed || layer.requiresFlushToResumeDecoding {
-      // The decoder lost its references. Drop back to the keyframe the host
-      // repeats in front of every access unit that matters, and stop showing a
-      // picture that no longer decodes.
-      layer.flushAndRemoveImage()
+    switch feeder.feed(annexB: record.data, keyframe: record.keyframe, seq: record.seq) {
+    case .enqueued:
+      if !hasFrame {
+        hasFrame = true
+      }
+      if phase != .live {
+        phase = .live
+      }
+    case .recovering:
+      // The decoder lost its references and its picture is gone. The host
+      // sends a keyframe every two seconds; the placeholder says so until then.
       hasFrame = false
-      gate.requireKeyframe()
+    case .held:
+      break
     }
-    guard gate.shouldDeliver(keyframe: record.keyframe, seq: record.seq) else { return }
-    guard formatDescription != nil else { return }
-    let accessUnit = MacDesktopAnnexB.avccAccessUnit(fromAnnexB: record.data)
-    guard !accessUnit.isEmpty else { return }
-    guard enqueue(accessUnit: accessUnit, keyframe: record.keyframe, timestampUs: record.timestampUs) else {
-      gate.requireKeyframe()
-      return
-    }
-    if !hasFrame {
-      hasFrame = true
-    }
-    if phase != .live {
-      phase = .live
-    }
-  }
-
-  private func updateFormatDescription(sps: [UInt8], pps: [UInt8]) {
-    if let current = parameterSets,
-       current.count == 2,
-       current[0] == sps,
-       current[1] == pps,
-       formatDescription != nil {
-      return
-    }
-    guard let format = MacDesktopAnnexB.formatDescription(sps: sps, pps: pps) else { return }
-    formatDescription = format
-    parameterSets = [sps, pps]
-    // A new resolution or profile invalidates every queued sample.
-    displayLayer?.flushAndRemoveImage()
-    hasFrame = false
-    gate.requireKeyframe()
-  }
-
-  private func enqueue(
-    accessUnit: Data,
-    keyframe: Bool,
-    timestampUs: Int
-  ) -> Bool {
-    guard let layer = displayLayer, let format = formatDescription else { return false }
-    guard !accessUnit.isEmpty else { return false }
-
-    var blockBuffer: CMBlockBuffer?
-    let blockStatus = CMBlockBufferCreateWithMemoryBlock(
-      allocator: kCFAllocatorDefault,
-      memoryBlock: nil,
-      blockLength: accessUnit.count,
-      blockAllocator: kCFAllocatorDefault,
-      customBlockSource: nil,
-      offsetToData: 0,
-      dataLength: accessUnit.count,
-      flags: 0,
-      blockBufferOut: &blockBuffer
-    )
-    guard blockStatus == kCMBlockBufferNoErr, let blockBuffer else { return false }
-    let copyStatus = accessUnit.withUnsafeBytes { raw -> OSStatus in
-      guard let base = raw.baseAddress else { return -1 }
-      return CMBlockBufferReplaceDataBytes(
-        with: base,
-        blockBuffer: blockBuffer,
-        offsetIntoDestination: 0,
-        dataLength: accessUnit.count
-      )
-    }
-    guard copyStatus == kCMBlockBufferNoErr else { return false }
-
-    var sampleBuffer: CMSampleBuffer?
-    var timing = CMSampleTimingInfo(
-      duration: .invalid,
-      presentationTimeStamp: CMTime(value: CMTimeValue(timestampUs), timescale: 1_000_000),
-      decodeTimeStamp: .invalid
-    )
-    var sampleSize = accessUnit.count
-    let sampleStatus = CMSampleBufferCreateReady(
-      allocator: kCFAllocatorDefault,
-      dataBuffer: blockBuffer,
-      formatDescription: format,
-      sampleCount: 1,
-      sampleTimingEntryCount: 1,
-      sampleTimingArray: &timing,
-      sampleSizeEntryCount: 1,
-      sampleSizeArray: &sampleSize,
-      sampleBufferOut: &sampleBuffer
-    )
-    guard sampleStatus == noErr, let sampleBuffer else { return false }
-    // Per-sample attachments, not `CMSetAttachment`: the layer reads the
-    // sample dictionary, so a buffer-level write is invisible to it.
-    MacDesktopSampleAttachments.apply(to: sampleBuffer, keyframe: keyframe)
-    layer.enqueue(sampleBuffer)
-    return true
   }
 
   private static func message(for error: Error) -> String {
@@ -607,11 +442,6 @@ struct MacDesktopControlPicture: View {
   @State private var pressOutstanding = false
   @State private var pictureSize: CGSize = .zero
   @State private var pump = MacDesktopPointerPump()
-  @State private var zoom = MacDesktopZoom.identity
-  /// The last magnification and pan translation seen, so each gesture update
-  /// applies only its change. Pinch and pan can then run at the same time.
-  @State private var lastMagnification: CGFloat = 1
-  @State private var lastPanTranslation: CGSize = .zero
 
   private var controlling: Bool { holderId != nil }
 
@@ -639,10 +469,8 @@ struct MacDesktopControlPicture: View {
         }
         .onChange(of: controlling) { _, next in
           focused = next
-          if next { resetZoom() }
           onControlChange?(next)
         }
-        .onChange(of: pictureSize) { _, _ in resetZoom() }
       controls
     }
     .task(id: holderId) { await heartbeat() }
@@ -656,63 +484,12 @@ struct MacDesktopControlPicture: View {
   }
 
   /// One view tree in every mode. The gesture masks switch the input on and
-  /// off, so taking control does not rebuild the display layer.
+  /// off, so taking control does not rebuild the display layer. Taking
+  /// control turns zoom off, which puts the picture back at 1x.
   private var gesturedPicture: some View {
     measuredPicture
       .highPriorityGesture(drag, including: controlling ? .all : .subviews)
-      .scaleEffect(zoom.scale)
-      .offset(zoom.offset)
-      .clipped()
-      .contentShape(Rectangle())
-      .gesture(zoomGesture, including: zoomActive ? .all : .subviews)
-  }
-
-  private var zoomGesture: some Gesture {
-    magnifyGesture
-      .simultaneously(with: panGesture)
-      .simultaneously(with: doubleTapGesture)
-  }
-
-  private var magnifyGesture: some Gesture {
-    MagnifyGesture()
-      .onChanged { value in
-        guard zoomActive, lastMagnification > 0 else { return }
-        let factor = value.magnification / lastMagnification
-        lastMagnification = value.magnification
-        zoom = zoom.magnified(by: factor, around: value.startLocation, in: pictureSize)
-      }
-      .onEnded { _ in lastMagnification = 1 }
-  }
-
-  /// One finger, or the fingers of a pinch, move a zoomed picture.
-  private var panGesture: some Gesture {
-    DragGesture(minimumDistance: 8, coordinateSpace: .local)
-      .onChanged { value in
-        guard zoomActive else { return }
-        let delta = CGSize(
-          width: value.translation.width - lastPanTranslation.width,
-          height: value.translation.height - lastPanTranslation.height
-        )
-        lastPanTranslation = value.translation
-        zoom = zoom.panned(by: delta, in: pictureSize)
-      }
-      .onEnded { _ in lastPanTranslation = .zero }
-  }
-
-  private var doubleTapGesture: some Gesture {
-    SpatialTapGesture(count: 2, coordinateSpace: .local)
-      .onEnded { value in
-        guard zoomActive else { return }
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
-          zoom = zoom.toggled(at: value.location, in: pictureSize)
-        }
-      }
-  }
-
-  private func resetZoom() {
-    zoom = .identity
-    lastMagnification = 1
-    lastPanTranslation = .zero
+      .livePictureZoom(enabled: zoomActive)
   }
 
   private var measuredPicture: some View {
@@ -875,5 +652,165 @@ struct MacDesktopControlPicture: View {
       try? await service.macDesktopInput(laneId: lane, call: call)
       _ = try? await service.macDesktopReturnControl(laneId: lane, controllerId: id)
     }
+  }
+}
+
+// MARK: - Zoom
+
+/// Watch-mode zoom for every live picture on the phone (macOS, App Control):
+/// pinch 1x-4x, pan when zoomed, double-tap 1x / 2.5x. The rules are
+/// `MacDesktopZoom`; this is the gesture wiring around them.
+///
+/// The zoomed picture may fill the whole viewer stage, not just its own
+/// letterboxed frame: the stage publishes its size with
+/// `livePictureViewport()`, and a pan stops where an edge of the picture meets
+/// an edge of the stage. Past an edge or a scale limit the picture follows the
+/// finger at a fraction and springs back when the gesture ends.
+///
+/// Turning zoom off, or turning the phone between portrait and landscape,
+/// puts the picture back at 1x. Other size changes keep the zoom and settle it
+/// inside the new limits.
+struct LivePictureZoom: ViewModifier {
+  var enabled: Bool
+
+  @Environment(\.livePictureViewport) private var viewport
+  @State private var zoom = MacDesktopZoom.identity
+  /// The last magnification seen, so each update applies only its change.
+  @State private var lastMagnification: CGFloat = 1
+  /// Where the picture was when the current pan began.
+  @State private var panStartOffset: CGSize?
+  @State private var size: CGSize = .zero
+
+  private static let settleAnimation = Animation.spring(response: 0.32, dampingFraction: 0.86)
+
+  func body(content: Content) -> some View {
+    content
+      .background(
+        GeometryReader { proxy in
+          Color.clear
+            .onAppear { size = proxy.size }
+            .onChange(of: proxy.size) { previous, next in
+              size = next
+              let turned = (previous.width > previous.height) != (next.width > next.height)
+              if turned {
+                reset()
+              } else {
+                zoom = zoom.settled(in: next, viewport: viewport)
+              }
+            }
+        }
+      )
+      .scaleEffect(zoom.scale)
+      .offset(zoom.offset)
+      .zIndex(zoom.isZoomed ? 1 : 0)
+      .contentShape(Rectangle())
+      .gesture(zoomGesture, including: enabled ? .all : .subviews)
+      .onChange(of: enabled) { _, on in
+        if !on { reset() }
+      }
+  }
+
+  private var zoomGesture: some Gesture {
+    magnify
+      .simultaneously(with: pan)
+      .simultaneously(with: doubleTap)
+  }
+
+  private var magnify: some Gesture {
+    MagnifyGesture()
+      .onChanged { value in
+        guard enabled, lastMagnification > 0 else { return }
+        let factor = value.magnification / lastMagnification
+        lastMagnification = value.magnification
+        let rawScale = zoom.scale * factor
+        // Past the limits the pinch still gives a little, then springs back.
+        let softScale = min(max(rawScale, MacDesktopZoom.minScale * 0.85), MacDesktopZoom.maxScale * 1.25)
+        let anchored = MacDesktopZoom(scale: zoom.scale, offset: zoom.offset)
+          .magnified(by: softScale / zoom.scale, around: value.startLocation, in: size, viewport: viewport)
+        zoom = MacDesktopZoom(scale: softScale, offset: anchored.offset)
+      }
+      .onEnded { _ in
+        lastMagnification = 1
+        withAnimation(Self.settleAnimation) { zoom = zoom.settled(in: size, viewport: viewport) }
+      }
+  }
+
+  /// One finger, or the fingers of a pinch, move a zoomed picture. It starts
+  /// on the first movement, so the picture never jumps to catch up.
+  private var pan: some Gesture {
+    DragGesture(minimumDistance: 1, coordinateSpace: .local)
+      .onChanged { value in
+        guard enabled, zoom.isZoomed else { return }
+        let start = panStartOffset ?? zoom.offset
+        if panStartOffset == nil { panStartOffset = start }
+        let limit = MacDesktopZoom.offsetLimits(scale: zoom.scale, in: size, viewport: viewport)
+        zoom.offset = CGSize(
+          width: MacDesktopZoom.rubberBand(start.width + value.translation.width, limit: limit.width),
+          height: MacDesktopZoom.rubberBand(start.height + value.translation.height, limit: limit.height)
+        )
+      }
+      .onEnded { _ in
+        panStartOffset = nil
+        withAnimation(Self.settleAnimation) { zoom = zoom.settled(in: size, viewport: viewport) }
+      }
+  }
+
+  private var doubleTap: some Gesture {
+    SpatialTapGesture(count: 2, coordinateSpace: .local)
+      .onEnded { value in
+        guard enabled else { return }
+        withAnimation(Self.settleAnimation) {
+          zoom = zoom.toggled(at: value.location, in: size, viewport: viewport)
+        }
+      }
+  }
+
+  private func reset() {
+    zoom = .identity
+    lastMagnification = 1
+    panStartOffset = nil
+  }
+}
+
+private struct LivePictureViewportKey: EnvironmentKey {
+  static let defaultValue: CGSize? = nil
+}
+
+extension EnvironmentValues {
+  /// The stage a zoomed live picture may fill. Set by `livePictureViewport()`.
+  var livePictureViewport: CGSize? {
+    get { self[LivePictureViewportKey.self] }
+    set { self[LivePictureViewportKey.self] = newValue }
+  }
+}
+
+/// Measures a viewer's stage, hands its size to the zoomable picture inside,
+/// and clips the zoomed picture to the stage.
+private struct LivePictureViewportModifier: ViewModifier {
+  @State private var stageSize: CGSize?
+
+  func body(content: Content) -> some View {
+    content
+      .environment(\.livePictureViewport, stageSize)
+      .background(
+        GeometryReader { proxy in
+          Color.clear
+            .onAppear { stageSize = proxy.size }
+            .onChange(of: proxy.size) { _, next in stageSize = next }
+        }
+      )
+      .clipped()
+  }
+}
+
+extension View {
+  /// See `LivePictureZoom`.
+  func livePictureZoom(enabled: Bool) -> some View {
+    modifier(LivePictureZoom(enabled: enabled))
+  }
+
+  /// Marks a viewer's stage as the area a zoomed live picture may fill.
+  func livePictureViewport() -> some View {
+    modifier(LivePictureViewportModifier())
   }
 }

@@ -1,3 +1,4 @@
+import { captureWorkerFailure } from "../../sentry/workerFailures";
 import { fork, type ChildProcess, type ForkOptions } from "node:child_process";
 import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs";
@@ -71,6 +72,8 @@ export type CursorSdkBridge = {
       ) => void)
     | null;
   onHookRequest: ((request: CursorSdkHookRequest) => Promise<CursorSdkHookDecision>) | null;
+  /** The hook behind an `onHookRequest` stopped waiting; its answer can no longer be delivered. */
+  onHookAbandoned: ((requestId: string) => void) | null;
 };
 
 export type CursorSdkPooled = {
@@ -665,6 +668,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     onRunStatus: null,
     onCloudArtifact: null,
     onHookRequest: null,
+    onHookAbandoned: null,
   };
   const workerIpcClosedError = () => new Error("Cursor SDK worker IPC channel is closed.");
   const normalizeIpcSendError = (error: unknown): Error => (
@@ -899,6 +903,10 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
       );
       return;
     }
+    if (message.type === "hook_abandoned") {
+      bridge.onHookAbandoned?.(message.requestId);
+      return;
+    }
     if (message.type === "hook_request") {
       void (async () => {
         let decision;
@@ -938,6 +946,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
         message: message.message,
         detail: message.detail,
       });
+      captureWorkerFailure("cursor", message);
     }
   });
 

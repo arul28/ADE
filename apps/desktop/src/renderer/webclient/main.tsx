@@ -1,12 +1,13 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import "../index.css";
+import "./gate.css";
 import jetbrainsMonoUrl from "../../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2?url";
 import geistVariableUrl from "../../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2?url";
 import geistMonoVariableUrl from "../../../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2?url";
 import { AdeSyncClient, bindProjectHostRecoveryClient } from "./sync";
 import { WebClientRoot } from "./shell/WebClientRoot";
 import { installScrollingIndicator } from "../lib/scrollingIndicator";
+import { installAnimationPhaseAlignment } from "../lib/animationPhaseAlignment";
 
 // Mark web-client mode before any renderer module loads, so desktop-only chrome
 // (extra tabs, onboarding tour, native window controls, updater) hides cleanly.
@@ -60,7 +61,15 @@ bindProjectHostRecoveryClient(client);
 
 // Scrollbars show only while you scroll the region under the pointer.
 installScrollingIndicator();
+installAnimationPhaseAlignment();
 
 createRoot(document.getElementById("root") as HTMLElement).render(
   <WebClientRoot client={client} />,
 );
+
+// Error tracking after the first paint, as its own chunk (see ./sentry.ts).
+const startSentry = () => {
+  void import("./sentry").then((module) => module.initWebClientSentry()).catch(() => undefined);
+};
+if ("requestIdleCallback" in window) window.requestIdleCallback(startSentry, { timeout: 3_000 });
+else setTimeout(startSentry, 1_000);

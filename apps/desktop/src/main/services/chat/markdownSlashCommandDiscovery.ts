@@ -45,18 +45,88 @@ export const DEFAULT_MARKDOWN_COMMAND_DEPTH = 10;
 export const SLASH_COMMAND_INPUT_PATTERN =
   /^(\/[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)*)(?:\s+([\s\S]*))?$/;
 
+function parseFrontmatterObject(source: string): Record<string, unknown> | null {
+  try {
+    const parsed = parseYaml(source);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+const FRONTMATTER_TOP_LEVEL_KEY = /^([A-Za-z_][\w-]*):(?:[ \t]+(.*)|[ \t]*)$/;
+
+/**
+ * Claude Code reads frontmatter that strict YAML rejects, and files in the wild
+ * rely on it: `description: Deploy helper: runs the flow` (a second `: `),
+ * `argument-hint: [system] [--source <path>]` (a `[` that is not a list), and a
+ * plain description that runs on over unindented lines. One such key used to
+ * make the whole block parse to nothing, so the file lost its name, description
+ * and `user-invocable` / `disable-model-invocation` flags with it.
+ *
+ * The repair works per top-level key: a key whose own text parses is kept
+ * verbatim, and a key that does not is re-emitted as one quoted string, joining
+ * its continuation lines. Block values (`|`, `>`) and keys with indented
+ * children are never rewritten, so a genuinely malformed structure still fails.
+ */
+function repairPlainScalarFrontmatter(source: string): string | null {
+  const entries: { key: string; value: string; lines: string[] }[] = [];
+  const preamble: string[] = [];
+  const seenKeys = new Set<string>();
+  for (const line of source.split(/\r?\n/)) {
+    const keyMatch = FRONTMATTER_TOP_LEVEL_KEY.exec(line);
+    // A key seen before is prose inside the previous value (agent files embed
+    // `user:` / `assistant:` example dialogue in an unquoted description).
+    if (keyMatch && !seenKeys.has(keyMatch[1]!)) {
+      seenKeys.add(keyMatch[1]!);
+      entries.push({ key: keyMatch[1]!, value: keyMatch[2] ?? "", lines: [line] });
+    } else if (entries.length) {
+      entries[entries.length - 1]!.lines.push(line);
+    } else {
+      preamble.push(line);
+    }
+  }
+  if (!entries.length) return null;
+  let repaired = false;
+  const out = [...preamble];
+  for (const entry of entries) {
+    const text = entry.lines.join("\n");
+    const value = entry.value.trim();
+    const continuation = entry.lines.slice(1);
+    const hasIndentedChildren = continuation.some((line) => /^\s+\S/.test(line));
+    // Verbatim only when the text parses to exactly this one key: a folded
+    // repeat of an earlier key (`user:` in example dialogue) would otherwise
+    // bring the duplicate straight back.
+    const own = parseFrontmatterObject(text);
+    if (
+      (own !== null && Object.keys(own).length === 1 && entry.key in own)
+      || !value
+      || /^[|>]/.test(value)
+      || hasIndentedChildren
+    ) {
+      out.push(text);
+      continue;
+    }
+    const joined = [value, ...continuation.map((line) => line.trim())]
+      .join("\n")
+      .replace(/\s+$/, "");
+    out.push(`${entry.key}: ${JSON.stringify(joined)}`);
+    repaired = true;
+  }
+  return repaired ? out.join("\n") : null;
+}
+
 export function readFrontmatter(markdown: string): Record<string, unknown> {
   if (!markdown.startsWith("---")) return {};
   const match = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
   if (!match) return {};
-  try {
-    const parsed = parseYaml(match[1] ?? "");
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
+  const source = match[1] ?? "";
+  const strict = parseFrontmatterObject(source);
+  if (strict) return strict;
+  const repaired = repairPlainScalarFrontmatter(source);
+  return (repaired !== null ? parseFrontmatterObject(repaired) : null) ?? {};
 }
 
 export function stripFrontmatter(markdown: string): string {

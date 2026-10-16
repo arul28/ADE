@@ -8,6 +8,8 @@ import { homedir } from "node:os";
 import { spawnAsync } from "../shared/utils";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
+  invalidateExecutableLookupCache,
+  refreshWindowsPersistedPathDirs,
   resolveExecutableFromKnownLocations,
   setPathEnvValue,
 } from "./cliExecutableResolver";
@@ -17,13 +19,14 @@ import type { AiLocalProviderConfigs } from "../../../shared/types";
 import { inspectLocalProvider, clearLocalProviderInspectionCache } from "./localModelDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
 import { loadQwenUserSettings } from "./qwenUserSettings";
-import { grokConfigHome } from "../shared/providerConfigHomes";
+import { devinCredentialFiles, grokConfigHome } from "../shared/providerConfigHomes";
 import {
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
   reportProviderRuntimeReady,
 } from "./providerRuntimeHealth";
 import { loadCursorSdk } from "./cursorSdkLoader";
+import { resolveMuseExecutable } from "./museExecutable";
 
 type CliName =
   | "claude"
@@ -33,13 +36,14 @@ type CliName =
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 
 /**
  * CLIs ADE reaches over the Agent Client Protocol. Their auth state is read
  * from disk, not from a spawn: see `inspectAcpCliCredentials`.
  */
-const ACP_CLI_NAMES = ["qwen", "kimi", "grok", "copilot"] as const;
+const ACP_CLI_NAMES = ["qwen", "kimi", "grok", "copilot", "devin"] as const;
 type AcpCliName = (typeof ACP_CLI_NAMES)[number];
 
 function isAcpCliName(cli: CliName): cli is AcpCliName {
@@ -70,7 +74,7 @@ export type CliAuthStatus = {
 export type DetectedAuth =
   | {
       type: "cli-subscription";
-      cli: "claude" | "codex" | "cursor" | "droid" | AcpCliName;
+      cli: "claude" | "codex" | "cursor" | "droid" | "muse" | AcpCliName;
       path: string;
       authenticated: boolean;
       verified: boolean;
@@ -119,6 +123,9 @@ const CLI_AUTH_PROBES: Record<CliName, string[][]> = {
   kimi: [],
   grok: [],
   copilot: [],
+  // `devin auth status` is a real, non-interactive subcommand; the
+  // protocol-level handshake is still authoritative.
+  devin: [["auth", "status"], ["--version"]],
 };
 
 /**
@@ -162,6 +169,28 @@ async function inspectAcpCliCredentials(
   if (cli === "kimi") {
     const root = dir(env.KIMI_CODE_HOME, ".kimi-code");
     return { authenticated: await fileExists(path.join(root, "config.toml")), verified: false };
+  }
+
+  if (cli === "devin") {
+    // Devin reads WINDSURF_API_KEY first, then the login `devin auth login`
+    // leaves in `credentials.toml` under the XDG data dir — the same list
+    // the ACP account reader checks. A Windsurf key saved on the Devin
+    // provider page counts too: the ACP spawn exports it to the CLI.
+    if (env.WINDSURF_API_KEY?.trim()) return { authenticated: true, verified: false };
+    for (const file of devinCredentialFiles({ env, homeDir: home })) {
+      if (await fileExists(file)) {
+        return { authenticated: true, verified: false };
+      }
+    }
+    try {
+      const { getApiCredentialKey } = await import("./apiKeyStore");
+      if (getApiCredentialKey("devin-cli")?.trim()) {
+        return { authenticated: true, verified: false };
+      }
+    } catch {
+      // The store is Electron-main scoped; probes elsewhere keep disk auth.
+    }
+    return { authenticated: false, verified: false };
   }
 
   // Copilot's durable login is normally keychain/session-state backed, not a
@@ -270,31 +299,18 @@ function findExplicitCommandPath(command: string): string | null {
  * with `'claude' is not recognized as an internal or external command`, not as
  * the ENOENT spawn error (`status === null`) that means "missing" on
  * macOS/Linux. An exit-code probe therefore reports *every* CLI as installed
- * on Windows. `where.exe` + the known-install-dir scan (which honours PATHEXT)
- * answer the question honestly.
+ * on Windows. The known-location scan answers it honestly instead: it walks
+ * every PATH entry, then the known install dirs, matching PATHEXT names (plus
+ * `.ps1`). That is everything `where.exe` searches except the current
+ * directory, which ADE must not resolve a CLI from — so a miss there is final,
+ * and no `where.exe` is spawned. Each one blocked the brain's event loop for up
+ * to ~100 ms, once per missing CLI per detection pass.
  */
 async function resolveCommandLocation(command: string): Promise<string | null> {
   const explicitPath = findExplicitCommandPath(command);
   if (explicitPath) return explicitPath;
 
-  if (process.platform === "win32") {
-    try {
-      // Spell the lookup `where.exe`, not `where`. `spawnAsync` routes an
-      // *extensionless* command through `cmd.exe /d /s /c "…"`; the extension
-      // here keeps the probe a direct spawn with no wrapper. Measured: direct
-      // `where.exe` 57.7ms vs `cmd + where` 73.7ms per lookup, and because the
-      // wrapper is what blocks the main thread, the worst *unrelated* IPC
-      // observed during a probe drops from 1364.5ms to 18.2ms.
-      const result = await spawnAsync("where.exe", [command], { timeout: 5_000 });
-      if (result.status === 0) {
-        const first = (result.stdout ?? "").trim().split(/\r?\n/)[0]?.trim();
-        if (first) return first;
-      }
-    } catch {
-      // Treat a failed lookup as "not installed" rather than guessing.
-    }
-    return null;
-  }
+  if (process.platform === "win32") return null;
 
   // POSIX: a direct spawn bypasses shell init (.zshrc errors, slow profiles),
   // and here ENOENT really does surface as `status === null`.
@@ -386,6 +402,9 @@ async function inspectCliAuthentication(
   for (const args of probes) {
     try {
       const result = await spawnAsync(command, args, { timeout: 8_000 });
+      // A missing binary answers no probe; the remaining ones would only
+      // spawn more `cmd.exe` "not recognized" exits on Windows.
+      if (result.notFound) break;
       const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
       const normalized = output.toLowerCase();
 
@@ -467,10 +486,15 @@ async function inspectCursorCliAuthentication(command: string): Promise<{
 }> {
   const probes = CLI_AUTH_PROBES.cursor ?? [];
   let sawUnsupported = false;
+  const env = { ...process.env };
+  if (process.platform === "win32") {
+    setPathEnvValue(env, augmentProcessPathWithShellAndKnownCliDirs({ env }));
+  }
 
   for (const args of probes) {
     try {
-      const result = await spawnAsync(command, args, { timeout: 8_000 });
+      const result = await spawnAsync(command, args, { timeout: 8_000, env });
+      if (result.notFound) break;
       const stdout = result.stdout ?? "";
       const normalized = `${stdout}\n${result.stderr ?? ""}`.trim().toLowerCase();
 
@@ -1227,6 +1251,16 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
   if (options?.force) {
     cachedCliAuth = null;
     cachedLocalProviders = null;
+    invalidateExecutableLookupCache();
+  }
+  // Windows: pick up CLIs whose installer only touched the persisted PATH
+  // since ADE started. Cached for 30 s, so a non-forced pass usually costs
+  // nothing; the forced pass (Settings "re-check") always rereads it. Folding
+  // it into process.env as well means provider CLIs spawned from here on (and
+  // their own children) resolve the same tools. On Windows that merge spawns
+  // nothing; elsewhere it runs a login shell, so it stays force-only there.
+  await refreshWindowsPersistedPathDirs({ force: options?.force === true });
+  if (options?.force || process.platform === "win32") {
     await refreshProcessPathFromShell();
   }
 
@@ -1350,6 +1384,23 @@ export async function detectAllAuth(
         });
       }
     }
+  }
+
+  // Muse is not a PATH CLI: ADE runs only its pinned build from the tools
+  // cache, so it is reported from there, signed in when META_API_KEY, a key
+  // saved in ADE, or Muse's auth.json is present. Never from a `muse` on PATH.
+  const musePath = resolveMuseExecutable().path;
+  if (musePath) {
+    // Lazy, like every other key-store read in this file.
+    const { inspectMuseCredentials } = await import("./museAuth");
+    const museCredentials = inspectMuseCredentials();
+    results.push({
+      type: "cli-subscription",
+      cli: "muse",
+      path: musePath,
+      authenticated: museCredentials.source != null,
+      verified: false,
+    });
   }
 
   // 2. API keys from config + secure local store.

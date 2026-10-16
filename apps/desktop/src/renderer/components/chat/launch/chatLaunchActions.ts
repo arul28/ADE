@@ -16,6 +16,8 @@ import { toQueuedMessage } from "../../../../shared/chatLaunch";
 import { extractError } from "../../../lib/format";
 import {
   announceChatLaunchClosed,
+  consumeChatLaunchDraftRestore,
+  queueChatLaunchDraftRestore,
   type ChatLaunchClosedNotice,
   type ChatLaunchDraftRestoreRequest,
 } from "./chatLaunchDraftRestore";
@@ -132,6 +134,11 @@ function restoreRequestFor(launchId: string, snapshot: ChatLaunchSnapshot): Chat
   };
 }
 
+/** The host refuses because the agent is already running. The launch stays. */
+function cancelWasRefused(error: unknown): boolean {
+  return /already started/i.test(extractError(error));
+}
+
 /**
  * Cancel (while running) or Delete (after a failure): the host removes the
  * lane it made — worktree, local and remote branch — and the chat. The tab
@@ -142,16 +149,35 @@ export async function cancelChatLaunch(launchId: string, options: { restorePromp
   if (!entry) return;
   const snapshot = entry.snapshot;
   const restorePrompt = options.restorePrompt ?? true;
-  if (!entry.hostSeen && entry.startError != null) {
-    // The host never accepted it. Cancel anyway in case a timed-out start did
-    // land, but never let that block removing the card.
-    void window.ade?.chatLaunch?.cancel({ launchId }, entry.binding).catch(() => undefined);
-    removeChatLaunch(launchId);
-  } else {
+  const restore = restorePrompt ? restoreRequestFor(launchId, snapshot) : null;
+  // The prompt goes back now. The host cancel waits out an in-flight fetch,
+  // and the composer must not stay empty for that. The tab stays until the
+  // host accepts: a refusal means the agent is already running, and closing
+  // its tab would leave that prompt free to send a second time.
+  if (restore) queueChatLaunchDraftRestore(restore);
+  const closeTab = () => announceChatLaunchClosed(closedNoticeFor(snapshot), restore);
+  try {
+    if (!entry.hostSeen && entry.startError != null) {
+      // The host never accepted it. Cancel anyway in case a timed-out start did
+      // land, but never let that block removing the card.
+      void window.ade?.chatLaunch?.cancel({ launchId }, entry.binding).catch(() => undefined);
+      removeChatLaunch(launchId);
+      closeTab();
+      return;
+    }
     applyResult(launchId, await window.ade.chatLaunch.cancel({ launchId }, entry.binding));
+    closeTab();
+  } catch (error) {
+    if (cancelWasRefused(error)) consumeChatLaunchDraftRestore(launchId);
+    throw error;
+  } finally {
+    // Drop the local record only after the host has been told. Forgetting it
+    // first would strand a CLI launch whose cancel never landed: the driver
+    // would no longer have the command to start.
+    if (!getChatLaunchEntry(launchId) || getChatLaunchEntry(launchId)?.snapshot.phase === "cancelled") {
+      forgetChatLaunchLocalRecord(launchId);
+    }
   }
-  announceChatLaunchClosed(closedNoticeFor(snapshot), restorePrompt ? restoreRequestFor(launchId, snapshot) : null);
-  forgetChatLaunchLocalRecord(launchId);
 }
 
 /* ── Queued messages ──────────────────────────────────────────────────────

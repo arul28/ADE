@@ -1,5 +1,5 @@
 allowBuilds:
   esbuild: true
   node-pty: true
-  opencode-ai: true
+  "@opencode/cli": true
   sqlite3: true

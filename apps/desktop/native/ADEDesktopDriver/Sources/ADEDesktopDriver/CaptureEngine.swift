@@ -62,7 +62,44 @@ final class CaptureFrameSink: NSObject, SCStreamOutput, SCStreamDelegate {
         onFrame(sampleBuffer)
     }
 
+    private let startLock = NSLock()
+    private var startWatcher: ((Error) -> Void)?
+    /// The stream this sink belongs to now: the attempt being started, then
+    /// the one that started. One sink serves every retry's stream, and an
+    /// abandoned attempt can still report a stop later. That report is about a
+    /// stream nobody uses, so it must neither end the current attempt nor tell
+    /// the client a running capture was interrupted.
+    private weak var currentStream: SCStream?
+
+    /// While a start waits for its completion, a stop error belongs to that
+    /// start and goes to `watcher`, not to `onError`. ScreenCaptureKit can stop
+    /// a stream with an error (-3805, the app connection interrupted) and then
+    /// never call the start's completion; without this the start sat out its
+    /// whole wait, every retry did the same, and a 15s request ran past 30s.
+    func watchStart(_ stream: SCStream, _ watcher: @escaping (Error) -> Void) {
+        startLock.lock()
+        currentStream = stream
+        startWatcher = watcher
+        startLock.unlock()
+    }
+
+    /// The start answered or was given up on. Later stops go to `onError`.
+    func endStartWatch() {
+        startLock.lock()
+        startWatcher = nil
+        startLock.unlock()
+    }
+
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        startLock.lock()
+        let isCurrent = currentStream === stream
+        let watcher = startWatcher
+        startLock.unlock()
+        guard isCurrent else { return }
+        if let watcher {
+            watcher(error)
+            return
+        }
         onError(error)
     }
 }
@@ -80,12 +117,36 @@ final class CaptureEngine {
         var fps: Int
         var width: Int
         var height: Int
+        /// The display this stream captures, kept so a stream that ScreenCaptureKit
+        /// has delivered no frame for can still be seeded through the screenshot
+        /// path.
+        var displayId: CGDirectDisplayID
         var codec: String?
         var startedAt: Date
         /// The last frame ScreenCaptureKit delivered, kept so a reader that
-        /// attaches to a still screen can be handed a keyframe of it.
+        /// attaches to a still screen can be handed a keyframe of it. While
+        /// `hadRealFrame` is false this is a screenshot standing in for one.
         var lastBuffer: CVPixelBuffer?
         var lastPresentationTime: CMTime
+        /// Whether ScreenCaptureKit has delivered a frame of its own. Until it
+        /// has, the picture is a screenshot taken for the reader and must keep
+        /// being retaken: a still re-broadcast every second is a frozen screen
+        /// presented as a live one.
+        var hadRealFrame: Bool
+        /// Whether a screenshot is out. Set before the capture leaves, cleared
+        /// when it lands, so the 1 s keep-alive cannot stack a second capture
+        /// behind a slow one.
+        var seedingFrame: Bool
+        /// Screenshots that came back with no picture, one after another. The
+        /// retry slows down as it climbs, to at most one every
+        /// `maxSeedBackoff`, so a lane whose capture is broken and whose
+        /// screenshots are broken too does not run a capture a second for ever.
+        /// It never stops trying: a reader that stays attached is owed a
+        /// picture, not the last one the desktop moved on from. A reader
+        /// attaching starts the count again.
+        var seedFailures: Int
+        /// When the last screenshot left, for the failure backoff.
+        var lastSeedAttemptAt: Date?
         /// When the encoder last produced an access unit, for the keepalive.
         var lastEncodedAt: Date
         var keepAlive: DispatchSourceTimer?
@@ -112,6 +173,17 @@ final class CaptureEngine {
         /// The newest frame the idle cut skipped, so a small change during a
         /// final still (a clock tick) is still what the file ends on.
         var pendingBuffer: CVPixelBuffer?
+        /// What is recorded and at what size, so a recording of a screen that
+        /// never changed can still be written from one still picture.
+        var displayId: CGDirectDisplayID = 0
+        var windowId: CGWindowID?
+        /// The newest picture written and its time in the file. An MP4 track
+        /// ends at its last sample, so a stop repeats it at the end time, or a
+        /// screen that went still before the stop is missing from the file.
+        var lastAppended: CVPixelBuffer?
+        var lastAppendedTime: Double = -1
+        var width: Int = 0
+        var height: Int = 0
     }
 
     /// How long a reader may go without a picture on a screen where nothing is
@@ -144,6 +216,12 @@ final class CaptureEngine {
     private let startingStreams = CaptureStartReservations()
     private let startingRecordings = CaptureStartReservations()
     private let lock = NSRecursiveLock()
+    /// Where the screenshot that seeds a frame-less stream is taken.
+    ///
+    /// Serial, so the 1 s keep-alive cannot pile captures up behind a slow one,
+    /// and off the main thread, which `captureImage` must never hold while its
+    /// nested run-loop pump waits for ScreenCaptureKit.
+    private let seedQueue = DispatchQueue(label: "com.ade.desktop-driver.seed")
     /// Serialises recording appends against the stop path.
     ///
     /// AVFoundation is explicit that `finishWriting` must not run concurrently
@@ -210,6 +288,13 @@ final class CaptureEngine {
             let filter = SCContentFilter(desktopIndependentWindow: window)
             return (filter, Int(window.frame.width), Int(window.frame.height))
         }
+        // A window capture with no display to fall back to (App Control records
+        // one app window, not a lane display). A window that is not listed yet
+        // is a race worth retrying; one that closed is not, and the retry
+        // budget runs out on it.
+        if let windowId, displayId == 0 {
+            throw CaptureError.noSurface("Window \(windowId) is not available to ScreenCaptureKit. It may have closed.")
+        }
         if displayId != 0, let display = content.displays.first(where: { $0.displayID == displayId }) {
             let filter = SCContentFilter(display: display, excludingWindows: [])
             return (filter, display.width, display.height)
@@ -240,7 +325,7 @@ final class CaptureEngine {
             do {
                 return try filter(displayId: displayId, windowId: windowId)
             } catch {
-                guard displayId != 0,
+                guard displayId != 0 || windowId != nil,
                       attempt < Self.startBackoffs.count,
                       Self.isRetryableStartFailure(error)
                 else { throw error }
@@ -268,6 +353,7 @@ final class CaptureEngine {
     /// budget, refreshing `SCShareableContent` each time so an attempt is never
     /// made against a stale content snapshot.
     static let startBackoffs: [TimeInterval] = [0.25, 0.5, 1.0, 2.0]
+
 
     /// The `SCStreamError` codes worth trying again.
     ///
@@ -347,22 +433,43 @@ final class CaptureEngine {
                 }
                 let settled = SettledFlag()
                 let failure = ValueBox<Error>()
+                let stoppedWhileStarting = ValueBox<Error>()
+                let start = AbandonableStart()
+                sink.watchStart(stream) { error in stoppedWhileStarting.set(error) }
+                defer { sink.endStartWatch() }
                 stream.startCapture { error in
+                    let givenUp = start.answer()
                     failure.set(error)
                     settled.set()
+                    // Given up on before it answered: stopped only now, once
+                    // it has. Stopping a stream whose start was still pending
+                    // interrupted every other stream in the process.
+                    if givenUp, error == nil { stream.stopCapture { _ in } }
                 }
-                RunLoopPump.wait(until: { settled.isSet }, timeout: 10)
+                RunLoopPump.wait(until: { settled.isSet || stoppedWhileStarting.value != nil }, timeout: 10)
+                if !settled.isSet, let stopError = stoppedWhileStarting.value {
+                    // The stream stopped before its start answered. Given up on
+                    // the same way as a start that never answers, but at once.
+                    if start.abandon(), failure.value == nil { stream.stopCapture { _ in } }
+                    throw stopError
+                }
                 guard settled.isSet else {
                     // A completion that never came. Treated as a failure and
                     // never as a success: the old code carried on here, which
                     // handed back a stream that was not capturing and a reply
-                    // that said it was.
-                    stream.stopCapture { _ in }
+                    // that said it was. The stream is left to its completion
+                    // (see above), unless it answered just now.
+                    if start.abandon(), failure.value == nil { stream.stopCapture { _ in } }
                     throw CaptureError.failed("ScreenCaptureKit did not answer the \(label) start request.")
                 }
                 if let error = failure.value {
                     stream.stopCapture { _ in }
                     throw error
+                }
+                // Answered, but stopped in the same breath: not a live stream.
+                if let stopError = stoppedWhileStarting.value {
+                    stream.stopCapture { _ in }
+                    throw stopError
                 }
                 if attempt > 0 {
                     log("\(label) started on attempt \(attempt + 1)")
@@ -715,8 +822,18 @@ final class CaptureEngine {
             throw error
         }
         // A reader attaching is the one moment a keyframe is owed immediately.
+        // If the stream has no captured frame to re-encode yet, one is taken
+        // through the screenshot path rather than leaving the reader with a
+        // config record and no picture.
         server.onClientAttached = { [weak self] in
-            self?.refreshKeyframe(laneId: laneId)
+            guard let self else { return }
+            self.lock.lock()
+            // Someone just started watching: a screenshot that failed while
+            // nobody was looking is worth trying again for them.
+            self.streams[laneId]?.seedFailures = 0
+            self.lock.unlock()
+            self.refreshKeyframe(laneId: laneId)
+            self.refreshFallbackFrame(laneId: laneId, server: server)
         }
 
         let early = EarlyFrameBox()
@@ -729,6 +846,10 @@ final class CaptureEngine {
                     if let current = self.streams[laneId] {
                         if current.server === server {
                             self.streams[laneId]?.lastBuffer = buffer
+                            // ScreenCaptureKit is delivering after all: the
+                            // screenshot standing in for it is done, and is
+                            // never taken again for this stream.
+                            self.streams[laneId]?.hadRealFrame = true
                             if CMTIME_IS_NUMERIC(time) { self.streams[laneId]?.lastPresentationTime = time }
                         }
                     } else {
@@ -795,11 +916,16 @@ final class CaptureEngine {
             fps: fps,
             width: configuration.width,
             height: configuration.height,
+            displayId: displayId,
             codec: nil,
             startedAt: Date(),
             // A frame that landed during the start is kept, not lost.
             lastBuffer: early.buffer,
             lastPresentationTime: early.presentationTime,
+            hadRealFrame: early.buffer != nil,
+            seedingFrame: false,
+            seedFailures: 0,
+            lastSeedAttemptAt: nil,
             lastEncodedAt: Date(),
             keepAlive: nil,
             showsCursor: cursorVisible
@@ -833,6 +959,149 @@ final class CaptureEngine {
         encoder.encode(pixelBuffer: buffer, presentationTime: next, forceKeyframe: true)
     }
 
+    /// The longest the fallback waits between screenshots after failures.
+    ///
+    /// The streak never stops the fallback: a reader that stays attached must
+    /// not be left with a still the desktop has moved on from, which is worse
+    /// than either a live picture or an honest "no picture". A lane whose
+    /// screenshots keep failing settles here instead, at most two attempts a
+    /// minute.
+    private static let maxSeedBackoff: TimeInterval = 30
+    /// Failures at which the fallback is down to that slowed cadence, logged
+    /// once per streak.
+    private static let seedStreakLogFailures = 5
+
+    /// The lane's picture while ScreenCaptureKit has delivered none of its own.
+    ///
+    /// `SCStream` can report a successful start and then never call
+    /// `didOutputSampleBuffer` — macOS 26/27's window server does this here,
+    /// answering `-3805` on the way in and then going quiet — while
+    /// `SCScreenshotManager` keeps working. Without this the stream's
+    /// `lastBuffer` stays nil for its whole life, so the keyframe owed to a
+    /// reader that attaches and the 1 s keep-alive both have nothing to
+    /// re-encode and the viewer sits on "Connecting" behind a config record
+    /// and no picture.
+    ///
+    /// The screenshot is retaken on every reader attach and on every keep-alive
+    /// tick, which is what makes the fallback a slow live picture rather than
+    /// one frozen moment: the still goes stale the instant anything on the
+    /// desktop moves, and a reader cannot tell a stale still from a live one.
+    /// It stops for good once ScreenCaptureKit delivers a frame of its own.
+    ///
+    /// Taken off the main thread on purpose: `captureImage` pumps a nested run
+    /// loop and can block for seconds, and the command loop must keep answering
+    /// every other lane while this one is being fixed. `seedingFrame` is set
+    /// before the work leaves, so a slow capture cannot be stacked behind by
+    /// the next keep-alive tick, and a screenshot that comes back empty slows
+    /// the next attempt down (`seedFailures`) rather than stopping it.
+    private func refreshFallbackFrame(laneId: String, server: StreamByteServer) {
+        guard #available(macOS 12.3, *) else { return }
+        lock.lock()
+        guard let state = streams[laneId], state.server === server,
+              !state.hadRealFrame, !state.seedingFrame else {
+            lock.unlock()
+            return
+        }
+        if let lastAttempt = state.lastSeedAttemptAt, state.seedFailures > 0 {
+            let backoff = min(Self.maxSeedBackoff, pow(2, Double(state.seedFailures)))
+            guard Date().timeIntervalSince(lastAttempt) >= backoff else {
+                lock.unlock()
+                return
+            }
+        }
+        let failures = state.seedFailures
+        let firstSeed = state.lastBuffer == nil
+        streams[laneId]?.seedingFrame = true
+        streams[laneId]?.lastSeedAttemptAt = Date()
+        let displayId = state.displayId
+        lock.unlock()
+
+        seedQueue.async { [weak self] in
+            guard let self else { return }
+            // `captureImage` waits by pumping this thread's run loop. A thread
+            // with no run-loop source at all would spin on the wait instead of
+            // blocking on it, so the pump is given one to park on.
+            let pump = Port()
+            RunLoop.current.add(pump, forMode: .default)
+            let image = try? self.captureImage(displayId: displayId, windowId: nil)
+            RunLoop.current.remove(pump, forMode: .default)
+
+            self.lock.lock()
+            // A stream replaced or stopped while the screenshot was in flight
+            // is not this one: the same check every capture callback makes.
+            guard var current = self.streams[laneId], current.server === server else {
+                self.lock.unlock()
+                return
+            }
+            current.seedingFrame = false
+            // A real frame that arrived while the screenshot was being taken is
+            // newer, and has already ended this fallback.
+            let seeded = current.hadRealFrame
+                ? nil
+                : image.flatMap { Self.pixelBuffer(from: $0, width: current.width, height: current.height) }
+            if let seeded {
+                current.lastBuffer = seeded
+                // Host time, the same clock ScreenCaptureKit's sample buffers
+                // are stamped with, so a real frame that turns up later is
+                // later than this one and `refreshKeyframe` steps forward from
+                // here in the meantime.
+                current.lastPresentationTime = CMClockGetTime(CMClockGetHostTimeClock())
+                current.seedFailures = 0
+            } else if !current.hadRealFrame {
+                current.seedFailures += 1
+            }
+            // ScreenCaptureKit delivering a frame while the screenshot was in
+            // flight leaves the streak where it was, and that is not news.
+            let degraded = !current.hadRealFrame && current.seedFailures == Self.seedStreakLogFailures
+            self.streams[laneId] = current
+            self.lock.unlock()
+            guard seeded != nil else {
+                if degraded {
+                    self.log("stream for lane \(laneId) has no ScreenCaptureKit frame and its screenshots keep failing; retrying every \(Int(Self.maxSeedBackoff))s")
+                }
+                return
+            }
+            self.refreshKeyframe(laneId: laneId)
+            // Logged when the fallback starts and when it comes back from a
+            // run of failures, not once a second: the retake itself is the
+            // normal case while ScreenCaptureKit is quiet.
+            if firstSeed || failures > 0 {
+                self.log("stream for lane \(laneId) has no ScreenCaptureKit frame; showing a screenshot instead")
+            }
+        }
+    }
+
+    /// A BGRA pixel buffer of `width`×`height` with `image` drawn to fill it —
+    /// the shape both the H.264 encoder and the recording input take.
+    private static func pixelBuffer(from image: CGImage, width: Int, height: Int) -> CVPixelBuffer? {
+        guard width > 0, height > 0 else { return nil }
+        var pixelBuffer: CVPixelBuffer?
+        let attributes: [String: Any] = [
+            kCVPixelBufferCGImageCompatibilityKey as String: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
+        ]
+        guard
+            CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, attributes as CFDictionary, &pixelBuffer) == kCVReturnSuccess,
+            let buffer = pixelBuffer
+        else { return nil }
+        CVPixelBufferLockBaseAddress(buffer, [])
+        let drawn: Bool = {
+            guard let context = CGContext(
+                data: CVPixelBufferGetBaseAddress(buffer),
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+            ) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }()
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+        return drawn ? buffer : nil
+    }
+
     /// The idle heartbeat: one keyframe a second while somebody is reading and
     /// the screen has produced nothing. It stops costing anything the moment
     /// the desktop is busy, because a real frame resets the clock, and it does
@@ -849,6 +1118,11 @@ final class CaptureEngine {
             self.lock.unlock()
             guard due else { return }
             self.refreshKeyframe(laneId: laneId)
+            // A stream ScreenCaptureKit has never fed has nothing of its own to
+            // re-encode, so the keep-alive also carries the screenshot that
+            // keeps its picture current — same reader-attached guard, same 1 Hz
+            // cadence.
+            self.refreshFallbackFrame(laneId: laneId, server: server)
         }
         timer.resume()
         lock.lock()
@@ -911,9 +1185,14 @@ final class CaptureEngine {
     // Recording
     // -----------------------------------------------------------------------
 
+    /// `windowId` records one window instead of the lane's display: App
+    /// Control records the app it drives, wherever that window sits. The
+    /// capture follows the window when it moves; a resize is scaled into the
+    /// size measured at start. `displayId` is 0 for such a recording.
     func startRecording(
         laneId: String,
         displayId: CGDirectDisplayID,
+        windowId: CGWindowID? = nil,
         fps: Int,
         filePath: String,
         keepIdle: Bool = false
@@ -940,8 +1219,20 @@ final class CaptureEngine {
             CaptureError.failed("Lane \(laneId)'s recording was stopped while it was starting.")
         }
 
-        let (_, width, height) = try retryingFilter(displayId: displayId, windowId: nil, label: "record.start")
+        let (measuredFilter, pointWidth, pointHeight) = try retryingFilter(
+            displayId: displayId,
+            windowId: windowId,
+            label: "record.start"
+        )
         guard !startingRecordings.isCancelled(reservation) else { throw cancelled() }
+        // A window filter measures in points. Record it in pixels, as a display
+        // capture is, or a Retina window comes out at half resolution.
+        var pixelScale: CGFloat = 1
+        if windowId != nil, #available(macOS 14.0, *) {
+            pixelScale = CGFloat(measuredFilter.pointPixelScale)
+        }
+        let width = Int((CGFloat(pointWidth) * pixelScale).rounded())
+        let height = Int((CGFloat(pointHeight) * pixelScale).rounded())
         let evenWidth = max(2, width - width % 2)
         let evenHeight = max(2, height - height % 2)
         let url = URL(fileURLWithPath: filePath)
@@ -981,6 +1272,11 @@ final class CaptureEngine {
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
         configuration.showsCursor = false
         configuration.queueDepth = 5
+        if windowId != nil, #available(macOS 14.0, *) {
+            // The window can grow after the start measured it. Scale it into
+            // the writer's fixed size rather than crop its right and bottom.
+            configuration.scalesToFit = true
+        }
 
         let sink = CaptureFrameSink(
             onFrame: { [weak self] sampleBuffer in
@@ -1026,6 +1322,10 @@ final class CaptureEngine {
                 let placed = state.idleCut.place(frameAt: elapsed) { Self.idleThumbnail(of: buffer) }
                 let willAppend = placed != nil && input.isReadyForMoreMediaData && writer.status == .writing
                 state.pendingBuffer = willAppend ? nil : buffer
+                if willAppend, let placed {
+                    state.lastAppended = buffer
+                    state.lastAppendedTime = placed
+                }
                 self.lock.lock()
                 self.recordings[laneId] = state
                 if willAppend {
@@ -1037,13 +1337,23 @@ final class CaptureEngine {
             },
             onError: { [weak self] error in
                 self?.log("recording stream error on lane \(laneId): \(error)")
+                // A window recording's stream ends when its window closes or
+                // its app quits. Say so, so the client can stop the recording
+                // and file what it already has instead of waiting for a stop.
+                if windowId != nil {
+                    self?.emit(DriverEvent(event: "recording-interrupted", fields: [
+                        "laneId": .string(laneId),
+                        "windowId": .int(Int(windowId ?? 0)),
+                        "error": .string("\(error)"),
+                    ]))
+                }
             }
         )
         let stream: SCStream
         do {
             stream = try startCaptureStream(
                 displayId: displayId,
-                windowId: nil,
+                windowId: windowId,
                 configuration: configuration,
                 sink: sink,
                 label: "record.start"
@@ -1083,7 +1393,11 @@ final class CaptureEngine {
             firstPresentationTime: nil,
             firstFrameAt: nil,
             idleCut: RecordingIdleCut(enabled: !keepIdle),
-            pendingBuffer: nil
+            pendingBuffer: nil,
+            displayId: displayId,
+            windowId: windowId,
+            width: evenWidth,
+            height: evenHeight
         )
         lock.unlock()
         return startedAt
@@ -1127,10 +1441,16 @@ final class CaptureEngine {
         recordedFrameCounts.removeValue(forKey: laneId)
         lock.unlock()
 
-        // A recording that never received a frame has no moov and no pictures:
-        // it is not a short video, and answering `ok` with its path filed a
-        // zero-byte file as proof. Refused with a reason the caller can act on.
+        // ScreenCaptureKit sends a frame only when the content is redrawn, so a
+        // screen that did not change for the whole recording gives none. That
+        // is a still video, not a failure: it is written from one picture of
+        // what was recorded, held for the real length. Only when even that
+        // picture cannot be taken is the recording refused.
         guard state.firstPresentationTime != nil else {
+            if let still = writeStillRecording(state: state, finalizeBudget: finalizeBudget) {
+                log("recording for lane \(laneId) had no redraw; wrote one still picture for \(still.wallDurationMs) ms")
+                return still
+            }
             state.writer.cancelWriting()
             try? FileManager.default.removeItem(at: URL(fileURLWithPath: state.filePath))
             throw DriverError(
@@ -1146,11 +1466,24 @@ final class CaptureEngine {
         var idleCut = state.idleCut
         let wallSeconds = max(0, Date().timeIntervalSince(state.firstFrameAt ?? state.startedAt))
         let finish = idleCut.finish(at: wallSeconds, pendingFrame: state.pendingBuffer != nil)
+        var lastTime = state.lastAppendedTime
+        var lastBuffer = state.lastAppended
         if let finalFrame = finish.finalFrame,
            let buffer = state.pendingBuffer,
            state.writer.status == .writing,
+           state.input.isReadyForMoreMediaData,
+           state.adaptor.append(buffer, withPresentationTime: CMTime(seconds: finalFrame, preferredTimescale: 600)) {
+            lastTime = finalFrame
+            lastBuffer = buffer
+        }
+        // Hold the last picture to the end: repeat it just before the end
+        // time, so the track (and the video's length) reaches the stop.
+        let holdTime = finish.end - 1.0 / 60
+        if let buffer = lastBuffer,
+           holdTime > lastTime + 1.0 / 60,
+           state.writer.status == .writing,
            state.input.isReadyForMoreMediaData {
-            state.adaptor.append(buffer, withPresentationTime: CMTime(seconds: finalFrame, preferredTimescale: 600))
+            state.adaptor.append(buffer, withPresentationTime: CMTime(seconds: holdTime, preferredTimescale: 600))
         }
 
         if state.writer.status == .writing {
@@ -1202,6 +1535,33 @@ final class CaptureEngine {
             wallDurationMs: wallDurationMs,
             idleCutMs: max(wallDurationMs - durationMs, 0)
         )
+    }
+
+    /// A recording whose screen never changed, written from one picture held
+    /// from the start to the stop. Nil when the picture or the writer fails.
+    private func writeStillRecording(state: RecordingState, finalizeBudget: TimeInterval) -> FinishedRecording? {
+        guard #available(macOS 12.3, *), state.width > 0, state.height > 0 else { return nil }
+        guard let image = try? captureImage(displayId: state.displayId, windowId: state.windowId),
+              let buffer = Self.pixelBuffer(from: image, width: state.width, height: state.height)
+        else { return nil }
+        guard state.writer.startWriting() else { return nil }
+        state.writer.startSession(atSourceTime: .zero)
+        guard state.input.isReadyForMoreMediaData, state.adaptor.append(buffer, withPresentationTime: .zero) else { return nil }
+        let wallSeconds = max(0.5, Date().timeIntervalSince(state.startedAt))
+        let writer = state.writer
+        let settled = Self.finalizeRecordingWriter(
+            writer: writer,
+            input: state.input,
+            endTime: CMTime(seconds: wallSeconds, preferredTimescale: 600),
+            timeout: finalizeBudget,
+            onCompletion: { [weak self] in self?.releaseAbandonedWriter(writer) }
+        )
+        guard settled, writer.status == .completed else {
+            if !settled { abandonWriter(writer) }
+            return nil
+        }
+        let wallMs = Int((wallSeconds * 1000).rounded())
+        return FinishedRecording(filePath: state.filePath, durationMs: wallMs, wallDurationMs: wallMs, idleCutMs: 0)
     }
 
     /// A greyscale thumbnail of a captured BGRA frame, for the idle cut.

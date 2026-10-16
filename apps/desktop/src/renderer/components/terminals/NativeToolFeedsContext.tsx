@@ -23,7 +23,7 @@ import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { isWebClientMode } from "../../lib/webClientMode";
 import type { WorkToolContext } from "./workTools";
-import { useMacDesktopSupport } from "./useMacDesktopSupport";
+import { desktopToolContext, useMacDesktopSupport } from "./useMacDesktopSupport";
 import {
   useNativeToolSessions,
   type NativeToolFeedScope,
@@ -124,12 +124,15 @@ export function useNativeToolFeedHandlers(handlers: NativeToolFeedHandlers): voi
 export function NativeToolFeedsProvider({
   active,
   runtimePin,
+  laneId = null,
   children,
 }: {
   /** The Work route is on screen. Every feed is torn down when it is not. */
   active: boolean;
   /** Machine the active Work session runs on, or null for this tab's own. */
   runtimePin: OpenProjectBinding | null;
+  /** The lane the tools pane shows. App Control's session is this lane's. */
+  laneId?: string | null;
   children: ReactNode;
 }) {
   const projectRoot = useAppStore(selectActiveProjectRoot);
@@ -155,8 +158,7 @@ export function NativeToolFeedsProvider({
   const context = useMemo<WorkToolContext>(() => ({
     supportsIosSimulator,
     isWebClient: isWebClientMode(),
-    supportsMacDesktop: macDesktopSupport?.supported ?? null,
-    macDesktopUnsupportedReason: macDesktopSupport?.reason ?? null,
+    ...desktopToolContext(macDesktopSupport),
   }), [macDesktopSupport, supportsIosSimulator]);
 
   // Collection identity follows the session machine. A Studio pin must keep
@@ -204,6 +206,7 @@ export function NativeToolFeedsProvider({
     browserViewRoot,
     runtimePin,
     offline,
+    laneId,
     onBrowserStatusSettled,
     onBrowserEvent,
     onAppControlEvent,

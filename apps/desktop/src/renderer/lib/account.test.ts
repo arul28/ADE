@@ -221,7 +221,7 @@ describe("account session state", () => {
     expect(accountSessionConnectionsAction("signed_out")).toBe("Sign in");
     expect(accountSessionConnectionsAction("expired")).toBe("Sign in");
     expect(accountSessionConnectionsAction("unreadable")).toBe("Fix sign-in");
-    expect(accountSessionConnectionsAction("active")).toBe("Manage account");
+    expect(accountSessionConnectionsAction("active")).toBe("Account Settings");
     expect(accountSessionConnectionsActionAria("unreadable")).toBe("Fix your sign-in");
   });
 

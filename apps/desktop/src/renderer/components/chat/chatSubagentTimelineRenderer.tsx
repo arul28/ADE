@@ -14,6 +14,7 @@ import type {
 } from "./chatTranscriptRows";
 
 export type SpawnedChatProviderProps = {
+  runtimePin?: import("../../../shared/types").OpenProjectBinding | null;
   sessionProvider?: string | null;
   resolveSpawnedChatProvider?: (sessionId: string) => string | null;
 };

@@ -594,23 +594,29 @@ describe("workLiveCardSize", () => {
     expect(workLiveCardSize({ tool: null })).toEqual({ width: 288, height: 180 });
   });
 
-  it("derives the box from the source picture's own aspect ratio", () => {
-    // A 390x844 phone capture: no crop, the card is tall and narrow. The
-    // minimum width wins over the soft height cap, so it is 200px wide.
-    const portrait = workLiveCardSize({ tool: "browser", aspect: 390 / 844, width: 250 });
-    expect(portrait.width).toBe(WORK_LIVE_CARD_MIN_WIDTH);
-    expect(portrait.width / portrait.height).toBeCloseTo(390 / 844, 2);
-
+  it.each([
+    // A phone preset: tall, so the 200px width floor beats the soft height cap.
+    { tool: "browser" as const, aspect: 390 / 844, width: 250, expected: { width: WORK_LIVE_CARD_MIN_WIDTH, height: Math.round(WORK_LIVE_CARD_MIN_WIDTH / (390 / 844)) } },
+    // A tall pane: the height is capped and the width shrinks to keep the shape.
+    { tool: "browser" as const, aspect: 0.7, width: 500, expected: { width: Math.round(WORK_LIVE_CARD_MAX_HEIGHT * 0.7), height: WORK_LIVE_CARD_MAX_HEIGHT } },
     // A wide window: the height follows, well under the cap.
-    const wide = workLiveCardSize({ tool: "mac-desktop", aspect: 3440 / 1440, width: 288 });
-    expect(wide).toEqual({ width: 288, height: Math.round(288 / (3440 / 1440)) });
+    { tool: "mac-desktop" as const, aspect: 3440 / 1440, width: 288, expected: { width: 288, height: Math.round(288 / (3440 / 1440)) } },
+  ])("takes the source picture's own shape ($tool, aspect $aspect)", ({ tool, aspect, width, expected }) => {
+    const size = workLiveCardSize({ tool, aspect, width });
+    expect(size).toEqual(expected);
+    expect(size.width / size.height).toBeCloseTo(aspect, 1);
+    expect(size.width).toBeGreaterThanOrEqual(WORK_LIVE_CARD_MIN_WIDTH);
   });
 
-  it("caps the height and shrinks the width to keep the aspect", () => {
-    const size = workLiveCardSize({ tool: "browser", aspect: 0.7, width: 500 });
-    expect(size.height).toBe(WORK_LIVE_CARD_MAX_HEIGHT);
-    expect(size.width).toBe(Math.round(WORK_LIVE_CARD_MAX_HEIGHT * 0.7));
-    expect(size.width / size.height).toBeCloseTo(0.7, 1);
+  it("narrows a tall card below the width floor rather than not fitting a short column", () => {
+    const host = { width: 760, height: 500 };
+    const reserve = 100;
+    const size = workLiveCardSize({ tool: "browser", aspect: 390 / 844, host, bottomReserve: reserve });
+    // The column leaves 500 - 100 - 2 * inset of height; the card takes all of it.
+    expect(size.height).toBe(host.height - reserve - WORK_LIVE_CARD_INSET * 2);
+    expect(size.width).toBeLessThan(WORK_LIVE_CARD_MIN_WIDTH);
+    expect(size.width / size.height).toBeCloseTo(390 / 844, 1);
+    expect(workLiveCardFits(host, reserve, size)).toBe(true);
   });
 
   it("never exceeds half the column's width", () => {

@@ -11,6 +11,7 @@ import {
   type ChatSources,
 } from "../../../shared/chatSources";
 import { useSeenOnScreen, useSourceFavicon } from "./useSourceFavicon";
+import { SectionHeader } from "./ChatSubagentsPanel";
 
 const GROUP_ORDER: ReadonlyArray<{ group: ChatSourceGroup; label: string }> = [
   { group: "cited", label: "Cited" },
@@ -42,7 +43,7 @@ export function ChatSourceIcon({ source, size = 16 }: { source: ChatSource; size
       className={
         showFavicon
           ? "flex shrink-0 items-center justify-center overflow-hidden rounded-[3px]"
-          : "flex shrink-0 items-center justify-center rounded-[4px] border border-white/[0.07] bg-white/[0.04] font-sans font-semibold leading-none text-fg/55"
+          : "flex shrink-0 items-center justify-center rounded-[4px] border border-fg/[0.07] bg-fg/[0.04] font-sans font-semibold leading-none text-fg/55"
       }
       data-testid="chat-source-icon"
     >
@@ -72,7 +73,7 @@ function CopyLinkButton({ link }: { link: string }) {
         void copyTextToClipboard(link).then((ok) => setCopied(ok));
       }}
       onMouseLeave={() => setCopied(false)}
-      className="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg/40 opacity-0 transition-opacity hover:bg-white/[0.06] hover:text-fg/80 focus-visible:opacity-100 group-hover:opacity-100"
+      className="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg/40 opacity-0 transition-opacity hover:bg-fg/[0.06] hover:text-fg/80 focus-visible:opacity-100 group-hover:opacity-100"
       data-testid="chat-source-copy"
     >
       {copied ? <Check size={11} weight="bold" aria-hidden /> : <Copy size={11} aria-hidden />}
@@ -102,14 +103,6 @@ function SourceRow({ source }: { source: ChatSource }) {
           {inline && subtitle ? (
             <span className="max-w-[45%] shrink-0 truncate font-sans text-[10.5px] text-muted-fg/45">{subtitle}</span>
           ) : null}
-          {source.cited ? (
-            <span
-              className="shrink-0 rounded-[3px] border border-cyan-300/20 px-1 font-sans text-[9px] font-semibold uppercase leading-[14px] tracking-[0.06em] text-cyan-200/65"
-              data-testid="chat-source-cited"
-            >
-              cited
-            </span>
-          ) : null}
         </span>
         {!inline && subtitle ? (
           <span className="block truncate font-sans text-[10.5px] leading-4 text-muted-fg/45">{subtitle}</span>
@@ -120,7 +113,7 @@ function SourceRow({ source }: { source: ChatSource }) {
   const bodyClass = "flex min-w-0 flex-1 items-center gap-2 px-1.5 py-1 text-left";
   return (
     <div
-      className="group flex min-w-0 items-center rounded-md transition-colors hover:bg-white/[0.035]"
+      className="group flex min-w-0 items-center rounded-md transition-colors hover:bg-fg/[0.035]"
       data-testid="chat-source-row"
     >
       {source.url ? (
@@ -169,7 +162,7 @@ function SourceGroup({
           type="button"
           onClick={onToggle}
           aria-expanded={expanded}
-          className="ml-[30px] mt-0.5 rounded px-1 py-0.5 font-sans text-[10.5px] text-fg/45 transition-colors hover:bg-white/[0.04] hover:text-fg/75"
+          className="ml-[30px] mt-0.5 rounded px-1 py-0.5 font-sans text-[10.5px] text-fg/45 transition-colors hover:bg-fg/[0.04] hover:text-fg/75"
           data-testid={`chat-sources-toggle-${group}`}
         >
           {expanded ? "Show less" : `Show ${hidden} more`}
@@ -204,6 +197,7 @@ export function ChatSourcesPanel({
   // Expanded groups, per view: the whole chat and each turn keep their own.
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const viewKey = turnSources ? `turn:${turnId}` : "all";
+  const [collapsed, setCollapsed] = useState(false);
 
   // Opened from a turn's chip: bring the section into view inside the drawer.
   useEffect(() => {
@@ -220,22 +214,29 @@ export function ChatSourcesPanel({
   }
 
   return (
-    <section ref={rootRef} className="px-4 py-3" data-testid="chat-sources-panel">
-      <div className="flex items-center gap-2">
-        <span className="font-sans text-[12px] font-semibold text-fg/80">Sources</span>
-        <span className="font-mono text-[10px] tabular-nums text-fg/35">{list.length}</span>
-        {turnSources ? (
+    <section ref={rootRef} className="pb-3" data-testid="chat-sources-panel">
+      <SectionHeader
+        label="Sources"
+        hint={String(list.length)}
+        tone="sources"
+        emphasized
+        sticky
+        collapsible
+        collapsed={collapsed}
+        onToggle={() => setCollapsed((current) => !current)}
+        action={turnSources ? (
           <button
             type="button"
             onClick={onShowAll}
-            className="ml-auto rounded px-1.5 py-0.5 font-sans text-[10.5px] text-fg/45 transition-colors hover:bg-white/[0.04] hover:text-fg/75"
+            className="rounded px-1.5 py-0.5 font-sans text-[10.5px] text-fg/45 transition-colors hover:bg-fg/[0.04] hover:text-fg/75"
             data-testid="chat-sources-show-all"
           >
             This turn · Show all
           </button>
-        ) : null}
-      </div>
-      <div className="mt-2 space-y-3">
+        ) : undefined}
+      />
+      {collapsed ? null : (
+      <div className="mt-1 space-y-3 px-4">
         {GROUP_ORDER.map(({ group, label }) => {
           const items = grouped.get(group);
           if (!items?.length) return null;
@@ -257,6 +258,7 @@ export function ChatSourcesPanel({
           );
         })}
       </div>
+      )}
     </section>
   );
 }

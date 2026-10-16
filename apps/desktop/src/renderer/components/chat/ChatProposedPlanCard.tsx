@@ -34,7 +34,7 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
   const headerLabel = pendingInputHeaderLabel(source, "plan_approval");
 
   return (
-    <div className="relative overflow-hidden rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[#12101A] p-4">
+    <div className="relative overflow-hidden rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-(color:--color-popup-bg) p-4">
       <div className="absolute inset-x-0 top-0 h-px bg-[color:color-mix(in_srgb,var(--chat-accent)_30%,transparent)]" />
 
       <div className="mb-2 flex items-center gap-2">
@@ -52,7 +52,7 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
           until Implement / Keep planning leave the viewport with no way to
           scroll to them. The cap is generous — ordinary plans never reach it —
           and a long one scrolls in place instead of evicting its own buttons. */}
-      <div className="mb-3 max-h-[min(52vh,560px)] overflow-y-auto rounded-lg border border-white/[0.06] bg-black/15 px-3 py-2 text-[12px] leading-relaxed text-fg/75">
+      <div className="mb-3 max-h-[min(52vh,560px)] overflow-y-auto rounded-lg border border-fg/[0.06] bg-black/15 px-3 py-2 text-[12px] leading-relaxed text-fg/75">
         <ChatMarkdown tone="neutral">{bodyText}</ChatMarkdown>
       </div>
 
@@ -72,8 +72,8 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
           type="button"
           disabled={disabled}
           className={cn(
-            "rounded-lg border border-white/[0.06] px-3 py-1.5 text-[11px] text-fg/50 transition-colors",
-            "hover:bg-white/[0.04] disabled:pointer-events-none disabled:opacity-40",
+            "rounded-lg border border-fg/[0.06] px-3 py-1.5 text-[11px] text-fg/50 transition-colors",
+            "hover:bg-fg/[0.04] disabled:pointer-events-none disabled:opacity-40",
           )}
           onClick={onReject}
         >
@@ -81,7 +81,7 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
         </button>
         <button
           type="button"
-          className="ml-auto flex items-center gap-1 rounded-[var(--chat-radius-pill)] border border-white/[0.06] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.12em] text-fg/35 transition-colors hover:bg-white/[0.04] hover:text-fg/55"
+          className="ml-auto flex items-center gap-1 rounded-[var(--chat-radius-pill)] border border-fg/[0.06] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.12em] text-fg/35 transition-colors hover:bg-fg/[0.04] hover:text-fg/55"
           onClick={() => void copy(bodyText)}
         >
           <CopySimple size={10} weight="bold" />

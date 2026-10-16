@@ -39,6 +39,7 @@ import {
   inlineBadge,
   outlineButton,
   primaryButton,
+  fgTint,
 } from "../lanes/laneDesignTokens";
 
 export type CloneProjectFormProps = {
@@ -66,6 +67,8 @@ export type CloneProjectFormProps = {
     input?: ListMyGitHubReposInput,
   ) => Promise<ListMyGitHubReposResult>;
   allowTokenSetup?: boolean;
+  /** Fills the repository URL, e.g. when cloning a project from another machine. */
+  initialUrl?: string;
 };
 
 type Tab = "url" | "my-repos";
@@ -106,7 +109,7 @@ const inputStyle: CSSProperties = {
   fontSize: 13,
   fontFamily: SANS_FONT,
   color: COLORS.textPrimary,
-  background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+  background: fgTint(4),
   border: `1px solid ${COLORS.border}`,
   borderRadius: 8,
   outline: "none",
@@ -178,6 +181,7 @@ export function CloneProjectForm({
   cloneProject,
   listMyRepos,
   allowTokenSetup = true,
+  initialUrl,
 }: CloneProjectFormProps) {
   const [tab, setTab] = useState<Tab>("url");
   const [defaultParentDir, setDefaultParentDir] = useState<string>("");
@@ -225,6 +229,7 @@ export function CloneProjectForm({
           cloneProject={clone}
           onCancel={onCancel}
           onCloned={onCloned}
+          initialUrl={initialUrl}
         />
       ) : (
         <MyReposTab
@@ -249,7 +254,7 @@ function TabBar({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => void }) {
         display: "inline-flex",
         gap: 4,
         padding: 4,
-        background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+        background: fgTint(4),
         border: `1px solid ${COLORS.border}`,
         borderRadius: 10,
         alignSelf: "flex-start",
@@ -309,7 +314,9 @@ function UrlTab({
   cloneProject,
   onCancel,
   onCloned,
+  initialUrl,
 }: {
+  initialUrl?: string;
   defaultParentDir: string;
   browseDirectories: (
     input: ProjectBrowseInput,
@@ -325,7 +332,7 @@ function UrlTab({
     projectId?: string;
   }) => void;
 }) {
-  const [url, setUrl] = useState("");
+  const [url, setUrl] = useState(initialUrl ?? "");
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
   const [parentDir, setParentDir] = useState("");
@@ -884,7 +891,7 @@ function ConnectedRepoBrowser({
           gap: 8,
           padding: "0 12px",
           height: 36,
-          background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+          background: fgTint(4),
           border: `1px solid ${COLORS.border}`,
           borderRadius: 8,
         }}
@@ -1095,7 +1102,7 @@ function RepoRow({
         borderRadius: 10,
         background: expanded
           ? "color-mix(in srgb, var(--color-accent) 4%, var(--color-card))"
-          : "color-mix(in srgb, var(--color-fg) 2%, transparent)",
+          : fgTint(2),
         overflow: "hidden",
         transition: "border-color 160ms ease, background 160ms ease",
         flexShrink: 0,
@@ -1349,7 +1356,7 @@ function PathPreview({ path, exists }: { path: string; exists: boolean }) {
         borderRadius: 8,
         background: exists
           ? "color-mix(in srgb, var(--color-error) 8%, transparent)"
-          : "color-mix(in srgb, var(--color-fg) 3%, transparent)",
+          : fgTint(3),
         border: `1px solid ${
           exists
             ? "color-mix(in srgb, var(--color-error) 40%, var(--color-border))"

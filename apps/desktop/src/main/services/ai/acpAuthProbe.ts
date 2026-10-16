@@ -38,7 +38,9 @@ import {
   qwenConfigHome,
 } from "../shared/providerConfigHomes";
 import { resolveAcpExecutable } from "./acpExecutables";
+import { prepareAcpProbeSpawnPlan } from "./acpProbeSpawnPlan";
 import {
+  getProviderRuntimeHealth,
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
   reportProviderRuntimeReady,
@@ -80,6 +82,10 @@ export function acpProbeConfigHome(
       return copilotConfigHome({ env });
     case "grok":
       return grokConfigHome({ env });
+    // Devin reads `~/.config/devin` (%APPDATA%\devin on Windows) and honors
+    // no override env var, so ADE sets nothing — same posture as Grok.
+    case "devin":
+      return null;
   }
 }
 
@@ -137,6 +143,14 @@ function loginBlocker(provider: AcpChatProvider): string {
 }
 
 function publishResult(provider: AcpChatProvider, result: AcpAuthProbeResult): void {
+  // A sign-in that changed state may now be a different account, whose models differ.
+  const before = getProviderRuntimeHealth(provider)?.state ?? null;
+  if (before !== null && before !== result.state && (before === "ready" || result.state === "ready")) {
+    // Loaded on use: model discovery imports this module.
+    void import("../chat/acpHost/acpModelDiscovery")
+      .then((discovery) => discovery.markAcpModelCatalogStale(provider))
+      .catch(() => undefined);
+  }
   switch (result.state) {
     case "ready":
       reportProviderRuntimeReady(provider);
@@ -221,20 +235,21 @@ export async function probeAcpProviderAuth(
     const dialect = acpDialectFor(provider);
     const baseEnv = args.env ?? process.env;
     const executable = resolveAcpExecutable(provider, { env: baseEnv });
-    const spawnPlan = dialect.buildSpawnPlan({
-      binaryPath: executable.path,
-      cwd,
-      baseEnv,
-      configHome: acpProbeConfigHome(provider, baseEnv),
-    });
-
-    const connection = createAcpConnection({
-      dialect,
-      spawnPlan,
-      ...(args.spawnOverride ? { spawnOverride: args.spawnOverride } : {}),
-    });
+    let connection: ReturnType<typeof createAcpConnection> | null = null;
     try {
-      const { response } = await initializeAcpConnection({
+      const spawnPlan = await prepareAcpProbeSpawnPlan(provider, dialect.buildSpawnPlan({
+        binaryPath: executable.path,
+        cwd,
+        baseEnv,
+        configHome: acpProbeConfigHome(provider, baseEnv),
+      }));
+
+      connection = createAcpConnection({
+        dialect,
+        spawnPlan,
+        ...(args.spawnOverride ? { spawnOverride: args.spawnOverride } : {}),
+      });
+      const response = await initializeAcpConnection({
         connection,
         dialect,
         timeoutMs: PROBE_TIMEOUT_MS,
@@ -303,7 +318,7 @@ export async function probeAcpProviderAuth(
           : `${dialect.displayName} was detected at ${executable.path}, but ADE could not start it: ${detail}`,
       };
     } finally {
-      connection.dispose("auth probe finished");
+      connection?.dispose("auth probe finished");
     }
   })().then((result) => {
     probeCache.set(key, { checkedAtMs: Date.now(), result });

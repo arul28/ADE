@@ -4,25 +4,9 @@
  * unit-test and shared by the message list.
  */
 
-// Terse human label for a non-completed turn's SDK terminal reason. Open set:
-// unknown reason strings return null so we show nothing extra. Completed turns
-// never pass a reason (avoid noise).
-export const TERMINAL_REASON_LABELS: Record<string, string> = {
-  budget_exhausted: "budget limit reached",
-  max_turns: "max turns reached",
-  prompt_too_long: "context window overflow",
-  api_error: "API error after retries",
-  malformed_tool_use_exhausted: "tool-call retries exhausted",
-  structured_output_retry_exhausted: "output retries exhausted",
-  model_error: "model error",
-  turn_setup_failed: "turn setup failed",
-  tool_deferred_unavailable: "deferred tool unavailable",
-};
-
-export function terminalReasonLabel(reason: string | undefined): string | null {
-  if (!reason) return null;
-  return TERMINAL_REASON_LABELS[reason] ?? null;
-}
+// Terse terminal-reason labels live in shared/terminalReasonLabels so the ADE
+// CLI shows the same words. Completed turns never pass a reason (avoid noise).
+export { TERMINAL_REASON_LABELS, terminalReasonLabel } from "../../../shared/terminalReasonLabels";
 
 /** Compact `Nm Ns` / `Ns` label for an auto-backgrounded-on-timeout Bash chip. */
 export function formatTimedOutAfter(ms: number): string {

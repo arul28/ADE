@@ -99,59 +99,66 @@ func workComposerFoldTransition(
   }
 }
 
-struct WorkTurnUsageSummaryBanner: View {
-  let summary: WorkUsageSummary
-  /// Retained for call-site compatibility. Model is shown in usage and composer, not the turn line.
-  /// Kept as optional params in case future rows need provider context.
-  var provider: String? = nil
-  var modelLabel: String? = nil
+// MARK: - Thread chrome glass
+
+/// The one surface every control floating over the chat thread uses: the
+/// header buttons, the title, the composer, the badge chips and the
+/// jump-to-latest button. Liquid Glass, so the transcript scrolling underneath
+/// stays visible (blurred) through it.
+///
+/// Reduce Transparency swaps the glass for an opaque fill — a see-through
+/// control over moving prose is exactly what that setting asks us not to draw.
+struct WorkChatGlassSurface<S: Shape>: ViewModifier {
+  let shape: S
+  var interactive: Bool = false
+  var tint: Color? = nil
+
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+  func body(content: Content) -> some View {
+    if reduceTransparency {
+      content
+        .background(ADEColor.cardBackground, in: shape)
+        .overlay(shape.stroke(ADEColor.glassBorder, lineWidth: 0.75))
+    } else {
+      content
+        .glassEffect(glass, in: shape)
+    }
+  }
+
+  private var glass: Glass {
+    var glass = Glass.regular
+    if let tint { glass = glass.tint(tint) }
+    if interactive { glass = glass.interactive() }
+    return glass
+  }
+}
+
+extension View {
+  func workChatGlass<S: Shape>(
+    in shape: S,
+    interactive: Bool = false,
+    tint: Color? = nil
+  ) -> some View {
+    modifier(WorkChatGlassSurface(shape: shape, interactive: interactive, tint: tint))
+  }
+}
+
+/// Round glass button used by the thread header (back, actions) and the
+/// jump-to-latest control. The glyph is the only content.
+struct WorkChatGlassCircleLabel: View {
+  let systemName: String
+  var size: CGFloat = 44
+  var glyphSize: CGFloat = 17
+  var tint: Color = ADEColor.textPrimary
 
   var body: some View {
-    HStack(spacing: 8) {
-      Text("USAGE")
-        .font(.caption2.weight(.bold))
-        .tracking(0.6)
-        .foregroundStyle(ADEColor.textMuted)
-
-      Spacer(minLength: 4)
-
-      usagePill("In", workAbbreviateCount(summary.inputTokens))
-      usagePill("Out", workAbbreviateCount(summary.outputTokens))
-
-      if summary.cacheReadTokens > 0 {
-        usagePill("Cache", workAbbreviateCount(summary.cacheReadTokens))
-      }
-      if summary.cacheCreationTokens > 0 {
-        usagePill("New cache", workAbbreviateCount(summary.cacheCreationTokens))
-      }
-
-      if summary.costUsd > 0 {
-        Text(formatUsageCost(summary.costUsd))
-          .font(.caption2.monospacedDigit())
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 7)
-    .background(ADEColor.surfaceBackground.opacity(0.55), in: Capsule(style: .continuous))
-    .overlay(
-      Capsule(style: .continuous)
-        .stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6)
-    )
-  }
-
-  private func usagePill(_ label: String, _ value: String) -> some View {
-    Text("\(label) \(value)")
-      .font(.caption2.monospacedDigit())
-      .foregroundStyle(ADEColor.textMuted)
-      .lineLimit(1)
-  }
-
-  private func formatUsageCost(_ cost: Double) -> String {
-    // Mirror desktop: two decimals when above one cent so "$0.06" reads
-    // cleanly; fall back to four decimals for sub-cent costs.
-    if cost >= 0.01 { return String(format: "$%.2f", cost) }
-    return String(format: "$%.4f", cost)
+    Image(systemName: systemName)
+      .font(.system(size: glyphSize, weight: .semibold))
+      .foregroundStyle(tint)
+      .frame(width: size, height: size)
+      .contentShape(Circle())
+      .workChatGlass(in: Circle(), interactive: true)
   }
 }
 
@@ -382,6 +389,14 @@ let workComposerControlsCollapseThreshold: CGFloat = 360
 struct WorkComposerControlsRow: View {
   let provider: String
   let modelDisplayName: String
+  /// The upstream maker's key for the model mark. Nil falls back to `provider`,
+  /// which is the right answer for every direct (non-gateway) harness.
+  var modelBrandKey: String? = nil
+  /// When the composer runs on a saved Custom harness, its own mark and accent
+  /// replace the provider mark — the desktop composer shows the preset, not
+  /// the harness, for the same selection. One optional value so "a preset is
+  /// selected" cannot disagree with "the preset has a mark".
+  var preset: SyncMachineInventoryPreset? = nil
   let reasoningEffort: String
   let currentMode: String
   let modeOptions: [WorkRuntimeModeOption]
@@ -390,10 +405,15 @@ struct WorkComposerControlsRow: View {
   let fastModeEnabled: Bool
   let onOpenModelPicker: (() -> Void)?
   let onSelectMode: ((String) -> Void)?
+  /// False when the access mode is not known yet (a chat on another machine
+  /// before its summary arrives): no dot beats a wrong one.
+  var showsAccessControl: Bool = true
 
   var body: some View {
     HStack(spacing: 8) {
-      accessControl
+      if showsAccessControl {
+        accessControl
+      }
       modelPill
     }
   }
@@ -548,12 +568,16 @@ struct WorkComposerControlsRow: View {
       onOpenModelPicker?()
     } label: {
       HStack(spacing: 6) {
-        WorkProviderLogo(
-          provider: provider,
-          fallbackSymbol: providerIcon(provider),
-          tint: providerTint(provider),
-          size: 16
-        )
+        if let preset {
+          WorkHarnessPresetMark(logo: preset.logo, accentColor: preset.accentColor, size: 16)
+        } else {
+          WorkProviderLogo(
+            provider: modelBrandKey ?? provider,
+            fallbackSymbol: providerIcon(modelBrandKey ?? provider),
+            tint: providerTint(modelBrandKey ?? provider),
+            size: 16
+          )
+        }
         Text(modelDisplayName)
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
@@ -623,6 +647,7 @@ struct WorkComposerChipStrip: View {
           WorkComposerControlsRow(
             provider: chatSummary.provider,
             modelDisplayName: chatSummary.modelLabel,
+            modelBrandKey: WorkModelMentionDirectory.shared.entry(for: chatSummary.model)?.brandKey,
             reasoningEffort: chatSummary.reasoningEffort,
             currentMode: currentMode,
             modeOptions: workRuntimeModeOptions(provider: chatSummary.provider),
@@ -630,7 +655,8 @@ struct WorkComposerChipStrip: View {
             isCollapsed: isCollapsed,
             fastModeEnabled: codexFastModeOverride ?? chatSummary.effectiveFastMode,
             onOpenModelPicker: onOpenModelPicker,
-            onSelectMode: onSelectRuntimeMode
+            onSelectMode: onSelectRuntimeMode,
+            showsAccessControl: chatSummary.accessModeKnown
           )
         }
       }
@@ -650,46 +676,12 @@ struct WorkComposerChipStrip: View {
     )
   }
 
-  private func prettyModelName(_ model: String) -> String {
-    // Match the desktop composer's model label: "Claude Sonnet 5" /
-    // "GPT-5.4" instead of a bare short id. Host-reported
-    // `chatSummary.model` is usually just "sonnet" / "opus" / "haiku" for
-    // Claude and the full long form for Codex, so we special-case the
-    // Claude short ids and otherwise beautify the raw string.
-    let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return "Model" }
-    if let known = workKnownModelDisplayName(trimmed) {
-      return known
-    }
-    let lower = trimmed.lowercased()
-    if lower.hasPrefix("claude-") {
-      let tail = trimmed.dropFirst("claude-".count)
-      return "Claude " + beautifyModelSegment(String(tail))
-    }
-    return beautifyModelSegment(trimmed)
-  }
-
-  private func beautifyModelSegment(_ raw: String) -> String {
-    raw
-      .split(separator: "-")
-      .map { part -> String in
-        let s = String(part)
-        if s.range(of: #"^\d+$"#, options: .regularExpression) != nil {
-          return s
-        }
-        if s.lowercased() == "gpt" { return "GPT" }
-        return s.prefix(1).uppercased() + s.dropFirst()
-      }
-      .joined(separator: " ")
-      .replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
-  }
-
 }
 
 /// The strip only ever renders messages the user explicitly queued — an
 /// atomically dispatched send never produces a staged row — so it no longer
-/// hides behind an accordion. A single queued message is one compact card with
-/// its four actions visible; only a pile-up gets a slim count above the rows.
+/// hides behind an accordion. Each queued message is one glass row with a
+/// "Sends next" / "Queued" tag and its actions.
 struct WorkQueuedSteerStrip: View {
   let steers: [WorkPendingSteerModel]
   @Binding var drafts: [String: String]
@@ -705,18 +697,56 @@ struct WorkQueuedSteerStrip: View {
   let onSaveEdit: @MainActor (String, String) async -> Void
   let onDispatchInline: (@MainActor (String) async -> Void)?
   let onDispatchInterrupt: (@MainActor (String) async -> Void)?
+  /// Moves a staged message to a position; nil when the queue cannot be
+  /// reordered. Offered as a long-press menu and as VoiceOver actions.
+  var onMove: (@MainActor (String, Int) async -> Void)? = nil
 
   // Cancel haptic token: bumped each time a row's cancel lands so the
   // whole strip can drive a single sensoryFeedback modifier.
   @State private var cancelHapticToken: Int = 0
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      if steers.count > 1 { header }
+    // No frame or header around the rows: each queued message is its own glass
+    // row, the same quiet list desktop draws above its composer.
+    VStack(alignment: .leading, spacing: 4) {
+      ForEach(Array(steers.enumerated()), id: \.element.id) { index, steer in
+        queuedRow(steer, statusLabel: index == 0 ? "Sends next" : "Queued")
+          .modifier(WorkQueuedSteerReorderModifier(
+            index: index,
+            count: steers.count,
+            // Hidden while the host is offline or another row action runs,
+            // like the row's own buttons.
+            move: isLive && !busy ? onMove.map { move in { toIndex in await move(steer.id, toIndex) } } : nil
+          ))
+      }
+      // The one reason the tags cannot give, as on desktop: why a message waits.
+      if let queueLimitNote {
+        Text(queueLimitNote)
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+          .padding(.horizontal, 4)
+      }
+    }
+    .accessibilityLabel(steers.count == 1 ? "1 queued message" : "\(steers.count) queued messages")
+    .accessibilityIdentifier("Work.Chat.StagedStrip")
+    .sensoryFeedback(.impact(weight: .light), trigger: cancelHapticToken)
+    .accessibilityElement(children: .contain)
+  }
 
-      ForEach(steers) { steer in
+  private var queueLimitNote: String? {
+    if capability.modes.allSatisfy({ $0 == .queue }) {
+      return "\(capability.agentLabel) cannot take a message mid-turn, so \(steers.count == 1 ? "it sends" : "they send") when the turn ends."
+    }
+    guard onDispatchInline != nil else { return nil }
+    return steers.lazy.compactMap { steer in
+      capability.inlineAttachmentBlockReason(attachmentTypes: (steer.attachments ?? []).map(\.type))
+    }.first
+  }
+
+  private func queuedRow(_ steer: WorkPendingSteerModel, statusLabel: String) -> some View {
         WorkQueuedSteerRow(
           steer: steer,
+          statusLabel: statusLabel,
           capability: capability,
           draft: Binding(
             get: { drafts[steer.id] ?? steer.text },
@@ -733,35 +763,54 @@ struct WorkQueuedSteerStrip: View {
             await onCancel(steer.id)
           },
           onSave: { text in await onSaveEdit(steer.id, text) },
-          onDispatchInline: onDispatchInline.map { dispatch in
+          // A row the live turn cannot take (Cursor with attachments) is not
+          // offered "Send now": pressing it could only re-queue the message.
+          onDispatchInline: capability.inlineAttachmentBlockReason(
+            attachmentTypes: (steer.attachments ?? []).map(\.type)
+          ) != nil ? nil : onDispatchInline.map { dispatch in
             { await dispatch(steer.id) }
           },
           onDispatchInterrupt: onDispatchInterrupt.map { dispatch in
             { await dispatch(steer.id) }
           }
         )
-      }
-    }
-    .padding(6)
-    .background(ADEColor.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.accent.opacity(0.22), lineWidth: 0.8)
-    )
-    .sensoryFeedback(.impact(weight: .light), trigger: cancelHapticToken)
-    .accessibilityElement(children: .contain)
   }
 
-  /// Static label, not a disclosure control — the rows below it are always
-  /// visible. Kept only so a queue of several reads as a queue.
-  private var header: some View {
-    Text("\(steers.count) queued")
-      .font(.caption.weight(.semibold))
-      .foregroundStyle(ADEColor.textSecondary)
-      .padding(.horizontal, 4)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .accessibilityLabel("\(steers.count) queued messages")
-      .accessibilityIdentifier("Work.Chat.StagedStrip.Header")
+}
+
+/// Reorder for one staged row: a long-press menu (Send first / Move up / Move
+/// down / Send last) and the same moves as VoiceOver actions. Desktop drags a
+/// handle; on a phone the row's tap already opens its detail sheet, so the
+/// moves live behind a long press instead of a second gesture on the card.
+private struct WorkQueuedSteerReorderModifier: ViewModifier {
+  let index: Int
+  let count: Int
+  let move: (@MainActor (Int) async -> Void)?
+
+  func body(content: Content) -> some View {
+    if let move, count > 1 {
+      content
+        .contextMenu {
+          if index > 0 {
+            Button { Task { await move(0) } } label: { Label("Send first", systemImage: "arrow.up.to.line") }
+            Button { Task { await move(index - 1) } } label: { Label("Move up", systemImage: "arrow.up") }
+          }
+          if index < count - 1 {
+            Button { Task { await move(index + 1) } } label: { Label("Move down", systemImage: "arrow.down") }
+            Button { Task { await move(count - 1) } } label: { Label("Send last", systemImage: "arrow.down.to.line") }
+          }
+        }
+        .accessibilityAction(named: "Move up") {
+          guard index > 0 else { return }
+          Task { await move(index - 1) }
+        }
+        .accessibilityAction(named: "Move down") {
+          guard index < count - 1 else { return }
+          Task { await move(index + 1) }
+        }
+    } else {
+      content
+    }
   }
 }
 
@@ -791,6 +840,8 @@ private struct WorkQueuedSteerWaitingGlyph: View {
 
 struct WorkQueuedSteerRow: View {
   let steer: WorkPendingSteerModel
+  /// Where the message stands in the queue ("Sends next", "Queued").
+  let statusLabel: String
   let capability: WorkActiveSendCapability
   @Binding var draft: String
   let isEditing: Bool
@@ -868,25 +919,27 @@ struct WorkQueuedSteerRow: View {
             HStack(spacing: 8) {
               WorkQueuedSteerWaitingGlyph(waiting: turnActive)
 
-              VStack(alignment: .leading, spacing: 1) {
-                Text(steer.text)
-                  .font(.system(size: 13.5))
-                  .foregroundStyle(ADEColor.textPrimary)
-                  .lineLimit(1)
-                  .truncationMode(.tail)
+              Text(steer.text)
+                .font(.system(size: 13.5))
+                .foregroundStyle(ADEColor.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text(dispositionText)
-                  .font(.caption2)
-                  .foregroundStyle(ADEColor.textMuted)
-                  .lineLimit(1)
-              }
-              .frame(maxWidth: .infinity, alignment: .leading)
+              Text(statusLabel)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+                .fixedSize()
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(ADEColor.textPrimary.opacity(0.06), in: Capsule(style: .continuous))
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
-          .accessibilityLabel("Queued message: \(steer.text)")
+          .accessibilityLabel("Queued message, \(statusLabel): \(steer.text). \(dispositionText)")
           .accessibilityHint("Opens the full message and its send options")
           .accessibilityIdentifier("Work.Chat.StagedStrip.Open")
 
@@ -940,11 +993,8 @@ struct WorkQueuedSteerRow: View {
     }
     .padding(.horizontal, 10)
     .padding(.vertical, isEditing ? 10 : 2)
-    .background(ADEColor.surfaceBackground.opacity(0.86), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-    )
+    // Floats over the thread, so each row carries its own glass to stay legible.
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     .accessibilityElement(children: .contain)
     .sheet(isPresented: $showingDetail) {
       WorkQueuedSteerDetailSheet(
@@ -964,7 +1014,13 @@ struct WorkQueuedSteerRow: View {
   /// Says what happens next, not when it was typed: a queued message's
   /// timestamp is always "a moment ago" and carried no information.
   private var dispositionText: String {
-    workQueuedSteerDisposition(capability: capability, turnActive: turnActive).shortText
+    workQueuedSteerDisposition(
+      capability: capability,
+      turnActive: turnActive,
+      inlineBlockedReason: capability.inlineAttachmentBlockReason(
+        attachmentTypes: (steer.attachments ?? []).map(\.type)
+      )
+    ).shortText
   }
 
   // Icon-only tap target with an accessibility label so the row's actions stay
@@ -1910,7 +1966,9 @@ private struct WorkStructuredQuestionMetaRow: View {
 }
 
 struct WorkModelSelectionPendingCard: View {
-  @EnvironmentObject private var syncService: SyncService
+  /// Not `@EnvironmentObject`: renders inside a transcript cell (see
+  /// `WorkSyncServiceReference`); only the picker sheet needs the object.
+  @Environment(\.workSyncService) private var syncReference
 
   let request: WorkPendingModelSelectionModel
   let busy: Bool
@@ -1970,27 +2028,29 @@ struct WorkModelSelectionPendingCard: View {
     }
     .adeGlassCard(cornerRadius: 18, padding: 14)
     .sheet(isPresented: $pickerPresented) {
-      WorkModelPickerSheet(
-        currentModelId: selectedModelId,
-        currentProvider: selectedProvider,
-        currentReasoningEffort: selectedReasoningEffort,
-        currentCodexFastMode: selectedCodexFastMode,
-        availableModelIds: request.availableModelIds,
-        isBusy: busy,
-        onSelect: { option, pickedReasoning, provider, pickedFastMode in
-          selectedModel = option
-          selectedModelId = option.id
-          selectedProvider = provider
-          let nextReasoning = pickedReasoning ?? ""
-          if nextReasoning != selectedReasoningEffort {
-            selectedReasoningEffort = nextReasoning
+      if let syncService = syncReference.service {
+        WorkModelPickerSheet(
+          currentModelId: selectedModelId,
+          currentProvider: selectedProvider,
+          currentReasoningEffort: selectedReasoningEffort,
+          currentCodexFastMode: selectedCodexFastMode,
+          availableModelIds: request.availableModelIds,
+          isBusy: busy,
+          onSelect: { option, pickedReasoning, provider, pickedFastMode in
+            selectedModel = option
+            selectedModelId = option.id
+            selectedProvider = provider
+            let nextReasoning = pickedReasoning ?? ""
+            if nextReasoning != selectedReasoningEffort {
+              selectedReasoningEffort = nextReasoning
+            }
+            if pickedFastMode != selectedCodexFastMode {
+              selectedCodexFastMode = pickedFastMode
+            }
           }
-          if pickedFastMode != selectedCodexFastMode {
-            selectedCodexFastMode = pickedFastMode
-          }
-        }
-      )
-      .environmentObject(syncService)
+        )
+        .environmentObject(syncService)
+      }
     }
     .onChange(of: requestResetKey) { _, _ in
       resetSelectionState()

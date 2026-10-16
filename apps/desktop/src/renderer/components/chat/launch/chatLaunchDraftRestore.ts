@@ -42,6 +42,13 @@ type RestoreState = {
 
 const restoreStore = createStore<RestoreState>(() => ({ requests: [], lastClosed: null }));
 
+/** Hand the prompt back to the draft without closing the launch's tab. */
+export function queueChatLaunchDraftRestore(restore: ChatLaunchDraftRestoreRequest): void {
+  restoreStore.setState((state) => ({
+    requests: [...state.requests.filter((entry) => entry.launchId !== restore.launchId), restore],
+  }));
+}
+
 /** Close a launch's tab in Work and, with `restore`, hand its prompt back to the draft — in one update. */
 export function announceChatLaunchClosed(
   notice: ChatLaunchClosedNotice,

@@ -199,7 +199,13 @@ final class LiveActivityService {
                 }
                 continue
             }
-            observePushToken(for: activity)
+            // A machine-scoped activity is the duplicate an older brain
+            // started. Only the relay's account-wide activity is real now.
+            Task { @MainActor [weak self] in
+                self?.perActivityTokenTasks[activity.id]?.cancel()
+                self?.perActivityTokenTasks[activity.id] = nil
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
         }
         if shouldReconcileAccountActivity {
             scheduleAccountWideActivityReconciliation()
@@ -207,20 +213,16 @@ final class LiveActivityService {
     }
 
     /// Foreground hook (called from `SyncService.handleForegroundTransition`).
-    /// Re-asserts observers, re-reports live tokens, and reaps orphaned
-    /// activities from machines we no longer talk to.
+    /// Re-asserts observers, re-reports live tokens, ends every machine-scoped
+    /// activity, and keeps exactly one account-wide activity.
     func handleForegroundTransition() async {
         start()
         if ActivityAuthorizationInfo().areActivitiesEnabled {
             publishCurrentPushToStartToken()
         }
-        await endOrphanedActivities()
+        await endMachineScopedActivities(immediate: true)
         await retryPendingAccountWideTokenRegistration()
         await reconcileAccountWideActivityTarget()
-        for activity in Activity<ADEAgentRunsAttributes>.activities
-        where !activity.attributes.isAccountWide {
-            observePushToken(for: activity)
-        }
     }
 
     /// Reattach account observers only after Clerk has established the local
@@ -377,14 +379,17 @@ final class LiveActivityService {
                         continue
                     }
                 }
-                self?.observePushToken(for: activity)
+                // Machine-scoped: an older brain's duplicate. End it at once.
+                await activity.end(nil, dismissalPolicy: .immediate)
             }
         }
     }
 
     private func observePushToken(for activity: Activity<ADEAgentRunsAttributes>) {
-        if activity.attributes.isAccountWide {
-            guard accountWideActivityObservationAction(
+        // Only the account-wide activity reports tokens. A machine-scoped one
+        // is ended on sight, never observed.
+        guard activity.attributes.isAccountWide,
+            accountWideActivityObservationAction(
                 phase: AccountService.shared.phase,
                 accountObserversSuspended: accountObserversSuspended
             ) == .observe,
@@ -393,8 +398,7 @@ final class LiveActivityService {
                 contentEpoch: activity.content.state.ownershipEpoch,
                 currentOwnership: AccountService.shared.attentionDeviceOwnership
             ) else {
-                return
-            }
+            return
         }
         // Replace any prior observer for this activity so a re-attach on
         // foreground doesn't stack duplicate reporters.
@@ -645,6 +649,10 @@ final class LiveActivityService {
         }
     }
 
+    /// How often unchanged counts are rewritten while the app is alive. Well
+    /// inside `localStaleWindow`, so a live feed never lets the activity go stale.
+    private static let localRefreshInterval: TimeInterval = 120
+
     private func writeLocalContent(items: [AccountAttentionItem]) async {
         let activities = Activity<ADEAgentRunsAttributes>.activities
             .filter { $0.attributes.isAccountWide && $0.activityState == .active }
@@ -653,20 +661,21 @@ final class LiveActivityService {
         let ownership = ADESharedContainer.readAccountDeviceOwnershipState()
         let state = ADEAgentRunsAttributes.ContentState.local(
             items: items,
-            ownershipEpoch: ownership?.ownershipEpoch,
-            hideDetails: ADESharedContainer.hideAttentionDetails
+            ownershipEpoch: ownership?.ownershipEpoch
         )
         // `updatedAt` moves on every call by construction, so it is excluded
         // from the hash — including it would defeat the dedupe entirely and
-        // make this write on every single feed tick.
+        // make this write on every single feed tick. Unchanged counts still
+        // rewrite once per `localRefreshInterval`, so a fresh feed renews the
+        // stale date instead of letting the tiles read as old data.
         var hasher = Hasher()
-        hasher.combine(state.runs)
-        hasher.combine(state.prs)
+        hasher.combine(state.columns)
         hasher.combine(state.activeCount)
-        hasher.combine(state.moreCount)
-        hasher.combine(state.groups)
         let hash = hasher.finalize()
-        guard hash != lastLocalContentHash else { return }
+        let refreshDue = lastLocalUpdateAt.map {
+            Date().timeIntervalSince($0) >= Self.localRefreshInterval
+        } ?? true
+        guard hash != lastLocalContentHash || refreshDue else { return }
         lastLocalContentHash = hash
         lastLocalUpdateAt = Date()
 
@@ -676,23 +685,6 @@ final class LiveActivityService {
         )
         for activity in activities {
             await activity.update(content)
-        }
-    }
-
-    private func endOrphanedActivities() async {
-        // Only reap when we actually know the current machine — a transient
-        // disconnect (nil host) must not tear down a valid activity.
-        guard let pairedMachine = SyncService.shared?.hostName?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-            !pairedMachine.isEmpty else { return }
-
-        for activity in Activity<ADEAgentRunsAttributes>.activities {
-            guard !activity.attributes.isAccountWide else { continue }
-            let machine = activity.attributes.machineName.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !machine.isEmpty, machine != pairedMachine else { continue }
-            await activity.end(nil, dismissalPolicy: .immediate)
-            perActivityTokenTasks[activity.id]?.cancel()
-            perActivityTokenTasks[activity.id] = nil
         }
     }
 }

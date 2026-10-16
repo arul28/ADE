@@ -32,7 +32,9 @@ docs/
 ├── logging.md                             # logging + PostHog ground truth
 ├── OPTIMIZATION_OPPORTUNITIES.md          # codebase-wide optimization backlog
 ├── design/
-│   └── notices.md                         # banners, toasts, dialogs, Z_LAYERS + ade-ui lint ratchet
+│   ├── notices.md                         # banners, toasts, dialogs, Z_LAYERS + ade-ui lint ratchet
+│   ├── theming.md                         # theme format, engine, token seam
+│   └── visual-language.md                 # surface kit, scenes, layout, colour rules
 ├── playbooks/
 │   ├── ship-lane.md                       # autonomous PR-to-merge driver
 │   └── windows-signed-release.md          # signed Windows publication
@@ -55,8 +57,10 @@ docs/
     ├── history/                           # operations timeline, transcripts, export
     ├── apple-device/                      # Apple Development tool + helper stream + ADEInspector
     ├── lanes/                             # worktree isolation, stacking, runtime, OAuth
+    ├── issues/                            # open an issue where you are: Issues tool tab, issue sheet
     ├── linear-integration/                # issue reads, lane/PR flow, live-status round-trip
-    ├── mac-desktop/                       # per-lane macOS virtual display driven by `ade mac-desktop`
+    ├── mac-desktop/                       # per-lane macOS virtual display driven by `ade screen` / `ade mac-desktop`
+    ├── music/                             # Apple Music and Spotify, players, MusicKit host, Now Playing source
     ├── onboarding-and-settings/           # first-run, schema, settings tabs
     ├── personal-chats/                    # machine-owned projectless AI conversations
     ├── sdk/                               # embeddable @ade-dev/sdk + @ade-dev/chat-ui sidecar
@@ -67,6 +71,7 @@ docs/
     ├── sync-and-multi-device/             # CRDT sync, account Activity, iOS, remote commands, session handoff
     ├── terminals-and-sessions/            # PTY, sessions, and UI surfaces
     ├── web-client/                        # owner-only hosted browser client over sync WebSocket
+    ├── windows-desktop/                   # per-lane Windows screen (private child session or the main desktop by consent), `ade screen`
 ```
 
 ## Conventions

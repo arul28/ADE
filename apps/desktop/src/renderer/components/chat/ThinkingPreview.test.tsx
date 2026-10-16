@@ -1,7 +1,5 @@
 /* @vitest-environment jsdom */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -13,7 +11,6 @@ import {
 } from "./AgentChatMessageList";
 import { buildTranscriptEventRowKeys } from "./chatTranscriptRows";
 import {
-  THINKING_LIVE_MAX_LINES,
   THINKING_PREVIEW_TAIL_CHARS,
   deriveLiveThinkingRowKey,
   formatThinkingElapsed,
@@ -307,26 +304,6 @@ describe("live thinking preview in the transcript", () => {
     expect(screen.getByTestId("thinking-preview-scroll").className).not.toContain("ade-thinking-live-smooth");
   });
 
-  it("draws the live thought as a compact block that grows to a four-line cap, not a fixed-height card", () => {
-    render(list([userMessage(0), reasoning(1, "One line.")], { live: true }));
-
-    const block = screen.getByTestId("thinking-preview-card");
-    const viewport = screen.getByTestId("thinking-preview-scroll");
-    // No grey box and no fixed height: a one-line thought is a one-line block.
-    expect(block.className).not.toContain("ade-thinking-card");
-    expect(block.className).not.toMatch(/(^|\s)h-\[/);
-    expect(viewport.className).toContain("ade-thinking-live-viewport");
-    expect(viewport.getAttribute("data-max-lines")).toBe(String(THINKING_LIVE_MAX_LINES));
-    // The thought's own size and leading, so `1lh` is one line of its text.
-    expect(viewport.className).toContain("leading-[1.65]");
-    expect(within(viewport).getByText("One line.").closest(".ade-thought-text")).toBeTruthy();
-
-    // The cap and the top fade live in the stylesheet (receipt for the rule).
-    const css = readFileSync(join(__dirname, "../../index.css"), "utf8");
-    expect(css).toMatch(/\.ade-thinking-live-viewport \{\s*max-height: calc\(4 \* 1lh\);\s*overflow: hidden;/);
-    expect(css).toMatch(/\.ade-thinking-live-viewport\[data-overflowing="true"\] \{[^}]*mask-image: linear-gradient\(to bottom, transparent/);
-  });
-
   it("follows the tail with at most one scroll write per frame and fades older lines once they overflow", () => {
     const frames: FrameRequestCallback[] = [];
     const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
@@ -457,15 +434,18 @@ describe("adjacent Thought rows merge into one", () => {
     const thoughtB = [reasoning(5, "Decide.", "r-2"), reasoning(8, " Pick one.", "r-2")];
     const view = render(list([userMessage(0), ...thoughtA, lifecycle(4), ...thoughtB], { live: true }));
 
-    // The live thought never joins the earlier one: it keeps its own row.
-    expect(screen.getByTestId("thinking-preview")).toBeTruthy();
-    expect(thoughtButtons()).toHaveLength(1);
-    expect(screen.getByText("for 2s")).toBeTruthy();
+    // The live thought joins the finished one above it: one row, drawing the
+    // live preview, under the run's first key.
+    const rowKeyOf = (element: Element) => element.closest("[data-chat-row-key]")?.getAttribute("data-chat-row-key");
+    const liveRowKey = rowKeyOf(screen.getByTestId("thinking-preview"));
+    expect(thoughtButtons()).toHaveLength(0);
 
     view.rerender(list([userMessage(0), ...thoughtA, lifecycle(4), ...thoughtB, answer(9, "Here.")], { live: true }));
     expect(screen.queryByTestId("thinking-preview")).toBeNull();
     const thoughts = thoughtButtons();
     expect(thoughts).toHaveLength(1);
+    // Settling keeps the same drawn row: nothing remounts.
+    expect(rowKeyOf(thoughts[0]!)).toBe(liveRowKey);
     // 2s + 3s: every member has a measured span.
     expect(thoughts[0]!.textContent).toContain("for 5s");
     fireEvent.click(thoughts[0]!);

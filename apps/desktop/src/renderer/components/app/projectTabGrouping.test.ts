@@ -3,11 +3,12 @@ import {
   activeMachineForGroup,
   groupRecentProjects,
   groupProjectTabs,
-  isMultiMachine,
+  remoteBindingFromRecent,
+  localCheckoutForRemote,
+  resolveProjectTabFallback,
   LOCAL_MACHINE_NAME,
-  type RemoteProjectTabBinding,
 } from "./projectTabGrouping";
-import type { RecentProjectSummary } from "../../../shared/types";
+import type { RecentProjectSummary, RemoteOpenProjectBinding } from "../../../shared/types";
 
 function local(rootPath: string, gitOriginUrl?: string | null): RecentProjectSummary {
   return {
@@ -20,7 +21,7 @@ function local(rootPath: string, gitOriginUrl?: string | null): RecentProjectSum
   } as RecentProjectSummary;
 }
 
-function remote(targetId: string, projectId: string, runtimeName: string): RemoteProjectTabBinding {
+function remote(targetId: string, projectId: string, runtimeName: string): RemoteOpenProjectBinding {
   return {
     kind: "remote",
     key: `remote:${targetId}:${projectId}`,
@@ -29,7 +30,7 @@ function remote(targetId: string, projectId: string, runtimeName: string): Remot
     runtimeName,
     rootPath: `/Users/other/${projectId}`,
     displayName: projectId,
-  } as RemoteProjectTabBinding;
+  } as RemoteOpenProjectBinding;
 }
 
 function remoteRecent(
@@ -70,7 +71,6 @@ describe("groupProjectTabs", () => {
       LOCAL_MACHINE_NAME,
       "MacBook Pro (97)",
     ]);
-    expect(isMultiMachine(groups[0])).toBe(true);
   });
 
   it("matches SSH and HTTPS forms of the same origin", () => {
@@ -177,7 +177,7 @@ describe("groupProjectTabs", () => {
       remoteTabs: [],
     });
     expect(activeMachineForGroup(groups[0])?.isLocal).toBe(true);
-    expect(isMultiMachine(groups[0])).toBe(false);
+    expect(groups[0].machines).toHaveLength(1);
   });
 
   it("treats a remote binding with unknown origin as its own tab", () => {
@@ -316,7 +316,7 @@ describe("groupRecentProjects", () => {
     expect(groups[0].locations[1].summary.remote?.projectId).toBe("ade");
   });
 
-  it("includes activity from a newly discovered connected checkout", () => {
+  it("counts a connected checkout's newer activity but still opens this computer's checkout", () => {
     const groups = groupRecentProjects({
       recentProjects: [{
         ...local("/Users/me/ADE", "git@github.com:arul28/ADE.git"),
@@ -341,6 +341,176 @@ describe("groupRecentProjects", () => {
     });
 
     expect(groups[0].lastOpenedAt).toBe("2026-07-28T12:00:00.000Z");
-    expect(groups[0].primary.machineName).toBe("Mac Studio");
+    expect(groups[0].locations.map((location) => location.machineName)).toContain("Mac Studio");
+    // Opening a project never lands on another machine's copy just because it
+    // was used last.
+    expect(groups[0].primary.machineName).toBe(LOCAL_MACHINE_NAME);
+    expect(groups[0].primary.summary.rootPath).toBe("/Users/me/ADE");
+  });
+});
+
+describe("localCheckoutForRemote", () => {
+  const ORIGIN = "https://github.com/arul28/ADE";
+  const SSH_ORIGIN = "git@github.com:arul28/ADE.git";
+  const worktree = { ...local("/Users/me/.ade/worktrees/x", SSH_ORIGIN), worktreeOf: { rootPath: "/Users/me/ADE" } } as RecentProjectSummary;
+  const missing = { ...local("/Users/me/Gone", SSH_ORIGIN), exists: false };
+
+  it.each([
+    { name: "finds a recent checkout of the same repo", open: [], known: [local("/Users/me/ADE", SSH_ORIGIN)], expected: "/Users/me/ADE" },
+    { name: "prefers an open tab over a recent", open: [local("/Users/me/Open", SSH_ORIGIN)], known: [local("/Users/me/ADE", SSH_ORIGIN)], expected: "/Users/me/Open" },
+    { name: "never uses a lane worktree", open: [worktree], known: [], expected: null },
+    { name: "skips a checkout missing on disk", open: [], known: [missing], expected: null },
+    { name: "ignores a different repo", open: [], known: [local("/Users/me/Other", "git@github.com:arul28/other.git")], expected: null },
+    { name: "ignores a recent with no origin", open: [], known: [local("/Users/me/ADE")], expected: null },
+    { name: "ignores another machine's recent", open: [], known: [remoteRecent("studio", "ade", "Mac Studio", SSH_ORIGIN, "")], expected: null },
+  ])("$name", ({ open, known, expected }) => {
+    expect(localCheckoutForRemote({ remoteOrigin: ORIGIN, openLocalTabs: open, knownLocalTabs: known })).toBe(expected);
+  });
+
+  it("returns nothing when the remote project's repo is unknown", () => {
+    expect(localCheckoutForRemote({
+      remoteOrigin: null,
+      openLocalTabs: [local("/Users/me/ADE", SSH_ORIGIN)],
+      knownLocalTabs: [],
+    })).toBeNull();
+  });
+});
+
+describe("resolveProjectTabFallback", () => {
+  const ORIGIN = "git@github.com:arul28/ADE.git";
+  const localCheckout = local("/Users/me/ADE", ORIGIN);
+  const studio = { ...remote("studio", "ade", "Mac Studio"), gitOriginUrl: ORIGIN };
+  const laptop = { ...remote("laptop", "ade", "MacBook Pro"), gitOriginUrl: ORIGIN };
+  const desktop = { ...remote("desktop", "ade", "Mac mini"), gitOriginUrl: ORIGIN };
+
+  function groupsWith(
+    knownLocal: RecentProjectSummary[],
+    knownRemote: RemoteOpenProjectBinding[],
+  ) {
+    return groupProjectTabs({
+      localTabs: [],
+      remoteTabs: [studio],
+      knownLocalTabs: knownLocal,
+      knownRemoteTabs: knownRemote,
+      remoteOriginByKey: Object.fromEntries(
+        [studio, ...knownRemote].map((binding) => [binding.key, ORIGIN]),
+      ),
+    });
+  }
+
+  // The tab's machine is going away (`excludeTargetId`); the tab is the repo,
+  // so it must land on another checkout of that repo, local first.
+  it.each([
+    {
+      name: "prefers the local checkout of the same repo",
+      knownLocal: [localCheckout],
+      knownRemote: [] as RemoteOpenProjectBinding[],
+      connected: [] as string[],
+      expected: { kind: "local", rootPath: "/Users/me/ADE" },
+    },
+    {
+      name: "skips a missing local checkout and uses a connected machine",
+      knownLocal: [{ ...localCheckout, exists: false }],
+      knownRemote: [laptop],
+      connected: ["laptop"],
+      expected: { kind: "remote", binding: laptop },
+    },
+    {
+      name: "prefers a connected machine over a disconnected one",
+      knownLocal: [],
+      knownRemote: [laptop, desktop],
+      connected: ["desktop"],
+      expected: { kind: "remote", binding: desktop },
+    },
+  ])("$name", ({ knownLocal, knownRemote, connected, expected }) => {
+    expect(
+      resolveProjectTabFallback({
+        bindingKey: studio.key,
+        groups: groupsWith(knownLocal, knownRemote),
+        openLocalRoots: [],
+        openRemoteBindingKeys: [studio.key],
+        connectedTargetIds: new Set(connected),
+        excludeTargetId: "studio",
+      }),
+    ).toEqual(expected);
+  });
+
+  it("returns null when the repo lives only on the machine being removed", () => {
+    expect(
+      resolveProjectTabFallback({
+        bindingKey: studio.key,
+        groups: groupProjectTabs({
+          localTabs: [],
+          remoteTabs: [studio],
+          remoteOriginByKey: { [studio.key]: ORIGIN },
+        }),
+        openLocalRoots: [],
+        openRemoteBindingKeys: [studio.key],
+        connectedTargetIds: new Set(["studio"]),
+        excludeTargetId: "studio",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null when no group contains the tab", () => {
+    expect(
+      resolveProjectTabFallback({
+        bindingKey: studio.key,
+        groups: [],
+        openLocalRoots: [],
+        openRemoteBindingKeys: [],
+        connectedTargetIds: new Set(),
+        excludeTargetId: "studio",
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("groupProjectTabs tab order", () => {
+  it("ranks ordered tabs first and keeps unranked tabs in their relative order", () => {
+    const groups = groupProjectTabs({
+      localTabs: [local("/Users/me/a"), local("/Users/me/b"), local("/Users/me/c")],
+      remoteTabs: [],
+      order: ["/Users/me/c", "/Users/me/a"],
+    });
+
+    expect(groups.map((group) => group.machines[0]!.bindingKey)).toEqual([
+      "/Users/me/c",
+      "/Users/me/a",
+      "/Users/me/b",
+    ]);
+  });
+});
+
+describe("remoteBindingFromRecent", () => {
+  function remoteRecent(transport?: "ssh" | "paired"): RecentProjectSummary {
+    return {
+      rootPath: "/srv/app",
+      displayName: "App",
+      lastOpenedAt: "",
+      exists: true,
+      kind: "remote",
+      remote: {
+        targetId: "t1",
+        projectId: "p1",
+        runtimeName: "Mac Studio",
+        hostname: "studio.local",
+        ...(transport ? { transport } : {}),
+      },
+    };
+  }
+
+  it("preserves the paired transport so the binding is not read as SSH", () => {
+    const paired = remoteBindingFromRecent(remoteRecent("paired"));
+
+    expect(paired?.transport).toBe("paired");
+    expect(paired?.key).toBe("remote:t1:p1");
+  });
+
+  it("omits transport for a legacy recent with none and returns null for a local one", () => {
+    const legacy = remoteBindingFromRecent(remoteRecent());
+    expect(legacy && "transport" in legacy).toBe(false);
+
+    expect(remoteBindingFromRecent(local("/Users/me/ADE"))).toBeNull();
   });
 });

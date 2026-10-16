@@ -134,10 +134,12 @@ extension SyncService {
       codexConfigSource: request.chat.codexConfigSource,
       opencodePermissionMode: request.chat.opencodePermissionMode,
       droidPermissionMode: request.chat.droidPermissionMode,
+      musePermissionMode: request.chat.musePermissionMode,
       cursorModeId: request.chat.cursorModeId,
       cursorConfigValues: nil,
       computerUse: nil,
-      requestedCwd: nil
+      requestedCwd: nil,
+      presetId: request.chat.presetId
     )
     chatLaunchStore.updateLocal(launchId: request.launchId) { state in
       state.request = ChatLaunchLocalRequest(

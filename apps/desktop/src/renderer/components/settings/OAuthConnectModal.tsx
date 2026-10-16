@@ -13,6 +13,7 @@ import { ProviderLogo } from "../shared/ProviderLogos";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { Dialog, type DialogAction } from "../ui/dialog";
 import { Banner } from "../ui/notice";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 
 const CODE_PATTERN = /[A-Z0-9]{4,}-[A-Z0-9]{4,}/;
 const OPEN_TARGET_STORAGE_KEY = "ade.opencode.oauthOpenTarget";
@@ -79,7 +80,7 @@ function promptVisible(
 function buildPromptDefaults(prompts: OpenCodeProviderAuthPrompt[]): Record<string, string> {
   const defaults: Record<string, string> = {};
   for (const prompt of prompts) {
-    defaults[prompt.key] = prompt.type === "select" ? prompt.options?.[0]?.value ?? "" : "";
+    defaults[prompt.key] = prompt.defaultValue ?? (prompt.type === "select" ? prompt.options?.[0]?.value ?? "" : "");
   }
   return defaults;
 }
@@ -111,6 +112,7 @@ export function OAuthConnectModal({
   providerId,
   providerName,
   methods,
+  initialMethodIndex,
   onClose,
   onConnected,
 }: {
@@ -118,14 +120,29 @@ export function OAuthConnectModal({
   providerName: string;
   /** The provider's full auth-method list (index is meaningful to the backend). */
   methods: OpenCodeProviderAuthMethod[];
+  /** The OAuth method to open on, when the user already picked one. */
+  initialMethodIndex?: number;
   onClose: () => void;
   onConnected: () => void;
 }) {
+  // The OAuth flow runs in the page's machine's runtime; start, cancel and the
+  // status feed must all name that machine.
+  const { pin } = useSettingsMachineScope();
+  // The parent's callbacks are read through refs so the effects below re-run
+  // only when the machine or provider changes: a re-run mid-flow cancels the
+  // sign-in (unmount cleanup) or re-anchors a pinned status feed past its
+  // "connected" event. `pin` itself is stable per machine (SettingsMachineScope).
+  const onConnectedRef = useRef(onConnected);
+  onConnectedRef.current = onConnected;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const oauthMethods = useMemo(
     () => methods.map((method, index) => ({ method, index })).filter((entry) => entry.method.type === "oauth"),
     [methods],
   );
-  const [methodIndex, setMethodIndex] = useState(() => oauthMethods[0]?.index ?? 0);
+  const [methodIndex, setMethodIndex] = useState(() =>
+    oauthMethods.find((entry) => entry.index === initialMethodIndex)?.index ?? oauthMethods[0]?.index ?? 0,
+  );
   const method = methods[methodIndex];
   const prompts = method?.prompts ?? [];
 
@@ -156,10 +173,10 @@ export function OAuthConnectModal({
     () => () => {
       cancelRequestedRef.current = true;
       if (startPendingRef.current || flowActiveRef.current) {
-        void window.ade.ai.opencodeOAuthCancel({ providerId }).catch(() => undefined);
+        void window.ade.ai.opencodeOAuthCancel({ providerId }, pin).catch(() => undefined);
       }
     },
-    [providerId],
+    [pin, providerId],
   );
 
   // Subscribe to backend OAuth status pushes for this provider.
@@ -168,8 +185,8 @@ export function OAuthConnectModal({
       if (event.providerId !== providerId) return;
       if (event.state !== "pending") flowActiveRef.current = false;
       if (event.state === "connected") {
-        onConnected();
-        onClose();
+        onConnectedRef.current();
+        onCloseRef.current();
       } else if (event.state === "failed" || event.state === "timeout" || event.state === "cancelled") {
         setPhase("error");
         setErrorMessage(
@@ -181,11 +198,11 @@ export function OAuthConnectModal({
                 : "Sign-in failed."),
         );
       }
-    });
+    }, pin);
     return () => {
       unsubscribe();
     };
-  }, [providerId, onClose, onConnected]);
+  }, [pin, providerId]);
 
   const startFlow = async () => {
     cancelRequestedRef.current = false;
@@ -203,14 +220,14 @@ export function OAuthConnectModal({
         providerId,
         methodIndex,
         inputs: Object.keys(filteredInputs).length ? filteredInputs : undefined,
-      });
+      }, pin);
       startPendingRef.current = false;
       if (cancelRequestedRef.current) {
-        void window.ade.ai.opencodeOAuthCancel({ providerId }).catch(() => undefined);
+        void window.ade.ai.opencodeOAuthCancel({ providerId }, pin).catch(() => undefined);
         return;
       }
       if (result.url && !isAllowedOpenCodeOAuthUrl(result.url)) {
-        await window.ade.ai.opencodeOAuthCancel({ providerId }).catch(() => undefined);
+        await window.ade.ai.opencodeOAuthCancel({ providerId }, pin).catch(() => undefined);
         throw new Error("OpenCode returned an unsafe OAuth URL.");
       }
       if (result.url) {
@@ -233,7 +250,7 @@ export function OAuthConnectModal({
     cancelRequestedRef.current = true;
     flowActiveRef.current = false;
     try {
-      await window.ade.ai.opencodeOAuthCancel({ providerId });
+      await window.ade.ai.opencodeOAuthCancel({ providerId }, pin);
     } catch {
       // Best-effort — closing regardless.
     }
@@ -475,7 +492,7 @@ export function OAuthConnectModal({
                 <span style={labelStyle}>Sign-in link</span>
                 <button
                   type="button"
-                  style={{ ...outlineButton({ height: 24, padding: "0 8px", fontSize: 10 }), border: "none" }}
+                  style={{ ...outlineButton({ height: 24, padding: "0 8px", fontSize: 12 }), border: "none" }}
                   onClick={() => setShowFullUrl((v) => !v)}
                 >
                   {showFullUrl ? "Hide" : "View full link"}

@@ -1,3 +1,4 @@
+import type { ProviderCompactionSettings } from "../compactionSettings";
 // ---------------------------------------------------------------------------
 // Configuration types
 // ---------------------------------------------------------------------------
@@ -515,25 +516,24 @@ export type RuntimeDiagnosticsStatus = {
   fallbackLanes: string[];
 };
 
-export type OpenCodeRuntimeLeaseKind = "shared" | "dedicated";
-export type OpenCodeRuntimeOwnerKind = "inventory" | "oneshot" | "chat" | "coordinator";
-
+/** One running ADE-owned OpenCode server. */
 export type OpenCodeRuntimeEntry = {
-  id: string;
+  /** Server profile key: a shared one (per set of project settings, or personal chats) or a per-config one. */
   key: string;
-  leaseKind: OpenCodeRuntimeLeaseKind;
-  ownerKind: OpenCodeRuntimeOwnerKind;
-  ownerId: string | null;
-  configFingerprint: string;
   url: string;
-  busy: boolean;
+  pid: number | null;
+  isolated: boolean;
+  /** A long-lived server many chats share, rather than one chat's own profile. */
+  shared: boolean;
   refCount: number;
+  listenerCount: number;
   startedAt: number;
   lastUsedAt: number;
 };
 
 export type OpenCodeRuntimeSnapshot = {
   sharedCount: number;
+  /** Servers of per-config profiles (own MCP servers, a preset, an isolated surface). */
   dedicatedCount: number;
   entries: OpenCodeRuntimeEntry[];
 };
@@ -579,6 +579,8 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "session.limit_reached",
   "session.failed",
   "session.ended_without_pr",
+  // A chat was settled (filed as done). The session service reports it.
+  "session.settled",
   "lane.created",
   "lane.archived",
   "lane.merged",
@@ -589,6 +591,14 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "linear.issue_assigned",
   "linear.issue_status_changed",
   "linear.issue_labeled",
+  // Other Linear activity the ADE app's webhook delivers.
+  "linear.comment_created",
+  "linear.project_update_posted",
+  "linear.initiative_update_posted",
+  "linear.user_joined",
+  // The ADE Linear agent: someone delegated an issue to ADE, or @mentioned ADE.
+  "linear.agent_delegated",
+  "linear.agent_mentioned",
   "cursor.cloud_finished",
   "cursor.cloud_error",
   "github-webhook",
@@ -603,6 +613,12 @@ export const LEGACY_GITHUB_PR_TRIGGER_ALIASES: Readonly<Record<string, Automatio
   "git.pr_merged": "github.pr_merged",
   "git.pr_closed": "github.pr_closed",
 };
+
+/** Whether a trigger of this type carries a pull request (`trigger.pr`). */
+export function isPullRequestTriggerType(type: string): boolean {
+  const canonical = LEGACY_GITHUB_PR_TRIGGER_ALIASES[type] ?? type;
+  return canonical.startsWith("github.pr_") || canonical === "lane.merged";
+}
 
 export type AutomationActionType =
   | "create-lane"
@@ -718,6 +734,49 @@ export type AutomationTrigger = {
    */
   providers?: string[];
   activeHours?: AutomationActiveHours;
+  /** For `webhook` triggers: the URL, signature check and filters. */
+  webhook?: AutomationWebhookTriggerConfig;
+};
+
+/**
+ * Signature schemes ADE can verify. `hmac` covers GitHub, Linear, Sentry,
+ * Shopify and most senders: HMAC-SHA256 of the raw body in a header. `stripe`
+ * is Stripe's `t=…,v1=…` header over `<t>.<body>`.
+ */
+export type AutomationWebhookSignatureScheme = "hmac" | "stripe";
+
+export type AutomationWebhookSignatureConfig = {
+  scheme: AutomationWebhookSignatureScheme;
+  /** Header that carries the signature, e.g. `x-hub-signature-256`. */
+  header: string;
+  /** Text before the digest, e.g. `sha256=`. `hmac` only. */
+  prefix?: string;
+  encoding?: "hex" | "base64";
+  /** Name of the project secret holding the signing secret. The value never lives in config. */
+  secretName: string;
+};
+
+export type AutomationWebhookFilterOp = "equals" | "not_equals" | "contains" | "exists" | "matches";
+
+/** "Only run when <path> <op> <value>": checked before any agent starts. */
+export type AutomationWebhookFilter = {
+  /** `body.action`, `headers.x-github-event`, `query.env`. */
+  path: string;
+  op: AutomationWebhookFilterOp;
+  value?: string;
+};
+
+export type AutomationWebhookPreset = "github" | "stripe" | "sentry" | "linear" | "generic";
+
+export type AutomationWebhookTriggerConfig = {
+  /** Stable id in the URL. The token that makes the URL secret lives only on the machine that made it. */
+  hookId: string;
+  preset?: AutomationWebhookPreset;
+  signature?: AutomationWebhookSignatureConfig | null;
+  /** Every filter must pass. */
+  filters?: AutomationWebhookFilter[];
+  /** Skip deliveries the relay held longer than this. */
+  maxAgeMinutes?: number;
 };
 
 /** Agent limits apply to `agent-session` actions only. */
@@ -812,7 +871,7 @@ export type AutomationAgentLimits = {
 
 export type AutomationExecutionKind = "agent-session" | "built-in";
 
-export type AutomationLaneMode = "create" | "reuse" | "require-on-trigger";
+export type AutomationLaneMode = "create" | "reuse" | "require-on-trigger" | "pr-branch";
 
 export type AutomationLaneNamePreset =
   | "issue-title"
@@ -825,7 +884,9 @@ export type AutomationExecution = {
   /**
    * Whether each run should spawn a fresh lane (`"create"`) or reuse the
    * configured / trigger / primary lane (`"reuse"`), or require the trigger
-   * caller/event to supply a lane (`"require-on-trigger"`). Defaults to `"reuse"`.
+   * caller/event to supply a lane (`"require-on-trigger"`). `"pr-branch"` runs
+   * in a lane on the trigger PR's own head branch: the lane already linked to
+   * that PR, or a new one imported from it. Defaults to `"reuse"`.
    */
   laneMode?: AutomationLaneMode;
   /**
@@ -851,6 +912,13 @@ export type AutomationExecution = {
    */
   session?: AutomationAgentLimits & {
     title?: string | null;
+    /**
+     * Run every trigger as a new turn in this existing chat instead of a new
+     * chat per run, so one conversation keeps the whole history (e.g. a triage
+     * thread that hears about every webhook delivery). Deliveries queue: one
+     * turn at a time, waiting while the chat is busy or waiting on the user.
+     */
+    chatSessionId?: string | null;
     reasoningEffort?: string | null;
     fastMode?: boolean;
     /** @deprecated Use fastMode. Accepted while reading older project configs. */
@@ -1052,7 +1120,7 @@ export type AiFeatureUsageRow = {
 
 export type AiDetectedAuth = {
   type: "cli-subscription" | "api-key" | "oauth" | "openrouter" | "local";
-  cli?: "claude" | "codex" | "cursor" | "droid" | "qwen" | "kimi" | "grok" | "copilot";
+  cli?: "claude" | "codex" | "cursor" | "droid" | "muse" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
   provider?: string;
   source?: "config" | "env" | "store" | "file";
   endpointSource?: "auto" | "config";
@@ -1073,7 +1141,10 @@ export type AiProviderCredentialSource =
   | "cursor-oauth"
   | "factory-env"
   | "pi-auth-file"
-  | "pi-models-file";
+  | "pi-models-file"
+  | "muse-auth-file"
+  | "muse-env"
+  | "muse-api-key-store";
 
 export type AiProviderConnectionSource = {
   kind: "cli" | "local-credentials";
@@ -1086,7 +1157,7 @@ export type AiProviderConnectionSource = {
 };
 
 export type AiProviderConnectionStatus = {
-  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot";
+  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | "muse" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
   authAvailable: boolean;
   runtimeDetected: boolean;
   runtimeAvailable: boolean;
@@ -1111,12 +1182,15 @@ export type AiProviderConnections = {
   cursor: AiProviderConnectionStatus;
   droid: AiProviderConnectionStatus;
   pi?: AiProviderConnectionStatus;
+  /** Optional like `pi`: an older host on a cross-machine call has no arm for it. */
+  muse?: AiProviderConnectionStatus;
   // ACP providers. Optional like `pi`, because an older host on the other end
   // of a cross-machine call has no arm for them and must keep deserialising.
   qwen?: AiProviderConnectionStatus;
   kimi?: AiProviderConnectionStatus;
   grok?: AiProviderConnectionStatus;
   copilot?: AiProviderConnectionStatus;
+  devin?: AiProviderConnectionStatus;
 };
 
 /**
@@ -1127,7 +1201,7 @@ export type AiProviderConnections = {
  * meaningful next to one that does.
  */
 export type AcpProviderDiagnostics = {
-  provider: "qwen" | "kimi" | "grok" | "copilot";
+  provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
   /** Null when nothing was found — the bare command name is a guess, not a path. */
   binaryPath: string | null;
   binarySource: "env" | "auth" | "path" | "common-dir" | "fallback-command";
@@ -1140,29 +1214,46 @@ export type AcpProviderDiagnostics = {
   lastProbe: { state: "ready" | "auth-failed" | "runtime-failed"; message: string | null } | null;
   /** Present only when the vendor ships a `doctor` command and it was run. */
   doctor: { command: string; exitCode: number | null; output: string } | null;
+  /** Version standing and update state. `null` when no version was read. */
+  update?: AcpProviderUpdateInfo | null;
   checkedAt: string;
 };
 
-/**
- * Where a machine-scoped API key was resolved from.
- *
- * Only `store` is ADE's to replace or delete — an `env` key belongs to the
- * machine's environment and the UI must present it read-only.
- */
-export type MachineApiKeySource = "store" | "env";
+/** Where an installed CLI version sits against the range ADE has tested. */
+export type AcpProviderVersionStanding = "below" | "tested" | "above" | "unknown";
 
 /**
- * What a settings surface needs to render a machine-scoped key without ever
- * receiving the secret itself.
+ * How an installed ACP provider CLI compares to the versions ADE has tested,
+ * and whether ADE may update it.
+ *
+ * An update always installs `targetVersion`, the newest tested version, never
+ * npm `latest`. ADE only offers the button when it could resolve the binary to
+ * a known installer, so an unresolvable install stays manual with a note.
  */
-export type MachineApiKeyStatus = {
-  provider: string;
-  /** Whether ADE can resolve a key at all, from any tier. */
-  configured: boolean;
-  /** Where the resolved key came from, or null when there is none. */
-  source: MachineApiKeySource | null;
-  /** The environment variable checked as the last tier, so the UI can name it. */
-  envVar: string | null;
+export type AcpProviderUpdateInfo = {
+  /** The `x.y.z` read from `--version`, or null when it could not be parsed. */
+  installedVersion: string | null;
+  /** Inclusive range of versions checked against ADE. */
+  testedRange: { min: string; max: string };
+  standing: AcpProviderVersionStanding;
+  /** The version an update installs: the top of the tested range. */
+  targetVersion: string;
+  /** True when the installed version is older than `targetVersion` and not above the range. */
+  updateAvailable: boolean;
+  /** Which installer owns the binary, or null when ADE cannot tell. */
+  installer: "native" | "npm" | null;
+  /** True when ADE may run the update for this install. */
+  canUpdate: boolean;
+  /** What to run by hand when there is no button. */
+  note: string | null;
+};
+
+/** Outcome of a one-click provider update. */
+export type AcpProviderUpdateResult = {
+  ok: boolean;
+  message: string;
+  /** The version re-read after the update, when it succeeded. */
+  version: string | null;
 };
 
 export type AiApiKeyVerificationResult = {
@@ -1469,15 +1560,61 @@ export interface OpenCodeProviderAuthPrompt {
   type: "text" | "select";
   key: string;
   message: string;
+  /** One line under the field, from OpenCode ("Found 2 projects in your gcloud configuration."). */
+  description?: string;
   placeholder?: string;
+  /** The value OpenCode proposes. */
+  defaultValue?: string;
+  /** A select's choices; for a text prompt, suggestions the field also accepts typing past. */
   options?: Array<{ label: string; value: string; hint?: string }>;
+  required?: boolean;
   when?: { key: string; op: "eq" | "neq"; value: string };
 }
 export interface OpenCodeProviderAuthMethod {
-  type: "oauth" | "api";
+  /**
+   * `cloud` signs in with a login the machine already has (gcloud, an AWS
+   * profile, the Azure CLI): OpenCode stores which one, never a token.
+   */
+  type: "oauth" | "api" | "cloud";
   label: string;
+  /** OpenCode's id for a cloud method (`google-adc`, `aws-profile`). */
+  methodId?: string;
   prompts?: OpenCodeProviderAuthPrompt[];
 }
+
+/**
+ * One OpenCode login for a provider, on one machine. OpenCode keeps several
+ * per provider and uses exactly one, `active`, for every chat on that machine.
+ * No secret is ever part of it.
+ */
+export type OpenCodeAccountKind = "subscription" | "api_key" | "cloud" | "unknown";
+export type OpenCodeAccount = {
+  id: string;
+  providerId: string;
+  label: string;
+  kind: OpenCodeAccountKind;
+  active: boolean;
+  updatedAt: number;
+  /** For a cloud login: what it points at, and whether this machine can use it. */
+  cloud?: OpenCodeCloudLoginInfo;
+};
+export type OpenCodeCloudLoginInfo = {
+  methodId: string;
+  /** The answers it was set up with (project, location, profile). Never secret. */
+  details: Record<string, string>;
+  readiness: OpenCodeCloudReadiness;
+  /** Saved to the ADE account, so every signed-in machine sets it up too. */
+  synced: boolean;
+};
+export type OpenCodeCloudReadiness =
+  | { state: "ready"; detail: string }
+  /** The login it points at is missing here; `command` puts it back. */
+  | { state: "needs_login"; detail: string; command: string }
+  /** ADE cannot check this kind of login. */
+  | { state: "unknown" };
+export type OpenCodeAccountsResult = { accounts: OpenCodeAccount[] };
+export type OpenCodeAccountActionResult = { ok: boolean; error?: string };
+export type OpenCodeCloudConnectResult = { ok: boolean; accountId?: string; error?: string };
 export type OpenCodeProviderAuthMethods = Record<string, OpenCodeProviderAuthMethod[]>;
 export interface OpenCodeOAuthStartResult {
   url: string;
@@ -1495,7 +1632,13 @@ export interface AiCustomProviderConfig {
   baseURL: string;
   npm?: "@ai-sdk/openai-compatible" | "@ai-sdk/openai" | "@ai-sdk/anthropic";
   models: string[];
+  /** Compress request bodies (OpenCode `settings.encoding`). Unset sends them plain. */
+  encoding?: AiCustomProviderEncoding;
+  /** Which prompt-cache markers the endpoint accepts (OpenCode `compatibility.cacheFormat`). Unset keeps OpenCode's default. */
+  cacheFormat?: AiCustomProviderCacheFormat;
 }
+export type AiCustomProviderEncoding = "gzip" | "zstd";
+export type AiCustomProviderCacheFormat = "anthropic" | "alibaba";
 
 /**
  * Renderer-facing state of the pinned agent-CLI cache. ADE fetches codex,
@@ -1614,7 +1757,10 @@ export type PiLoginProvider = {
 export type OpenCodeProviderSummary = {
   id: string;
   name: string;
+  /** OpenCode can use the provider now (free models count). */
   connected: boolean;
+  /** OpenCode holds a login or key for it; `connected` alone may be free models. */
+  signedIn?: boolean;
   modelCount: number;
   availableModelCount?: number;
   /** Environment variable names OpenCode associates with credentials. */
@@ -1706,20 +1852,24 @@ export type AiSettingsStatus = {
     codex: boolean;
     cursor: boolean;
     droid: boolean;
+    muse?: boolean;
     qwen?: boolean;
     kimi?: boolean;
     grok?: boolean;
     copilot?: boolean;
+    devin?: boolean;
   };
   models: {
     claude: AiModelDescriptor[];
     codex: AiModelDescriptor[];
     cursor: AiModelDescriptor[];
     droid: AiModelDescriptor[];
+    muse?: AiModelDescriptor[];
     qwen?: AiModelDescriptor[];
     kimi?: AiModelDescriptor[];
     grok?: AiModelDescriptor[];
     copilot?: AiModelDescriptor[];
+    devin?: AiModelDescriptor[];
   };
   features: AiFeatureUsageRow[];
   detectedAuth?: AiDetectedAuth[];
@@ -1790,12 +1940,14 @@ export type AiProviderPermissions = {
   droid?: AgentChatPermissionMode;
   opencode?: AgentChatPermissionMode;
   pi?: AgentChatPermissionMode;
+  muse?: AgentChatPermissionMode;
   // The ACP providers. One key each, sharing one option list, because they
   // share one permission round-trip (`session/request_permission`).
   qwen?: AgentChatPermissionMode;
   kimi?: AgentChatPermissionMode;
   grok?: AgentChatPermissionMode;
   copilot?: AgentChatPermissionMode;
+  devin?: AgentChatPermissionMode;
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
   writablePaths?: string[];
   allowedTools?: string[];
@@ -1876,10 +2028,23 @@ export type AiChatConfig = {
    * either way.
    */
   piExtensionsEnabled?: boolean;
+  /**
+   * Draw what Claude Code mods show (status lines, toasts, a band above the
+   * prompt, panes) in ADE chat. Off unless set to true: the channel is
+   * private to Claude Code. The mods' hooks run either way; this only
+   * controls the drawing.
+   */
+  claudePluginUiEnabled?: boolean;
   /** Global kill switch for durable Claude wakeups, cron tasks, and loops. */
   scheduledWorkPaused?: boolean;
+  /**
+   * Continue a chat whose turn an ADE restart cut short (a crash, a force quit,
+   * a reboot). On unless set to false. Settled and archived chats stay asleep.
+   */
+  continueAfterRestart?: boolean;
 };
 export type AiConfig = {
+  compaction?: Record<string, ProviderCompactionSettings>;
   mode?: ProviderMode;
   defaultProvider?: string;
   taskRouting?: Partial<Record<AiTaskRoutingKey, AiTaskRoutingRule>>;
@@ -1932,20 +2097,24 @@ export type AiIntegrationStatus = {
     codex: boolean;
     cursor: boolean;
     droid: boolean;
+    muse?: boolean;
     qwen?: boolean;
     kimi?: boolean;
     grok?: boolean;
     copilot?: boolean;
+    devin?: boolean;
   };
   models: {
     claude: AgentChatModelInfo[];
     codex: AgentChatModelInfo[];
     cursor: AgentChatModelInfo[];
     droid: AgentChatModelInfo[];
+    muse?: AgentChatModelInfo[];
     qwen?: AgentChatModelInfo[];
     kimi?: AgentChatModelInfo[];
     grok?: AgentChatModelInfo[];
     copilot?: AgentChatModelInfo[];
+    devin?: AgentChatModelInfo[];
   };
   // OpenCode/runtime-backed fields
   detectedAuth?: AiDetectedAuth[];
@@ -2011,6 +2180,11 @@ export type ProjectConfigFile = {
      */
     autoMapByBranch?: boolean;
   };
+  issueTrackers?: {
+    jira?: {
+      projectKeys: string[];
+    };
+  };
   git?: {
     autoRebaseOnHeadChange?: boolean;
     newLaneBaseSource?: NewLaneBaseSource;
@@ -2058,6 +2232,11 @@ export type EffectiveProjectConfig = {
     };
     /** Auto-map same-repo PRs to lanes by branch. Defaults to true. */
     autoMapByBranch?: boolean;
+  };
+  issueTrackers?: {
+    jira?: {
+      projectKeys: string[];
+    };
   };
   git: {
     autoRebaseOnHeadChange: boolean;

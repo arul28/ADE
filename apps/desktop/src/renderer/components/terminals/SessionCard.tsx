@@ -1,20 +1,25 @@
 import React from "react";
+import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 import {
   Alarm,
   Brain,
   CircleNotch,
   Clock,
   CloudArrowUp,
+  CloudCheck,
   DesktopTower,
   DownloadSimple,
   GitPullRequest,
   GridFour,
+  PaperPlaneTilt,
+  PencilSimple,
   PushPin,
   Tag,
   TreeStructure,
   UsersThree,
   Warning,
   XCircle,
+  Target,
 } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
@@ -25,7 +30,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
-import type { CrossMachineLaneMarker } from "../../state/crossMachineLanes";
+import { isMachineMarkerShown, type CrossMachineLaneMarker } from "../../state/crossMachineLanes";
 import {
   canonicalInputFromSummary,
   sanitizeTerminalInlineText,
@@ -42,16 +47,22 @@ import {
   sessionActivityInstant,
 } from "../../lib/sessions";
 import { relativeTimeCompact } from "../../lib/format";
+import { CHAT_MENTION_DND_MIME } from "../../../shared/chatMentions";
+import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
-import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useLaneNamePending, useSessionFieldGenerating } from "../../state/sessionMetadataGeneratingStore";
 import { useSessionDelta } from "./useSessionDelta";
+import { pressActivation, type PressUndo } from "../../lib/pressActivation";
 import { cn } from "../ui/cn";
-import { MONO_FONT } from "../lanes/laneDesignTokens";
+import { MONO_FONT, toneText } from "../lanes/laneDesignTokens";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { LanePrBadge } from "./LanePrBadge";
 import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
 import { LaneMacDesktopMarker } from "./LaneMacDesktopMarker";
+import type { DesktopSeatKind } from "../../../shared/types/macDesktop";
+import { LaneWorkToolMarker } from "./LaneWorkToolMarker";
+import { LANE_APP_CONTROL_LABEL, laneBrowserLabel } from "./useLaneWorkToolUse";
 import type { LaneAppleDevice } from "../apple/useLaneAppleDevices";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { lanePrStateColor, lanePrStateLabel, openLanePr } from "../../lib/lanePrBadge";
@@ -61,6 +72,13 @@ import {
   type SessionHoverCardRow,
 } from "./SessionHoverCard";
 import { ToolLogo } from "./ToolLogos";
+import { useTurnStallClock } from "../../lib/useTurnStallClock";
+import { HarnessLogo } from "../shared/HarnessLogo";
+import { harnessBodyLabel } from "../../../shared/harnessPresets";
+import {
+  resolveHarnessLaunchTarget,
+  type HarnessLaunchTarget,
+} from "../settings/harnesses/harnessLaunchTarget";
 import { cursorCloudAgentWebUrl } from "../../lib/cursorCloudUtils";
 import { openExternalUrl } from "../../lib/openExternal";
 import { readImportedFrom } from "./importSessions/contract";
@@ -70,10 +88,13 @@ import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { ChatSubagentGlyph, chatSubagentColor } from "../chat/chatSubagentIdentity";
 import { navigateToSpawnedChat } from "../chat/spawnNavigation";
-import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { linearIssueRef } from "../../../shared/issueRefs";
+import { openIssueRef } from "../../lib/issueNavigation";
 import { isSessionSnoozed, sessionWokeMarker, snoozeWakeLabel } from "../../lib/sessionSnooze";
 import { SessionStatusSlot } from "./SessionStatusSlot";
-import { useChatLaunchRowState, useChatLaunchStatusLine } from "../../state/chatLaunchStore";
+import { useChatLaunchQueuedState, useChatLaunchRowState, useChatLaunchStatusLine } from "../../state/chatLaunchStore";
+import { useComposerDraftPresence } from "../../state/composerDraftPresenceStore";
+import { deriveSessionRowIndicators } from "../../../shared/sessionDraftIndicators";
 import { AgentBrowserPresenceBadge } from "./AgentBrowserPresenceBadge";
 import { SessionStatusLabel } from "./SessionStatusLabel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
@@ -148,6 +169,14 @@ import {
    18% alpha, so it reads as floating over the row. When the list is short
    enough that no scrollbar is reserved, the surplus is clipped by the scroll
    container's own `overflow-x: hidden`, so the row is flush either way. */
+
+/** See `SessionCard.focusMark`. */
+export type WorkFocusCardMark = {
+  page: number;
+  onScreen: boolean;
+  unseen: boolean;
+};
+
 /** Wrapper: declare the two bleeds, then spend them as margin + width. */
 export const SESSION_ROW_BLEED_CLASS = cn(
   "[--session-row-scrollbar:6px]",
@@ -248,10 +277,8 @@ function LinkifiedPreviewLine({
       if (prMatch) {
         onOpenPr(Number.parseInt(prMatch[1]!, 10));
       } else if (linearIssue) {
-        requestLinearIssueQuickView({
-          issueIdentifier: linearIssue,
-          source: "manual",
-        });
+        const ref = linearIssueRef(linearIssue);
+        if (ref) openIssueRef({ ref, source: "session-card" });
       }
     };
     return (
@@ -287,6 +314,12 @@ function LinkifiedPreviewLine({
  */
 function branchDisplayLabel(branchName: string): string {
   return branchName.startsWith("ade/") ? branchName.slice("ade/".length) : branchName;
+}
+
+/** "Goal: <objective>", with the status when it is not plain active. */
+function sessionGoalTitle(goal: NonNullable<TerminalSessionSummary["activeGoal"]>): string {
+  const status = goal.status !== "active" ? ` (${goal.status.replace(/_/g, " ")})` : "";
+  return `Goal${status}: ${goal.objective}`;
 }
 
 /** `·` between the adaptive "where" line's parts. Decoration, never read out. */
@@ -326,6 +359,37 @@ function modelHandoffProviderSequence(session: TerminalSessionSummary): string[]
   return providers;
 }
 
+/**
+ * A Custom provider's own mark — and nothing else.
+ *
+ * A row used to show the harness alone, which said "Claude Code" for a chat the
+ * person had deliberately pointed at another vendor's model: the one fact about
+ * that row they chose, and the one the mark did not carry. The preset's (or the
+ * route's) own mark, at the preset's own accent, replaces it.
+ *
+ * No second glyph for the harness. Two marks in one row is a badge cluster
+ * competing with the title for a fact the tooltip already carries, and the
+ * harness is the *less* surprising half of the pairing — the person picked the
+ * Custom provider.
+ */
+function CustomProviderMark({
+  target,
+  size,
+}: {
+  target: HarnessLaunchTarget;
+  size: number;
+}) {
+  return (
+    <span
+      data-session-custom-provider={target.presetId}
+      title={`${target.name} · ${harnessBodyLabel(target.harness)}`}
+      className="inline-flex shrink-0 items-center opacity-90"
+    >
+      <HarnessLogo logo={target.logo} size={size} accentColor={target.accentColor} />
+    </span>
+  );
+}
+
 function SessionProviderLogoStack({
   session,
   size,
@@ -333,9 +397,21 @@ function SessionProviderLogoStack({
   session: TerminalSessionSummary;
   size: number;
 }) {
+  // The saved Custom provider (or ad-hoc route) this row runs on, resolved from
+  // the same account-scoped list every other surface reads: a store read rather
+  // than a projected field, so the mark follows a rename or a re-logo without
+  // the row being relisted. The ROOT store, because a project store only ever
+  // holds the seed copy it was created with (see `useHarnessPresets`).
+  const harnessPresets = useRootAppStore((state) => state.harnessPresets);
+  const customTarget = React.useMemo(
+    () => resolveHarnessLaunchTarget(session.presetId, harnessPresets),
+    [harnessPresets, session.presetId],
+  );
   const providers = modelHandoffProviderSequence(session);
   if (providers.length < 2) {
-    return <ToolLogo toolType={session.toolType} size={size} className="shrink-0 opacity-75" />;
+    return customTarget
+      ? <CustomProviderMark target={customTarget} size={size} />
+      : <ToolLogo toolType={session.toolType} size={size} className="shrink-0 opacity-75" />;
   }
 
   const visibleProviders = providers.slice(-MAX_VISIBLE_MODEL_HANDOFF_LOGOS);
@@ -366,11 +442,15 @@ function SessionProviderLogoStack({
             zIndex: visibleProviders.length - index,
           }}
         >
-          <ToolLogo
-            toolType={chatToolTypeForProvider(provider)}
-            size={size}
-            className={index === 0 ? "block shrink-0" : "block shrink-0 opacity-60"}
-          />
+          {index === 0 && customTarget ? (
+            <CustomProviderMark target={customTarget} size={size} />
+          ) : (
+            <ToolLogo
+              toolType={chatToolTypeForProvider(provider)}
+              size={size}
+              className={index === 0 ? "block shrink-0" : "block shrink-0 opacity-60"}
+            />
+          )}
         </span>
       ))}
     </span>
@@ -383,15 +463,19 @@ function ChatLaunchStatusText({ launchId }: { launchId: string }) {
   return <span className="min-w-0 truncate">{text ?? ""}</span>;
 }
 
-export const SessionCard = React.memo(function SessionCard({
+// The list rebuilds each card's handlers on every render (session updates,
+// timers); with them proxied a card re-renders only when what it shows changes.
+export const SessionCard = memoWithLatestHandlers(function SessionCard({
   session,
   lane,
   isSelected,
   isMultiSelected,
   onSelect,
+  selectOnPress = false,
   onContextMenu,
   compact = false,
   gridBadge = null,
+  focusMark = null,
   liveChildrenCount = 0,
   parentSessionTitle = null,
   disabledReason = null,
@@ -403,23 +487,41 @@ export const SessionCard = React.memo(function SessionCard({
   lanePr = null,
   lanePrs = [],
   onOpenLanePrs,
+  onOpenLanePrInChat,
   lanePrForeign = false,
   machineMarker = null,
   laneAppleDevice = null,
-  laneMacDesktop = false,
+  laneDesktop = null,
+  laneCloud = null,
+  laneAppControl = false,
+  laneBrowserTabs = 0,
   suppressMachineChip = false,
   suppressStatusLabel = false,
   nestedSubagent = false,
+  subagentBusy = false,
 }: {
   session: TerminalSessionSummary;
   lane: LaneSummary | null;
   isSelected: boolean;
   isMultiSelected?: boolean;
-  onSelect: (id: string, event: React.MouseEvent) => void;
+  /**
+   * May return how to go back to what was open before. A row opens on the
+   * press (`selectOnPress`), and the same press can start a drag of the row;
+   * the drag then puts the previous chat back.
+   */
+  onSelect: (id: string, event: React.MouseEvent) => void | PressUndo;
+  /** Open on the press, not on the release. Off where a press has more to undo. */
+  selectOnPress?: boolean;
   onContextMenu: (e: React.MouseEvent) => void;
   compact?: boolean;
   /** Grid membership indicator: "active" = in the currently-viewed grid, "inactive" = in another grid, null = not gridded. */
   gridBadge?: "active" | "inactive" | null;
+  /**
+   * Focus grid with the sidebar open: the sidebar is the grid's roster. A chat
+   * on screen is lit like the selected row; one on another page names that
+   * page; one that arrived while the user was elsewhere carries a dot.
+   */
+  focusMark?: WorkFocusCardMark | null;
   /** Count of this session's still-running spawned children (surfaced in the tooltip). */
   liveChildrenCount?: number;
   /** Title of the parent chat that spawned this session (drives the lineage glyph tooltip). */
@@ -450,6 +552,12 @@ export const SessionCard = React.memo(function SessionCard({
   /** Opens the lane-filtered PR list from a multi-PR counter. */
   onOpenLanePrs?: () => void;
   /**
+   * Opens the lane PR in this session's PR tool. The pill and the hover card
+   * use it; only PR lists still go to the PRs tab. Absent for a row on another
+   * machine, whose PR opens there.
+   */
+  onOpenLanePrInChat?: (pr: PrSummary) => void;
+  /**
    * True when this card's lane lives on another machine. The PR itself is read
    * from that machine; only its click-through has to change, because the PRs tab
    * cannot resolve a PR id that is not on the bound machine. See `openLanePr`.
@@ -473,8 +581,17 @@ export const SessionCard = React.memo(function SessionCard({
    * with `showLaneIdentity`; elsewhere the lane header shows it.
    */
   laneAppleDevice?: LaneAppleDevice | null;
-  /** The card's lane holds a Mac Desktop display. Shown like `laneAppleDevice`. */
-  laneMacDesktop?: boolean;
+  /**
+   * The screen the card's lane holds — the Mac Desktop, or a private or shared
+   * Windows seat — or null when it holds none. Shown like `laneAppleDevice`.
+   */
+  laneDesktop?: DesktopSeatKind | null;
+  /** A headerless lane that lives on a cloud: its card carries the cloud mark. */
+  laneCloud?: "devin" | "cursor" | null;
+  /** The card's lane has a live App Control app. Shown like `laneAppleDevice`. */
+  laneAppControl?: boolean;
+  /** Browser tabs an agent of the card's lane owns. Shown like `laneAppleDevice`. */
+  laneBrowserTabs?: number;
   /**
    * The lane header above already names the machine, so the row's own chip
    * would just repeat it. Set by SessionListPane for children of a lane group
@@ -500,6 +617,8 @@ export const SessionCard = React.memo(function SessionCard({
    * glyph (word only for Needs you / Failed). Distinct from a compact shell.
    */
   nestedSubagent?: boolean;
+  /** A nested subagent still keeps this chat busy, so a finished row reads Waiting. */
+  subagentBusy?: boolean;
 }) {
   const navigate = useNavigate();
   // Hover INTENT, not hover: a one-second rest on the row, cancelled by any
@@ -508,6 +627,11 @@ export const SessionCard = React.memo(function SessionCard({
   // The row id lets the hook re-find this row if React swaps the wrapper node
   // during the one-second wait — see `resolveTriggerElement`.
   const hoverCard = useSessionHoverCard({ rowId: session.id });
+  // A grid tile takes the keyboard focus when it becomes the active one. On a
+  // press that would happen before the browser moves the focus to this row,
+  // and the row would take it back. A grid member waits for the click, which
+  // comes after the focus has moved.
+  const opensOnPress = selectOnPress && gridBadge == null;
   const sessionAttentionInput = canonicalInputFromSummary(session);
   const canonicalUiState = sessionCanonicalUiState(sessionAttentionInput);
   const canonicalPhase = canonicalUiState.phase;
@@ -571,11 +695,16 @@ export const SessionCard = React.memo(function SessionCard({
   // where the row is filed and what it says can never disagree.
   const snoozed = isSessionSnoozed(session);
   const wokeMarker = sessionWokeMarker(session);
+  // A live turn can go quiet, and a scheduled wake can come due, with no new
+  // data at all, so the card re-renders exactly when this session crosses the
+  // stall bar or its wake turns overdue.
+  const statusClockSessions = React.useMemo(() => [session], [session]);
+  const statusClockMs = useTurnStallClock(statusClockSessions);
   const presentation = sessionStatusDisplay(sessionAttentionInput, {
     snoozed,
     woke: !snoozed && Boolean(wokeMarker),
     snoozeWakeLabel: snoozed ? snoozeWakeLabel(session.snoozedUntil) : null,
-  });
+  }, { subagentBusy });
 
   // Pulse once when an already-mounted row transitions into the loud Needs-you
   // state. First render stays calm, and motion-safe suppresses it for users who
@@ -600,6 +729,19 @@ export const SessionCard = React.memo(function SessionCard({
   const chatLaunch = useChatLaunchRowState(session.id);
   // Only a row born this moment slides in; a remount of an older launch row is still.
   const launchRowJustAppeared = Boolean(chatLaunch && Date.now() - Date.parse(chatLaunch.startedAt) < 1500);
+  // Draft / outbox marks. Each reads its own store and re-renders this row only
+  // when its own boolean or count flips, so typing in one chat or a queue tick
+  // does not repaint the list.
+  const hasComposerDraft = useComposerDraftPresence(session.id);
+  const queuedState = useChatLaunchQueuedState(session.id);
+  const rowIndicators = deriveSessionRowIndicators({
+    hasDraft: hasComposerDraft,
+    queuedCount: queuedState.count,
+    queuedSending: queuedState.sending,
+    queuedFailed: queuedState.failed,
+  });
+  const draftIndicator = rowIndicators.find((indicator) => indicator.kind === "draft") ?? null;
+  const outboxIndicator = rowIndicators.find((indicator) => indicator.kind === "outbox") ?? null;
   const namingLane = useLaneNamePending(lane?.id ?? session.laneId);
   const namingTitle = useSessionFieldGenerating(session.id, "title");
   const namingStatus = useSessionFieldGenerating(session.id, "statusLine");
@@ -626,6 +768,7 @@ export const SessionCard = React.memo(function SessionCard({
     provider: session.toolType === "claude-chat" ? "claude" : null,
     status: session.runtimeState === "idle" ? "idle" : "active",
     idleSinceAt: session.chatIdleSinceAt,
+    cache: session.chatPromptCache,
     awaitingInput: session.runtimeState === "waiting-input",
   });
   const hasDeltaChips = Boolean(delta && (delta.insertions > 0 || delta.deletions > 0));
@@ -720,47 +863,65 @@ export const SessionCard = React.memo(function SessionCard({
 
      Two reasons it moved. It is the one part of line 1 whose width is fixed, so
      on the left it pushed the elastic lane name around by a constant; and a run
-     of singleton cards down the sidebar now aligns its glyphs in a single
-     column, which is what makes "three of these are elsewhere, one is here"
-     readable at a glance instead of row by row.
+     of singleton cards down the sidebar aligns its glyphs in a single column.
 
      Deliberately an inline element rather than `LaneMachineMarker`: that
      component wraps itself in its own SmartTooltip with a focusable trigger, and
      this row already owns a hover card and a click target. The visual identity
-     is identical — amber tower, amber pill — and the name is carried by the
-     hover card's machine row rather than inline, per the glyph-only rule. */
-  const machineGlyph = machineMarker && !suppressMachineChip ? (
+     matches it — a dimmed tower in a neutral pill — and the name is carried by
+     the hover card's machine row rather than inline, per the glyph-only rule.
+
+     Offline only (`isMachineMarkerShown`). An online machine's session just works wherever it lives —
+     the connection dot in the top bar already says the machines are linked —
+     so badging every other machine's row was noise, and relative to the tab's
+     binding it even badged this computer's own sessions. The glyph survives
+     only where it explains something: rows that went quiet and can't act. */
+  const machineGlyph = machineMarker && isMachineMarkerShown(machineMarker) && !suppressMachineChip ? (
     <span
       data-session-machine={machineMarker.machineName}
       data-machine-id={machineMarker.machineId}
-      data-machine-online={machineMarker.online ? "true" : "false"}
+      data-machine-online="false"
       /* Same attribute `LaneMachineMarker` exposes, on purpose: a badge can live
          on a lane header OR on the card standing in for one, and "is this row
          badged" must be a single selector rather than two that drift. */
       data-machine-marker-mode="glyph"
       role="img"
-      aria-label={
-        machineMarker.online
-          ? `On ${machineMarker.machineName}`
-          : `On ${machineMarker.machineName}, offline`
-      }
-      className={cn(
-        "inline-flex shrink-0 items-center rounded-full border px-1 py-px leading-none",
-        machineMarker.online
-          ? "border-amber-400/20 bg-amber-400/[0.06]"
-          : "border-white/[0.08] bg-white/[0.03]",
-      )}
+      aria-label={`On ${machineMarker.machineName}, offline`}
+      className="inline-flex shrink-0 items-center rounded-full border border-fg/[0.08] bg-fg/[0.03] px-1 py-px leading-none"
     >
-      <DesktopTower
-        size={10}
-        weight="duotone"
-        className={cn("shrink-0", machineMarker.online ? "text-amber-400/85" : "text-muted-fg/45")}
-        aria-hidden
-      />
+      <DesktopTower size={10} weight="duotone" className="shrink-0 text-muted-fg/45" aria-hidden />
+    </span>
+  ) : null;
+
+  const cloudName = laneCloud === "devin" ? "Devin Cloud" : laneCloud === "cursor" ? "Cursor Cloud" : null;
+  const cloudGlyph = cloudName ? (
+    <span
+      data-lane-cloud={laneCloud}
+      role="img"
+      aria-label={`Lane lives on ${cloudName}`}
+      title={`Lane lives on ${cloudName}`}
+      className="inline-flex shrink-0 items-center rounded-full border border-sky-400/25 bg-sky-400/[0.08] px-1 py-px leading-none"
+    >
+      <CloudCheck size={10} weight="fill" className="shrink-0 text-sky-300" aria-hidden />
     </span>
   ) : null;
 
   const whereParts: React.ReactNode[] = [];
+  if (focusMark && !focusMark.onScreen) {
+    whereParts.push(
+      <span
+        key="focus-page"
+        className="relative inline-flex shrink-0 items-center rounded px-1 text-[9.5px] font-semibold leading-[14px] text-muted-fg/80 ring-1 ring-inset ring-fg/[0.12]"
+        title={`On page ${focusMark.page + 1} of the Focus grid`}
+        data-testid="session-card-focus-page"
+      >
+        Page {focusMark.page + 1}
+        {focusMark.unseen ? (
+          <span aria-hidden className="absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" />
+        ) : null}
+      </span>,
+    );
+  }
   if (session.pinned) {
     whereParts.push(
       <PushPin
@@ -784,7 +945,7 @@ export const SessionCard = React.memo(function SessionCard({
         data-session-lane-identity={lane.name}
         className="inline-flex min-w-0 shrink items-center gap-1.5 text-[12px] font-semibold"
         // Inline style, not a class: the accent is per-lane user data.
-        style={{ color: laneAccent ?? undefined }}
+        style={{ color: laneAccent ? toneText(laneAccent) : undefined }}
       >
         <span
           aria-hidden
@@ -796,7 +957,13 @@ export const SessionCard = React.memo(function SessionCard({
           <LaneNamingLabel laneName={lane.name} naming={namingLane} />
         </span>
         {laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
-        {laneMacDesktop ? <LaneMacDesktopMarker laneId={lane.id} /> : null}
+        {laneDesktop ? <LaneMacDesktopMarker laneId={lane.id} kind={laneDesktop} /> : null}
+        {laneAppControl ? (
+          <LaneWorkToolMarker tool="app-control" laneId={lane.id} label={LANE_APP_CONTROL_LABEL} />
+        ) : null}
+        {laneBrowserTabs > 0 ? (
+          <LaneWorkToolMarker tool="browser" laneId={lane.id} label={laneBrowserLabel(laneBrowserTabs)} />
+        ) : null}
       </span>,
     );
   }
@@ -835,7 +1002,7 @@ export const SessionCard = React.memo(function SessionCard({
         title={ctoChipTitle}
         // Same neutral pill as the Subagent/Peer chip below — lineage is
         // identity, and identity never spends a status hue.
-        className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-white/10 bg-white/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
+        className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-fg/10 bg-fg/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -864,7 +1031,7 @@ export const SessionCard = React.memo(function SessionCard({
         /* One pill, not a loose glyph beside loose text — same chip idiom as the
            machine marker. Neutral, never amber: lineage is identity, and amber
            means "your move" (see `sessionStatusPresentation.ts`). */
-        className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-white/10 bg-white/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
+        className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-fg/10 bg-fg/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -965,7 +1132,7 @@ export const SessionCard = React.memo(function SessionCard({
     id: "lane",
     icon: <LaneIcon size={13} style={laneAccent ? { color: laneAccent } : undefined} />,
     value: (
-      <span style={laneAccent ? { color: laneAccent } : undefined}>
+      <span style={laneAccent ? { color: toneText(laneAccent) } : undefined}>
         <LaneNamingLabel
           laneName={lane?.name ?? session.laneName}
           naming={namingLane}
@@ -1013,7 +1180,10 @@ export const SessionCard = React.memo(function SessionCard({
           ) : null}
         </span>
       ),
-      onActivate: () => openLanePr(lanePr, { foreign: lanePrForeign, navigate }),
+      onActivate: () => {
+        if (onOpenLanePrInChat) onOpenLanePrInChat(lanePr);
+        else openLanePr(lanePr, { foreign: lanePrForeign, navigate });
+      },
       activateLabel: `Open pull request #${lanePr.githubPrNumber}`,
       testId: "session-hover-pr",
     });
@@ -1091,12 +1261,33 @@ export const SessionCard = React.memo(function SessionCard({
       value: gridBadge === "active" ? "In the active grid" : "In another grid",
     });
   }
+  if (draftIndicator) {
+    hoverRows.push({
+      id: "draft",
+      icon: <PencilSimple size={13} className="text-muted-fg/60" />,
+      value: draftIndicator.title,
+    });
+  }
+  if (outboxIndicator) {
+    hoverRows.push({
+      id: "outbox",
+      icon: <PaperPlaneTilt size={13} className="text-muted-fg/60" />,
+      value: outboxIndicator.title,
+    });
+  }
   if (session.claudeTag?.trim()) {
     hoverRows.push({
       id: "tag",
       icon: <Tag size={13} className="text-muted-fg/60" />,
       value: session.claudeTag.trim(),
       mono: true,
+    });
+  }
+  if (session.activeGoal) {
+    hoverRows.push({
+      id: "goal",
+      icon: <Target size={13} weight="duotone" className="text-amber-300/70" />,
+      value: sessionGoalTitle(session.activeGoal),
     });
   }
   if (session.nextWakeAt) {
@@ -1166,6 +1357,7 @@ export const SessionCard = React.memo(function SessionCard({
       compact={compact}
       runtimePin={runtimePin}
       hideLabelUnlessShout={nestedSubagent}
+      clockMs={statusClockMs}
     />
   );
   /* Live activity, not a property of the session: the agent is driving the
@@ -1187,11 +1379,54 @@ export const SessionCard = React.memo(function SessionCard({
       <GridFour size={11} weight={gridBadge === "active" ? "fill" : "bold"} />
     </span>
   ) : null;
+  /* Draft / outbox marks sit in the same fixed-width glyph cluster as the grid
+     and machine marks: identity-adjacent state that never spends a status hue
+     and never competes with the status slot for the eye. Glyph-only, with the
+     sentence in the title and the hover card — the existing vocabulary. */
+  // A chat working toward a goal says so, in the same quiet glyph cluster.
+  const activeGoal = session.activeGoal ?? null;
+  const goalTitle = activeGoal ? sessionGoalTitle(activeGoal) : null;
+  const indicatorGlyph = rowIndicators.length > 0 || activeGoal ? (
+    <span className="inline-flex shrink-0 items-center gap-1" data-testid="session-row-indicators">
+      {activeGoal && goalTitle ? (
+        <span
+          data-testid="session-goal-indicator"
+          role="img"
+          title={goalTitle}
+          aria-label={goalTitle}
+          className={cn(
+            "inline-flex shrink-0 items-center justify-center",
+            activeGoal.status === "active" ? "text-amber-300/80" : "text-muted-fg/55",
+          )}
+        >
+          <Target size={11} weight="duotone" />
+        </span>
+      ) : null}
+      {rowIndicators.map((indicator) => (
+        <span
+          key={indicator.kind}
+          data-testid={`session-${indicator.kind}-indicator`}
+          role="img"
+          title={indicator.title}
+          aria-label={indicator.title}
+          className={cn(
+            "inline-flex shrink-0 items-center justify-center",
+            indicator.kind === "outbox" ? "text-sky-300/75" : "text-muted-fg/60",
+          )}
+        >
+          {indicator.kind === "draft"
+            ? <PencilSimple size={11} weight="fill" />
+            : <PaperPlaneTilt size={11} weight="fill" />}
+        </span>
+      ))}
+    </span>
+  ) : null;
   const singletonPrBadge = showLaneIdentity && lanePr ? (
     <LanePrBadge
       pr={lanePr}
       prs={lanePrList}
       onOpen={(target) => openLanePr(target, { foreign: lanePrForeign, navigate })}
+      onOpenPill={onOpenLanePrInChat}
       onOpenList={onOpenLanePrs}
     />
   ) : null;
@@ -1312,19 +1547,19 @@ export const SessionCard = React.memo(function SessionCard({
         "group/v2-row relative w-full select-none overflow-hidden rounded-md text-left outline-none transition-[background-color,opacity] duration-100",
         launchRowJustAppeared && "ade-launch-row-enter",
         disabledReason ? "cursor-default" : "cursor-pointer",
-        isHighlighted ? "bg-white/[0.06]" : "hover:bg-white/[0.05]",
+        isHighlighted ? "bg-fg/[0.06]" : "hover:bg-fg/[0.05]",
         isMultiSelected && "ring-1 ring-accent/35",
       )}
       {...(disabledReason
         ? { "aria-label": `${primaryText}: ${disabledReason}` }
         : { "aria-label": primaryText })}
-      onClick={(event) => {
+      {...pressActivation((event) => {
         // Selecting loads this session into the very area the card floats over,
         // so the card gets out of the way the moment the row is acted on.
         hoverCard.close();
-        if (disabledReason) return;
-        onSelect(session.id, event);
-      }}
+        if (disabledReason) return undefined;
+        return onSelect(session.id, event);
+      }, opensOnPress)}
       onKeyDown={(event) => {
         // Only the row itself — a key pressed inside a nested control (settle,
         // snooze, a preview link) belongs to that control.
@@ -1347,8 +1582,10 @@ export const SessionCard = React.memo(function SessionCard({
           {browserPresenceGlyph}
           {/* Compact rows have no line 1, so this is their only seat for it —
               same precedent as `compactLineageGlyph` directly above. */}
+          {cloudGlyph}
           {machineGlyph}
           {gridIndicator}
+          {indicatorGlyph}
           {statusSlot}
         </div>
       ) : (
@@ -1365,8 +1602,10 @@ export const SessionCard = React.memo(function SessionCard({
               </React.Fragment>
             ))}
             {browserPresenceGlyph}
+            {cloudGlyph}
             {machineGlyph}
             {gridIndicator}
+            {indicatorGlyph}
             {statusSlot}
           </div>
 
@@ -1424,7 +1663,7 @@ export const SessionCard = React.memo(function SessionCard({
             )}
 
             {showClaudeCacheTimer ? (
-              <ClaudeCacheTtlBadge idleSinceAt={session.chatIdleSinceAt} />
+              <ClaudeCacheTtlBadge idleSinceAt={session.chatIdleSinceAt} cache={session.chatPromptCache} />
             ) : null}
             {/* The diff chips used to sit here. They moved to line 1's floor:
                 on this line they were competing with the preview text for the
@@ -1514,6 +1753,12 @@ export const SessionCard = React.memo(function SessionCard({
         // Source for the Cursor-style work grid: drop onto a session / the work
         // area to add this chat or CLI session to a grid.
         event.dataTransfer.setData(GRID_SESSION_DND_MIME, session.id);
+        // Dropped on a composer, the row becomes an @-mention of itself.
+        event.dataTransfer.setData(CHAT_MENTION_DND_MIME, JSON.stringify({
+          kind: isChatToolType(session.toolType) ? "chat" : "terminal",
+          id: session.id,
+          title: session.title?.trim() || session.id,
+        }));
         event.dataTransfer.effectAllowed = "copyMove";
       }}
     >

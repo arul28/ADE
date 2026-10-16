@@ -200,6 +200,8 @@ and an older phone that never calls it must not be flipped to `limited`
 against a newer host. `chat.continueUsageLimitOnAlternate` is optional for the
 same reason: the phone shows **Continue on** that account only when the host
 advertises it and the resume carries `alternateAccount`.
+`chat.switchAccount` is optional too: a client without it simply has no
+account switcher.
 
 `prs.setDraft` and `prs.setAutoMerge` are optional for the same reason. The
 phone shows the draft and auto-merge controls in the PR actions sheet only
@@ -231,6 +233,27 @@ over the wire. A controller only invokes an action the host advertises in
   token-free provider accounts, model counts, and saved harness presets. Detail
   is fetched only when the machine is online and already connected; older brains
   that do not advertise the command are treated as compatibility gaps.
+
+**Provider accounts** (`providerAccounts.*`)
+- `list`, `getSettings`, `refresh` — viewer-allowed reads of the host's Claude
+  and Codex logins.
+- `loginStatus`, `create`, `remove`, `signOut`, `rename`, `setDefault`, `dismissReplaced`,
+  `setSettings`, `loginStart`, `loginSubmitCode`, `loginCancel` — controller-only
+  (`viewerAllowed: false`, `controllerAllowed: true`). A viewer may read;
+  anything that changes a login, or reads a running sign-in (its link and device
+  code), needs control of the host.
+
+All are runtime-scoped (`register(entry.action, entry.policy, entry.handler,
+"runtime")`): accounts name config homes on the host, so they need no open
+project. `providerAccountRemoteCommands.ts` forwards each payload unchanged to
+the method of the same name on the `provider_instances` action domain, so a
+remote caller and the desktop run one implementation; a method the domain does
+not expose throws when the host starts, not on a user's first tap. The actions
+are registered under `MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`
+(`shared/syncMobileCompatibility.ts`), so a host older than them leaves the
+phone's AI accounts page showing "update ADE" rather than an empty list. iOS and
+the hosted web client both consume them; see `ios-companion.md` and
+`../web-client/README.md`.
 
 **Usage** (`usage.*`)
 - `getAdeStats` — viewer-allowed project read for today, 7d, 30d, year,
@@ -375,7 +398,7 @@ that cannot encode a JSON null (iOS) must still be able to express "clear".
   `rewindFiles`, `getTurnFileDiff`, `saveTempAttachment`, `createAttachmentUpload`,
   `beginTempFileAttachment`, `appendTempFileAttachmentChunk`,
   `finishTempFileAttachment`, `abortTempFileAttachment`, `getAttachmentChunk`,
-  `listPromptStashes`, `createPromptStash`, `deletePromptStash`, `getImageDataUrl`
+  `listDrafts`, `getDraft`, `createDraft`, `updateDraft`, `deleteDraft`, `claimDraft`, `getImageDataUrl`
 - New-lane launches: `startLaunch`, `getLaunch`, `listLaunches`,
   `cancelLaunch`, `retryLaunch`, `startLaunchNow`, `queueLaunchMessage`,
   `completeLaunchClient` — see [New-lane launch commands](#new-lane-launch-commands)
@@ -443,6 +466,19 @@ needed) read for the Sources list. `{ domains: string[] }` returns
 the host's SSRF-guarded favicon resolver and cached on its disk. See
 [Favicons](../chat/transcript-and-turns.md#favicons).
 
+`chat.getMcpApp` and `chat.mcpAppRequest` carry MCP Apps to a controller (the
+iPhone app). `chat.getMcpApp` (`{ sessionId, itemId }`, viewer-allowed) returns
+the stored app with `contentSecurityPolicy`, the page's policy as the brain
+built it, including `sandbox allow-scripts`; the controller serves the page
+with that string and builds none. A page over 1 MB is answered
+`{ status: "unavailable", reason }` instead of being sent.
+`chat.mcpAppRequest` (`{ sessionId, itemId, method, params, userActivated }`)
+is not viewer-allowed and not queueable: it runs a tool for the app, on the
+app's own server, through the chat's live session. `userActivated` is the
+controller's word that the user tapped inside the app just before; a tool that
+may change data runs only when it is true. Both are optional in
+`syncMobileCompatibility.ts`. See [MCP Apps](../chat/README.md#mcp-apps).
+
 `chat.createScheduledWork` takes `{ sessionId, cron, prompt, recurring?,
 reason? }` and creates an ADE-owned durable schedule for any provider-backed
 chat. `recurring` defaults to true; false creates a one-shot at the next
@@ -460,6 +496,10 @@ and non-queueable for the same reason. The account is the one already published
 on the live resume. It answers `{ ok: true, sessionId }` for the new chat, or
 `{ ok: false, reason: "no_live_usage_limit" | "no_alternate_account" |
 "handoff_failed", message }`.
+`chat.switchAccount` takes `{ sessionId, instanceId }` and is owner-only and
+non-queueable: it changes which login pays for the chat's next turn. It answers
+`{ ok: true, instanceId }` or `{ ok: false, reason: "busy" | "signed_out" |
+"failed", message }`.
 Create is owner-only (`viewerAllowed: false`), so paired controller devices can
 discover the capability but cannot invoke it. Pause, resume, and cancel are
 viewer-allowed recovery controls. All three are deliberately
@@ -827,9 +867,9 @@ A handful have more logic:
   value throws `"work.startCliSession requires provider."`), clamps
   `cols` to `[20, 240]` and `rows` to `[4, 120]`, and truncates
   `initialInput` at 20 KB. `model` / `modelId`, `reasoningEffort`,
-  and `fastMode` flow into the same launch builder as desktop; the
-  older `codexFastMode` wire name is accepted only as a compatibility
-  alias. Provider-specific argv, env, and shell
+  `fastMode`, and (for Codex) `fastTier` flow into the same launch builder as
+  desktop; the older `codexFastMode` wire name is accepted only as a
+  compatibility alias. Provider-specific argv, env, and shell
   preambles come from `buildTrackedCliLaunchCommand` in
   `apps/desktop/src/shared/cliLaunch.ts`
   — the same module the desktop Work tab uses — so the runtime owns the
@@ -945,8 +985,22 @@ A handful have more logic:
   Lanes tab consumes (runtime bucket summaries, rebase suggestions,
   auto-rebase statuses, batch assessment).
 - **`prs.refresh`** — delegates to `prService.refresh`, then
-  re-lists PRs and returns both the PR list and the snapshots in a
-  single response.
+  re-lists PRs and returns the PR list plus a **bounded** set of snapshots:
+  `{ refreshedCount, prs, snapshots, snapshotScope, omittedSnapshotPrIds }`.
+  Args: `prId` / `prIds` (snapshots for exactly those PRs) and
+  `includeSnapshots: "active" | "all" | "none"` (default `"active"`: open or
+  draft PRs, and PRs whose lane is not archived). Snapshots are capped at
+  6 MiB per reply, open PRs first; the ones left out are listed in
+  `omittedSnapshotPrIds` and load one PR at a time (`{ prId }`) when opened.
+  An argument-less refresh used to return every stored snapshot — 17 MB on a
+  real project — which the host refused to send and closed the phone over.
+- **Reply size guard.** `execute` measures every command's serialized result;
+  over 12 MiB (`SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES`) the command fails with
+  `{ ok: false, error: { code: "result_too_large", message, bytes, limitBytes } }`.
+  The host's `sendRequired` does the same for any request-bound reply that
+  cannot fit the 16 MiB send budget, and keeps the socket open; only a peer
+  whose queue is already full, or backpressured past the timeout, is closed
+  with 4001.
 - **`prs.getMobileSnapshot`** — calls `prService.getMobileSnapshot`,
   which builds stack chains from `laneService.list`, classifies each
   PR's action capabilities, resolves per-lane create-PR eligibility

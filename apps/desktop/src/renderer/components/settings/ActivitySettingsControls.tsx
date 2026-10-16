@@ -1,47 +1,28 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Confetti,
   DesktopTower,
   HourglassMedium,
   LockKey,
-  Notches,
   SpeakerHigh,
-  ArrowsOutSimple,
-  CursorClick,
 } from "@phosphor-icons/react";
 
 import {
   DEFAULT_ATTENTION_PREFERENCES,
-  type AttentionNotchRevealMode,
+  upgradeAttentionEventPolicies,
   type AttentionPreferences,
 } from "../../../shared/types";
-import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
-import {
-  activityNotchSupported,
-  activityNotchSettingsFromPreferences,
-  activityPreferencesWithNotchPresentation,
-  normalizeActivityPreferences,
-  onActivityNotchSettingsChanged,
-  readActivityNotchEnabled,
-  resolveActivityNotchPresentation,
-  writeActivityNotchEnabled,
-  writeActivityNotchPresentation,
-  type ActivityNotchPresentation,
-} from "../activity/activityNotchLocalSettings";
 import { useAccountStatus } from "../../lib/account";
-import { supportsNativeNotch } from "../../lib/platform";
 import { useActivityStore } from "../../state/activityStore";
-import { SettingsCard, SettingsGroup, SettingsSelect, SettingsToggle } from "./primitives";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 
 /**
  * Every Activity setting, once.
  *
  * Two surfaces show these: the gear inside the Activity popover and pane, and
  * the Activity settings tab. Before this file they were two hand-maintained
- * lists that had already drifted — the popover could turn the notch on with a
- * Save button while the settings page saved instantly, and only one of them
- * knew about hide-previews. Both now mount this component, so a row can only
+ * lists that had already drifted — the popover saved with a Save button while
+ * the settings page saved instantly, and only one of them knew about
+ * hide-previews. Both now mount this component, so a row can only
  * exist in one place: here.
  *
  * The variants differ in chrome, not in content or behaviour. `popover` renders
@@ -49,19 +30,6 @@ import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
  * canonical card lives on another tab; `page` renders `SettingsCard`s carrying
  * the anchors the settings manifest promises.
  */
-
-/**
- * Two modes, and only two. There were three, and the difference between them
- * was never the one the names promised: "Compact + peek" and "Click only"
- * rendered the same flush strip while "Reveal on hover" revealed into the
- * bigger expanded rect, so choosing a REVEAL mode silently chose a LAYOUT too.
- * Both modes now show the identical compact strip and both open the full panel
- * on click; the only question left is whether the strip is always there.
- */
-const REVEAL_OPTIONS: { value: AttentionNotchRevealMode; label: string }[] = [
-  { value: "always", label: "Always show" },
-  { value: "hover", label: "Show on hover" },
-];
 
 const ESCALATION_OPTIONS = [
   { value: "0", label: "Immediately" },
@@ -78,11 +46,6 @@ const DOCK_BADGE_SCOPE_OPTIONS: {
   { value: "account", label: "All machines" },
 ];
 
-const NOTCH_REVEAL_HELP: Record<AttentionNotchRevealMode, string> = {
-  always: "Keep the compact strip on the menu bar. Click it for the full list.",
-  hover: "Show the same strip when the pointer reaches the top edge.",
-};
-
 export type ActivityMachineOption = {
   machineKey: string;
   name: string;
@@ -90,6 +53,40 @@ export type ActivityMachineOption = {
 };
 
 export type ActivitySettingsModel = ReturnType<typeof useActivitySettings>;
+
+/**
+ * Account fields an older build may still carry. The notch that read them is
+ * gone, so they are dropped on load and never saved back to the account.
+ */
+const RETIRED_ACCOUNT_PREFERENCE_KEYS = ["notchRevealMode", "notchExpandedPanel"] as const;
+
+function normalizeActivityPreferences(
+  preferences: AttentionPreferences,
+): AttentionPreferences {
+  const saved = upgradeAttentionEventPolicies(preferences.account ?? {});
+  const account: AttentionPreferences["account"] & Record<string, unknown> = {
+    ...DEFAULT_ATTENTION_PREFERENCES.account,
+    ...saved,
+    eventPolicies: {
+      ...DEFAULT_ATTENTION_PREFERENCES.account.eventPolicies,
+      ...saved.eventPolicies,
+    },
+    quietHours: {
+      ...DEFAULT_ATTENTION_PREFERENCES.account.quietHours,
+      ...saved.quietHours,
+    },
+  };
+  for (const key of RETIRED_ACCOUNT_PREFERENCE_KEYS) delete account[key];
+  return {
+    ...DEFAULT_ATTENTION_PREFERENCES,
+    ...preferences,
+    account,
+    devices: preferences.devices ?? {},
+    machines: preferences.machines ?? {},
+    projects: preferences.projects ?? {},
+    mutedSessionIds: preferences.mutedSessionIds ?? [],
+  };
+}
 
 /**
  * Load, hold, and persist every Activity preference. Both surfaces call this,
@@ -104,7 +101,6 @@ export function useActivitySettings() {
   const [preferences, setPreferences] = useState<AttentionPreferences>(
     DEFAULT_ATTENTION_PREFERENCES,
   );
-  const [notchEnabled, setNotchEnabled] = useState(() => readActivityNotchEnabled());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -118,15 +114,6 @@ export function useActivitySettings() {
       if (savedTimer.current != null) window.clearTimeout(savedTimer.current);
     };
   }, []);
-
-  // The native context menu can change reveal mode behind the app's back.
-  useEffect(() => onActivityNotchSettingsChanged((settings) => {
-    setNotchEnabled(settings.enabled);
-    setPreferences((current) => activityPreferencesWithNotchPresentation(current, {
-      revealMode: settings.revealMode,
-      expandedPanelEnabled: settings.expandedPanelEnabled,
-    }));
-  }), []);
 
   useEffect(() => {
     const api = typeof window !== "undefined" ? window.ade?.attention : null;
@@ -167,10 +154,7 @@ export function useActivitySettings() {
    * state update commits, so reading component state here would save the value
    * the user just replaced.
    */
-  const persist = useCallback(async (
-    next: AttentionPreferences,
-    nextNotchEnabled = notchEnabled,
-  ) => {
+  const persist = useCallback(async (next: AttentionPreferences) => {
     const api = typeof window !== "undefined" ? window.ade?.attention : null;
     if (!api || !accountOwnerId) {
       setError("Sign in to ADE to change Activity settings.");
@@ -178,17 +162,6 @@ export function useActivitySettings() {
     }
     try {
       await api.putPreferences(accountOwnerId, next);
-      // localStorage stays the offline cache of record for notch presentation:
-      // a signed-out or offline launch still opens the notch the way this Mac
-      // last had it rather than snapping back to the shipped default.
-      if (supportsNativeNotch && activityNotchSupported()) {
-        const presentation = resolveActivityNotchPresentation(next);
-        writeActivityNotchEnabled(nextNotchEnabled);
-        writeActivityNotchPresentation(presentation);
-        await window.ade?.attentionNotch?.updateSettings(
-          activityNotchSettingsFromPreferences(next, nextNotchEnabled, presentation),
-        );
-      }
       if (!mounted.current) return;
       setError(null);
       flashSaved();
@@ -198,7 +171,7 @@ export function useActivitySettings() {
         ? saveError.message
         : "ADE couldn’t save your Activity settings.");
     }
-  }, [accountOwnerId, flashSaved, notchEnabled]);
+  }, [accountOwnerId, flashSaved]);
 
   const updateAccount = useCallback((patch: Partial<AttentionPreferences["account"]>) => {
     const next: AttentionPreferences = {
@@ -207,20 +180,6 @@ export function useActivitySettings() {
     };
     setPreferences(next);
     void persist(next);
-  }, [persist, preferences]);
-
-  const setNotchPresentation = useCallback((patch: Partial<ActivityNotchPresentation>) => {
-    const next = activityPreferencesWithNotchPresentation(preferences, {
-      ...resolveActivityNotchPresentation(preferences),
-      ...patch,
-    });
-    setPreferences(next);
-    void persist(next);
-  }, [persist, preferences]);
-
-  const toggleNotchEnabled = useCallback((enabled: boolean) => {
-    setNotchEnabled(enabled);
-    void persist(preferences, enabled);
   }, [persist, preferences]);
 
   /**
@@ -277,8 +236,6 @@ export function useActivitySettings() {
     return [...byKey.values()].sort((left, right) => left.name.localeCompare(right.name));
   }, [itemsById]);
 
-  const notchPresentation = resolveActivityNotchPresentation(preferences);
-
   return {
     accountOwnerId,
     signedOut: !accountOwnerId,
@@ -288,12 +245,7 @@ export function useActivitySettings() {
     preferences,
     account: preferences.account,
     machines,
-    notchEnabled,
-    notchPresentation,
-    notchSupported: supportsNativeNotch && activityNotchSupported(),
     updateAccount,
-    toggleNotchEnabled,
-    setNotchPresentation,
     setMachineMuted,
     machineMuted: (machineKey: string) =>
       preferences.machines[machineKey]?.notificationsEnabled === false,
@@ -374,12 +326,7 @@ export function ActivitySettingsControls({
     loading,
     signedOut,
     machines,
-    notchEnabled,
-    notchPresentation,
-    notchSupported,
     updateAccount,
-    toggleNotchEnabled,
-    setNotchPresentation,
     setMachineMuted,
     machineMuted,
   } = model;
@@ -388,75 +335,6 @@ export function ActivitySettingsControls({
   if (variant === "popover") {
     return (
       <>
-        {notchSupported ? (
-          <section>
-            {/*
-              These two are scope labels, not macOS prose: the page variant
-              renders the very same notch row,
-              and this component exists so the two surfaces cannot say different
-              things about one setting. A badge reading "This Mac" beside a chip
-              reading "This computer" would be two names for one machine. The
-              surrounding section is macOS-only, but the *scope* is not a
-              platform claim, so it follows `THIS_MACHINE_NAME`.
-            */}
-            <h3>{THIS_MACHINE_NAME}</h3>
-            <PopoverRow
-              icon={Notches}
-              label="ADE notch"
-              description="Ambient agent status at the top of this display."
-              badge={THIS_MACHINE_NAME}
-              control={
-                <PopoverSwitch
-                  label="ADE notch"
-                  checked={notchEnabled}
-                  onChange={toggleNotchEnabled}
-                />
-              }
-            />
-            <PopoverRow
-              icon={CursorClick}
-              label="Notch behavior"
-              description={NOTCH_REVEAL_HELP[notchPresentation.revealMode]}
-              disabled={!notchEnabled}
-              control={
-                <select
-                  aria-label="Notch behavior"
-                  value={notchPresentation.revealMode}
-                  disabled={!notchEnabled}
-                  onChange={(event) => setNotchPresentation({
-                    revealMode: event.target.value as AttentionNotchRevealMode,
-                  })}
-                >
-                  {REVEAL_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
-              }
-            />
-            <PopoverRow
-              icon={ArrowsOutSimple}
-              label="Expanded panel"
-              description="Allow the notch to grow into a full list of sessions."
-              disabled={!notchEnabled}
-              control={
-                <PopoverSwitch
-                  label="Expanded panel"
-                  checked={notchPresentation.expandedPanelEnabled}
-                  disabled={!notchEnabled}
-                  onChange={(expandedPanelEnabled) =>
-                    setNotchPresentation({ expandedPanelEnabled })}
-                />
-              }
-            />
-            {/* No "Automatic reveal" row, and no "Live ticker" row. Flashing
-                the strip when something needs you is what the notch IS, and the
-                strip has no ticker to cycle: it is two wings of state-group
-                counts plus a top signal. Both switches survived the surfaces
-                they described, which made them settings that promised
-                something and did nothing. */}
-          </section>
-        ) : null}
-
         <section>
           <h3>Account</h3>
           <PopoverRow
@@ -477,20 +355,6 @@ export function ActivitySettingsControls({
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
-            }
-          />
-          <PopoverRow
-            icon={Confetti}
-            label="Celebrations"
-            description="A brief flourish when meaningful work lands."
-            disabled={busy}
-            control={
-              <PopoverSwitch
-                label="Celebrations"
-                checked={account.celebrationsEnabled}
-                disabled={busy}
-                onChange={(celebrationsEnabled) => updateAccount({ celebrationsEnabled })}
-              />
             }
           />
           <PopoverRow
@@ -577,107 +441,72 @@ export function ActivitySettingsControls({
     );
   }
 
+  // The settings page composes the row sections below in its own layout.
   return (
     <>
-      <SettingsGroup
-        title="Notch & menu bar"
-        description={
-          notchSupported
-            // Prose about a macOS surface, not a scope label — "menu bar"
-            // already commits the sentence to macOS, and this branch only
-            // renders there. Half-renaming it to "this computer" would read
-            // worse and claim no more. Deliberately unlike the popover badges.
-            ? "The ambient HUD near the menu bar on this Mac."
-            // `notchSupported` is false for two unrelated reasons and the old
-            // copy assumed only one of them: the web client (no `attentionNotch`
-            // bridge) and any non-macOS desktop. A Windows user was told they
-            // were running the web client.
-            : supportsNativeNotch
-              ? "The notch is a native macOS surface and isn’t available in the web client."
-              : "The notch is a native macOS surface and isn’t available on this computer."
-        }
-      >
-        <SettingsCard
-          anchor="activity-notch"
-          title="ADE notch"
-          description="A small HUD near the menu bar for work that needs you."
-          disabled={!notchSupported}
-          control={
-            <SettingsToggle
-              label="ADE notch"
-              checked={notchEnabled && notchSupported}
-              disabled={!notchSupported}
-              onChange={toggleNotchEnabled}
-            />
-          }
-        />
-        <SettingsCard
-          anchor="activity-notch-reveal"
-          title="Notch behavior"
-          description={NOTCH_REVEAL_HELP[notchPresentation.revealMode]}
-          disabled={!notchSupported || !notchEnabled}
-          control={
-            <SettingsSelect
-              ariaLabel="Notch behavior"
-              value={notchPresentation.revealMode}
-              options={REVEAL_OPTIONS}
-              disabled={!notchSupported || !notchEnabled}
-              onChange={(revealMode) => setNotchPresentation({ revealMode })}
-            />
-          }
-        />
-        <SettingsCard
-          anchor="activity-notch-expanded"
-          title="Expanded panel"
-          description="Allow the notch to grow into a full list of sessions."
-          disabled={!notchSupported || !notchEnabled}
-          control={
-            <SettingsToggle
-              label="Expanded panel"
-              checked={notchPresentation.expandedPanelEnabled}
-              disabled={!notchSupported || !notchEnabled}
-              onChange={(expandedPanelEnabled) => setNotchPresentation({ expandedPanelEnabled })}
-            />
-          }
-        />
-        {/* The `activity-auto-reveal` and `activity-ticker` cards are gone with
-            their settings — see the note in the popover variant above. */}
-        <SettingsCard
-          anchor="activity-celebrations"
-          title="Celebrations"
-          description="A brief flourish when meaningful work lands."
-          control={
-            <SettingsToggle
-              label="Celebrations"
-              checked={account.celebrationsEnabled}
-              disabled={busy}
-              onChange={(celebrationsEnabled) => updateAccount({ celebrationsEnabled })}
-            />
-          }
-        />
-      </SettingsGroup>
+      <ActivityPrivacySection model={model} />
+      <ActivityMachinesSection model={model} />
+    </>
+  );
+}
 
-      <SettingsGroup title="Sound">
-        <SettingsCard
-          anchor="activity-sounds"
-          title="Activity sounds"
-          description="Restrained cues for events that need you."
-          control={
-            <SettingsToggle
-              label="Activity sounds"
-              checked={account.soundsEnabled}
-              disabled={busy}
-              onChange={(soundsEnabled) => updateAccount({ soundsEnabled })}
-            />
-          }
-        />
-      </SettingsGroup>
+/**
+ * A two-or-three-way choice as a segmented control (`.kit-seg`), exposed as a
+ * radio group under the same accessible name the old select carried.
+ */
+function SegmentedChoice<T extends string>({
+  ariaLabel,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  ariaLabel: string;
+  value: T;
+  options: readonly { value: T; label: string }[];
+  disabled?: boolean;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div
+      className="kit-seg"
+      data-case="sentence"
+      role="radiogroup"
+      aria-label={ariaLabel}
+      aria-disabled={disabled || undefined}
+      style={disabled ? { opacity: 0.5 } : undefined}
+    >
+      {options.map((option) => {
+        const active = option.value === value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            disabled={disabled}
+            style={disabled ? { cursor: "not-allowed" } : undefined}
+            onClick={() => { if (!active) onChange(option.value); }}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
-      <SettingsGroup title="Privacy">
-        <SettingsCard
+/** What Activity reveals, and what the Dock badge counts. */
+export function ActivityPrivacySection({ model }: { model: ActivitySettingsModel }) {
+  const { account, loading, signedOut, updateAccount } = model;
+  const busy = loading || signedOut;
+  return (
+    <ModernSection group="Privacy" title="Privacy and badges" hint="What ambient surfaces reveal, and what the badge counts.">
+      <ModernRows>
+        <ModernRow
           anchor="activity-hide-details"
           title="Hide previews"
-          description="Use private summaries instead of agent text on the notch, the phone, and the lock screen."
+          hint="Show private summaries, not agent text, on the phone and the lock screen."
           control={
             <SettingsToggle
               label="Hide previews"
@@ -687,18 +516,12 @@ export function ActivitySettingsControls({
             />
           }
         />
-      </SettingsGroup>
-
-      <SettingsGroup
-        title="Account"
-        description="Choose how Activity rolls up work from your signed-in machines."
-      >
-        <SettingsCard
+        <ModernRow
           anchor="activity-dock-badge"
           title="Dock badge counts"
-          description="Count work waiting on this computer, or across every machine on your account."
+          hint="Work waiting on this computer, or on every machine."
           control={
-            <SettingsSelect
+            <SegmentedChoice
               ariaLabel="Dock badge counts"
               value={account.dockBadgeScope}
               options={DOCK_BADGE_SCOPE_OPTIONS}
@@ -707,67 +530,50 @@ export function ActivitySettingsControls({
             />
           }
         />
-      </SettingsGroup>
+      </ModernRows>
+    </ModernSection>
+  );
+}
 
-      <SettingsGroup
-        title="Machines"
-        description="Activity always shows every machine. Muting one stops it notifying you."
-      >
-        <SettingsCard
-          anchor="activity-machines"
-          title="Notify me about"
-          description="Machines currently reporting to your account."
-          stacked
-        >
-          {machines.length === 0 ? (
-            <p
-              style={{
-                margin: 0,
-                fontFamily: SANS_FONT,
-                fontSize: 11,
-                color: COLORS.textMuted,
-              }}
-            >
-              No machines have reported Activity yet.
-            </p>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              {machines.map((machine, index) => (
-                <div
-                  key={machine.machineKey}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 16,
-                    padding: "8px 0",
-                    borderTop: index === 0 ? "none" : `1px solid ${COLORS.borderMuted}`,
-                  }}
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary }}>
-                      {machine.name}
-                    </div>
-                    <div style={{ marginTop: 2, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                      {machineMuted(machine.machineKey)
-                        ? "Muted — visible in Activity, never notifies."
-                        : machine.online
-                          ? "Online"
-                          : "Offline"}
-                    </div>
-                  </div>
+/** One switch per machine. Muted machines still show in Activity. */
+export function ActivityMachinesSection({ model }: { model: ActivitySettingsModel }) {
+  const { machines, signedOut, setMachineMuted, machineMuted } = model;
+  return (
+    <ModernSection group="Machines" anchor="activity-machines" title="Machines" hint="Mute a machine to keep it in Activity without notifications.">
+      <ModernRows>
+        {machines.length === 0 ? (
+          <ModernRow title="No machines yet" hint="Machines appear here once they report Activity." />
+        ) : (
+          machines.map((machine) => {
+            const muted = machineMuted(machine.machineKey);
+            return (
+              <ModernRow
+                key={machine.machineKey}
+                title={(
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                    <DesktopTower size={14} style={{ color: "var(--kit-text-3)" }} />
+                    {machine.name}
+                  </span>
+                )}
+                hint={(
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <span className="kit-dot" data-state={machine.online && !muted ? "ok" : undefined} aria-hidden />
+                    {muted ? "Muted · still shown in Activity" : machine.online ? "Online" : "Offline"}
+                  </span>
+                )}
+                control={
                   <SettingsToggle
                     label={`Notify me about ${machine.name}`}
-                    checked={!machineMuted(machine.machineKey)}
+                    checked={!muted}
                     disabled={signedOut}
                     onChange={(enabled) => void setMachineMuted(machine.machineKey, !enabled)}
                   />
-                </div>
-              ))}
-            </div>
-          )}
-        </SettingsCard>
-      </SettingsGroup>
-    </>
+                }
+              />
+            );
+          })
+        )}
+      </ModernRows>
+    </ModernSection>
   );
 }

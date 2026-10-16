@@ -1,0 +1,38 @@
+{
+  "$comment": [
+    "Cross-language conformance fixture for the Activity board-column table.",
+    "",
+    "Every Activity surface groups agent items into the Work board's four",
+    "columns: needs_you, working, waiting, done. The mapping is implemented",
+    "three times because the surfaces cannot share code: the desktop and web",
+    "renderer (TypeScript), the iOS app and widgets (Swift), and the push relay",
+    "(a hermetic Cloudflare Worker that imports nothing from this repo). Each",
+    "implementation runs these cases through its own mapper.",
+    "",
+    "Canonical source of truth: `activityBoardColumn` in",
+    "apps/desktop/src/shared/attention/activityBoardColumn.ts. When the rule",
+    "changes, change it there, update these cases, and let the other suites",
+    "fail until they follow.",
+    "",
+    "`boardColumn` is what the publishing brain wrote; null means an older brain",
+    "that does not send it. `tier` is the item's activityTier. `expected` null",
+    "means the item is not counted in any column."
+  ],
+  "cases": [
+    { "name": "a published column wins over the phase", "kind": "agent", "phase": "running", "tier": "ambient", "boardColumn": "waiting", "expected": "waiting" },
+    { "name": "a published done wins over a raised hand", "kind": "agent", "phase": "needs_you", "tier": "signal", "boardColumn": "done", "expected": "done" },
+    { "name": "an unknown published column falls back to the phase", "kind": "agent", "phase": "running", "tier": "ambient", "boardColumn": "parked", "expected": "working" },
+    { "name": "needs_you is Needs you", "kind": "agent", "phase": "needs_you", "tier": "signal", "boardColumn": null, "expected": "needs_you" },
+    { "name": "a failure is the user's move", "kind": "agent", "phase": "failed", "tier": "signal", "boardColumn": null, "expected": "needs_you" },
+    { "name": "a failure stays Needs you on the idle tier", "kind": "agent", "phase": "failed", "tier": "idle", "boardColumn": null, "expected": "needs_you" },
+    { "name": "starting is Working", "kind": "agent", "phase": "starting", "tier": "ambient", "boardColumn": null, "expected": "working" },
+    { "name": "running is Working", "kind": "agent", "phase": "running", "tier": "ambient", "boardColumn": null, "expected": "working" },
+    { "name": "a quiet run is still Working", "kind": "agent", "phase": "stale", "tier": "ambient", "boardColumn": null, "expected": "working" },
+    { "name": "a resting roster row is Done", "kind": "agent", "phase": "stale", "tier": "idle", "boardColumn": null, "expected": "done" },
+    { "name": "an idle-tier running row is Done", "kind": "agent", "phase": "running", "tier": "idle", "boardColumn": null, "expected": "done" },
+    { "name": "completed is Done", "kind": "agent", "phase": "completed", "tier": "ambient", "boardColumn": null, "expected": "done" },
+    { "name": "a legacy item with no tier still maps", "kind": "agent", "phase": "running", "tier": null, "boardColumn": null, "expected": "working" },
+    { "name": "a pull request is never counted", "kind": "pull_request", "phase": "checks_failing", "tier": "signal", "boardColumn": null, "expected": null },
+    { "name": "a pull request ignores a stray column", "kind": "pull_request", "phase": "open", "tier": "ambient", "boardColumn": "working", "expected": null }
+  ]
+}

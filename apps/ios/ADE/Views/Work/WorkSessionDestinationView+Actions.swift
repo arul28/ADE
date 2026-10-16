@@ -23,12 +23,19 @@ extension WorkSessionDestinationView {
   func sendMessage(
     _ text: String,
     attachments inputAttachments: [WorkChatInputAttachment] = [],
-    deliveryMode: WorkActiveSendMode = .queue
+    deliveryMode: WorkActiveSendMode = .queue,
+    compactFirst: Bool? = nil
   ) async -> Bool {
     let useSteer = shouldSteerActiveTurn
     guard !sending || useSteer else { return false }
     let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !text.isEmpty else { return false }
+    // Pending thread comments marked for the next send ride this message. A
+    // manual `/compact` is a command, not a reply, so it never takes them.
+    let includeThreadComments = !workChatIsManualCompactCommand(text)
+      && workThreadCommentsHaveSendable(sendableThreadComments)
+    // With comments to carry, an empty field is a real send: the host builds
+    // the message from the comments alone.
+    guard !text.isEmpty || includeThreadComments else { return false }
     guard canSendChatMessages else { return false }
     if workChatBlocksManualCompactSend(
       text: text,
@@ -65,7 +72,19 @@ extension WorkSessionDestinationView {
       attachments: pendingUploadRefs.isEmpty ? nil : pendingUploadRefs
     )
     let echoId = echo.id
-    localEchoMessages.append(echo)
+    // A comments-only send has no typed text, so its echo would have no dedupe
+    // key and could never be retired by the host's row. Skip it; the host's
+    // own row (with the comment card) arrives instead. A send with typed text
+    // keeps its echo: the dedupe key ignores the leading review block.
+    let showsEcho = !text.isEmpty || !pendingUploadRefs.isEmpty
+    if showsEcho {
+      localEchoMessages.append(echo)
+    }
+    // The staged-steer chip needs some words even when the user typed none.
+    let pendingSteerText = text.isEmpty ? "Your comments" : text
+    // Before the first await: the echo rides this turn's overlays, so the
+    // bubble is in the frame that follows the tap.
+    syncThreadOverlays()
     sending = true
 
     let attachmentRefs: [AgentChatFileRef]
@@ -101,7 +120,8 @@ extension WorkSessionDestinationView {
             sessionId: sessionId,
             text: text,
             attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
-            dispatchMode: atomicDispatchMode
+            dispatchMode: atomicDispatchMode,
+            includeThreadComments: includeThreadComments
           )
         } catch where workChatErrorIndicatesUnsupportedDispatchMode(error) {
           // An older host rejects a mode this client offers. On a normal chat,
@@ -115,7 +135,8 @@ extension WorkSessionDestinationView {
               sessionId: sessionId,
               text: text,
               attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
-              dispatchMode: nil
+              dispatchMode: nil,
+              includeThreadComments: includeThreadComments
             )
           } else {
             ADEHaptics.error()
@@ -130,7 +151,9 @@ extension WorkSessionDestinationView {
           delivery = try await syncService.sendChatMessage(
             sessionId: sessionId,
             text: text,
-            attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
+            attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
+            includeThreadComments: includeThreadComments,
+            compactFirst: compactFirst
           )
         } catch where workChatErrorIndicatesActiveTurn(error) {
           if workChatIsManualCompactCommand(text) {
@@ -150,7 +173,8 @@ extension WorkSessionDestinationView {
             sessionId: sessionId,
             text: text,
             attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
-            dispatchMode: atomicDispatchMode
+            dispatchMode: atomicDispatchMode,
+            includeThreadComments: includeThreadComments
           )
         }
       }
@@ -176,7 +200,7 @@ extension WorkSessionDestinationView {
               updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
               upsertOptimisticPendingSteer(
                 id: steerId,
-                text: text,
+                text: pendingSteerText,
                 timestamp: echo.timestamp,
                 attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
               )
@@ -196,7 +220,7 @@ extension WorkSessionDestinationView {
             updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
             upsertOptimisticPendingSteer(
               id: steerId,
-              text: text,
+              text: pendingSteerText,
               timestamp: echo.timestamp,
               attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
             )
@@ -212,7 +236,7 @@ extension WorkSessionDestinationView {
         if let steerId {
           upsertOptimisticPendingSteer(
             id: steerId,
-            text: text,
+            text: pendingSteerText,
             timestamp: echo.timestamp,
             attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
           )
@@ -503,6 +527,18 @@ extension WorkSessionDestinationView {
   }
 
   @MainActor
+  func moveSteer(_ steerId: String, toIndex: Int) async {
+    do {
+      try await syncService.moveChatSteer(sessionId: sessionId, steerId: steerId, toIndex: toIndex)
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
   func editSteer(_ steerId: String, _ text: String) async {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
@@ -699,6 +735,7 @@ extension WorkSessionDestinationView {
       || wire.codexConfigSource != nil
       || wire.opencodePermissionMode != nil
       || wire.droidPermissionMode != nil
+      || wire.musePermissionMode != nil
       || wire.cursorModeId != nil
     else { return false }
 
@@ -713,6 +750,7 @@ extension WorkSessionDestinationView {
         codexConfigSource: wire.codexConfigSource,
         opencodePermissionMode: wire.opencodePermissionMode,
         droidPermissionMode: wire.droidPermissionMode,
+        musePermissionMode: wire.musePermissionMode,
         cursorModeId: wire.cursorModeId
       )
       await refreshChatStateAfterAction(forceRemote: true)
@@ -974,6 +1012,12 @@ extension WorkSessionDestinationView {
   func openFileReference(_ path: String) async {
     guard !personalChat else {
       errorMessage = "Files are not attached to projectless chats."
+      return
+    }
+    guard !isRemoteMachineChat else {
+      // The Files tab shows the focused machine only.
+      let machine = syncService.chatMachineName(sessionId: sessionId) ?? "that machine"
+      errorMessage = "Open \(machine)'s projects from the Hub to browse its files."
       return
     }
     guard let session else { return }
@@ -1276,6 +1320,7 @@ extension WorkSessionDestinationView {
       if lanePrSummary != nil { lanePrSummary = nil }
       if lanePrTag != nil { lanePrTag = nil }
       if !laneChatPrs.isEmpty { laneChatPrs = [] }
+      if !chatPrCatalog.isEmpty { chatPrCatalog = [] }
       if selectedChatPrId != nil { selectedChatPrId = nil }
       return
     }
@@ -1296,6 +1341,7 @@ extension WorkSessionDestinationView {
       lanePrSummary = nil
       lanePrTag = nil
       laneChatPrs = []
+      chatPrCatalog = []
       selectedChatPrId = nil
       return
     }
@@ -1344,6 +1390,7 @@ extension WorkSessionDestinationView {
       sessionId: sessionId
     )
     if laneChatPrs != chatPrs { laneChatPrs = chatPrs }
+    if chatPrCatalog != projectItems { chatPrCatalog = projectItems }
     // A pick that no longer exists (PR merged away, link removed) must fall
     // back to the primary rather than blanking the badge.
     if let picked = selectedChatPrId, !chatPrs.contains(where: { $0.id == picked }) {
@@ -1389,6 +1436,209 @@ extension WorkSessionDestinationView {
     prDetailsSnapshot = nil
     prDetailsError = nil
     Task { await refreshChatPrDetails(force: true) }
+  }
+
+  /// The GitHub stack offer for the PR on screen, unless the user chose
+  /// "Not now" for this session+stack.
+  var visibleChatStackOffer: WorkChatStackOffer? {
+    guard let selected = chatDisplayPr else { return nil }
+    guard let offer = workChatStackOffer(
+      selected: selected,
+      catalog: chatPrCatalog,
+      sessionId: sessionId
+    ) else { return nil }
+    if dismissedStackOfferKey == "\(sessionId):\(offer.stackNumber)" { return nil }
+    return offer
+  }
+
+  /// PRs the "Link another PR" picker may offer for this chat.
+  var chatPrLinkableCatalog: [PullRequestListItem] {
+    workChatLinkableCatalog(catalog: chatPrCatalog, linked: laneChatPrs, sessionId: sessionId)
+  }
+
+  @MainActor
+  func withChatPrLinkBusy(_ work: () async throws -> Void) async {
+    guard !chatPrLinkBusy else { return }
+    chatPrLinkBusy = true
+    defer { chatPrLinkBusy = false }
+    do {
+      try await work()
+      await resolveLaneOpenPr(for: headerMenuLaneId, forceGithubRefresh: false, clearBeforeLoad: false)
+      await refreshChatPrDetails(force: false)
+    } catch {
+      prDetailsError = SyncUserFacingError.message(for: error)
+    }
+  }
+
+  // MARK: - PR Watch / Ship
+
+  /// The open PR on screen, when the host can watch it. Merged and closed PRs
+  /// have nothing left to watch, matching desktop `PrWatchPill`.
+  var chatPrWatchTarget: PullRequestListItem? {
+    guard syncService.supportsPrChatWatch, let pr = chatDisplayPr else { return nil }
+    let state = pr.state.lowercased()
+    guard state != "merged", state != "closed" else { return nil }
+    return pr
+  }
+
+  /// Reload key: the chat, the PR on screen, and the PR projection revision, so
+  /// a PR update (when Watch / Ship tells the agent something) refreshes it.
+  var prChatWatchTaskKey: String {
+    "\(sessionId)|\(chatPrWatchTarget?.id ?? "")|\(syncService.prsProjectionRevision)"
+  }
+
+  var chatPrWatchModel: WorkChatPrWatchModel? {
+    guard let pr = chatPrWatchTarget else { return nil }
+    let watch = prChatWatch.flatMap { $0.prId == pr.id && $0.isLive ? $0 : nil }
+    return WorkChatPrWatchModel(
+      prNumber: pr.githubPrNumber,
+      mode: watch?.mode,
+      holding: watch?.holding ?? false,
+      lastToldAt: watch?.lastToldAt,
+      lastToldSummary: watch?.lastToldSummary,
+      armedByAgent: watch?.armedBy == "agent",
+      busy: prChatWatchBusy,
+      error: prChatWatchError,
+      unknown: prChatWatchUnknown
+    )
+  }
+
+  /// A failed read cannot claim Off: the control shows it could not read the
+  /// watch, and Off still sends.
+  @MainActor
+  func refreshPrChatWatch() async {
+    guard let pr = chatPrWatchTarget else {
+      prChatWatch = nil
+      prChatWatchUnknown = false
+      return
+    }
+    let session = sessionId
+    let watches: [PrChatWatchSummary]
+    do {
+      // nil: an older host with no PR Watch, which reads as Off.
+      watches = try await syncService.fetchPrChatWatches(sessionId: session) ?? []
+    } catch {
+      guard session == sessionId, chatPrWatchTarget?.id == pr.id else { return }
+      prChatWatchUnknown = true
+      return
+    }
+    guard session == sessionId, chatPrWatchTarget?.id == pr.id else { return }
+    prChatWatchUnknown = false
+    prChatWatch = watches.first { $0.prId == pr.id && $0.isLive }
+  }
+
+  @MainActor
+  func setPrChatWatch(mode: String?) async {
+    guard let pr = chatPrWatchTarget, !prChatWatchBusy else { return }
+    prChatWatchBusy = true
+    prChatWatchError = nil
+    defer { prChatWatchBusy = false }
+    let session = sessionId
+    do {
+      let next = try await syncService.setPrChatWatch(prId: pr.id, sessionId: session, mode: mode)
+      // The chat's PR may have changed while this was in flight; its own
+      // refresh owns what the control shows now.
+      guard session == sessionId, chatPrWatchTarget?.id == pr.id else { return }
+      prChatWatch = next.flatMap { $0.isLive ? $0 : nil }
+      prChatWatchUnknown = false
+      ADEHaptics.success()
+    } catch {
+      ADEHaptics.error()
+      guard session == sessionId, chatPrWatchTarget?.id == pr.id else { return }
+      let message = SyncUserFacingError.message(for: error)
+      prChatWatchError = message
+      // The menu is closed by now; say it where the chat shows its errors.
+      errorMessage = "Couldn't change the PR watch: \(message)"
+    }
+  }
+
+  // MARK: - Restart agent session
+
+  /// Restart the chat's provider process, keeping the conversation. A running
+  /// turn is never stopped silently: the host refuses with "turn is running",
+  /// and the user confirms before the retry with `stopFirst`.
+  @MainActor
+  func restartAgentSession(stopFirst: Bool) async {
+    do {
+      _ = try await syncService.restartChatSession(sessionId: sessionId, stopFirst: stopFirst)
+      ADEHaptics.success()
+      errorMessage = nil
+      await refreshChatStateAfterAction(forceRemote: true)
+    } catch {
+      if !stopFirst, error.localizedDescription.range(of: "turn is running", options: .caseInsensitive) != nil {
+        restartStopTurnConfirmPresented = true
+        return
+      }
+      ADEHaptics.error()
+      errorMessage = "Couldn’t restart the agent session. \(error.localizedDescription)"
+    }
+  }
+
+  // MARK: - Codex goal
+
+  @MainActor
+  func setCodexGoal(objective: String) async {
+    await runCodexGoalAction { try await syncService.setCodexGoal(sessionId: sessionId, objective: objective) }
+  }
+
+  @MainActor
+  func setCodexGoalStatus(_ status: String) async {
+    await runCodexGoalAction { try await syncService.setCodexGoalStatus(sessionId: sessionId, status: status) }
+  }
+
+  @MainActor
+  func clearCodexGoal() async {
+    await runCodexGoalAction {
+      try await syncService.clearCodexGoal(sessionId: sessionId)
+      return nil
+    }
+  }
+
+  @MainActor
+  private func runCodexGoalAction(_ body: () async throws -> AgentChatCodexGoal?) async {
+    do {
+      _ = try await body()
+      errorMessage = nil
+      // The summary carries the goal; refetch it so the chip follows.
+      await refreshChatStateAfterAction(forceRemote: true)
+    } catch {
+      ADEHaptics.error()
+      errorMessage = "Couldn’t update the goal. \(error.localizedDescription)"
+    }
+  }
+
+  @MainActor
+  func linkChatPr(prId: String, allowCrossLane: Bool) async {
+    await withChatPrLinkBusy {
+      try await syncService.linkPullRequestChatSession(
+        prId: prId,
+        sessionId: sessionId,
+        allowCrossLane: allowCrossLane
+      )
+    }
+  }
+
+  @MainActor
+  func unlinkCurrentChatPr() async {
+    guard let prId = chatDisplayPr?.id else { return }
+    await withChatPrLinkBusy {
+      try await syncService.unlinkPullRequestChatSession(prId: prId, sessionId: sessionId)
+      selectedChatPrId = nil
+    }
+  }
+
+  @MainActor
+  func linkChatStackOffer() async {
+    guard let offer = visibleChatStackOffer, let focus = chatDisplayPr else { return }
+    await withChatPrLinkBusy {
+      try await syncService.linkPullRequestChatStack(
+        sessionId: sessionId,
+        stackNumber: offer.stackNumber,
+        prId: focus.id,
+        siblingPrIds: offer.siblings.map(\.id)
+      )
+      dismissedStackOfferKey = "\(sessionId):\(offer.stackNumber)"
+    }
   }
 
   /// Navigate to the resolved lane PR. No-op (rather than crash) if the PR was
@@ -1568,7 +1818,8 @@ extension WorkSessionDestinationView {
         baseBranch: baseBranch,
         labels: labels,
         reviewers: reviewers,
-        strategy: strategy
+        strategy: strategy,
+        sessionId: sessionId
       )
       createPrPresented = false
       try? await syncService.refreshPullRequestSnapshots()
@@ -1664,5 +1915,101 @@ func workChatMappedPullRequest(
   }
   return pullRequests.first { pr in
     pr.githubPrNumber == tag.githubPrNumber || pr.githubUrl == tag.githubUrl
+  }
+}
+
+// MARK: - Cross-machine handoff (in-chat card + send gate)
+
+extension WorkSessionDestinationView {
+  /// The card's calls, each the `chat.*CrossMachineHandoff` command desktop's
+  /// banner makes. Nil when the host has none of them, which hides the card's
+  /// buttons and lifts the send gate.
+  var crossMachineHandoffActions: WorkCrossMachineHandoffActions? {
+    guard syncService.crossMachineHandoffActionAvailable("chat.cancelCrossMachineHandoff", sessionId: sessionId)
+      || syncService.crossMachineHandoffActionAvailable("chat.acknowledgeCrossMachineHandoff", sessionId: sessionId)
+    else { return nil }
+    let sessionId = sessionId
+    return WorkCrossMachineHandoffActions(
+      keepHere: {
+        await runCrossMachineHandoffAction("Couldn't keep the chat here") {
+          try await syncService.cancelCrossMachineHandoff(sourceSessionId: sessionId)
+        }
+      },
+      dismiss: {
+        await runCrossMachineHandoffAction("Couldn't dismiss the move") {
+          try await syncService.cancelCrossMachineHandoff(sourceSessionId: sessionId)
+        }
+      },
+      resolveApproval: { approve in
+        guard let record = composerChatSummary?.crossMachineHandoff else { return }
+        await runCrossMachineHandoffAction(approve ? "Couldn't approve the move" : "Couldn't deny the move") {
+          try await syncService.resolveCrossMachineHandoffApproval(
+            sourceSessionId: sessionId,
+            handoffId: record.handoffId,
+            approve: approve
+          )
+        }
+      },
+      acknowledge: {
+        guard let record = composerChatSummary?.crossMachineHandoff else { return true }
+        do {
+          // Keyed by the move that landed the chat, not a later attempt.
+          let next = try await syncService.acknowledgeCrossMachineHandoff(
+            sourceSessionId: sessionId,
+            handoffId: record.continuation?.handoffId ?? record.handoffId
+          )
+          applyCrossMachineHandoffResult(next)
+          // The send that asked goes ahead now; the summary catches up behind it.
+          Task { @MainActor in await refreshChatStateAfterAction(forceRemote: true) }
+          return true
+        } catch {
+          ADEHaptics.error()
+          errorMessage = "Couldn't switch to working here: \(error.localizedDescription)"
+          return false
+        }
+      },
+      retry: {
+        // The same move again (same handoff id): the brain reconciles an
+        // `unknown` one through the destination's record, never a second chat.
+        await runCrossMachineHandoffAction("Couldn't retry the move") {
+          try await syncService.retryCrossMachineHandoff(sourceSessionId: sessionId)
+        }
+      },
+      open: {
+        guard let record = composerChatSummary?.crossMachineHandoff else { return }
+        syncService.openCrossMachineHandoffDestination(record)
+      }
+    )
+  }
+
+  @MainActor
+  private func runCrossMachineHandoffAction(
+    _ failure: String,
+    _ operation: () async throws -> AgentChatCrossMachineHandoffRecord?
+  ) async {
+    do {
+      let next = try await operation()
+      ADEHaptics.success()
+      applyCrossMachineHandoffResult(next)
+      await refreshChatStateAfterAction(forceRemote: true)
+    } catch {
+      ADEHaptics.error()
+      errorMessage = "\(failure): \(error.localizedDescription)"
+    }
+  }
+
+  /// Folds the record an action answered with into the cache and the live
+  /// summary at once, so the card and the send gate move before the refresh.
+  @MainActor
+  func applyCrossMachineHandoffResult(_ record: AgentChatCrossMachineHandoffRecord?) {
+    guard let record, !record.handoffId.isEmpty else { return }
+    syncService.applyCrossMachineHandoffActionResult(record, sessionId: sessionId)
+    if var current = chatSummary {
+      current.crossMachineHandoff = AgentChatCrossMachineHandoffRecord.pickNewer(
+        current: current.crossMachineHandoff,
+        incoming: record
+      )
+      if current != chatSummary { chatSummary = current }
+    }
   }
 }

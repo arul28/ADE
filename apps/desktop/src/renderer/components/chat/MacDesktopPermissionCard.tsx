@@ -96,6 +96,10 @@ export type MacDesktopPermissionCardProps = {
   onCheckAgain: () => void;
   /** Offered when the picture can work without what is missing. */
   onStartAnyway?: (() => void) | null;
+  /** The tool asking. App Control's recorder needs the same grant. */
+  productName?: string;
+  /** What each grant does for that tool, when it is not Mac Desktop. */
+  purposes?: Partial<Record<MacDesktopPermissionKind, string>>;
 };
 
 export function MacDesktopPermissionCard({
@@ -110,6 +114,8 @@ export function MacDesktopPermissionCard({
   onOpenSettings,
   onCheckAgain,
   onStartAnyway = null,
+  productName = "Mac Desktop",
+  purposes,
 }: MacDesktopPermissionCardProps) {
   const missing = macDesktopMissingPermissions(permissions);
   const inline = variant === "inline";
@@ -118,8 +124,8 @@ export function MacDesktopPermissionCard({
   const [helpOpen, setHelpOpen] = useState(signing === "adhoc");
 
   const title = missing.length > 1
-    ? "Mac Desktop needs two permissions"
-    : "Mac Desktop needs one more permission";
+    ? `${productName} needs two permissions`
+    : `${productName} needs one more permission`;
   const pronoun = missing.length > 1 ? "these" : "it";
   const subtitle = hostIsLocal
     ? `Turn ${pronoun} on for ${appName} in System Settings.`
@@ -130,7 +136,7 @@ export function MacDesktopPermissionCard({
   const card = (
     <section
       data-testid={inline ? "mac-desktop-permission-inline" : "mac-desktop-permission-card"}
-      aria-label="Mac Desktop permissions"
+      aria-label={`${productName} permissions`}
       className={cn(
         "flex w-full min-w-0 flex-col",
         inline
@@ -163,6 +169,7 @@ export function MacDesktopPermissionCard({
             where={where}
             disabled={checking}
             onOpenSettings={onOpenSettings}
+            purpose={purposes?.[kind] ?? null}
           />
         ))}
       </ul>
@@ -269,6 +276,7 @@ function PermissionRow({
   where,
   disabled,
   onOpenSettings,
+  purpose,
 }: {
   kind: MacDesktopPermissionKind;
   granted: boolean;
@@ -279,6 +287,7 @@ function PermissionRow({
   where: string;
   disabled: boolean;
   onOpenSettings: (kind: MacDesktopPermissionKind) => void;
+  purpose: string | null;
 }) {
   const copy = MAC_DESKTOP_PERMISSION_COPY[kind];
   const Icon = copy.icon;
@@ -316,7 +325,7 @@ function PermissionRow({
             {granted ? (unknown ? "Not checked" : "On") : "Off"}
           </span>
         </div>
-        <p className="font-sans text-[12px] leading-5 text-muted-fg">{copy.purpose}</p>
+        <p className="font-sans text-[12px] leading-5 text-muted-fg">{purpose ?? copy.purpose}</p>
         {granted ? null : (
           <p className="font-sans text-[11.5px] leading-5 text-fg/70" data-testid={`mac-desktop-permission-path-${kind}`}>
             {hostIsLocal ? macDesktopPermissionPath(kind) : `On ${where}: ${macDesktopPermissionPath(kind)}`}

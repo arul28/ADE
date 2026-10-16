@@ -1,4 +1,6 @@
+import { THREAD_COMMENT_ACTION_NAMES } from "./threadComments";
 import type { SyncFileRequest, SyncRemoteCommandAction } from "./types";
+import { PROVIDER_ACCOUNT_REMOTE_COMMAND_ACTIONS } from "./types/sync";
 
 export const MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION = 1;
 
@@ -6,6 +8,17 @@ export const MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION = 1;
 // hello_ok.features.commandRouting.actions. They must not become part of the
 // required set below, because older mobile builds do not implement them.
 export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
+  // Reorder one staged message. Optional: a phone hides the reorder controls
+  // against a brain that does not advertise it.
+  "chat.moveSteer",
+  // This machine's last-used chat model and settings, to seed a new chat.
+  // Optional: against an older brain the phone keeps its own last choice.
+  "chat.getLaunchDefaults",
+  // Machine inventory detail (provider accounts and saved Custom harness
+  // presets, with their bound state). The phone's model picker lists the
+  // machine's custom harnesses from it, and hides that section against an
+  // older host that omits the action.
+  "account.getMachineInventory",
   // New-lane launches owned by the brain. Optional: a phone falls back to the
   // chained lanes.create → chat.create flow against a brain without them.
   "chat.startLaunch",
@@ -19,11 +32,40 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "cto.completeLinearMobileOAuth",
   "cto.setLinearToken",
   "cto.clearLinearToken",
+  // Linear pane: live counts, custom views, detail read with relations, and
+  // inline issue edits. Optional: an older brain omits them and the phone
+  // keeps the read-only pane.
+  "cto.getLinearIssue",
+  "cto.updateLinearIssue",
+  // Issue viewer: Linear comments, and GitHub issues read and edited the way
+  // the desktop's Issues tab does. Optional: an older brain omits them.
+  "cto.createLinearIssueComment",
+  "github.getRepoIssueSummary",
+  "github.listRepoIssueList",
+  "github.listIssueComments",
+  "github.getIssueWriteAccess",
+  "github.listRepoMilestones",
+  "github.updateIssue",
+  "github.commentOnIssue",
+  "github.createIssue",
+  "github.listIssueTemplates",
+  "github.listIssueTypes",
+  "cto.createLinearIssue",
+  "cto.getLinearIssueCreateOptions",
+  "cto.listLinearProjectMilestones",
+  "cto.uploadLinearFile",
+  "cto.countLinearIssues",
+  "cto.getLinearCustomViews",
   // Whether the CTO thread is blocked on the user. The CTO chat is hidden from
   // every session roster, so the phone cannot derive this from its chat list —
   // it must ask. Optional so a phone on a newer build simply never lights the
   // dot against an older brain.
   "cto.getAttention",
+  // The project's CTO home machine (account setting `cto.homeMachine`), so a
+  // phone reaches the one CTO wherever it lives. Optional: an older brain
+  // leaves the phone on its primary machine's CTO.
+  "cto.getHomeMachine",
+  "cto.setHomeMachine",
   // Session lifecycle. The phone gates its settle/snooze affordances on these
   // appearing in hello_ok.features.commandRouting.actions, so they must be
   // advertised — but they stay OPTIONAL: shipped builds predating the feature
@@ -61,6 +103,9 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // Usage-limit "Continue on <account>". Optional for the same reason as
   // Resume now: older phones keep their connection and simply omit the button.
   "chat.continueUsageLimitOnAlternate",
+  // Account switch from the chat's account row. Optional so older phones keep
+  // their connection and simply have no switcher.
+  "chat.switchAccount",
   // GitHub Stacked PRs are in public preview. Mobile clients can expose these
   // actions as they adopt stack management without limiting older builds.
   "prs.listGithubStacks",
@@ -68,6 +113,21 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "prs.createGithubStack",
   "prs.addGithubStackPullRequests",
   "prs.unstackGithubStack",
+  "prs.linkChatSession",
+  "prs.unlinkChatSession",
+  "prs.linkChatStack",
+  "prs.listChatSessionsForPr",
+  "prs.getStackLinkOffer",
+  // PR Watch / Ship. Optional: an older host simply has no watch.
+  "prs.setChatWatch",
+  "prs.getChatWatches",
+  // Restart agent session. Optional: an older host simply lacks it.
+  "chat.restartSession",
+  // Session menu "Hand off ▸ Auto handoff…". Optional: the phone hides the
+  // item unless all three are advertised, and an older host simply omits them.
+  "automations.list",
+  "automations.saveDraft",
+  "automations.deleteRule",
   // Cursor Cloud watch/open. iOS and the web client presence-gate inbound
   // sync on these; optional so an older phone against a newer host does not
   // go limited, and an older host simply omits the actions.
@@ -96,14 +156,29 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "ai.cursorCloudResolveLane",
   "ai.cursorCloudPullIntoLane",
   "ai.cursorCloudStopRun",
+  // Cloud agents (Devin Cloud and Cursor Cloud). The web client's Cloud
+  // agents panel rides these; optional so an older host simply omits it.
+  "ai.listCloudAgents",
+  "ai.openCloudAgent",
+  "ai.stopCloudAgent",
+  "ai.archiveCloudAgent",
+  "ai.launchCloudAgent",
   // Per-project prompt stash. iOS gates the overflow-menu items on these
   // descriptors so an older brain simply omits stash instead of going limited.
-  "chat.listPromptStashes",
-  "chat.createPromptStash",
-  "chat.deletePromptStash",
+  "chat.listDrafts",
+  "chat.createDraft",
+  "chat.deleteDraft",
+  "chat.updateDraft",
+  "chat.claimDraft",
+  // Thread comments. An older brain omits them, and the phone hides the chip.
+  ...THREAD_COMMENT_ACTION_NAMES.map((action) => `chat.${action}` as const),
   // Sources favicons improve the compact phone Sources list; older hosts keep
   // working with the domain-initial fallback.
   "chat.resolveSourceFavicons",
+  // MCP Apps. Optional: against an older host the phone shows the app card's
+  // fallback text instead of the app.
+  "chat.getMcpApp",
+  "chat.mcpAppRequest",
   // Read-only Work tools pane (active tool, browser tabs, App Control, latest
   // frame). Optional because the phone simply shows no lane tool chips when
   // the brain does not advertise it — an older brain must not be flipped to
@@ -124,6 +199,12 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "macDesktop.stop",
   "macDesktop.streamSubscribe",
   "macDesktop.streamUnsubscribe",
+  // A watch-only viewer's Stop for the lane's Windows screen: `stopPrivate`
+  // (private screen only, older phones) and `stopSeat` (either seat). Never a
+  // Mac lane's display. Optional: the phone shows no Stop when the host does
+  // not advertise them.
+  "macDesktop.stopPrivate",
+  "macDesktop.stopSeat",
   // Web takeover. Controller-only (never viewer-allowed), and advertised as
   // optional so a phone on an older build — or the phone at all, which is
   // view-only by product decision — simply never calls them. A host with no
@@ -132,6 +213,12 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "macDesktop.returnControl",
   "macDesktop.renewLease",
   "macDesktop.input",
+  // App Control live view. Read-only and viewer-allowed. Optional because a
+  // chat-only runtime builds no App Control service; the phone then keeps the
+  // App Control card's text-only state.
+  "appControl.status",
+  "appControl.streamSubscribe",
+  "appControl.streamUnsubscribe",
   // Apple device environment. Optional in both directions: an older brain
   // simply omits them and the phone's Simulator card says the Mac needs an
   // update, rather than a version mismatch flipping the phone to "limited".
@@ -149,6 +236,23 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // host advertises the action, so an older host stays "full".
   "prs.setDraft",
   "prs.setAutoMerge",
+  // One archive across lanes, chats, and shells. A phone hides its archive
+  // screen until the host advertises these.
+  "archive.list",
+  "archive.summary",
+  "archive.restore",
+  "archive.delete",
+  // The host's Claude and Codex logins. The phone shows "update ADE" on its
+  // AI accounts page until the host advertises them.
+  ...PROVIDER_ACCOUNT_REMOTE_COMMAND_ACTIONS,
+  // Custom webhook automations: the read-only list and delivery log. Optional
+  // so a phone on an older build simply shows no Webhooks pane against a newer
+  // host, and an older host — or a runtime with no webhook source wired —
+  // omits the actions instead of flipping a newer phone into "limited". A host
+  // whose automations are off lists no webhooks.
+  "automations.webhookList",
+  "automations.webhookListDeliveries",
+  "automations.webhookGetDelivery",
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { createGithubIssueOps } from "../../desktop/src/main/services/github/githubIssueOps";
+import { issueWriteCandidates } from "../../desktop/src/main/services/github/githubIssueWriteAccess";
 import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,6 +11,9 @@ import type { createLaneService } from "../../desktop/src/main/services/lanes/la
 import type { createOperationService } from "../../desktop/src/main/services/history/operationService";
 import type { createProjectConfigService } from "../../desktop/src/main/services/config/projectConfigService";
 import type { createConflictService } from "../../desktop/src/main/services/conflicts/conflictService";
+import type { createAutoRebaseService } from "../../desktop/src/main/services/lanes/autoRebaseService";
+import type { createRebaseSuggestionService } from "../../desktop/src/main/services/lanes/rebaseSuggestionService";
+import type { LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import type { createLinearClient } from "../../desktop/src/main/services/cto/linearClient";
@@ -98,6 +103,9 @@ import { createPrService as createPrServiceImpl } from "../../desktop/src/main/s
 import { createAutomationSecretService as createAutomationSecretServiceImpl } from "../../desktop/src/main/services/automations/automationSecretService";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { createExpiringPromiseCache } from "../../desktop/src/shared/expiringPromiseCache";
+import { knownGitCommonDir, runGitRepoCached } from "../../desktop/src/main/services/git/git";
+import { invalidateGitRepoCache, isRefAffectingGitCommand } from "../../desktop/src/main/services/git/gitRepoCache";
+import { execFileOffThread, offThreadSpawnEnabled } from "../../desktop/src/main/services/shared/offThreadSpawn";
 import {
   GITHUB_CREDENTIAL_CACHE_TTL_MS,
   evaluateGithubCredentialCapabilities,
@@ -186,12 +194,16 @@ type HeadlessLinearDeps = {
   laneService: ReturnType<typeof createLaneService>;
   operationService: ReturnType<typeof createOperationService>;
   conflictService: ReturnType<typeof createConflictService>;
+  laneWorktreeLockService?: LaneWorktreeLockService | null;
+  autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
+  rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
   openExternal?: (url: string) => Promise<void>;
   onGitHubStatusChanged?: (status: HeadlessGitHubStatus) => void;
   getAccountAccessToken?: () => Promise<string | null>;
   getAccountVault?: () => AccountVaultBridge | null | undefined;
   getAccountUserId?: () => string | null;
   getDeviceId?: () => string | null;
+  refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
 };
 
 type HeadlessLinearServices = {
@@ -453,6 +465,19 @@ function runCommandAsync(
   args: string[],
   options: { cwd?: string; timeoutMs: number; maxBuffer?: number },
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  if (offThreadSpawnEnabled()) {
+    // `gh auth token` runs here every ~15 s; on Windows a spawn on the event
+    // loop blocked it ~120 ms each time. See offThreadSpawn.ts.
+    return execFileOffThread(executable, args, {
+      cwd: options.cwd,
+      timeoutMs: options.timeoutMs,
+      maxBuffer: options.maxBuffer ?? 10 * 1024 * 1024,
+    }).then(({ exitCode, stdout, stderr, error }) => ({
+      exitCode: error ? 1 : exitCode ?? 1,
+      stdout,
+      stderr: stderr || (error ? error.message : ""),
+    }));
+  }
   return new Promise((resolve) => {
     execFile(
       executable,
@@ -539,25 +564,35 @@ async function ghAuthTokenAsync(): Promise<Pick<
   };
 }
 
+/**
+ * The origin URL from the repo-scoped git cache. It uses the short freshness
+ * window because users and other processes can edit remotes outside ADE.
+ */
 async function readGitOriginAsync(projectRoot: string): Promise<string | null> {
-  const result = await runCommandAsync("git", ["remote", "get-url", "origin"], {
-    cwd: projectRoot,
-    timeoutMs: 2_000,
-    maxBuffer: 64 * 1024,
-  });
+  const result = await runGitRepoCached(
+    ["remote", "get-url", "origin"],
+    { cwd: projectRoot, timeoutMs: 2_000, maxOutputBytes: 64 * 1024 },
+    { key: "remote-url:origin", cacheClass: "volatile" },
+  );
   const remote = result.exitCode === 0 ? result.stdout.trim() : "";
   return remote || null;
 }
 
-function runGitHeadlessAsync(
+async function runGitHeadlessAsync(
   projectRoot: string,
   args: string[],
   timeoutMs: number,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  return runCommandAsync("git", args, {
+  const result = await runCommandAsync("git", args, {
     cwd: projectRoot,
     timeoutMs,
   });
+  if (isRefAffectingGitCommand(args)) {
+    // Headless Git bypasses runGit, so it must perform the same invalidation.
+    // Invalidate on failures too: Git may have partially changed config/remotes.
+    invalidateGitRepoCache(knownGitCommonDir(projectRoot));
+  }
+  return result;
 }
 
 function parseGitHubRepoFromRemoteUrl(
@@ -926,7 +961,7 @@ export function createHeadlessGitHubService(
         patTokenStored,
         ghCliPath: null,
         ghAuthError: null,
-        capabilities: ["read", "write"],
+        capabilities: ["read", "write", "issue-write"],
       });
     }
     if (appToken) {
@@ -936,7 +971,7 @@ export function createHeadlessGitHubService(
         patTokenStored,
         ghCliPath: null,
         ghAuthError: null,
-        capabilities: ["read"],
+        capabilities: ["read", "issue-write"],
         userLogin: appStatus.userLogin,
       });
     }
@@ -947,7 +982,7 @@ export function createHeadlessGitHubService(
         patTokenStored,
         ghCliPath: gh.ghCliPath,
         ghAuthError: gh.ghAuthError,
-        capabilities: ["read", "write"],
+        capabilities: ["read", "write", "issue-write"],
       });
     }
     if (patToken) {
@@ -957,7 +992,7 @@ export function createHeadlessGitHubService(
         patTokenStored,
         ghCliPath: gh.ghCliPath,
         ghAuthError: gh.ghAuthError,
-        capabilities: ["read", "write"],
+        capabilities: ["read", "write", "issue-write"],
       });
     }
     return {
@@ -1314,7 +1349,7 @@ export function createHeadlessGitHubService(
   }): Promise<{ data: T; response: Response | null; linkHeader?: string | null }> => {
     const capability = args.capability ?? (args.method === "GET" ? "read" : "write");
     const explicitToken = args.token?.trim() ?? "";
-    const candidates: HeadlessGitHubTokenCandidate[] = explicitToken
+    const candidatePool: HeadlessGitHubTokenCandidate[] = explicitToken
       ? [{
           token: explicitToken,
           source: "environment",
@@ -1327,6 +1362,16 @@ export function createHeadlessGitHubService(
           (await readCredentialInventoryAsync()).candidates,
           capability,
         );
+    // An issue write uses the App only when its installation grants
+    // `Issues: write`; otherwise it would 403 on every edit (see
+    // `githubIssueWriteAccess.ts`).
+    const candidates = capability === "issue-write" && !explicitToken
+      ? await issueWriteCandidates(
+        candidatePool,
+        args.repo?.owner ?? classifyGitHubRepositoryApiPath(args.path)?.owner ?? null,
+        readAppIssueGrant,
+      )
+      : candidatePool;
     if (candidates.length === 0) {
       throw new Error(
         "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
@@ -1657,6 +1702,26 @@ export function createHeadlessGitHubService(
     });
     return Array.isArray(data) ? data : [];
   };
+
+  // Issue reads, edits and creates (see githubIssueOps.ts).
+  const issueOps = createGithubIssueOps({
+    apiRequest,
+    apiRequestAllPages,
+    readCredentialCandidates: async () => (await readCredentialInventoryAsync()).candidates,
+    logger,
+    runGh: async (ghArgs, options) => {
+      const result = await runCommandAsync(await resolveGhCliPathAsync(), ghArgs, {
+        cwd: options.cwd,
+        timeoutMs: options.timeoutMs,
+        maxBuffer: 1024 * 1024,
+      });
+      if (result.exitCode !== 0) {
+        throw new Error(result.stderr.trim() || `gh ${ghArgs.slice(0, 2).join(" ")} failed (exit ${result.exitCode}).`);
+      }
+      return result.stdout;
+    },
+  });
+  const readAppIssueGrant = issueOps.readAppIssueGrant;
 
   const getIssue: HeadlessGitHubService["getIssue"] = async (
     owner,
@@ -2344,6 +2409,16 @@ export function createHeadlessGitHubService(
     },
     listRepoIssues,
     getIssue,
+    getRepoIssueSummary: issueOps.getRepoIssueSummary,
+    createIssue: issueOps.createIssue,
+    listIssueTemplates: issueOps.listIssueTemplates,
+    listIssueTypes: issueOps.listIssueTypes,
+    linkSubIssue: issueOps.linkSubIssue,
+    getIssueWriteAccess: issueOps.getIssueWriteAccess,
+    updateIssue: issueOps.updateIssue,
+    commentOnIssue: issueOps.commentOnIssue,
+    listRepoMilestones: issueOps.listRepoMilestones,
+    listRepoIssueList: issueOps.listRepoIssueList,
     listIssueComments,
     listRepoPulls,
     listPullRequestReviews,
@@ -3017,7 +3092,18 @@ export function createHeadlessLinearServices(
     githubService,
     projectConfigService: args.projectConfigService,
     conflictService: args.conflictService,
+    // The same lane services desktop main passed: PR-driven lane mutations
+    // take the worktree lease (which auto-pull and other mutators honor), and
+    // post-merge cleanup refreshes rebase suggestions and child auto-rebase
+    // attention state.
+    laneWorktreeLockService: args.laneWorktreeLockService ?? null,
+    autoRebaseService: args.autoRebaseService ?? null,
+    rebaseSuggestionService: args.rebaseSuggestionService ?? null,
     openExternal: args.openExternal ?? (async () => {}),
+    // Posts the "PR opened" card (and, through the published hook, proof) onto
+    // the lane's Linear issues. Without it the brain skipped Linear entirely.
+    getLinearIssueTracker: () => issueTracker,
+    refreshDefaultBranchAfterMerge: args.refreshDefaultBranchAfterMerge,
   });
   const agentChatService = createHeadlessAgentChatService(
     args.projectRoot,

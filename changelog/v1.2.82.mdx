@@ -1,0 +1,32 @@
+---
+title: "v1.2.82"
+description: "Release notes for ADE v1.2.82 - September 29, 2026"
+---
+
+ADE 1.2.82 ships SDK 0.4.0 and chat UI 0.4.0 with the runtime support needed by external desktop integrators.
+
+## SDK 0.4
+
+`@ade-dev/sdk` and `@ade-dev/chat-ui` are **0.4.0**, and support `@ade-dev/runtime` **>=1.2.82 <2.0.0**. Older runtimes still connect; features they do not support report `unsupported` or remain unavailable.
+
+- Retry and edit the last turn, with provider-specific rollback behavior, live-thread refresh, and turn-in-flight protection.
+- Open threads with validated attachment roots, retrieve threads by key, and react to thread lifecycle and model changes.
+- Compose `AdeChat` with controlled values, send interception, render props, links, and mutable thread state.
+- Harden Electron bridge checks, renderer options, CLI version probing, and Computer Use keyboard handling.
+
+## Desktop
+
+- Custom providers and models can be configured across chat and CLI (#1378).
+- Codex text attachments are submitted correctly (#1377).
+- CLI lane setup no longer stalls or drops its prompt (#1376).
+- Mobile fleet, Work, and PR surfaces receive the phase 4 redesign (#1374).
+- Removing a remote machine no longer closes project tabs (#1375).
+- Git pane headers and background lane deletion are improved (#1373).
+- OpenCode is available as a primary provider (#1372).
+- In-thread proof recordings show a video poster (#1371).
+
+## Runtime 1.2.82
+
+- The runtime supports SDK 0.4 thread retry and edit-last operations, lifecycle notifications, model updates, and safer attachment routing (#1379).
+- App Control and browser keyboard input handle Enter, modifiers, and function keys consistently; hidden Chromium pages report their state (#1379).
+- Computer Use readiness and policy handling no longer emit misleading status events (#1379).

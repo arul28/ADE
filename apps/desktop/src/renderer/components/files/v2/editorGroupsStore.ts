@@ -21,6 +21,8 @@ export type ViewerKind =
   | "markdown"
   | "html"
   | "csv"
+  | "spreadsheet"
+  | "presentation"
   | "pdf"
   | "audio"
   | "video"

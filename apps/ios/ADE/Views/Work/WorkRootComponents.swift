@@ -5,227 +5,267 @@ import AVKit
 // The session row card itself (`WorkSessionRow`, its leaf views and the preview-line
 // helpers) lives in `WorkSessionRowCard.swift`; this file keeps the surrounding list chrome.
 
-/// Work sidebar toolbar matching the desktop `SessionListPane` layout: one 44pt row holding the
-/// search field, the funnel toggle that reveals the Group-by + Lane filter panel, and a compose
-/// menu carrying both creation actions.
-///
-/// The header is one row on purpose. It used to be three — search + funnel, then a full-width
-/// "Start new chat" / "Add lane" hero pair, then a `N waiting` chip — which pushed the first
-/// session row most of a thumb below the top bar and spent amber on a count that the bell already
-/// badges. Creation is a two-item menu behind one icon; the count rollup is gone entirely.
+/// Expanded filter panel under the Work header, laid out like the desktop
+/// panel: the one-of-many Group choice is a segmented control, and the filters
+/// below the rule are rows of chips with a fixed label column. Search itself and
+/// the chip that toggles this panel live in `WorkRootHeader`.
 struct WorkFiltersSection: View {
   @Binding var searchText: String
   @Binding var selectedLaneId: String
   @Binding var selectedStatus: WorkSessionStatusFilter
   @Binding var organization: WorkSessionOrganization
-  @Binding var filterOpen: Bool
+  /// By-lane only: fold lanes with nothing waiting on you into a Working shelf.
+  var foldBusyLanes: Binding<Bool>? = nil
+  let filterOpen: Bool
+  /// Status, lane and machine filters applied (`workActiveFilterCount`).
+  let activeFilterCount: Int
+  /// Serialized machine ids (`workSerializeMachineFilter`). Empty = all.
+  var machineFilter: Binding<String> = .constant("")
+  var machineOptions: [WorkMachineFilterOption] = []
   let lanes: [LaneSummary]
-  let isLive: Bool
   let onClear: () -> Void
-  let onNewChat: () -> Void
-  let onAddLane: () -> Void
 
-  private var selectedLaneName: String {
-    if selectedLaneId == "all" { return "All lanes" }
-    return lanes.first(where: { $0.id == selectedLaneId })?.name ?? "All lanes"
+  private var selectedMachines: Set<String> { workParseMachineFilter(machineFilter.wrappedValue) }
+
+  /// The choices plus any filtered machine that has since left, so a saved
+  /// filter never hides rows without a chip to turn it off.
+  private var visibleMachineOptions: [WorkMachineFilterOption] {
+    let known = Set(machineOptions.map(\.id))
+    let stale = selectedMachines.subtracting(known).sorted().map {
+      WorkMachineFilterOption(id: $0, name: "Unavailable machine", isLive: false)
+    }
+    return machineOptions + stale
   }
 
   private var hasActiveFilters: Bool {
-    selectedStatus != .all
-      || selectedLaneId != "all"
+    activeFilterCount > 0
       || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
+  private var selectedLaneName: String {
+    guard selectedLaneId != "all" else { return "All lanes" }
+    return lanes.first(where: { $0.id == selectedLaneId }).map(laneMenuTitle) ?? "All lanes"
+  }
+
+  /// Two machines' lanes can share a name ("main"), so a lane from another
+  /// machine names it in the picker entry (never in a title).
+  private func laneMenuTitle(_ lane: LaneSummary) -> String {
+    guard let machine = workRemoteLaneMachineName(lane.id, options: machineOptions) else { return lane.name }
+    return "\(lane.name) — \(machine)"
+  }
+
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 8) {
-        HStack(spacing: 8) {
-          Image(systemName: "magnifyingglass")
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(ADEColor.textMuted)
-          TextField("Search sessions, lanes, output", text: $searchText)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .font(.footnote)
-          if !searchText.isEmpty {
-            Button {
-              searchText = ""
-            } label: {
-              Image(systemName: "xmark.circle.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(ADEColor.textMuted)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Clear search")
-          }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        // 44, not the old 32: a text field's tap target is its own bounds, so a
-        // `.contentShape` on a taller wrapper would not extend it. This is the
-        // one control in the row that has to grow to reach the minimum.
-        .frame(minHeight: 44)
-        .frame(maxWidth: .infinity)
-        .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-        )
-
-        Button {
-          withAnimation(.snappy(duration: 0.2)) {
-            filterOpen.toggle()
-          }
-        } label: {
-          Image(systemName: filterOpen ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
-            .font(.system(size: 16, weight: .semibold))
-            .foregroundStyle(filterOpen ? ADEColor.accent : ADEColor.textSecondary)
-            .frame(width: 32, height: 32)
-            .background(
-              (filterOpen ? ADEColor.accent.opacity(0.12) : ADEColor.composerBackground),
-              in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-            )
-            .overlay(
-              RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(filterOpen ? ADEColor.accent.opacity(0.32) : ADEColor.glassBorder, lineWidth: 0.5)
-            )
-            // The chip stays 32pt; the hit area is grown to 44 around it rather
-            // than by inflating the visual, which is what keeps the row's rhythm.
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Toggle filter panel")
-
-        // Creation is one icon with two items. Both used to be full-width hero
-        // buttons stacked under the search field; they are rare actions that were
-        // spending the most valuable strip on the screen.
-        Menu {
-          Button(action: onNewChat) {
-            Label("New chat", systemImage: "plus.bubble")
-          }
-          Button(action: onAddLane) {
-            Label("New lane", systemImage: "plus.square.on.square")
-          }
-        } label: {
-          Image(systemName: "square.and.pencil")
-            .font(.system(size: 16, weight: .semibold))
-            .foregroundStyle(isLive ? ADEColor.accent : ADEColor.textMuted)
-            .frame(width: 32, height: 32)
-            .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-              RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(isLive ? ADEColor.accent.opacity(0.3) : ADEColor.glassBorder, lineWidth: 0.6)
-            )
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!isLive)
-        .opacity(isLive ? 1 : 0.55)
-        .accessibilityLabel("New chat or lane")
-        .accessibilityHint(isLive ? "Opens chat and lane creation options" : "Reconnect to machine before creating lanes")
-      }
-      .frame(minHeight: 44)
-
-      if hasActiveFilters {
-        HStack(spacing: 6) {
-          Spacer(minLength: 0)
-          Button("Clear") {
-            withAnimation(.snappy(duration: 0.18)) {
-              onClear()
-            }
-          }
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.accent)
-          .buttonStyle(.plain)
-          .accessibilityLabel("Clear Work filters")
-        }
-      }
-
-      if filterOpen {
-        VStack(alignment: .leading, spacing: 10) {
-          Text("Status")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(ADEColor.textMuted)
-            .textCase(.uppercase)
-            .tracking(0.5)
-
-          ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-              ForEach(WorkSessionStatusFilter.allCases) { status in
-                WorkFilterChip(
-                  title: status.title,
-                  selected: selectedStatus == status,
-                  tint: statusFilterTint(status)
-                ) {
-                  withAnimation(.snappy(duration: 0.18)) {
-                    selectedStatus = status
-                  }
-                }
-              }
-            }
-            .padding(.vertical, 1)
-          }
-
-          VStack(alignment: .leading, spacing: 8) {
-            Text("Group")
-              .font(.caption2.weight(.semibold))
-              .foregroundStyle(ADEColor.textMuted)
-              .textCase(.uppercase)
-              .tracking(0.5)
-            ScrollView(.horizontal, showsIndicators: false) {
-              HStack(spacing: 6) {
-              ForEach(WorkSessionOrganization.allCases) { option in
-                WorkFilterChip(
-                  title: option.title,
-                  selected: organization == option,
-                  tint: ADEColor.accent
-                ) {
-                  withAnimation(.snappy(duration: 0.18)) {
-                    organization = option
-                  }
-                }
-              }
-            }
-            }
-
-            Text("Lane")
-              .font(.caption2.weight(.semibold))
-              .foregroundStyle(ADEColor.textMuted)
-              .textCase(.uppercase)
-              .tracking(0.5)
-            ScrollView(.horizontal, showsIndicators: false) {
-              HStack(spacing: 6) {
-                WorkFilterChip(
-                  title: "All lanes",
-                  selected: selectedLaneId == "all",
-                  tint: ADEColor.accent
-                ) {
-                  selectedLaneId = "all"
-                }
-              ForEach(lanes) { lane in
-                WorkFilterChip(
-                  title: lane.name,
-                  selected: selectedLaneId == lane.id,
-                  tint: ADEColor.accent
-                ) {
-                  selectedLaneId = lane.id
-                }
-              }
-              }
-            }
-          }
-        }
-        .padding(12)
-        .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-        )
-        .transition(.move(edge: .top).combined(with: .opacity))
+    if filterOpen {
+      panel
+    } else if hasActiveFilters {
+      HStack(spacing: 6) {
+        Spacer(minLength: 0)
+        clearButton
       }
     }
+  }
+
+  /// Desktop's panel (`WorkFilterPanel.tsx`): two short sections, a label on
+  /// the left and one menu button on the right of every row. "View" never
+  /// hides a chat; "Show only" does. Colour stays out of the panel.
+  private var panel: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      VStack(alignment: .leading, spacing: 8) {
+        sectionLabel("View")
+        filterRow("Group by") {
+          menuButton(organization.title, active: false) {
+            Picker("Group by", selection: $organization.animation(.snappy(duration: 0.18))) {
+              ForEach(WorkSessionOrganization.allCases) { option in
+                Text(option.title).tag(option)
+              }
+            }
+          }
+        }
+        if organization == .byLane, let foldBusyLanes {
+          filterRow("Focus") {
+            checkRow("Fold busy lanes", checked: foldBusyLanes.wrappedValue) {
+              withAnimation(.snappy(duration: 0.18)) { foldBusyLanes.wrappedValue.toggle() }
+            }
+            .accessibilityHint("Lanes with nothing waiting on you fold into a Working section until something needs you or finishes.")
+          }
+        }
+      }
+
+      VStack(alignment: .leading, spacing: 8) {
+        HStack {
+          sectionLabel("Show only")
+          Spacer(minLength: 0)
+          if activeFilterCount > 0 {
+            Button("Reset") {
+              withAnimation(.snappy(duration: 0.18)) { onClear() }
+            }
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textSecondary)
+            .buttonStyle(.plain)
+          }
+        }
+        filterRow("Status") {
+          menuButton(selectedStatus == .all ? "Any" : selectedStatus.title, active: selectedStatus != .all) {
+            Picker("Status", selection: $selectedStatus.animation(.snappy(duration: 0.18))) {
+              ForEach(WorkSessionStatusFilter.allCases) { status in
+                Text(status == .all ? "Any" : status.title).tag(status)
+              }
+            }
+          }
+        }
+        if visibleMachineOptions.count > 1 {
+          filterRow("Machine") {
+            menuButton(machineSummary, active: !selectedMachines.isEmpty) {
+              ForEach(visibleMachineOptions) { machine in
+                Button {
+                  withAnimation(.snappy(duration: 0.18)) { toggleMachine(machine.id) }
+                } label: {
+                  if selectedMachines.contains(machine.id) {
+                    Label(machine.isLive ? machine.name : "\(machine.name) (offline)", systemImage: "checkmark")
+                  } else {
+                    Text(machine.isLive ? machine.name : "\(machine.name) (offline)")
+                  }
+                }
+              }
+              if !selectedMachines.isEmpty {
+                Divider()
+                Button("Show all") {
+                  withAnimation(.snappy(duration: 0.18)) { machineFilter.wrappedValue = "" }
+                }
+              }
+            }
+          }
+        }
+        filterRow("Lane") {
+          menuButton(selectedLaneName, active: selectedLaneId != "all") {
+            Picker("Lane", selection: $selectedLaneId) {
+              Text("All lanes").tag("all")
+              ForEach(lanes) { lane in
+                Text(laneMenuTitle(lane)).tag(lane.id)
+              }
+            }
+          }
+          .accessibilityLabel("Lane filter, \(selectedLaneName)")
+        }
+      }
+    }
+    .padding(14)
+    .background(ADEColor.raisedBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+    )
+    .shadow(color: .black.opacity(0.14), radius: 20, y: 8)
+  }
+
+  private var machineSummary: String {
+    let picked = visibleMachineOptions.filter { selectedMachines.contains($0.id) }
+    if picked.isEmpty { return "Any" }
+    if picked.count <= 2 { return picked.map(\.name).joined(separator: ", ") }
+    return "\(picked.count) selected"
+  }
+
+  private func sectionLabel(_ text: String) -> some View {
+    Text(text.uppercased())
+      .font(.system(size: 10, weight: .semibold))
+      .tracking(0.8)
+      .foregroundStyle(ADEColor.textMuted)
+  }
+
+  /// One control shape for every setting: the value, then an up-down caret.
+  /// An active filter's button wears a faint accent edge, like desktop.
+  private func menuButton<Content: View>(
+    _ value: String,
+    active: Bool,
+    @ViewBuilder content: () -> Content
+  ) -> some View {
+    Menu {
+      content()
+    } label: {
+      HStack(spacing: 6) {
+        Text(value)
+          .font(.footnote)
+          .foregroundStyle(value == "Any" ? ADEColor.textSecondary : ADEColor.textPrimary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+        Spacer(minLength: 0)
+        Image(systemName: "chevron.up.chevron.down")
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .padding(.horizontal, 10)
+      .frame(height: 32)
+      .frame(maxWidth: .infinity)
+      .adeKitPill(
+        in: RoundedRectangle(cornerRadius: 8, style: .continuous),
+        edge: active ? ADEColor.accent.opacity(0.4) : ADEKit.edge
+      )
+    }
+  }
+
+  /// A yes/no setting as a small checkbox row.
+  private func checkRow(_ title: String, checked: Bool, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      HStack(spacing: 8) {
+        RoundedRectangle(cornerRadius: 4, style: .continuous)
+          .fill(checked ? ADEColor.accent : Color.clear)
+          .overlay(
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+              .stroke(checked ? ADEColor.accent : ADEColor.textMuted.opacity(0.5), lineWidth: 1)
+          )
+          .overlay {
+            if checked {
+              Image(systemName: "checkmark")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white)
+            }
+          }
+          .frame(width: 16, height: 16)
+        Text(title)
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textPrimary)
+        Spacer(minLength: 0)
+      }
+      .frame(minHeight: 32)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityAddTraits(checked ? .isSelected : [])
+  }
+
+  private var clearButton: some View {
+    Button {
+      withAnimation(.snappy(duration: 0.18)) {
+        onClear()
+      }
+    } label: {
+      HStack(spacing: 4) {
+        Image(systemName: "xmark")
+          .font(.system(size: 9, weight: .bold))
+        Text(activeFilterCount > 0 ? "Clear \(activeFilterCount)" : "Clear")
+      }
+    }
+    .font(.caption.weight(.semibold))
+    .foregroundStyle(ADEColor.accent)
+    .buttonStyle(.plain)
+    .accessibilityLabel("Clear Work filters")
+  }
+
+  private func filterRow<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
+    HStack(alignment: .center, spacing: 8) {
+      Text(label)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .frame(width: 64, alignment: .leading)
+      content()
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  private func toggleMachine(_ id: String) {
+    var ids = selectedMachines
+    if ids.contains(id) { ids.remove(id) } else { ids.insert(id) }
+    machineFilter.wrappedValue = workSerializeMachineFilter(ids)
   }
 
   /// The chip accents, mapped one-for-one onto the desktop board's column
@@ -250,66 +290,16 @@ struct WorkFiltersSection: View {
   }
 }
 
-struct WorkFilterChip: View {
-  let title: String
-  let selected: Bool
-  let tint: Color
-  let action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      Text(title)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(selected ? tint : ADEColor.textSecondary)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(
-          selected ? tint.opacity(0.14) : ADEColor.surfaceBackground.opacity(0.5),
-          in: Capsule(style: .continuous)
-        )
-        .overlay(
-          Capsule(style: .continuous)
-            .stroke(selected ? tint.opacity(0.32) : ADEColor.glassBorder, lineWidth: 0.6)
-        )
-    }
-    .buttonStyle(.plain)
-  }
-}
-
-struct WorkFilterMenuLabel: View {
-  let icon: String
-  let title: String
-  let value: String
-
-  var body: some View {
-    HStack(spacing: 7) {
-      Image(systemName: icon)
-        .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
-      VStack(alignment: .leading, spacing: 1) {
-        Text(title)
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
-        Text(value)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          // Tail, never middle. Middle truncation eats the distinguishing middle
-          // of a name and leaves two fragments that read as one mangled word.
-          .truncationMode(.tail)
-      }
-      Spacer(minLength: 0)
-      Image(systemName: "chevron.up.chevron.down")
-        .font(.system(size: 9, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 8)
-    .frame(maxWidth: .infinity)
-    .background(ADEColor.surfaceBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+private extension View {
+  /// Fades the trailing edge of a sideways-scrolling chip row, so a cut-off
+  /// chip reads as "more this way" instead of a clipped label.
+  func workChipRowFade() -> some View {
+    mask(
+      LinearGradient(
+        stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.9), .init(color: .clear, location: 1)],
+        startPoint: .leading,
+        endPoint: .trailing
+      )
     )
   }
 }
@@ -338,12 +328,30 @@ struct WorkSidebarSectionHeader: View {
   /// headers and orphaned sections.
   var lane: LaneSummary? = nil
   var laneMenu: WorkSessionLaneMenuActions? = nil
+  /// The first Snoozed/Settled shelf draws one heavier rule above itself, so the
+  /// quiet zone reads as its own region rather than one more lane. Same fence the
+  /// desktop sidebar draws (`renderQuietZone` in `SessionListPane.tsx`).
+  var startsQuietZone = false
 
   /// Collapsed and holding only settled work: render one thin muted row with the
   /// count folded in, instead of a full-weight header over nothing.
   private var isQuietRow: Bool { group.isQuiet && collapsed }
 
   var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      if startsQuietZone {
+        Rectangle()
+          .fill(ADEColor.textMuted.opacity(0.32))
+          .frame(height: 1)
+          .padding(.top, 14)
+          .padding(.bottom, 6)
+          .accessibilityHidden(true)
+      }
+      headerRow
+    }
+  }
+
+  private var headerRow: some View {
     HStack(spacing: isQuietRow ? 6 : 8) {
       Button(action: onToggle) {
         HStack(spacing: isQuietRow ? 6 : 8) {
@@ -354,10 +362,39 @@ struct WorkSidebarSectionHeader: View {
 
           sectionIcon
 
-          Text(group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label)
-            .font(isQuietRow ? .caption2.weight(.medium) : .caption.weight(.semibold))
-            .foregroundStyle(quietAwareLabelColor)
-            .lineLimit(1)
+          if group.isShelf, group.id != workWorkingSectionId {
+            // Snoozed and Settled: desktop's quiet shelf label, grey caps.
+            Text(group.label.uppercased())
+              .font(.system(size: 10, weight: .semibold))
+              .tracking(0.8)
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+          } else if group.id == workWorkingSectionId {
+            // Working keeps its colour on the label, then a hairline rule.
+            Text(group.label)
+              .font(.caption.weight(.medium))
+              .foregroundStyle(ADEColor.info)
+              .lineLimit(1)
+            Rectangle()
+              .fill(ADEColor.textMuted.opacity(0.12))
+              .frame(height: 1)
+              .frame(maxWidth: .infinity)
+              .accessibilityHidden(true)
+          } else {
+            Text(group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label)
+              .font(isQuietRow ? .caption2.weight(.medium) : .caption.weight(.semibold))
+              .foregroundStyle(quietAwareLabelColor)
+              .lineLimit(1)
+            if let laneId = group.laneId, isWorkRemoteLaneId(laneId) {
+              WorkRemoteLaneGlyph()
+            }
+          }
+
+          // Beside the name, not in the trailing cluster: there it sat next to
+          // the amber "uncommitted changes" dot and read as the same fact.
+          if let laneFocus = group.laneStatus, group.laneId != nil, !isQuietRow {
+            WorkLaneFocusDot(status: laneFocus)
+          }
 
           Spacer(minLength: 0)
         }
@@ -394,20 +431,35 @@ struct WorkSidebarSectionHeader: View {
         .accessibilityHint("Opens in the PRs tab")
       }
 
-      if isQuietRow {
+      if isQuietRow, group.isShelf {
+        // A shelf names itself with its icon; the trailing slot says when the
+        // first row comes back (Snoozed) and how many rows it holds.
+        HStack(spacing: 6) {
+          if let detail = group.shelfDetail {
+            Text(detail)
+              .font(.caption2)
+              .lineLimit(1)
+          }
+          Text("\(group.displayCount)")
+            .font(.caption2.monospacedDigit().weight(.medium))
+        }
+        .foregroundStyle(ADEColor.textMuted.opacity(0.75))
+        .accessibilityHidden(true)
+      } else if isQuietRow {
         // Hollow ring + count: the settled tier's own language, matching the
-        // desktop sidebar's inline quiet counts.
+        // desktop sidebar's inline quiet counts. Only a settled-only LANE uses
+        // it; the Snoozed shelf used to borrow it and read as settled.
         HStack(spacing: 3) {
           Circle()
             .strokeBorder(ADEColor.textMuted.opacity(0.45), lineWidth: 1)
             .frame(width: 6, height: 6)
-          Text("\(group.sessions.count)")
+          Text("\(group.displayCount)")
             .font(.caption2.monospacedDigit().weight(.medium))
         }
         .foregroundStyle(ADEColor.textMuted.opacity(0.6))
         .accessibilityHidden(true)
       } else {
-        Text("\(group.sessions.count)")
+        Text("\(group.displayCount)")
           .font(.caption2.monospacedDigit().weight(.semibold))
           .foregroundStyle(ADEColor.textMuted)
           .padding(.horizontal, 7)
@@ -477,11 +529,22 @@ struct WorkSidebarSectionHeader: View {
   }
 
   private var accessibilityLabelText: String {
-    let count = group.sessions.count
+    let count = group.displayCount
     let noun = "session\(count == 1 ? "" : "s")"
     let action = collapsed ? "expand" : "collapse"
+    if group.id == workWorkingSectionId {
+      return "Working, \(count) lane\(count == 1 ? "" : "s") with nothing waiting on you. Tap to \(action)."
+    }
+    if group.id == workSnoozedSectionId {
+      let detail = group.shelfDetail.map { ", next \($0)" } ?? ""
+      return "Snoozed, \(count) snoozed \(noun)\(detail). Tap to \(action)."
+    }
     if isQuietRow {
       return "\(group.label), \(count) settled \(noun). Tap to \(action)."
+    }
+    if let laneFocus = group.laneStatus, group.laneId != nil {
+      let label = group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label
+      return "\(label), \(laneFocus.statusFilter.title), \(count) \(noun). Tap to \(action)."
     }
     let label = group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label
     return "\(label), \(count) \(noun). Tap to \(action)."
@@ -501,6 +564,24 @@ struct WorkSidebarSectionHeader: View {
       Image(systemName: "exclamationmark.triangle")
         .font(.caption)
         .foregroundStyle(ADEColor.warning)
+        .frame(width: 12, height: 12)
+    // The three shelves wear desktop's marks (`SessionListPane.tsx`): a
+    // dashed circle for Working, a moon for Snoozed, a hollow ring for Settled.
+    // Snoozed and Settled differ by shape, never by colour.
+    case .working:
+      Image(systemName: "circle.dashed")
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(ADEColor.info)
+        .frame(width: 12, height: 12)
+    case .snoozed:
+      Image(systemName: "moon.fill")
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+        .frame(width: 12, height: 12)
+    case .settled:
+      Circle()
+        .strokeBorder(ADEColor.textMuted.opacity(0.7), lineWidth: 1)
+        .frame(width: 8, height: 8)
         .frame(width: 12, height: 12)
     case .none:
       Color.clear.frame(width: 0, height: 0)
@@ -643,6 +724,7 @@ struct WorkSessionListRow: View {
   /// True when no lane header sits above this row — the singleton form, where
   /// the row carries the lane identity itself.
   var showsLaneIdentity: Bool = true
+  var waitingOnSubagent: Bool = false
   var isLaneDeleting = false
   @Binding var selectedSessionId: String?
   let isSelecting: Bool
@@ -689,15 +771,32 @@ struct WorkSessionListRow: View {
   /// Deletes a CLI/shell session (running or stopped). Chats keep `onDelete`;
   /// the two go through different host commands and different confirmations.
   var onDeleteSession: (TerminalSessionSummary) -> Void = { _ in }
-  /// Opens this session in the hosted web client. Purely local — it builds a URL
-  /// and hands it to the system, so it needs no host command and no gate.
-  var onOpenInWeb: (TerminalSessionSummary) -> Void = { _ in }
   /// Lane-scoped actions for the `Lane ▸` submenu. Nil (the default) renders no
   /// submenu at all, which is also what a row with no resolvable lane gets.
   var laneMenu: WorkSessionLaneMenuActions? = nil
   /// The host advertises `chat.regenerateSessionMetadata`.
   var generateNamesAvailable: Bool = false
   var onGenerateNames: (TerminalSessionSummary, [String]) -> Void = { _, _ in }
+  /// The host advertises `chat.updateSession` (desktop "Set tag…").
+  var tagAvailable: Bool = false
+  var onSetTag: (TerminalSessionSummary) -> Void = { _ in }
+  /// The host advertises `chat.restartSession`.
+  var restartAvailable: Bool = false
+  var onRestartAgent: (TerminalSessionSummary) -> Void = { _ in }
+  /// `Hand off ▸` destinations, asked of the brain that owns THIS chat. Each
+  /// false hides its item: `chat.handoff`, `chat.startCrossMachineHandoff`, and
+  /// the three `automations.*` rule commands.
+  var localHandoffAvailable: Bool = false
+  var crossMachineHandoffAvailable: Bool = false
+  /// The chat's brain takes `chat.cancelCrossMachineHandoff` /
+  /// `chat.retryCrossMachineHandoff` (Keep it here or Dismiss / Retry move).
+  var crossMachineCancelAvailable: Bool = false
+  var crossMachineRetryAvailable: Bool = false
+  var autoHandoffAvailable: Bool = false
+  /// Auto-handoff rules already scoped to this chat; nil while unknown. Drives
+  /// "Edit auto handoff…" and "Remove auto handoff" like desktop's menu.
+  var autoHandoffRuleCount: Int? = nil
+  var onHandoff: (TerminalSessionSummary, WorkSessionHandoffIntent) -> Void = { _, _ in }
 
   /// Observed so the muted glyph and menu label re-render the moment a mute
   /// flips anywhere (this menu, the open chat's header menu, settings).
@@ -849,7 +948,8 @@ struct WorkSessionListRow: View {
           isSelectedTransitionSource: selectedSessionId == session.id,
           compact: compact,
           nestedSubagent: nestedSubagent,
-          showsLaneIdentity: showsLaneIdentity
+          showsLaneIdentity: showsLaneIdentity,
+          waitingOnSubagent: waitingOnSubagent
         )
         .equatable()
       }
@@ -916,15 +1016,21 @@ struct WorkSessionListRow: View {
         }
       }
     }
+    // Rows have no card, so the long-press lift needs a shape of its own.
+    .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 12, style: .continuous))
     // Desktop's tree, in desktop's order (`SessionContextMenu.tsx`): identity
     // first, then lifecycle, then the places this session also appears, then —
     // fenced behind a divider and never before it — the deletes. Ordering is not
     // cosmetic here: a mis-tap right after the menu opens lands mid-list, which
     // is exactly where the deletes used to sit.
     .contextMenu {
-      identityMenuSection
+      nameMenuSection
+      fileMenuSection
       lifecycleMenuSection(status: rowStatus)
-      goToMenuSection
+      handoffMenuSection
+      agentMenuSection
+      laneMenuSection
+      copyMenuSection
       destructiveMenuSection(status: rowStatus)
     }
     .overlay {
@@ -972,63 +1078,60 @@ struct WorkSessionListRow: View {
   }
 
   // MARK: - Menu sections
+  //
+  // Desktop's tree in desktop's order (`SessionContextMenu.tsx`), one native
+  // `Section` per block so iOS draws the dividers:
+  //   name · tag · lifecycle · hand off · agent · lane · copy · delete.
+  // Every item calls the command the desktop item calls, and an item the
+  // session type or the host cannot honour is hidden, not greyed.
 
-  /// What this row is called and how it is filed. Unlabelled: it is the first
-  /// block under the finger and needs no signpost.
+  private var canRename: Bool {
+    !CursorCloudNaming.ownsName(session.cursorCloudAgentId)
+      && !CursorCloudNaming.ownsName(chatSummary?.cursorCloudAgentId)
+  }
+
+  /// Desktop shows "Set tag…" only on a running Claude chat: tag writes need a
+  /// live Claude SDK runtime.
+  private var canSetTag: Bool {
+    tagAvailable && session.toolType == "claude-chat" && session.status == "running"
+  }
+
+  /// Section 1 — what the row is called: Rename, Generate ▸.
   @ViewBuilder
-  private var identityMenuSection: some View {
-    Button {
-      onLongPressSelect(session)
-    } label: {
-      Label("Select", systemImage: "checkmark.circle")
-    }
-    if !CursorCloudNaming.ownsName(session.cursorCloudAgentId)
-      && !CursorCloudNaming.ownsName(chatSummary?.cursorCloudAgentId) {
-      Button {
-        onRename(session)
-      } label: {
-        Label("Rename", systemImage: "pencil")
+  private var nameMenuSection: some View {
+    Section {
+      if canRename {
+        Button {
+          onRename(session)
+        } label: {
+          Label("Rename", systemImage: "pencil")
+        }
       }
+      generateNamesMenu
     }
-    Button {
-      onPin(session)
-    } label: {
-      Label(session.pinned ? "Unpin from front" : "Pin to front",
-            systemImage: session.pinned ? "pin.slash" : "pin")
-    }
-    if isChat {
-      Button {
-        PushNotificationService.shared.setMuted(!isMuted, sessionId: session.id)
-      } label: {
-        Label(isMuted ? "Unmute notifications" : "Mute notifications",
-              systemImage: isMuted ? "bell" : "bell.slash")
-      }
-    }
-    generateNamesMenu
   }
 
   @ViewBuilder
   private var generateNamesMenu: some View {
     if isChat && generateNamesAvailable {
-      let cloudOwned = CursorCloudNaming.ownsName(session.cursorCloudAgentId)
-        || CursorCloudNaming.ownsName(chatSummary?.cursorCloudAgentId)
+      let cloudOwned = !canRename
       Menu {
         if !cloudOwned {
           Button {
             onGenerateNames(session, ["title"])
           } label: {
-            Label("Generate chat title", systemImage: "textformat")
+            Label("Chat title", systemImage: "textformat")
           }
         }
         Button {
           onGenerateNames(session, ["laneName"])
         } label: {
-          Label("Generate lane name", systemImage: "arrow.triangle.branch")
+          Label("Lane name", systemImage: "arrow.triangle.branch")
         }
         Button {
           onGenerateNames(session, ["statusLine"])
         } label: {
-          Label("Generate status line", systemImage: "text.alignleft")
+          Label("Status line", systemImage: "text.alignleft")
         }
         Button {
           onGenerateNames(
@@ -1036,33 +1139,81 @@ struct WorkSessionListRow: View {
             cloudOwned ? ["laneName", "statusLine"] : ["title", "laneName", "statusLine"]
           )
         } label: {
-          Label(cloudOwned ? "Generate lane & status" : "Generate all three", systemImage: "sparkles")
+          Label(cloudOwned ? "Lane & status" : "All three", systemImage: "sparkles")
         }
       } label: {
-        Label("Generate names", systemImage: "sparkles")
+        Label("Generate", systemImage: "sparkles")
       }
     }
   }
 
-  /// Everything that changes where the list files this row: stop (runtime),
-  /// snooze/wake (visibility), settle/keep-active (state). Durations use a
-  /// native nested `Menu`, never a popover — this is a long press on a phone.
-  ///
-  /// Keep it exhaustive. A row that reaches the end of this block with nothing
-  /// rendered is a row the user cannot un-hide.
+  /// Section 2 — how the row is filed: Pin, Set tag…, plus the phone-only
+  /// Mute and Select (the one way into multi-select).
+  @ViewBuilder
+  private var fileMenuSection: some View {
+    Section {
+      Button {
+        onPin(session)
+      } label: {
+        Label(session.pinned ? "Unpin" : "Pin", systemImage: session.pinned ? "pin.slash" : "pin")
+      }
+      if canSetTag {
+        Button {
+          onSetTag(session)
+        } label: {
+          Label("Set tag…", systemImage: "tag")
+        }
+      }
+      if isChat {
+        Button {
+          PushNotificationService.shared.setMuted(!isMuted, sessionId: session.id)
+        } label: {
+          Label(isMuted ? "Unmute notifications" : "Mute notifications",
+                systemImage: isMuted ? "bell" : "bell.slash")
+        }
+      }
+      Button {
+        onLongPressSelect(session)
+      } label: {
+        Label("Select", systemImage: "checkmark.circle")
+      }
+    }
+  }
+
+  /// Section 3 — everything that changes where the list files this row:
+  /// settle (state), snooze/wake (visibility), stop (runtime). Durations use a
+  /// native nested `Menu`. Keep it exhaustive: a row that reaches the end of
+  /// this block with nothing rendered is a row the user cannot un-hide.
   @ViewBuilder
   private func lifecycleMenuSection(status: String) -> some View {
     let canStopRuntime = isStoppableRuntimeStatus(session, status: status)
-    if canStopRuntime || lifecycleAvailable || snoozeAvailable || canDemoteToPeer || canPromoteToSubagent {
-      Divider()
-      // Stop runtime moved here from the identity block: it is a lifecycle
-      // change, and it is NOT destructive — the session and its transcript
-      // survive — so it must not sit next to the deletes.
-      if canStopRuntime {
+    Section {
+      if canSettle {
         Button {
-          onStopRuntime(session)
+          settle()
         } label: {
-          Label("Stop runtime", systemImage: "stop.fill")
+          Label(settleLabel, systemImage: "checkmark.circle")
+        }
+      } else if settleBlockedOnInput {
+        // Disabled on purpose: it states the precondition instead of an item
+        // that silently vanished.
+        Button {} label: {
+          Label("Resolve input to settle", systemImage: "exclamationmark.bubble")
+        }
+        .disabled(true)
+      }
+      if canUnsettle {
+        Button {
+          onUnsettle(session)
+        } label: {
+          Label("Unsettle", systemImage: "arrow.uturn.backward.circle")
+        }
+      }
+      if canKeepActive {
+        Button {
+          onKeepActive(session)
+        } label: {
+          Label("Keep active", systemImage: "pin.circle")
         }
       }
       if snoozeAvailable {
@@ -1086,101 +1237,115 @@ struct WorkSessionListRow: View {
           }
         }
       }
-      if canSettle {
+      // Not destructive — the session and its transcript survive — so it sits
+      // here and never next to the deletes.
+      if canStopRuntime {
         Button {
-          settle()
+          onStopRuntime(session)
         } label: {
-          Label(settleLabel, systemImage: "checkmark.circle")
-        }
-      } else if settleBlockedOnInput {
-        // Disabled on purpose. Hiding Settle here would leave the user hunting
-        // for an item that simply vanished; this states the precondition.
-        Button {} label: {
-          Label("Resolve input to settle", systemImage: "exclamationmark.bubble")
-        }
-        .disabled(true)
-      }
-      if canUnsettle {
-        Button {
-          onUnsettle(session)
-        } label: {
-          Label("Unsettle", systemImage: "arrow.uturn.backward.circle")
-        }
-      }
-      if canKeepActive {
-        Button {
-          onKeepActive(session)
-        } label: {
-          Label("Keep active", systemImage: "pin.circle")
-        }
-      }
-      if canDemoteToPeer {
-        Button {
-          onDemoteToPeer(session)
-        } label: {
-          Label("Demote to peer", systemImage: "arrow.down.forward.and.arrow.up.backward")
-        }
-      }
-      if canPromoteToSubagent {
-        Button {
-          onPromoteToSubagent(session)
-        } label: {
-          Label("Promote to subagent", systemImage: "arrow.up.backward.and.arrow.down.forward")
+          Label("Stop runtime", systemImage: "stop.fill")
         }
       }
     }
   }
 
-  /// The other surfaces that show this same session, plus the clipboard rows and
-  /// the lane submenu. Copy and Lane are nested because a phone context menu
-  /// past roughly ten top-level rows stops being scannable.
+  /// Section 4 — Hand off ▸ (`WorkSessionHandoffMenu`, kept with the hand-off
+  /// sheets it opens).
+  private var handoffMenuSection: some View {
+    WorkSessionHandoffMenu(
+      session: session,
+      record: chatSummary?.crossMachineHandoff ?? session.crossMachineHandoff,
+      isChat: isChat,
+      localHandoffAvailable: localHandoffAvailable,
+      crossMachineHandoffAvailable: crossMachineHandoffAvailable,
+      crossMachineCancelAvailable: crossMachineCancelAvailable,
+      crossMachineRetryAvailable: crossMachineRetryAvailable,
+      autoHandoffAvailable: autoHandoffAvailable,
+      autoHandoffRuleCount: autoHandoffRuleCount,
+      onHandoff: onHandoff
+    )
+  }
+
+  /// Section 5 — the agent itself: restart, promote / demote.
   @ViewBuilder
-  private var goToMenuSection: some View {
-    Divider()
-    Button {
-      onGoToLane(session)
-    } label: {
-      Label("Go to lane", systemImage: "arrow.triangle.branch")
-    }
-    if let pullRequest {
-      Button {
-        onOpenPullRequest(session, pullRequest)
-      } label: {
-        Label("Open in PRs tab", systemImage: "arrow.triangle.pull")
+  private var agentMenuSection: some View {
+    if isChat && (restartAvailable || canDemoteToPeer || canPromoteToSubagent) {
+      Section {
+        if restartAvailable {
+          Button {
+            onRestartAgent(session)
+          } label: {
+            Label("Restart agent session", systemImage: "arrow.clockwise")
+          }
+        }
+        if canPromoteToSubagent {
+          Button {
+            onPromoteToSubagent(session)
+          } label: {
+            Label("Promote to subagent", systemImage: "arrow.up.backward.and.arrow.down.forward")
+          }
+        }
+        if canDemoteToPeer {
+          Button {
+            onDemoteToPeer(session)
+          } label: {
+            Label("Demote to peer", systemImage: "arrow.down.forward.and.arrow.up.backward")
+          }
+        }
       }
     }
-    Button {
-      onOpenInWeb(session)
-    } label: {
-      Label("Open in web", systemImage: "safari")
-    }
-    Menu {
-      Button {
-        onCopyId(session)
-      } label: {
-        Label("Session ID", systemImage: "number")
-      }
-      Button {
-        onCopyDeepLink(session)
-      } label: {
-        Label("Session link", systemImage: "link")
-      }
-    } label: {
-      Label("Copy", systemImage: "doc.on.doc")
-    }
-    laneMenuSection
   }
 
-  /// `Lane ▸`. Rendered only when the row actually resolves a lane and the
-  /// screen wired the actions — on iOS every row has a lane header or a lane
-  /// chip, so this is the lane menu for the whole app, not just singleton rows.
+  /// Section 6 — the lane: Go to lane, Manage lane, the PR shortcut, and the
+  /// `Lane ▸` submenu with the rest of the lane's own menu.
   @ViewBuilder
   private var laneMenuSection: some View {
-    if let lane, let laneMenu {
-      Menu {
-        WorkLaneContextMenuContent(lane: lane, actions: laneMenu)
+    Section {
+      Button {
+        onGoToLane(session)
       } label: {
-        Label("Lane", systemImage: "arrow.triangle.branch")
+        Label("Go to lane", systemImage: "arrow.triangle.branch")
+      }
+      if let lane, let laneMenu, laneMenu.manageAvailable {
+        Button {
+          laneMenu.onManage(lane)
+        } label: {
+          Label("Manage lane", systemImage: "slider.horizontal.3")
+        }
+      }
+      if let pullRequest {
+        Button {
+          onOpenPullRequest(session, pullRequest)
+        } label: {
+          Label("Open in PRs tab", systemImage: "arrow.triangle.pull")
+        }
+      }
+      if let lane, let laneMenu {
+        Menu {
+          WorkLaneContextMenuContent(lane: lane, actions: laneMenu)
+        } label: {
+          Label("Lane", systemImage: "square.stack.3d.up")
+        }
+      }
+    }
+  }
+
+  /// Section 7 — Copy ▸.
+  private var copyMenuSection: some View {
+    Section {
+      Menu {
+        Button {
+          onCopyId(session)
+        } label: {
+          Label("Session ID", systemImage: "number")
+        }
+        Button {
+          onCopyDeepLink(session)
+        } label: {
+          Label("Session deep link", systemImage: "link")
+        }
+      } label: {
+        Label("Copy", systemImage: "doc.on.doc")
       }
     }
   }
@@ -1189,7 +1354,7 @@ struct WorkSessionListRow: View {
   @ViewBuilder
   private func destructiveMenuSection(status: String) -> some View {
     if canStopAndDeleteSession(status: status) || shouldShowDeleteAction || canDeleteStoppedSession(status: status) {
-      Divider()
+      Section {
       if canStopAndDeleteSession(status: status) {
         Button(role: .destructive) {
           onDeleteSession(session)
@@ -1211,33 +1376,34 @@ struct WorkSessionListRow: View {
           Label("Delete session", systemImage: "trash")
         }
       }
+      }
     }
   }
 }
 
+/// An OPEN nested drawer: caret header + rows. Drawers default collapsed
+/// (`workIsNestedDrawerCollapsed`); a collapsed one renders as a
+/// `WorkNestedDrawerMarks` mark instead. Tapping the header collapses it.
 struct WorkNestedSessionSection<Content: View>: View {
   let group: WorkSessionChildGroup
-  let collapsed: Bool
-  let onToggle: () -> Void
+  let onCollapse: () -> Void
   let content: () -> Content
 
   init(
     group: WorkSessionChildGroup,
-    collapsed: Bool,
-    onToggle: @escaping () -> Void,
+    onCollapse: @escaping () -> Void,
     @ViewBuilder content: @escaping () -> Content
   ) {
     self.group = group
-    self.collapsed = collapsed
-    self.onToggle = onToggle
+    self.onCollapse = onCollapse
     self.content = content
   }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
-      Button(action: onToggle) {
+      Button(action: onCollapse) {
         HStack(spacing: 5) {
-          Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+          Image(systemName: "chevron.down")
             .font(.system(size: 8, weight: .bold))
             .foregroundStyle(ADEColor.textMuted)
             .frame(width: 9, alignment: .center)
@@ -1250,17 +1416,6 @@ struct WorkNestedSessionSection<Content: View>: View {
             .textCase(.uppercase)
             .tracking(0.4)
           Spacer(minLength: 0)
-          if group.attention == .failed {
-            Text("Failed")
-              .font(.caption2.weight(.semibold))
-              .foregroundStyle(ADEColor.danger)
-              .accessibilityHidden(true)
-          } else if group.attention == .needsYou {
-            Circle()
-              .fill(ADEColor.warning)
-              .frame(width: 6, height: 6)
-              .accessibilityHidden(true)
-          }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -1268,14 +1423,12 @@ struct WorkNestedSessionSection<Content: View>: View {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .accessibilityLabel(drawerAccessibilityLabel)
-      .accessibilityHint(collapsed ? "Expands nested sessions" : "Collapses nested sessions")
-      .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
+      .accessibilityLabel(group.label)
+      .accessibilityHint("Collapses nested sessions")
+      .accessibilityValue("Expanded")
 
-      if !collapsed {
-        VStack(spacing: 3) {
-          content()
-        }
+      VStack(spacing: 3) {
+        content()
       }
     }
     .padding(.leading, 14)
@@ -1286,15 +1439,70 @@ struct WorkNestedSessionSection<Content: View>: View {
         .padding(.leading, 3)
     }
   }
+}
 
-  /// Desktop's drawer button speaks the count plus Failed / Needs you
-  /// (`aria-expanded` + visible Failed / sr-only Needs you). The custom
-  /// label used to replace those children, so VoiceOver lost the shout.
-  private var drawerAccessibilityLabel: String {
-    switch group.attention {
-    case .failed: return "\(group.label), Failed"
-    case .needsYou: return "\(group.label), Needs you"
-    case .none: return group.label
+/// A parent's COLLAPSED drawers, as one thin line of marks under the card:
+/// kind icon, count, and the one state worth seeing (`workNestedDrawerStatus`).
+/// Tapping a mark opens that drawer. Mirrors desktop `renderCollapsedDrawerMark`.
+struct WorkNestedDrawerMarks: View {
+  let groups: [WorkSessionChildGroup]
+  let onOpen: (WorkSessionChildGroup) -> Void
+
+  var body: some View {
+    HStack(spacing: 4) {
+      ForEach(groups) { group in
+        Button {
+          onOpen(group)
+        } label: {
+          HStack(spacing: 4) {
+            Image(systemName: group.systemImage)
+              .font(.system(size: 9, weight: .medium))
+            Text("\(group.children.count)")
+              .font(.caption2.monospacedDigit())
+            statusGlyph(group.status)
+          }
+          .foregroundStyle(ADEColor.textMuted)
+          .padding(.horizontal, 6)
+          .frame(minHeight: 32)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel(group))
+        .accessibilityHint("Expands nested sessions")
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.leading, 8)
+  }
+
+  @ViewBuilder
+  private func statusGlyph(_ status: WorkNestedDrawerStatus) -> some View {
+    switch status {
+    case .failed:
+      Image(systemName: "xmark")
+        .font(.system(size: 8, weight: .bold))
+        .foregroundStyle(ADEColor.danger)
+    case .needsYou:
+      Circle()
+        .fill(ADEColor.warning)
+        .frame(width: 6, height: 6)
+    case .running:
+      Image(systemName: "circle.dashed")
+        .font(.system(size: 9, weight: .bold))
+        .foregroundStyle(ADEColor.info)
+    case .none:
+      EmptyView()
+    }
+  }
+
+  /// "Show N shells", plus the status word VoiceOver would otherwise lose.
+  private func accessibilityLabel(_ group: WorkSessionChildGroup) -> String {
+    let base = "Show \(group.label)"
+    switch group.status {
+    case .failed: return "\(base), Failed"
+    case .needsYou: return "\(base), Needs you"
+    case .running: return "\(base), Running"
+    case .none: return base
     }
   }
 }
@@ -1348,6 +1556,114 @@ struct WorkProviderLogo: View {
   }
 }
 
+/// The mark for Custom — ADE's own saved agent-plus-model setups. A port of
+/// `CustomToolMark.tsx`: a gear with a wrench inside it, drawn rather than
+/// imported so it lands on the same baseline as the provider marks beside it.
+/// Used by the Custom rail entry and by a preset whose picture (`upload` /
+/// `generated`) lives only on its own machine.
+struct WorkCustomToolMark: View {
+  /// The desktop mark's violet, `#a78bfa`.
+  static let defaultColor = Color(red: 0.655, green: 0.545, blue: 0.980)
+
+  var size: CGFloat = 18
+  var color: Color = WorkCustomToolMark.defaultColor
+
+  var body: some View {
+    Canvas { context, canvasSize in
+      let scale = min(canvasSize.width, canvasSize.height) / 24
+      func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+        CGPoint(x: x * scale, y: y * scale)
+      }
+
+      // Gear ring — eight teeth, with the centre cut out (even-odd).
+      var gear = Path()
+      let teeth: [(CGFloat, CGFloat)] = [
+        (21.09, 10.04), (23.30, 10.48), (23.30, 13.52), (21.09, 13.96),
+        (19.81, 17.04), (21.06, 18.92), (18.92, 21.06), (17.04, 19.81),
+        (13.96, 21.09), (13.52, 23.30), (10.48, 23.30), (10.04, 21.09),
+        (6.96, 19.81), (5.08, 21.06), (2.94, 18.92), (4.19, 17.04),
+        (2.91, 13.96), (0.70, 13.52), (0.70, 10.48), (2.91, 10.04),
+        (4.19, 6.96), (2.94, 5.08), (5.08, 2.94), (6.96, 4.19),
+        (10.04, 2.91), (10.48, 0.70), (13.52, 0.70), (13.96, 2.91),
+        (17.04, 4.19), (18.92, 2.94), (21.06, 5.08), (19.81, 6.96),
+      ]
+      gear.move(to: point(teeth[0].0, teeth[0].1))
+      for tooth in teeth.dropFirst() {
+        gear.addLine(to: point(tooth.0, tooth.1))
+      }
+      gear.closeSubpath()
+      gear.addEllipse(in: CGRect(x: 5.6 * scale, y: 5.6 * scale, width: 12.8 * scale, height: 12.8 * scale))
+      context.fill(gear, with: .color(color), style: FillStyle(eoFill: true))
+
+      // Wrench head — the long arc under the slot, then down into the slot and
+      // back, so the head is one outline instead of a disc minus a rectangle.
+      let headRadius: CGFloat = 3.2
+      let halfChord: CGFloat = 1.1
+      let headCenterY = 6.8 + sqrt(headRadius * headRadius - halfChord * halfChord)
+      let headCenter = point(12, headCenterY)
+      var head = Path()
+      head.addArc(
+        center: headCenter,
+        radius: headRadius * scale,
+        startAngle: Angle(radians: atan2(6.8 - headCenterY, 10.9 - 12)),
+        endAngle: Angle(radians: atan2(6.8 - headCenterY, 13.1 - 12)),
+        clockwise: true
+      )
+      head.addLine(to: point(13.1, 9.5))
+      head.addLine(to: point(10.9, 9.5))
+      head.closeSubpath()
+      context.fill(head, with: .color(color))
+
+      // Wrench handle — from the head down into the gear ring.
+      var handle = Path()
+      handle.addRoundedRect(
+        in: CGRect(x: 10.75 * scale, y: 11.6 * scale, width: 2.5 * scale, height: 9.2 * scale),
+        cornerSize: CGSize(width: 1.1 * scale, height: 1.1 * scale)
+      )
+      context.fill(handle, with: .color(color))
+    }
+    .frame(width: size, height: size)
+    .accessibilityHidden(true)
+  }
+}
+
+/// A preset's mark, mirroring `HarnessLogo.tsx`: a provider's brand mark, or
+/// the Custom mark in the preset's own accent. An `upload`/`generated` picture
+/// never leaves its machine, so a remote surface draws the Custom mark for it
+/// rather than a wrong company's logo.
+struct WorkHarnessPresetMark: View {
+  let logo: SyncMachineInventoryPresetLogo?
+  let accentColor: String?
+  var size: CGFloat = 22
+
+  private var resolvedAccent: Color? {
+    LaneColorPalette.color(forHex: accentColor)
+  }
+
+  var body: some View {
+    let providerId = logo?.providerId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    Group {
+      if logo?.kind == "provider", !providerId.isEmpty {
+        WorkProviderBareLogo(
+          provider: providerId,
+          fallbackSymbol: providerIcon(providerId),
+          tint: providerTint(providerId),
+          size: size
+        )
+      } else {
+        WorkCustomToolMark(size: size, color: resolvedAccent ?? WorkCustomToolMark.defaultColor)
+      }
+    }
+    .frame(width: size, height: size)
+    .overlay {
+      if let resolvedAccent {
+        Circle().stroke(resolvedAccent, lineWidth: 1.5)
+      }
+    }
+  }
+}
+
+
 /// Borderless provider mark — same asset as WorkProviderLogo but without the
 /// surrounding tinted square. Used inside the provider-tinted session card so
 /// the logo reads as part of the card itself, not a separate badge.
@@ -1385,7 +1701,7 @@ struct WorkLanePrIndicator: View {
       Circle()
         .fill(tint)
         .frame(width: 6, height: 6)
-      Text("#\(tag.githubPrNumber)")
+      Text(verbatim: "#\(tag.githubPrNumber)")
         .font(.caption2.monospacedDigit().weight(.semibold))
       Text(lanePrStateLabel(tag.state))
         .font(.caption2.weight(.medium))
@@ -1412,5 +1728,321 @@ struct WorkTag: View {
       .padding(.horizontal, 8)
       .padding(.vertical, 5)
       .background(tint.opacity(0.10), in: Capsule(style: .continuous))
+  }
+}
+
+// MARK: - Work header
+
+/// Everything the Work header can do, bundled so the header stays a value with
+/// no reference to `SyncService` (and therefore no reason to re-render on its
+/// publishes).
+struct WorkRootHeaderActions {
+  var onBackToHub: () -> Void = {}
+  var onNewChat: () -> Void = {}
+  var onCancelSelection: () -> Void = {}
+  var onOpenActivity: () -> Void = {}
+  var onOpenLinear: () -> Void = {}
+  var onOpenCursorCloud: () -> Void = {}
+  var onOpenGitHubIssues: () -> Void = {}
+  var onOpenSettings: () -> Void = {}
+}
+
+/// The Work tab's header, one row:
+///
+///     [project / back] Work [ search ……………… (filter) ] [new chat] [⋯]
+///
+/// The project control keeps the hub-back behaviour of `ADEHubBackButton`.
+/// Linear, Cursor Cloud, Settings and the Activity drawer live in the overflow
+/// menu, whose icon carries the unread dot the bell used to.
+struct WorkRootHeader: View {
+  let projectIconDataUrl: String?
+  @Binding var searchText: String
+  @Binding var filterOpen: Bool
+  /// Lane + status filters applied (search excluded — the field shows it).
+  let activeFilterCount: Int
+  let isLive: Bool
+  let showsLinear: Bool
+  let showsCursorCloud: Bool
+  var showsGitHubIssues = false
+  /// Non-nil while multi-select is on; the row becomes "N selected · Cancel".
+  let selectionCount: Int?
+  let actions: WorkRootHeaderActions
+
+  var body: some View {
+    HStack(spacing: 8) {
+      if let selectionCount {
+        Text("\(selectionCount) selected")
+          .font(.system(size: 22, weight: .heavy, design: .rounded))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .accessibilityAddTraits(.isHeader)
+        Spacer(minLength: 8)
+        Button("Cancel", action: actions.onCancelSelection)
+          .font(.body.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
+          .frame(minHeight: 44)
+          .accessibilityLabel("Cancel selection")
+      } else {
+        WorkHeaderProjectButton(iconDataUrl: projectIconDataUrl, action: actions.onBackToHub)
+        Text("Work")
+          .font(.system(size: 22, weight: .heavy, design: .rounded))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .fixedSize()
+          .accessibilityAddTraits(.isHeader)
+        WorkHeaderSearchField(
+          searchText: $searchText,
+          filterOpen: $filterOpen,
+          activeFilterCount: activeFilterCount
+        )
+        Button(action: actions.onNewChat) {
+          Image(systemName: "square.and.pencil")
+            .font(.system(size: 18, weight: .medium))
+            .foregroundStyle(isLive ? ADEColor.textPrimary : ADEColor.textMuted)
+            .frame(width: 32, height: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isLive)
+        .accessibilityLabel("New chat")
+        .accessibilityHint(isLive ? "Opens a new chat" : "Reconnect to the machine to start a chat")
+        WorkHeaderOverflowMenu(
+          showsLinear: showsLinear,
+          showsCursorCloud: showsCursorCloud,
+          showsGitHubIssues: showsGitHubIssues,
+          actions: actions
+        )
+      }
+    }
+    .padding(.horizontal, 16)
+    .frame(minHeight: 56)
+    .background {
+      LinearGradient(
+        colors: [
+          ADEColor.pageBackground,
+          ADEColor.pageBackground.opacity(0.98),
+          ADEColor.pageBackground.opacity(0.88),
+          ADEColor.pageBackground.opacity(0)
+        ],
+        startPoint: .top,
+        endPoint: .bottom
+      )
+      .ignoresSafeArea(edges: .top)
+      .allowsHitTesting(false)
+    }
+  }
+}
+
+/// Back-to-hub control: a small chevron and the project's icon, or the ADE mark
+/// when the project has none. Same action as `ADEHubBackButton`, without the
+/// capsule so it sits flat in the one-row header.
+private struct WorkHeaderProjectButton: View {
+  let iconDataUrl: String?
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 3) {
+        Image(systemName: "chevron.left")
+          .font(.system(size: 13, weight: .bold))
+          .foregroundStyle(ADEColor.accent)
+        if let icon = projectIconImage(from: iconDataUrl) {
+          Image(uiImage: icon).projectIconStyle(size: 26, cornerRadius: 7)
+        } else {
+          Image("BrandMark")
+            .resizable()
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fit)
+            .frame(width: 38, height: 26)
+        }
+      }
+      .frame(minHeight: 44)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Back to all projects")
+    .accessibilityHint("Returns to the project hub.")
+  }
+}
+
+/// Search that takes the header's remaining width, with the filter control as a
+/// chip inside its trailing edge. The chip turns accent while the panel is open
+/// or a lane/status filter is applied, and shows how many are applied.
+private struct WorkHeaderSearchField: View {
+  @Binding var searchText: String
+  @Binding var filterOpen: Bool
+  let activeFilterCount: Int
+
+  private var chipActive: Bool { filterOpen || activeFilterCount > 0 }
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Image(systemName: "magnifyingglass")
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .accessibilityHidden(true)
+      TextField("Search", text: $searchText)
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .font(.subheadline)
+        .submitLabel(.search)
+        .accessibilityLabel("Search sessions, lanes, output")
+      if !searchText.isEmpty {
+        Button {
+          searchText = ""
+        } label: {
+          Image(systemName: "xmark.circle.fill")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(width: 24, height: 36)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Clear search")
+      }
+      Button {
+        withAnimation(.snappy(duration: 0.2)) {
+          filterOpen.toggle()
+        }
+      } label: {
+        HStack(spacing: 3) {
+          Image(systemName: "line.3.horizontal.decrease")
+            .font(.system(size: 11, weight: .bold))
+          if activeFilterCount > 0 {
+            Text("\(activeFilterCount)")
+              .font(.caption2.monospacedDigit().weight(.bold))
+          }
+        }
+        .foregroundStyle(chipActive ? ADEColor.accent : ADEColor.textSecondary)
+        .padding(.horizontal, 8)
+        .frame(height: 24)
+        .background(
+          chipActive ? ADEColor.accent.opacity(0.14) : ADEColor.recessedBackground,
+          in: Capsule(style: .continuous)
+        )
+        .frame(minWidth: 36, minHeight: 40)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Filters")
+      .accessibilityValue(activeFilterCount > 0 ? "\(activeFilterCount) applied" : (filterOpen ? "Open" : "None"))
+      .accessibilityHint(filterOpen ? "Hides the filter panel" : "Shows status, group and lane filters")
+    }
+    .padding(.leading, 10)
+    .padding(.trailing, 4)
+    .frame(minHeight: 40)
+    .frame(maxWidth: .infinity)
+    .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+    )
+  }
+}
+
+/// The "⋯" menu: Activity, Linear, Cursor Cloud, Settings. A plain icon with a
+/// warning dot while the Activity drawer has unread needs-you items — the same
+/// `unreadCount` the bell used — so moving the bell in here loses no signal.
+///
+/// The only observer in the header, and of `ActivityDrawerModel` alone.
+private struct WorkHeaderOverflowMenu: View {
+  @EnvironmentObject private var drawer: ActivityDrawerModel
+  let showsLinear: Bool
+  let showsCursorCloud: Bool
+  var showsGitHubIssues = false
+  let actions: WorkRootHeaderActions
+
+  private var unread: Int { drawer.unreadCount }
+
+  var body: some View {
+    Menu {
+      Button {
+        ADEHaptics.light()
+        actions.onOpenActivity()
+      } label: {
+        Label(
+          unread > 0 ? "Activity · \(unread) need\(unread == 1 ? "s" : "") you" : "Activity",
+          systemImage: unread > 0 ? "bell.badge" : "bell"
+        )
+      }
+      if showsLinear {
+        Button {
+          ADEHaptics.light()
+          actions.onOpenLinear()
+        } label: {
+          Label { Text("Linear") } icon: { Image("LinearLogo") }
+        }
+      }
+      if showsGitHubIssues {
+        Button {
+          ADEHaptics.light()
+          actions.onOpenGitHubIssues()
+        } label: {
+          Label { Text("GitHub Issues") } icon: { Image("ProviderGitHub") }
+        }
+      }
+      if showsCursorCloud {
+        Button {
+          ADEHaptics.light()
+          actions.onOpenCursorCloud()
+        } label: {
+          Label { Text("Cursor Cloud") } icon: { Image("CursorCloudLogo") }
+        }
+      }
+      Divider()
+      Button(action: actions.onOpenSettings) {
+        Label("Settings", systemImage: "gearshape")
+      }
+    } label: {
+      Image(systemName: "ellipsis")
+        .font(.system(size: 18, weight: .semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .frame(width: 32, height: 44)
+        .overlay(alignment: .topTrailing) {
+          if unread > 0 {
+            Circle()
+              .fill(ADEColor.warning)
+              .frame(width: 8, height: 8)
+              .overlay(Circle().stroke(ADEColor.pageBackground, lineWidth: 1.5))
+              .offset(x: -2, y: 10)
+              .transition(.scale.combined(with: .opacity))
+          }
+        }
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .animation(.snappy(duration: 0.2), value: unread > 0)
+    .accessibilityLabel(unread > 0 ? "More, \(unread) activity \(unread == 1 ? "item needs" : "items need") you" : "More")
+    .accessibilityHint("Activity, Linear, GitHub Issues, Cursor Cloud and Settings")
+  }
+}
+
+/// Marks a lane that lives on another machine, after its name: two machines'
+/// lanes can share a name, and the machine never goes in the title.
+struct WorkRemoteLaneGlyph: View {
+  var body: some View {
+    Image(systemName: "desktopcomputer")
+      .font(.system(size: 9, weight: .medium))
+      .foregroundStyle(ADEColor.textMuted.opacity(0.8))
+      .accessibilityLabel("On another machine")
+  }
+}
+
+/// A lane's rolled-up status as one dot in the board column's accent — the same
+/// accents as the status chips (`statusFilterTint`) and the desktop board.
+struct WorkLaneFocusDot: View {
+  let status: WorkLaneFocusStatus
+
+  var body: some View {
+    ADEKitDot(color: color)
+  }
+
+  private var color: Color {
+    switch status {
+    case .needsYou: return ADEColor.warning
+    case .working: return ADEColor.info
+    case .waiting: return ADEColor.textMuted
+    case .done: return ADEColor.success
+    }
   }
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { FolderOpen } from "@phosphor-icons/react";
 import type { LaneDeleteLeftoverWorktree } from "../../../shared/types";
+import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { revealLabel } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { Dialog } from "../ui/dialog";
@@ -59,7 +60,7 @@ export function LeftoverWorktreeDialogHost(): JSX.Element | null {
       .then(() => dismiss())
       .catch((reason: unknown) => {
         setDeleting(false);
-        setError(reason instanceof Error ? reason.message : String(reason));
+        setError(stripElectronErrorWrapper(reason instanceof Error ? reason.message : String(reason)));
       });
   };
 

@@ -12,6 +12,7 @@ import { cleanupLegacyAdeSkills } from "../skills/legacySkillCleanupService";
 import type { Logger } from "../logging/logger";
 import { spawnAsync } from "../shared/utils";
 import { pathsEqual } from "../shared/pathCompare";
+import { stripHostRuntimeEnv } from "../shared/hostRuntimeEnv";
 import {
   getPathEnvValue,
   setPathEnvValue,
@@ -630,7 +631,7 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
   const hostPathSnapshot = getPathEnvValue(envSnapshot);
 
   const agentEnv = (baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => {
-    const next: NodeJS.ProcessEnv = { ...baseEnv };
+    const next: NodeJS.ProcessEnv = stripHostRuntimeEnv({ ...baseEnv });
     if (resolved.commandPath) {
       const nextPath = prependPathDir(getPathEnvValue(next), resolved.binDir);
       if (nextPath) setPathEnvValue(next, nextPath);

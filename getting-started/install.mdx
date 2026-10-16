@@ -1,6 +1,6 @@
 ---
 title: "Install ADE"
-description: "Install ADE with one command on macOS, Linux, or Windows, or download the desktop app. Add the iOS companion from TestFlight and run in guest mode with no account."
+description: "Install ADE with one command on macOS, Linux, or Windows, or download the desktop app. Add the iOS companion from TestFlight, then sign in on the machine or from your phone."
 icon: "download"
 ---
 
@@ -96,14 +96,23 @@ Want the brain binary directly, without piping a script? Download it for [`darwi
 
 ## Launch and explore
 
-Open ADE and you land on the welcome screen. ADE starts in **guest mode** — no sign-up, no account — so you can add a repository and look around right away. Connect a provider whenever you're ready to run agents.
+Open ADE and you land on the welcome screen, then the sign-in card. ADE needs a free account: it is what connects your machines, your phone, and the web client to each other.
+
+- Select **Sign in or create account** to sign in in the browser of this machine.
+- Select **Sign in with your phone or another device** to get a QR code and a short code. Scan the QR code with your phone, or enter the code on a different computer. Your password is never typed on this machine, which is what you want on a VM or a shared computer.
+
+After you sign in, add a repository and look around. Without an AI provider ADE starts in **guest mode**, so connect a provider when you are ready to run agents.
+
+<Note>
+The Brain and `ade code` work on the machine itself with no account. Run `ade connect --no-login` to install the background service only.
+</Note>
 
 <Note>
 ADE keeps itself current with a built-in auto-updater: it downloads new releases in the background and applies them on relaunch. Installed via Homebrew? Run `brew upgrade --cask ade` instead.
 </Note>
 
 <Info>
-macOS is the generally available desktop platform. Windows 10/11 x64 is in beta: the app, brain, and CLI all run, but native OS computer use, the iOS Simulator drawer, and the Notch are macOS-only. [ADE on Windows](/getting-started/windows) lists every difference. The iOS companion is available through TestFlight.
+macOS is the generally available desktop platform. Windows 10/11 x64 is in beta: the app, brain, and CLI all run, but native OS computer use and the iOS Simulator drawer are macOS-only. [ADE on Windows](/getting-started/windows) lists every difference. The iOS companion is available through TestFlight.
 </Info>
 
 ## Next

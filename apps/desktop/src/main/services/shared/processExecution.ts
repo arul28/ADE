@@ -147,6 +147,23 @@ export function resolveWindowsCmdLineInvocation(
   };
 }
 
+/**
+ * True when a `cmd.exe /d /s /c` wrapper reports that the command it was asked
+ * to run does not exist. cmd.exe itself always starts, so a missing CLI comes
+ * back as exit 1 with "'x' is not recognized as an internal or external
+ * command" on stderr rather than as an ENOENT spawn error. Only the English
+ * message is matched; a localized Windows still reads as a plain failure.
+ */
+export function isWindowsCmdCommandNotFound(
+  status: number | null,
+  stderr: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform === "win32"
+    && status === 1
+    && /is not recognized as an internal or external command/i.test(stderr);
+}
+
 export function isWindowsPowerShellScript(command: string, platform: NodeJS.Platform = process.platform): boolean {
   return platform === "win32" && path.win32.extname(command).toLowerCase() === ".ps1";
 }

@@ -303,6 +303,54 @@ describe("providerInstanceStore", () => {
     expect(changes.at(-1)).toEqual({ reason: "setSettings", provider: "claude" });
   });
 
+  it("keeps each account's own settings apart and takes only a Claude 1-hour subagent cache", () => {
+    const { store, adeDir } = makeStore();
+    const work = store.create({ provider: "claude", label: "Work" }).instance;
+    const codex = store.getDefault("codex");
+
+    store.setProviderSettings("claude", { compaction: { atTokens: 300_000 } }, work.id);
+    store.setProviderSettings("claude", { subagentPromptCacheTtl: "1h" }, work.id);
+    // A patch that names one account setting leaves the other alone.
+    expect(store.get(work.id)).toMatchObject({ subagentPromptCacheTtl: "1h", compaction: { atTokens: 300_000 } });
+    expect(store.getDefault("claude").subagentPromptCacheTtl).toBeUndefined();
+    // The choice survives a new store over the same file.
+    expect(createProviderInstanceStore({ adeDir, env: {} }).get(work.id)?.subagentPromptCacheTtl).toBe("1h");
+
+    store.setProviderSettings("claude", { compaction: null }, work.id);
+    expect(store.get(work.id)?.compaction).toBeUndefined();
+    expect(store.get(work.id)?.subagentPromptCacheTtl).toBe("1h");
+
+    // The main-conversation lifetime is its own choice: either value, and null goes back to automatic.
+    store.setProviderSettings("claude", { mainPromptCacheTtl: "5m" }, work.id);
+    expect(store.get(work.id)).toMatchObject({ mainPromptCacheTtl: "5m", subagentPromptCacheTtl: "1h" });
+    expect(createProviderInstanceStore({ adeDir, env: {} }).get(work.id)?.mainPromptCacheTtl).toBe("5m");
+    store.setProviderSettings("claude", { mainPromptCacheTtl: "1h" }, work.id);
+    expect(store.get(work.id)?.mainPromptCacheTtl).toBe("1h");
+    store.setProviderSettings("claude", { mainPromptCacheTtl: null }, work.id);
+    expect(store.get(work.id)?.mainPromptCacheTtl).toBeUndefined();
+    expect(store.get(work.id)?.subagentPromptCacheTtl).toBe("1h");
+    // A Codex account has no such setting.
+    store.setProviderSettings("codex", { mainPromptCacheTtl: "1h" }, codex.id);
+    expect(store.get(codex.id)?.mainPromptCacheTtl).toBeUndefined();
+
+    // With no account named there is nothing to set it on; saying "saved" would be a lie.
+    expect(() => store.setProviderSettings("claude", { subagentPromptCacheTtl: "1h" })).toThrow(/account id/);
+    expect(() => store.setProviderSettings("claude", { mainPromptCacheTtl: "1h" })).toThrow(/account id/);
+    expect(() => store.setProviderSettings("claude", { onExtraUsage: "stop" })).toThrow(/account id/);
+    // One patch that names an account setting and a provider setting saves both.
+    const before = store.getProviderSettings("claude").smartBalance;
+    const mixed = store.setProviderSettings("claude", { onExtraUsage: "stop", smartBalance: !before }, work.id);
+    expect(mixed.smartBalance).toBe(!before);
+    expect(store.getProviderSettings("claude").smartBalance).toBe(!before);
+    expect(store.get(work.id)).toMatchObject({ onExtraUsage: "stop", subagentPromptCacheTtl: "1h" });
+    store.setProviderSettings("claude", { onExtraUsage: null }, work.id);
+    expect(store.get(work.id)?.onExtraUsage).toBeUndefined();
+    store.setProviderSettings("codex", { subagentPromptCacheTtl: "1h" }, codex.id);
+    expect(store.get(codex.id)?.subagentPromptCacheTtl).toBeUndefined();
+    store.setProviderSettings("claude", { subagentPromptCacheTtl: "2h" as never }, work.id);
+    expect(store.get(work.id)?.subagentPromptCacheTtl).toBeUndefined();
+  });
+
   it("records each account's identity from its own config home", async () => {
     const homes: string[] = [];
     const { store } = makeStore({
@@ -360,6 +408,117 @@ describe("providerInstanceStore", () => {
     expect(changes.filter((change) => change.reason === "refresh")).toHaveLength(afterFirst + 1);
     expect(store.get("claude")?.account).toBeUndefined();
     expect(store.get("claude")?.signedIn).toBe(false);
+  });
+
+  it("reports a broken login as signed out, keeps its email, and emits once per flip", async () => {
+    const { store, changes } = makeStore({
+      readAccount: async () => ({ email: "known@example.com", plan: "Claude Max" }),
+    });
+    const created = store.create({ provider: "claude", label: "Work" });
+    await store.refreshAccounts();
+    expect(store.get(created.instance.id)?.signedIn).toBe(true);
+
+    store.setLoginBroken(created.instance.id, true);
+    const broken = store.get(created.instance.id);
+    expect(broken?.signedIn).toBe(false);
+    expect(broken?.loginBroken).toBe(true);
+    // The email stays: the row still names the account, it just cannot run.
+    expect(broken?.account?.email).toBe("known@example.com");
+    expect(changes.filter((change) => change.reason === "login")).toHaveLength(1);
+
+    // A repeated flag for the same account is not a change.
+    store.setLoginBroken(created.instance.id, true);
+    expect(changes.filter((change) => change.reason === "login")).toHaveLength(1);
+
+    // A working read clears it and the account is signed in again.
+    store.setLoginBroken(created.instance.id, false);
+    const cleared = store.get(created.instance.id);
+    expect(cleared?.signedIn).toBe(true);
+    expect(cleared?.loginBroken).toBeUndefined();
+    expect(changes.filter((change) => change.reason === "login")).toHaveLength(2);
+  });
+
+  it("does not carry a broken login onto an account that reuses a removed id", async () => {
+    const { store } = makeStore({ readAccount: async () => ({ email: "known@example.com" }) });
+    const first = store.create({ provider: "claude", label: "Work" });
+    store.setLoginBroken(first.instance.id, true);
+    store.remove(first.instance.id);
+
+    // Same label, same id: the fresh account must not inherit the old flag.
+    const second = store.create({ provider: "claude", label: "Work" });
+    expect(second.instance.id).toBe(first.instance.id);
+
+    await store.refreshAccounts();
+    const reused = store.get(second.instance.id);
+    expect(reused?.signedIn).toBe(true);
+    expect(reused?.loginBroken).toBeUndefined();
+  });
+
+  it("gives a shared login to the working default account, else the first working one", async () => {
+    const { store } = makeStore({
+      readAccount: async (_provider, configHome) => (
+        configHome.includes("provider-homes") ? { email: "shared@example.com" } : {}
+      ),
+    });
+    const first = store.create({ provider: "claude", label: "First" });
+    const second = store.create({ provider: "claude", label: "Second" });
+    await store.refreshAccounts();
+
+    // With both working, the first in list order owns the shared email.
+    expect(store.get(first.instance.id)?.sameLoginAs).toBeUndefined();
+    expect(store.get(second.instance.id)?.sameLoginAs).toBe(first.instance.id);
+
+    // The owner's login breaks: the working copy now owns the email instead.
+    store.setLoginBroken(first.instance.id, true);
+    expect(store.get(first.instance.id)?.sameLoginAs).toBe(second.instance.id);
+    expect(store.get(second.instance.id)?.sameLoginAs).toBeUndefined();
+
+    // The default owns it whatever its place in the list, so smart balance
+    // counts the account the usage poller keeps the reading for.
+    store.setLoginBroken(first.instance.id, false);
+    store.setDefault(second.instance.id);
+    expect(store.get(second.instance.id)?.sameLoginAs).toBeUndefined();
+    expect(store.get(first.instance.id)?.sameLoginAs).toBe(second.instance.id);
+
+    // …unless the default's own login is broken.
+    store.setLoginBroken(second.instance.id, true);
+    expect(store.get(first.instance.id)?.sameLoginAs).toBeUndefined();
+    expect(store.get(second.instance.id)?.sameLoginAs).toBe(first.instance.id);
+  });
+
+  it.each([
+    { provider: "claude" as const, args: ["auth", "logout"], envKey: "CLAUDE_CONFIG_DIR" },
+    { provider: "codex" as const, args: ["logout"], envKey: "CODEX_HOME" },
+  ])("signs a $provider account out in its own home, and refuses the default", ({ provider, args, envKey }) => {
+    const { store } = makeStore();
+    const created = store.create({ provider, label: "Work" });
+
+    const command = store.logoutCommand(created.instance.id);
+    expect(command.args).toEqual(args);
+    expect(command.env[envKey]).toBe(created.instance.configHome);
+    // The machine's own login is the default until another account is.
+    expect(() => store.logoutCommand(provider)).toThrow(/default/);
+
+    store.setDefault(created.instance.id);
+    expect(() => store.logoutCommand(created.instance.id)).toThrow(/default/);
+    // Then it signs out wherever the environment points.
+    expect(store.logoutCommand(provider).env).toEqual({});
+  });
+
+  it("does not let an account become the default while its sign-out runs", async () => {
+    const { store } = makeStore();
+    const created = store.create({ provider: "claude", label: "Work" });
+    let finish: () => void = () => undefined;
+    const signingOut = store.whileSigningOut(created.instance.id, () => new Promise<void>((resolve) => { finish = resolve; }));
+
+    // It would come out of the logout as a signed-out default.
+    expect(() => store.setDefault(created.instance.id)).toThrow(/being signed out/);
+    expect(() => store.remove(created.instance.id)).toThrow(/being signed out/);
+    await expect(store.whileSigningOut(created.instance.id, async () => undefined)).rejects.toThrow(/already/);
+
+    finish();
+    await signingOut;
+    expect(store.setDefault(created.instance.id).isDefault).toBe(true);
   });
 
   it("keeps a listener that throws from rolling back the write", () => {

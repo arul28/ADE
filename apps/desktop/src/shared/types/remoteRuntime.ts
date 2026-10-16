@@ -338,7 +338,17 @@ export type RemoteRuntimeMachineProjectCapability =
   | "handoffStoragePreflight"
   | "create"
   | "clone"
-  | "listMyGitHubRepos";
+  | "listMyGitHubRepos"
+  /** `projects.setIcon` + `projects.removeIcon`: change a project's icon on the host. */
+  | "setIcon";
+
+/** Icon bytes a desktop uploads to the host with `projects.setIcon`. */
+export type RemoteRuntimeProjectIconUpload = {
+  /** Picked file's name; only its extension and base name are used. */
+  fileName: string;
+  mimeType: string;
+  dataBase64: string;
+};
 
 export type RemoteRuntimeCapabilities = {
   projects: boolean;
@@ -351,6 +361,11 @@ export type RemoteRuntimeHandoffStoragePreflightArgs = {
   originUrl?: string;
   branchRef?: string;
   sourceHeadSha?: string;
+  /**
+   * The handoff carries its commits in a git bundle, so the destination does
+   * not require origin's branch to be at `sourceHeadSha`.
+   */
+  hasGitBundle?: boolean;
 };
 
 export type RemoteRuntimeCloneProjectOptions = {
@@ -402,18 +417,12 @@ export type RemoteRuntimeActionResult = {
  * server's parser, three identical client guards and the bridge's exclusion —
  * and a category added to some of them is a stream that silently drops. The
  * tuple is the source; the union, the guard and the schema enum all derive.
- *
- * `cto_voice` carries call STATE only: phase, captions, approvals. Audio never
- * enters the buffer, which is bounded and replayable and would evict every real
- * event inside seconds under PCM. Who may READ that category is a policy, not
- * a shape, and lives in `shared/runtimeEventPolicy.ts`.
  */
 export const REMOTE_RUNTIME_EVENT_CATEGORIES = [
   "orchestrator",
   "dag_mutation",
   "runtime",
   "pty",
-  "cto_voice",
 ] as const;
 
 export type RemoteRuntimeEventCategory = (typeof REMOTE_RUNTIME_EVENT_CATEGORIES)[number];
@@ -500,6 +509,13 @@ export type RemoteRuntimeUpdateStep = {
   detail: string;
 };
 
+/**
+ * Which updater took the request. `desktop_app`: the ADE app open on that
+ * machine installs its own update and brings the brain with it.
+ * `standalone`: no app is open there, so the standalone runtime is replaced.
+ */
+export type RemoteRuntimeUpdateRoute = "desktop_app" | "standalone";
+
 export type RemoteRuntimeUpdateAndRestartResult = {
   ok: boolean;
   /** True when a new version was actually installed, not just a restart. */
@@ -509,6 +525,14 @@ export type RemoteRuntimeUpdateAndRestartResult = {
   steps: RemoteRuntimeUpdateStep[];
   /** One plain line to show the user. Already names the failed step. */
   message: string;
+  /** Absent from hosts that predate it; those only had the standalone route. */
+  route?: RemoteRuntimeUpdateRoute;
+  /**
+   * The version the machine should report once it is back, when the update is
+   * still in flight. Absent from older hosts: the client then falls back to
+   * `targetVersion` for an `ok` result that applied an update.
+   */
+  pendingVersion?: string | null;
 };
 
 export type RemoteRuntimeLocalWorkMatch = {

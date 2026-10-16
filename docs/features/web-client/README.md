@@ -6,8 +6,8 @@ in to ADE, loads the account machine directory, and adopts the chosen machine ov
 ADE Relay. Localhost pages retain direct `ws://` for development.
 
 Sign-in is mandatory, not optional. Relay routing requires the account, so a
-signed-out hosted client has nothing it can show: `LaunchGate` renders the
-sign-in card with no skip until the account is signed in. Desktop keeps its
+signed-out hosted client has nothing it can show: the boot path renders
+`WebSignInScreen` with no skip until the account is signed in. Desktop keeps its
 **Continue to your work** path only when a prior desktop account session is
 recoverable; a fresh desktop launch has no account-less pass-through either.
 
@@ -39,6 +39,11 @@ direct deployment-check fallback. The app is built from `apps/desktop` with
 
 ## Source file map
 
+- `apps/desktop/src/renderer/components/app/AppearanceRoot.tsx` — shared appearance lifetime for workspace and sign-in.
+- `apps/desktop/src/renderer/webclient/adapter/infra/backoffPoller.ts` — visibility-aware unchanged-read cadence and teardown.
+- `apps/desktop/src/renderer/webclient/adapter/infra/pageVisibility.ts` — shared tab visibility observer.
+- `apps/desktop/src/renderer/scene/scenePreferences.ts` — platform defaults and explicit scene choices.
+
 Build and static host:
 
 - `apps/desktop/package.json` - `dev:webclient` and `build:webclient`. The
@@ -49,6 +54,7 @@ Build and static host:
   output root. It relies on Rollup's normal graph splitting instead of forcing
   the desktop renderer's heavy vendor groups into eager module preloads; the
   shared renderer's dynamic imports remain the feature-loading boundaries.
+- `apps/desktop/src/renderer/public/scene-frame.html` - the page a chat scene loads in on the hosted client. `_headers` gives it the scene policy in place of the app's (and lifts `X-Frame-Options`), because a `blob:` scene document inherits the app's policy and its scripts never run. `SceneFrame` posts the scene document to it on request.
 - `apps/desktop/scripts/check-webclient-entry.mjs` - post-build regression
   guard for the first-load graph. It collects local entry scripts and
   `modulepreload` links from the generated `index.html`, rejects eagerly linked
@@ -201,6 +207,17 @@ Browser `window.ade` adapter:
   returns an empty list because dev-server discovery reads this machine's PTY
   output and a web tab has none. Everything else in the namespace is
   deliberately absent so a caller feature-detects instead of getting a fake.
+- `apps/desktop/src/renderer/webclient/adapter/providerAccounts.ts` - the host's
+  Claude and Codex logins, backing the web-only **AI accounts** card
+  (`agents.accounts`, the `providerInstances` namespace). Each member forwards to
+  the host's `providerAccounts.*` command (which runs the `provider_instances`
+  action) and unwraps its `{ instance }` / `{ login }` envelope into what the
+  desktop bridge returns. Reads may be answered from the last good reply while
+  the host is away; a change, or a running sign-in's status, goes to the host
+  every time. `loginCommand` and `setAccent` stay absent — a browser cannot run
+  the host's shell command, and no account screen offers a colour any more. A
+  host older than these commands rejects, and the panel shows its error rather
+  than an empty list that looks like "no accounts".
 - `apps/desktop/src/renderer/webclient/adapter/macDesktop.ts` - the lane's
   macOS screen as this surface can use it. `getStatus`/`start`/`stop` are the
   same `macDesktop.*` commands the desktop panel calls, and
@@ -219,7 +236,7 @@ Browser `window.ade` adapter:
   token, never a lease identity — the host derives `web:<connectionId>:<token>`
   — and a host without the bit keeps the watch-only pane and its
   `WORK_TOOLS_CONTROL_HINT` line. The `macDesktop` Work tool renders live in
-  `WorkToolReadOnlyView` by feeding `H264VideoCanvas` a pushed-record source
+  `WorkToolReadOnlyView` by feeding `H264StreamView` a pushed-record source
   (the same decoder the Electron panel drives from a loopback URL), keeps the
   display's aspect ratio with `object-fit: contain`, shows the last still frame
   until the first keyframe arrives, and falls back to that still with a
@@ -281,6 +298,22 @@ Browser `window.ade` adapter:
   matched `lane_worktree_locks`, so a lock heartbeat wiped the Files read cache
   every few seconds. An unrecognized table still falls back to the
   `UNCLASSIFIED_TABLE_DOMAINS` set rather than going silently stale.
+  `runtime_processes` is mapped to `sessions`, but it is local-only: it is in
+  `LOCAL_ONLY_CRR_EXCLUDED_TABLES` (`state/kvDb.ts`), has no change-tracking
+  clock or triggers, and writes nothing to `crsql_changes`. The 5-second
+  process heartbeat therefore never produces an `invalidation_batch`, and
+  `sessions` refetches come only from real session-table writes.
+- `apps/desktop/src/renderer/webclient/adapter/appControl.ts` - the App Control
+  namespace on web, watch only. `getStatus` and `onEvent` read the lane's session
+  from `appControl.status`; `holdFrames` and `streamSubscribe` deliver the
+  lane's JPEG screencast frames. Every call that would drive the app (click,
+  type, observe, launch, connect, stop, and the rest) rejects with "App Control
+  runs on the desktop. From here you can only watch it." Status is polled while
+  a listener exists: every 3 s, backing off to 15 s while the session is
+  unchanged, paused while hidden, read at once when visible.
+- `apps/desktop/src/renderer/webclient/adapter/infra/pageVisibility.ts` - the
+  `document.visibilityState` helper the relay pollers use. Without a `document`
+  (Node tests) the page counts as visible.
 - `apps/desktop/src/renderer/webclient/adapter/runtimePinGuard.ts` - the
   adapter-wide boundary guard for the desktop's per-session runtime pins. A web
   adapter instance speaks to exactly one machine and one bound project, and
@@ -430,9 +463,9 @@ Browser `window.ade` adapter:
   does not advertise the action. Sources favicons go through
   `chat.resolveSourceFavicons`; an older host without it leaves every row on
   its domain initial. The adapter also implements the shared
-  `agentChat.promptStashes` object through
-  `chat.listPromptStashes` / `chat.createPromptStash` /
-  `chat.deletePromptStash`. The cross-machine handoff trio is genuinely
+  `agentChat.drafts` object through
+  `chat.listDrafts` / `chat.createDraft` /
+  `chat.deleteDraft` (and `updateDraft` / `claimDraft`). The cross-machine handoff trio is genuinely
   implemented rather than left to the fallback proxy:
   `prepareCrossMachineHandoff`, `validateCrossMachineSource`, and
   `markCrossMachineHandoff` call the registered sync remote commands
@@ -460,8 +493,17 @@ Browser `window.ade` adapter:
   `${kind}:${providerId}` so both flows can run at once, and each kind declares
   its own terminal states (`connected`/`failed`/`cancelled`/`timeout` for
   OpenCode, `success`/`error` for Pi) — so there is no perpetual background
-  poll. Pi sign-in has no honest offline fallback shape, so it reports
-  unavailable rather than fabricating a result. The same adapter also routes
+  poll. The drain reads every 1 s, and every 5 s once a minute passes without a
+  status. It pauses while the tab is hidden and drains at once when the tab is
+  visible again, from the same cursor. A cancel removes that flow; when it was
+  the last active flow, the drain runs once more so its final status still
+  arrives. A flow that never reports or is never cancelled stops at its
+  21-minute deadline. Pi sign-in has no honest offline fallback shape, so it
+  reports unavailable rather than fabricating a result. The fleet poll
+  (`ai.cursorCloudFleet`, every 2 s while a listener exists) backs off to 15 s
+  after three identical snapshots, pauses while hidden, and resets to 2 s on a
+  change, on a visible tab, and after any fleet-changing action. The same
+  adapter also routes
   Cursor Cloud fleet reads, chat mirroring, follow-ups, and lane actions through
   the host's advertised `ai.cursorCloud*` commands. Those commands expose the
   account-wide, paged fleet and use the host-owned Cursor API key; the web
@@ -540,6 +582,41 @@ Browser shell and routes:
   and the account directory usable and is surfaced as a non-fatal notice.
   Session-lifecycle chrome follows the client currently assigned to the active
   machine rather than the bootstrap client.
+
+  Signed-out boot loads no workspace code. After account bootstrap and privacy
+  pruning, a visitor with no account session gets only `window.ade.account`
+  and a lazy `WebSignInScreen` chunk (`components/onboarding/WebSignInGate.tsx`).
+  The federated adapter, `App` and `appStore` stay unloaded: the gate's theme,
+  scene and tooltip code read their values through `state/appearanceStore.ts`,
+  which is a stand-in filled from the saved preferences until `appStore` loads
+  and registers itself there. When
+  `hasPersistedSession()` reports a stored session, `preloadWorkspaceModules()`
+  starts those imports alongside bootstrap, so a signed-in reload does not wait
+  for them afterwards. Cold signed-out load measured 123 → 47 requests and
+  9,703 → 1,552 KB transferred (`npm run bench:webclient`, interleaved, 5 runs
+  per side). The
+  `@phosphor-icons/react` namespace import that kept 4.9 MB of icons on that
+  path is gone too (`components/history/eventIcons.ts`).
+
+  The entry stylesheet is `webclient/gate.css`, not `index.css`. It holds what
+  the boot screens and the sign-in card draw: Tailwind limited to the files in
+  `apps/desktop/tailwind.gate.config.cjs`, `styles/foundation.css` (theme
+  values, the dark and light token blocks, base element rules), the surface
+  kit, the scene rules, and the backdrop and tooltip partials
+  (`styles/toolPickerBackdrop.css`, `styles/smartTooltip.css`). `index.css`
+  imports the same partials, so every rule of the entry stylesheet is in the
+  full one as well. The full stylesheet loads with the workspace
+  (`loadAppStylesheet()` in `WebClientRoot.tsx`): `loadAppRoot()` waits for it,
+  and `preloadWorkspaceModules()` starts it with the other imports. It is
+  first in both lists, because stylesheets apply in the order their links are
+  added and the app's stylesheet was ahead of every chunk stylesheet when the
+  entry carried it. With the store split above, the entry stylesheet fell from
+  657 KB to 57 KB, the signed-out JavaScript from 739 KB to 518 KB, and the cold
+  signed-out transfer from 1,556 KB to 736 KB (Mac Studio numbers in
+  `docs/perf/macos-baseline.md`). A component that renders before the workspace
+  loads must be in the gate config's `content` list, and a component rule it
+  needs must be in a partial that both stylesheets import; otherwise it is
+  unstyled on the sign-in screen only.
 - `apps/desktop/src/renderer/webclient/workspace/WebMachineSessionManager.ts` -
   browser machine-session owner. It merges saved environments with live
   clients, serializes admission, deduplicates same-target connects, retains
@@ -630,13 +707,12 @@ Reused desktop renderer (web-mode adaptation):
   vertical math never mixes `window.innerHeight` with a CSS-zoomed rect.
 - `apps/desktop/src/renderer/components/activity/HeaderActivityControl.tsx`
   and `ActivityPane.tsx` - the project-independent header popover and the
-  expanded pane its "Open all" raises. Activity is a global utility surface, not
+  expanded pane its "Open all" raises: one `ActivityPanel` in two sizes, grouped
+  by the Work board's four columns exactly as on desktop. Activity is a global utility surface, not
   another selected-machine tab, so it is intentionally separate from
   `WEB_CLIENT_TAB_PATHS`. Its `/activity` pathname (and the `/attention` name it
   replaced) is a deep link that opens the pane over the current tab; both are in
-  `APP_ROUTE_ROOTS` so a hard reload keeps it. The notch has no web counterpart,
-  so `attentionNotch` is listed in `WEB_HIDDEN_CAPABILITIES` and its settings
-  rows are hidden rather than rendered inert.
+  `APP_ROUTE_ROOTS` so a hard reload keeps it.
 - `apps/desktop/src/renderer/components/app/TopBar.tsx` and
   `ConnectionsPanel.tsx` - the single desktop Connections control and its
   Machines, Phone, and Web tabs. The Web tab reports connected browser peers
@@ -651,26 +727,38 @@ Reused desktop renderer (web-mode adaptation):
 - `apps/desktop/src/renderer/components/onboarding/LaunchGate.tsx` - the launch
   gate, split into a web variant and a desktop variant so neither constrains the
   other. The web variant gates on account state alone and offers no way past it:
-  signed in renders the app, loading renders an animated mark, signed out
-  renders `SignInCard` with no skip button. Sign-in is a full-page OAuth
-  redirect, so there is no polling phase to survive.
+  signed in renders the app, signed out renders `WebSignInGate` (the
+  `GlassSignInCard`) with no skip button. The hosted shell's own boot path
+  renders the same card through `WebSignInScreen` before `LaunchGate` exists
+  (see `WebClientRoot.tsx` above). Sign-in is a full-page OAuth redirect, so
+  there is no polling phase to survive.
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomePage.tsx` - the
   shared welcome surface, adapted for web rather than replaced by a parallel UI.
-  In hosted mode its recents come from `webRecentProjects` instead of
-  `project.listRecent`, and the existing `groupRecentProjects` still collapses
-  one card per repository with the other machines behind an **Also on <machine>**
-  switcher. Each card carries the machine's dot and name, its reachability as a
-  tooltip, lane count, relative activity, and `(connects on open)` for a machine
-  that is not live; cards fed by a cached catalog shimmer until live data
-  replaces them. Clicking a card connects that machine first - saved pairing or
-  account adoption - then opens the project, so an account-only machine is never
-  a dead end. Pin, forget, and merge row actions are desktop-only: the hosted
-  list is the machines' own catalogs, which the browser does not own. **Chat
-  without a project** is labelled with the active machine, and a signed-in owner
-  with no Macs gets a pointer to sign in to ADE on one.
+  It renders the same home dashboard the desktop does (`ProjectWelcomeHome.tsx`:
+  the hero and the widget grid — projects with working now, pull requests with
+  contributions, the clock and weather) with the
+  recents side panel. In hosted mode its recents come from `webRecentProjects`
+  instead of `project.listRecent`, and the existing `groupRecentProjects` still
+  collapses one card per repository, with its machines behind one quiet
+  **N machines** chip whose menu lists each machine, its state, and opens the
+  project there. Each card carries its reachability as a tooltip, lane count, relative activity, and `(connects on
+  open)` for a machine that is not live; cards fed by a cached catalog shimmer
+  until live data replaces them. Clicking a card connects that machine first -
+  saved pairing or account adoption - then opens the project, so an account-only
+  machine is never a dead end. Pin, forget, and merge row actions are
+  desktop-only: the hosted list is the machines' own catalogs, which the browser
+  does not own. **Chat without a project** is labelled with the active machine,
+  and a signed-in owner with no Macs gets a pointer to sign in to ADE on one.
+- `apps/desktop/src/renderer/components/projects/ProjectWelcomeHome.tsx` - the
+  home dashboard's hero and cards, shared by desktop and web. Each card answers
+  one question at a glance (what is running, this machine's activity, its live
+  limits and the machines, and the open project's pull requests), links to the
+  full surface, and reads state the renderer already holds; the PR card reads the
+  same GitHub snapshot the PRs tab reads through `prReadCache`.
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomeWebRows.tsx` -
-  the recents-row chrome: project artwork, the machine dot and name, the
-  **Also on <machine>** switcher, worktree/lane badges, and relative activity.
+  the recents-row chrome: project artwork, the **N machines** chip and its
+  menu (each machine's state, and open there), worktree/lane badges, and
+  relative activity.
   Every export is driven entirely by its props, which is what keeps the welcome
   page's own body readable as page logic rather than row markup.
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomeWebNotices.tsx` -
@@ -704,8 +792,8 @@ Reused desktop renderer (web-mode adaptation):
 - `apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx`
   - reused route/project lifecycle capture plus the hosted-web startup event.
   It sends only normalized inputs through `window.ade.analytics`; the browser
-  client never talks to PostHog directly. There is no in-app consent prompt;
-  Settings carries the opt-out.
+  client never talks to PostHog directly. There is no in-app consent prompt and
+  no Settings control; a browser opt-out stored earlier is still honored.
 
 Machine runtime and sync host:
 
@@ -876,9 +964,9 @@ Tests:
   it in favor of the browser's socket state alone. Transport-open and
   authenticated-hello deadlines are intentionally separate so slow token/DPoP
   preparation and a dead network route produce different failures.
-- **Analytics collection is on by default and opted out browser-locally.** No
-  consent prompt is shown; the browser collects until someone turns it off in
-  Settings, which writes `"false"` to the local-storage preference. The host
+- **Analytics collection is on by default and honors a browser-local opt-out.**
+  No consent prompt is shown and no Settings control writes the preference; a
+  `"false"` in local storage from an earlier build still disables collection. The host
   keeps an in-memory consent bit for that paired socket and starts it
   disabled, so every adapter connection must reassert the local preference
   before capture. An opt-out is still fail-closed: a failed disable
@@ -915,8 +1003,10 @@ Tests:
   calls `assertWebRuntimePinRoutable` first.
 - **Native-only surfaces must stay unavailable in the web adapter.** OS
   notifications, external editor open, reveal in Finder, local directory
-  picking, native shells, app control, computer use, built-in browser, iOS
-  Simulator, updater, and transcription are not browser capabilities.
+  picking, native shells, computer use, built-in browser, iOS Simulator,
+  updater, and transcription are not browser capabilities. App Control is the
+  exception that is watch-only: its status and frames are served, and driving
+  calls reject (see `adapter/appControl.ts`).
 - **Build output shape matters.** Cloudflare Pages serves from the output root;
   `_headers`, `_redirects`, and `index.html` must sit directly inside
   `apps/desktop/dist/web-client`.
@@ -984,8 +1074,9 @@ agent/chat mutations.
 
 ## Account connection and auth flow
 
-1. The operator opens `https://app.ade-app.dev`. `LaunchGate` renders the
-   sign-in card and nothing else - there is no skip, because every byte this
+1. The operator opens `https://app.ade-app.dev`. The boot path renders the
+   sign-in card (`WebSignInScreen`) and nothing else - there is no skip,
+   because every byte this
    client can show arrives over account-authorized Relay. Desktop's
    **Connections > Web** surface points to this account flow; it exposes no QR,
    link, PIN, or manual endpoint entry.
@@ -1290,6 +1381,30 @@ as layout, zoom, and keybinding overrides. The catalog cache holds project
 names, paths, lane counts, and icons - never project contents - and is dropped
 when its account signs out or another account signs in.
 
+## Appearance and background reads
+
+`components/app/AppearanceRoot.tsx` owns the shared theme, document colour
+scheme, motion, and scene preferences for both `App` and the lazily loaded
+`WebSignInScreen`. Signed-out boot loads the sign-in chunk without the workspace
+router; a failed chunk load reaches the shell's error phase with Retry.
+
+The web default scene is `plain`: the theme background without a picture or
+motion. An untouched shipped Shuffle preference also reads as Plain in web;
+a saved choice or tuned texture, dim, theme matching, or image visibility stays
+as chosen. `showImage` remains true in the web default so choosing Image shows
+its picture. Reset to Shuffle is an explicit choice. Desktop retains Shuffle.
+The command palette uses `Z_LAYERS.commandPalette` above the shared overlays.
+
+`adapter/infra/backoffPoller.ts` owns subscriber-scoped App Control and Cursor
+fleet cadence: three unchanged reads at the base interval, then doubling to
+15 seconds; a changed snapshot or explicit action resets the cadence. Hidden
+tabs make no reads and visibility resumes with an immediate read. App Control's
+explicit status read moves a pending long timer back to the base delay. Stopping
+removes timers and visibility listeners. OAuth status draining in `adapter/misc.ts`
+also pauses while hidden and slows after a quiet interval; cancellation during
+an in-flight read sets a drain-again flag so the terminal cancelled status is
+still delivered before the drain stops.
+
 ## Deeplinks
 
 The web client uses the shared deeplink grammar rather than defining its own
@@ -1384,9 +1499,10 @@ Ops checks after deploy:
 - No native directory picker.
 - No local shell process. Terminal creation and IO go through the paired
   machine runtime.
-- No ADE Browser, app control, computer use, or iOS Simulator surface.
-  Projectless Chats therefore shows its runtime-backed Terminal control but not
-  the desktop-only Browser button/profile.
+- No ADE Browser, computer use, or iOS Simulator surface. App Control is
+  watch-only: the Work tool shows the lane's live frames and session state, and
+  no driving action runs from the web. Projectless Chats therefore shows its
+  runtime-backed Terminal control but not the desktop-only Browser button/profile.
 - No local file watcher. File-change events are synthesized from
   sync-driven invalidation and are coarser than desktop chokidar events.
 - Some progress/live updates are invalidation-triggered snapshots rather than

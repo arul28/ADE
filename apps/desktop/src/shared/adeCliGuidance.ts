@@ -16,6 +16,7 @@ import { SESSION_ACTIVITY_VALUES } from "./types/sessions";
  */
 export const adeBundledAgentSkills = [
   "ade-cli-control-plane",
+  "ade-computer-use",
   "ade-apple",
   "ade-harnesses",
   "ade-ios-simulator",
@@ -25,10 +26,10 @@ export const adeBundledAgentSkills = [
   "ade-pr-workflows",
   "ade-lanes-git",
   "ade-linear",
+  "ade-webhooks",
   "ade-proof-artifacts",
   "ade-deeplinks",
   "ade-search",
-  "ade-mosaic",
   "ade-scene",
 ] as const;
 
@@ -49,12 +50,12 @@ export const adeBundledAgentSkills = [
 export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
   "ADE control protocol for truthful Work status:",
   `- Use \`ade chat note "testing desktop auth fallback"\` for a durable one-line summary (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; notes truncate past ${MAX_STATUS_NOTE_CHARACTERS} characters).`,
-  '- Blocked on input: call `ade chat note "<what and why>"`, then `ade chat ask "<the exact question>"`; a note alone can leave an idle row looking Done.',
-  "- The next accepted user message clears the prior hand-raise. Re-note and re-ask before ending if still blocked.",
+  '- Asking the user anything, even while background work runs: `ade chat ask "<the exact question>"`; a note alone can leave an idle row looking Done. Not for progress updates.',
+  "- The next accepted user message clears the prior hand-raise; re-ask if still blocked.",
   '- Done: report it and leave `ade chat note "<delivered result>"`.',
   "- You cannot settle or unsettle a session; that is the user's call, or the automatic result of its PR merging.",
   "- Waiting a while? `ade session snooze <id> --for <duration>` hides the row without claiming done; a hand-raise wakes it.",
-  "- If the lane, branch, or chat name is wrong, rename it: `ade chat generate-names`, `ade chat update --title`, or `ade lanes rename`.",
+  "- Lane and chat names are yours to keep accurate. When the work changes direction or moves to a new branch, rename without asking: `ade lanes rename`, `ade chat update --title`, or `ade chat generate-names`. A lane keeps its name when its branch changes.",
 ].join("\n");
 
 /**
@@ -76,7 +77,15 @@ export function buildAdeRuntimeSocketEnv(runtimeSocketPath: string | null | unde
 export type AdeSessionActivityTarget =
   | { type: "environment" }
   /** OpenCode's shared server cannot receive this session's environment. */
-  | { type: "inline"; runtimeSocketPath: string };
+  | { type: "inline"; runtimeSocketPath: string }
+  /**
+   * A personal (project-less) chat. Its runtime has no socket of its own, so
+   * every command names the personal scope and the session
+   * (`--personal --session <id>`) and reaches it through the brain the CLI shim
+   * already targets. Works from any shell, OpenCode's shared server included.
+   * Adds the `note` / `ask` lines, and calls the row the Chats row.
+   */
+  | { type: "personal" };
 
 /**
  * Agent-set activity is emitted only by provider call sites that have verified
@@ -126,19 +135,30 @@ export function buildAdeSessionActivityGuidance(args: {
     }
   }
   let cliCommand: string;
-  if (target.type === "inline") {
+  if (target.type === "inline" || target.type === "personal") {
     cliCommand = args.shell === "powershell" ? `& ${safeCliPath}` : safeCliPath;
   } else {
     cliCommand = args.shell === "powershell" ? '& "$env:ADE_CLI_PATH"' : '"$ADE_CLI_PATH"';
   }
-  const command = (activity: "testing" | "clear"): string => {
-    const invoke = `${cliCommand} chat activity ${activity} --session ${safeSessionId}`;
+  const personal = target.type === "personal";
+  const scopeFlag = personal ? " --personal" : "";
+  const command = (activity: "debugging" | "clear"): string => {
+    const invoke = `${cliCommand} chat activity ${activity}${scopeFlag} --session ${safeSessionId}`;
     if (target.type !== "inline" || !safeRuntimeSocketPath) return invoke;
     return `${runtimeTargetAssignments}${invoke}`;
   };
+  const row = personal ? "Chats row" : "Work row";
   return [
-    `- Report session activity with \`${command("testing")}\`; clear it with \`${command("clear")}\`.`,
-    `  Choose one current state: ${SESSION_ACTIVITY_VALUES.join(", ")}.`,
+    // A personal chat's status lines spell the scope and session too: an
+    // OpenCode shell (one shared server) has no ADE_CHAT_SCOPE to route by.
+    ...(personal
+      ? [
+        `- For long work, keep a one-line status on this chat's ${row} with \`${cliCommand} chat note${scopeFlag} --session ${safeSessionId} "<what you are doing>"\`; when you are blocked on the user, \`${cliCommand} chat ask${scopeFlag} --session ${safeSessionId} "<the question>"\`.`,
+      ]
+      : []),
+    `- ADE shows this chat's activity on its ${row}, detected from your tool calls. You do not need to report it.`,
+    `  When the detected state is wrong or too coarse (debugging looks like testing to it), name the real one with \`${command("debugging")}\` (replace debugging with the real value); clear it with \`${command("clear")}\`.`,
+    `  Values: ${SESSION_ACTIVITY_VALUES.join(", ")}.`,
   ].join("\n");
 }
 
@@ -179,6 +199,29 @@ export function buildAdeCliAgentGuidance(skillRoots: readonly string[] = getAdeA
 
 export const ADE_CLI_AGENT_GUIDANCE = buildAdeCliAgentGuidance();
 
+/**
+ * The screen rules a tracked CLI session needs in its own prompt.
+ *
+ * An ADE chat gets the full computer-use directive, written for the screens
+ * its machine actually has. A provider CLI in a terminal is started with fixed
+ * text and never gets that directive, yet every `ade` command works there
+ * (the terminal carries the lane and session identity), so it could drive a
+ * screen knowing only the name of a skill. These are the rules that prevent
+ * damage; the how-to stays in `ade-computer-use`.
+ */
+export const ADE_CLI_SESSION_SCREEN_RULES = [
+  "Screens and proof: every `ade` command works from this terminal.",
+  "- The user's own screen, apps and windows are not yours to change. Never close, quit, hide or reset an app or window you did not open. Act on their real screen only when they ask.",
+  "- Pick the surface: a web page or localhost is `ade browser`; an Electron app's DOM is `ade app-control`; an iOS or SwiftUI app is `ade apple`; any other desktop app is this lane's own screen, `ade mac-desktop` (`ade screen` on Windows).",
+  "- Do not click, type or capture with anything else (osascript, cliclick, screencapture, a browser you start yourself): those drive the user's real screen.",
+  "- An ok result only means the input was sent. Observe before you report, and file proof with the surface's own `proof` or `record` command.",
+].join("\n");
+
+/** What a tracked provider CLI session is told: the bootstrap, then the screen rules. */
+export function buildAdeCliSessionGuidance(skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt()): string {
+  return [buildAdeCliAgentGuidance(skillRoots), "", ADE_CLI_SESSION_SCREEN_RULES].join("\n");
+}
+
 export function buildAdeCliInlineGuidance(skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt()): string {
   return buildAdeCliAgentGuidance(skillRoots);
 }
@@ -202,9 +245,16 @@ export function buildAdeBootstrapGuidance(
     `Skills: ${adeBundledAgentSkills.map((name) => `\`${name}\``).join(", ")}.`,
     formatAdeAgentSkillRootsForPrompt(skillRoots),
     "If skills are not native, discover with `ade skill list --text` and load with `ade skill show <name> --text`.",
-    "For Codex Computer Use, prefer direct `mcp__computer_use` tools and honor per-app approvals; never substitute `@oai/sky` via `node_repl`.",
+    // The one scene line every agent sees. Without it the skill was opened only
+    // when a model happened to read the index, so scenes almost never appeared.
+    "Visuals: when there is an obvious thing to show and a picture reads faster than prose (status across many items, a comparison, a trend), add one ```scene block; always when the user asks for a visual. Its buttons can offer options for a larger decision. Run `ade scene guide` first; check with `ade scene preview`.",
+    "For computer use, read `ade-computer-use` first. `mcp__computer_use` drives the user's real screen: use it only on request; never substitute `@oai/sky` via `node_repl`.",
     "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Read only requested `ade secrets`, never print them, and clean up started processes.",
     "`ade chat scheduled-work create` durably resumes bound chats and tracked provider CLIs.",
+    // The distinction agents get wrong: a wake is you doing work later, a
+    // draft send is the user's message arriving later. Naming both here keeps
+    // an agent from reaching for its own cron when the user asked for a send.
+    "Use `ade drafts` to send a message later (it lands as a real user turn in the target chat and shows in the user's Drafts); use `ade chat scheduled-work create` to wake *yourself* later to do work.",
     ADE_SESSION_STATUS_PROTOCOL_GUIDANCE,
   ].join("\n");
 }

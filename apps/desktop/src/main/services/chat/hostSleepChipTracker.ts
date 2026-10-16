@@ -43,6 +43,21 @@ export type HostSleepChipSession = {
   session: { id: string; status?: string | null };
 };
 
+/**
+ * Whether a session has a live turn that a host suspend or an ADE restart
+ * would stop mid-flight. One rule with two callers — the sleep chip fan-out
+ * and the update-install interrupted-chat probe — so the two can never
+ * disagree about which chats are running.
+ */
+export function sessionTurnInFlight(
+  session: HostSleepChipSession,
+  activeTurnId: string | null,
+): boolean {
+  return !session.closed
+    && !session.deleted
+    && (activeTurnId !== null || session.session.status === "active");
+}
+
 export type HostSleepChipTrackerOptions<TSession extends HostSleepChipSession> = {
   /** Null when this runtime has no host power hook at all. */
   powerSource?: MachinePowerSource | null;
@@ -172,9 +187,7 @@ export function createHostSleepChipTracker<TSession extends HostSleepChipSession
    * including the window before the provider hands back an id.
    */
   const turnInFlight = (managed: TSession): boolean =>
-    !managed.closed
-    && !managed.deleted
-    && (options.activeTurnIdFor(managed) !== null || managed.session.status === "active");
+    sessionTurnInFlight(managed, options.activeTurnIdFor(managed));
 
   const onHostSuspend = (at: number): void => {
     resolved = false;

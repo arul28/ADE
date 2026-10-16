@@ -1,6 +1,7 @@
 import type { BrainRepair } from "../../hooks/useBrainRepair";
 import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { ReportIssueButton } from "../app/ReportIssueButton";
+import { canRestartAde, restartAde } from "../app/restartAde";
 
 /**
  * The Repair control, shared by every surface that renders a brain-side
@@ -25,7 +26,7 @@ export function BrainRepairButton({
         disabled={blocked}
         onClick={repair.run}
         style={{
-          ...outlineButton({ height, padding: "0 9px", fontSize: 11, flexShrink: 0 }),
+          ...outlineButton({ height, padding: "0 9px", fontSize: 12, flexShrink: 0 }),
           opacity: blocked ? 0.6 : 1,
         }}
       >
@@ -73,6 +74,17 @@ export function BrainRepairButton({
         >
           {repair.notice.text}
         </span>
+      ) : null}
+      {/* The next rung after a repair that left the service down: a button,
+          not an instruction to quit and reopen ADE by hand. */}
+      {(repair.error || repair.notice?.offerRestart) && canRestartAde() ? (
+        <button
+          type="button"
+          onClick={() => void restartAde()}
+          style={outlineButton({ height, padding: "0 9px", fontSize: 12, flexShrink: 0 })}
+        >
+          Restart ADE
+        </button>
       ) : null}
     </>
   );

@@ -342,7 +342,67 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
   // Stable order: newest-spawned subagent at the top, and it stays put. Sorting
   // on startedAt (fixed at spawn) — NOT updatedAt/status — keeps the list from
   // reshuffling every time a tool result streams in from any subagent.
-  return [...snapshots.values()].sort((left, right) => compareIsoDesc(left.startedAt, right.startedAt));
+  // A background shell the host already shows as a background row
+  // (`scheduled_work_update` for `background:<taskId>`) is never a subagent.
+  // Older hosts sent a stray "Task updated" progress for such a shell when it
+  // arrived between turns; with no end event of its own, that row read
+  // "running" forever.
+  const backgroundShellIds = new Set<string>();
+  for (const envelope of events) {
+    const event = envelope.event;
+    if (event.type !== "scheduled_work_update" || event.kind !== "background_task") continue;
+    if (event.id.startsWith("background:")) backgroundShellIds.add(event.id.slice("background:".length));
+  }
+  return [...snapshots.values()]
+    .filter((snapshot) => !(backgroundShellIds.has(snapshot.taskId) && !snapshot.agentType))
+    .sort((left, right) => compareIsoDesc(left.startedAt, right.startedAt));
+}
+
+/** The events a subagent derivation read, and what it returned for them. */
+export type ChatSubagentDerivation = {
+  events: readonly AgentChatEventEnvelope[];
+  snapshots: ChatSubagentSnapshot[];
+};
+
+/**
+ * `deriveChatSubagentSnapshots` for a list that is the previous list plus events
+ * with no subagent lifecycle. The derivation reads only those events, so the
+ * previous snapshots still hold and keep their identity (a streamed text delta
+ * does not re-render every subagent card). The prefix is compared by element
+ * identity, so a trim or a reorder takes the full path. A rewritten tool call
+ * does not: a provider resends every tool call, the merge replaces the stored
+ * one in place, and a tool call is not a subagent event before or after the
+ * rewrite.
+ */
+export function deriveChatSubagentSnapshotsIncremental(
+  previous: ChatSubagentDerivation | null,
+  events: AgentChatEventEnvelope[],
+): ChatSubagentDerivation {
+  if (previous && events.length >= previous.events.length) {
+    let samePrefix = true;
+    for (let index = 0; index < previous.events.length; index += 1) {
+      const event = events[index]!;
+      const previousEvent = previous.events[index]!;
+      if (
+        event !== previousEvent
+        && !(event.event.type === "tool_call" && previousEvent.event.type === "tool_call")
+      ) {
+        samePrefix = false;
+        break;
+      }
+    }
+    if (samePrefix) {
+      let tailHasSubagent = false;
+      for (let index = previous.events.length; index < events.length; index += 1) {
+        if (normalizeSubagentLifecycleEvent(events[index]!.event)) {
+          tailHasSubagent = true;
+          break;
+        }
+      }
+      if (!tailHasSubagent) return { events, snapshots: previous.snapshots };
+    }
+  }
+  return { events, snapshots: deriveChatSubagentSnapshots(events) };
 }
 
 export function deriveTurnDiffSummaries(events: AgentChatEventEnvelope[]): TurnDiffSummary[] {
@@ -361,6 +421,24 @@ export function deriveTurnDiffSummaries(events: AgentChatEventEnvelope[]): TurnD
     }
   }
   return summaries;
+}
+
+/** Same summaries field for field: `files` is the source event's own array. */
+export function sameTurnDiffSummaries(previous: readonly TurnDiffSummary[], next: readonly TurnDiffSummary[]): boolean {
+  if (previous.length !== next.length) return false;
+  for (let index = 0; index < next.length; index += 1) {
+    const a = previous[index]!;
+    const b = next[index]!;
+    if (
+      a.turnId !== b.turnId
+      || a.beforeSha !== b.beforeSha
+      || a.afterSha !== b.afterSha
+      || a.files !== b.files
+      || a.totalAdditions !== b.totalAdditions
+      || a.totalDeletions !== b.totalDeletions
+    ) return false;
+  }
+  return true;
 }
 
 export type SubagentTimelineEntry = {

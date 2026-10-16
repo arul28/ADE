@@ -2,7 +2,11 @@ import type {
   AgentChatUsageAccount,
   AgentChatUsageAccountKind,
 } from "../../../shared/types/chat";
-import type { ProviderInstance, ProviderInstanceProvider } from "../../../shared/types/providerInstances";
+import {
+  providerInstanceHasAccount,
+  type ProviderInstance,
+  type ProviderInstanceProvider,
+} from "../../../shared/types/providerInstances";
 import { createOpenCodeUsageAccountResolver } from "./openCodeTurnUsage";
 
 /**
@@ -189,8 +193,6 @@ export function createTurnUsageAccountResolvers<Session>(deps: {
   sessionInstanceId: (session: Session) => string | null | undefined;
   /** The endpoint ADE hands OpenCode for a local server, or null for any other provider. */
   openCodeLocalEndpoint: (providerID: string) => string | null;
-  /** The data dirs of the OpenCode server this session runs on, when it is not the user's own. */
-  openCodeDataDirs: (session: Session) => readonly string[] | undefined;
   env?: () => NodeJS.ProcessEnv;
   now?: () => number;
 }) {
@@ -224,7 +226,9 @@ export function createTurnUsageAccountResolvers<Session>(deps: {
         modelProvider: args.modelProvider,
         keyedPreset: runsKeyedPreset(session),
         redirectedEndpoint: Boolean(current.ANTHROPIC_BASE_URL?.trim() || current.ANTHROPIC_AUTH_TOKEN?.trim()),
-        instanceSignedIn: instance?.signedIn === true,
+        // "Did this account's plan pay", not "does its login work now": a turn
+        // that ran proves the login, even while the poller's flag is stale.
+        instanceSignedIn: instance ? providerInstanceHasAccount(instance) : false,
       });
       return buildInstanceUsageAccount({ provider: "claude", kind, instance, routedAway });
     },
@@ -234,15 +238,19 @@ export function createTurnUsageAccountResolvers<Session>(deps: {
       const { kind, routedAway } = codexUsageAccountKind({
         authMode,
         keyedPreset: runsKeyedPreset(session),
-        instanceSignedIn: instance?.signedIn === true,
+        instanceSignedIn: instance ? providerInstanceHasAccount(instance) : false,
       });
       return buildInstanceUsageAccount({ provider: "codex", kind, instance, routedAway, plan: planType });
     },
 
-    /** OpenCode account for the upstream provider that served the turn. */
-    openCode(session: Session, providerID: string): AgentChatUsageAccount {
-      const dataDirs = deps.openCodeDataDirs(session);
-      return resolveOpenCode({ providerID, ...(dataDirs ? { dataDirs } : {}) });
+    /**
+     * OpenCode account for the upstream provider that served the turn. The
+     * shared lookup order leads with ADE's owned store and keeps the user's
+     * behind it for a legacy session re-opened on its original home, so one
+     * reader covers both.
+     */
+    openCode(_session: Session, providerID: string): AgentChatUsageAccount {
+      return resolveOpenCode({ providerID });
     },
   };
 }

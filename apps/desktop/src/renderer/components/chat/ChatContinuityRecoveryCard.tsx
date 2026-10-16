@@ -13,6 +13,7 @@ import type {
   AgentChatRecoverContinuityArgs,
   AgentChatResumeFailureKind,
 } from "../../../shared/types";
+import { useAgentChatApi } from "./agentChatApi";
 
 /**
  * Window event the Work surface already listens for to switch the active chat
@@ -24,18 +25,18 @@ const SELECT_SESSION_EVENT = "ade:work:select-session";
 type RecoverMode = AgentChatContinuityRecoveryResult["mode"];
 
 // Warm amber, never red — a chat whose provider thread couldn't be resumed is
-// recoverable, not a crash. Card + button chrome mirror ProviderFailureRecoveryCard
-// and AgentCliAuthCard so the three recovery surfaces read as one family.
+// recoverable, not a crash. Card + button chrome mirror AgentCliAuthCard so the
+// recovery surfaces read as one family.
 const CARD_CLASS =
   "mt-3 rounded-[calc(var(--chat-radius-card)-8px)] border border-amber-300/14 bg-amber-400/[0.045] px-3 py-2.5";
 const PRIMARY_BUTTON_CLASS =
   "inline-flex items-center gap-1.5 rounded-md border border-amber-200/16 bg-amber-300/[0.07] px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-amber-50/80 transition-colors hover:border-amber-200/30 hover:bg-amber-300/[0.13] disabled:pointer-events-none disabled:opacity-40";
 const NEUTRAL_BUTTON_CLASS =
-  "inline-flex items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.035] px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-fg/65 transition-colors hover:border-violet-300/22 hover:bg-violet-400/[0.08] hover:text-fg/85 disabled:pointer-events-none disabled:opacity-40";
+  "inline-flex items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.035] px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-fg/65 transition-colors hover:border-violet-300/22 hover:bg-violet-400/[0.08] hover:text-fg/85 disabled:pointer-events-none disabled:opacity-40";
 const DISCLOSURE_SUMMARY_CLASS =
   "cursor-pointer list-none font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-muted-fg/40 transition-colors hover:text-muted-fg/65";
 const IDENTIFIER_BLOCK_CLASS =
-  "mt-1.5 grid gap-1 rounded-[calc(var(--chat-radius-card)-8px)] border border-white/[0.06] bg-black/20 px-3 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] leading-relaxed text-fg/55";
+  "mt-1.5 grid gap-1 rounded-[calc(var(--chat-radius-card)-8px)] border border-fg/[0.06] bg-black/20 px-3 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] leading-relaxed text-fg/55";
 
 // One plain-language line explaining *why* the thread could not be resumed.
 // Only thread_missing/unknown reach the "required" state in practice, but the
@@ -155,7 +156,7 @@ function CapsulePreviewDisclosure({ capsulePreview }: { capsulePreview: string }
   return (
     <details className="mt-1.5">
       <summary className={DISCLOSURE_SUMMARY_CLASS}>What the new session was told</summary>
-      <pre className="mt-1.5 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-[calc(var(--chat-radius-card)-8px)] border border-white/[0.06] bg-black/20 px-3 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] leading-relaxed text-fg/60">
+      <pre className="mt-1.5 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-[calc(var(--chat-radius-card)-8px)] border border-fg/[0.06] bg-black/20 px-3 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] leading-relaxed text-fg/60">
         {capsulePreview}
       </pre>
     </details>
@@ -182,6 +183,9 @@ export function ChatContinuityRecoveryCard({
   const [failure, setFailure] = useState<string | null>(null);
   // Populated once an action in *this* card succeeds; drives the resolved view.
   const [result, setResult] = useState<AgentChatContinuityRecoveryResult | null>(null);
+  // Without a host callback, the pane's own chat API (never the project one
+  // for a personal chat; its adapter refuses recovery with a clear error).
+  const agentChatApi = useAgentChatApi();
 
   const runRecovery = useCallback(
     async (mode: RecoverMode) => {
@@ -189,7 +193,7 @@ export function ChatContinuityRecoveryCard({
       setPendingMode(mode);
       setFailure(null);
       try {
-        const res = await (onRecoverContinuity ?? window.ade.agentChat.recoverContinuity)({
+        const res = await (onRecoverContinuity ?? agentChatApi.recoverContinuity)({
           sessionId,
           mode,
         });
@@ -208,7 +212,7 @@ export function ChatContinuityRecoveryCard({
         setPendingMode(null);
       }
     },
-    [sessionId, pendingMode, detail.spawnedSession?.laneId, onRecoverContinuity],
+    [sessionId, pendingMode, detail.spawnedSession?.laneId, onRecoverContinuity, agentChatApi],
   );
 
   // ── Resolved states after an action taken in this card ───────────────────

@@ -8,7 +8,7 @@
   "license": "AGPL-3.0-only",
   "scripts": {
     "predev": "node ./scripts/normalize-runtime-binaries.cjs",
-    "prebuild": "node ./scripts/normalize-runtime-binaries.cjs && npm run ade:build",
+    "prebuild": "node ./scripts/normalize-runtime-binaries.cjs && node ./scripts/bundle-release-notes.mjs && npm run ade:build",
     "dev": "node ./scripts/ensure-electron.cjs && node ./scripts/dev.cjs",
     "dev:clean": "node ./scripts/clear-vite-cache.cjs && node ./scripts/normalize-runtime-binaries.cjs && node ./scripts/ensure-electron.cjs && node ./scripts/dev.cjs --force-vite",
     "predev:vite": "node ./scripts/export-browser-mock-ade-snapshot.mjs --optional",
@@ -18,20 +18,23 @@
     "dev:browser-bridge": "node ./scripts/browser-runtime-bridge.mjs",
     "export:browser-mock-ade": "node ./scripts/export-browser-mock-ade-snapshot.mjs",
     "build": "tsup && vite build",
-    "build:notch": "node ./scripts/build-attention-notch.mjs",
     "build:desktop-driver": "node ./scripts/build-mac-desktop-driver.mjs",
-    "build:mac-native": "npm run build:notch && npm run build:desktop-driver && npm run build:capture-helper && npm run build:sim-helper",
-    "test:notch": "swift test --package-path ./native/ADEAttentionNotch",
+    "build:mac-native": "npm run build:desktop-driver && npm run build:capture-helper && npm run build:sim-helper && npm run build:ade-media && npm run build:music-host:mac",
     "test:desktop-driver": "swift test --package-path ./native/ADEDesktopDriver",
     "build:capture-helper": "node ./scripts/build-capture-helper.mjs",
     "build:capture-helper:win": "node ./scripts/build-capture-helper-win.mjs",
+    "build:music-host:win": "node ./scripts/build-music-host-win.mjs",
+    "build:music-host:mac": "node ./scripts/build-music-host-mac.mjs",
     "test:capture-helper": "swift test --package-path ./native/ADECaptureHelper",
     "build:sim-helper": "node ./scripts/build-sim-helper.mjs",
     "test:sim-helper": "swift test --package-path ./native/ADESimHelper",
+    "build:ade-media": "node ./scripts/build-ade-media.mjs",
+    "test:ade-media": "swift test --package-path ./native/ADEMedia",
     "build:webclient": "vite build --config vite.webclient.config.ts --configLoader runner && node ./scripts/check-webclient-entry.mjs",
+    "bench:webclient": "node ./scripts/bench-webclient.mjs",
     "dist:win:test": "node ./scripts/run-windows-test-build.mjs",
-    "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build && npm run package:win && npm run validate:win:release",
-    "dist:win:signed": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build && npm run package:win:signed && npm run validate:win:release:signed",
+    "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build:desktop-driver:win && npm run build:music-host:win && npm run build:now-playing:win && npm run build && npm run package:win && npm run validate:win:release",
+    "dist:win:signed": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build:desktop-driver:win && npm run build:music-host:win && npm run build:now-playing:win && npm run build && npm run package:win:signed && npm run validate:win:release:signed",
     "package:win": "node ./scripts/run-electron-builder.mjs --win --x64 --publish never",
     "package:win:signed": "node ./scripts/run-electron-builder.mjs --require-signing --win --x64 --publish never",
     "dist:mac": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build:mac-native && npm run build && electron-builder --mac --publish never",
@@ -77,26 +80,28 @@
     "test:lint-tooling": "node --test ./eslint-rules/ade-ui.test.mjs ./scripts/lint-ratchet.test.mjs",
     "rebuild:native": "node ./scripts/rebuild-native.mjs",
     "version:ci": "node ./scripts/set-ci-version.mjs",
-    "version:release": "node ./scripts/set-release-version.mjs"
+    "version:release": "node ./scripts/set-release-version.mjs",
+    "build:desktop-driver:win": "node ./scripts/build-windows-desktop-driver.mjs",
+    "build:now-playing:win": "node ./scripts/build-now-playing-win.mjs"
   },
   "//dependencies": "Only packages the PACKAGED runtime resolves from node_modules belong here: electron-builder ships every production dependency into app.asar. main/preload are bundled by tsup (dependencies stay external, so a bare require() in dist/main or dist/preload means the package must ship), the packaged ade-cli resolves its own externals through NODE_PATH into app.asar[.unpacked]/node_modules (see src/main/services/runtime/packagedNodePath.ts), and a few binaries are located by path. Everything the renderer uses is inlined into dist/renderer by Vite and belongs in devDependencies.",
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.280",
-    "@cursor/sdk": "1.0.32",
+    "@anthropic-ai/claude-agent-sdk": "0.3.300",
+    "@cursor/sdk": "1.0.36",
     "@factory/droid-sdk": "0.9.1",
     "@linear/sdk": "^84.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openai/codex": "0.156.1",
-    "@opencode-ai/sdk": "1.18.32",
+    "@openai/codex": "0.162.1",
+    "@opencode/cli": "2.0.29",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
     "bonjour-service": "^1.3.0",
     "chokidar": "^4.0.3",
     "electron-updater": "^6.8.3",
     "graceful-fs": "^4.2.11",
+    "mp4-muxer": "^5.2.2",
     "node-cron": "^3.0.3",
     "node-pty": "^1.1.0",
-    "opencode-ai": "1.18.32",
     "ssh2": "^1.17.0",
     "ws": "^8.19.0",
     "yaml": "^2.8.2",
@@ -104,6 +109,7 @@
   },
   "devDependencies": {
     "@electron/asar": "^3.4.1",
+    "@electron/notarize": "2.5.0",
     "@electron/rebuild": "^4.0.1",
     "@floating-ui/react": "^0.27.19",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
@@ -112,6 +118,8 @@
     "@lobehub/icons": "^5.2.0",
     "@lobehub/icons-static-svg": "^1.84.0",
     "@lobehub/ui": "^5.6.3",
+    "@muse-code/sdk": "1.4.7",
+    "@opencode/client": "2.0.29",
     "@phosphor-icons/react": "^2.1.10",
     "@pierre/diffs": "^1.1.21",
     "@radix-ui/react-context-menu": "^2.2.16",
@@ -119,6 +127,8 @@
     "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@radix-ui/react-popover": "^1.1.15",
     "@radix-ui/react-tabs": "^1.1.13",
+    "@sentry/electron": "8.2.0",
+    "@sentry/react": "11.7.0",
     "@tailwindcss/postcss": "^4.1.18",
     "@tanstack/react-virtual": "^3.13.21",
     "@testing-library/dom": "^10.4.1",
@@ -128,6 +138,7 @@
     "@types/node": "^20.11.30",
     "@types/node-cron": "^3.0.11",
     "@types/papaparse": "^5.5.2",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^18.2.74",
     "@types/react-dom": "^18.2.24",
     "@types/sql.js": "^1.4.9",
@@ -148,11 +159,13 @@
     "concurrently": "^9.1.0",
     "cross-env": "^7.0.3",
     "electron": "^41.5.0",
-    "electron-builder": "^26.8.1",
+    "electron-builder": "^26.15.3",
     "eslint": "^8.57.1",
     "eslint-plugin-react-hooks": "^7.0.1",
+    "fflate": "^0.8.3",
     "framer-motion": "^12.34.2",
     "geist": "^1.7.0",
+    "jpeg-js": "^0.4.4",
     "jsdom": "^22.1.0",
     "mdast-util-find-and-replace": "^3.0.2",
     "mermaid": "^11.15.0",
@@ -160,6 +173,7 @@
     "motion": "^12.34.2",
     "papaparse": "^5.5.3",
     "pdfjs-dist": "^4.10.38",
+    "pngjs": "^7.0.0",
     "postcss": "^8.5.6",
     "qrcode.react": "^4.2.0",
     "react": "^18.3.1",
@@ -170,6 +184,7 @@
     "rehype-raw": "^7.0.0",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
     "shiki": "^4.0.2",
     "sql.js": "^1.13.0",
     "tailwind-merge": "^3.4.0",
@@ -177,6 +192,7 @@
     "three": "^0.186.0",
     "tsup": "^8.3.5",
     "typescript": "^5.7.3",
+    "unified": "^11.0.5",
     "vite": "^8.0.3",
     "vitest": "^0.34.6",
     "wait-on": "^7.2.0",
@@ -190,6 +206,7 @@
     },
     "files": [
       "dist/**/*",
+      "!dist/**/*.map",
       "electron.cjs",
       "package.json",
       "vendor/**/*",
@@ -207,25 +224,25 @@
       "!node_modules/@openai/codex-linux-x64/**",
       "!node_modules/@openai/codex-win32-arm64/**",
       "!node_modules/@openai/codex-win32-x64/**",
-      "!node_modules/opencode-darwin-arm64/**",
-      "!node_modules/opencode-darwin-x64/**",
-      "!node_modules/opencode-darwin-x64-baseline/**",
-      "!node_modules/opencode-linux-arm64/**",
-      "!node_modules/opencode-linux-arm64-musl/**",
-      "!node_modules/opencode-linux-x64/**",
-      "!node_modules/opencode-linux-x64-baseline/**",
-      "!node_modules/opencode-linux-x64-baseline-musl/**",
-      "!node_modules/opencode-linux-x64-musl/**",
-      "!node_modules/opencode-windows-arm64/**",
-      "!node_modules/opencode-windows-x64/**",
-      "!node_modules/opencode-windows-x64-baseline/**"
+      "!node_modules/@opencode/cli-darwin-arm64/**",
+      "!node_modules/@opencode/cli-darwin-x64/**",
+      "!node_modules/@opencode/cli-darwin-x64-baseline/**",
+      "!node_modules/@opencode/cli-linux-arm64/**",
+      "!node_modules/@opencode/cli-linux-arm64-musl/**",
+      "!node_modules/@opencode/cli-linux-x64/**",
+      "!node_modules/@opencode/cli-linux-x64-baseline/**",
+      "!node_modules/@opencode/cli-linux-x64-baseline-musl/**",
+      "!node_modules/@opencode/cli-linux-x64-musl/**",
+      "!node_modules/@opencode/cli-windows-arm64/**",
+      "!node_modules/@opencode/cli-windows-x64/**",
+      "!node_modules/@opencode/cli-windows-x64-baseline/**"
     ],
     "asarUnpack": [
       "dist/main/packagedRuntimeSmoke.cjs",
       "node_modules/node-pty/**/*",
       "node_modules/@anthropic-ai/claude-agent-sdk/**",
       "node_modules/@openai/codex/**",
-      "node_modules/opencode-ai/**",
+      "node_modules/@opencode/cli/**",
       "node_modules/@cursor/sdk/**",
       "node_modules/@cursor/sdk-darwin-arm64/**",
       "node_modules/@cursor/sdk-darwin-x64/**",
@@ -317,6 +334,7 @@
         "to": "whisper",
         "filter": [
           "**/*",
+          "!*.gguf",
           "!ggml-base.en.bin"
         ]
       },
@@ -326,7 +344,9 @@
         "filter": [
           "ade-capture-helper",
           "ade-capture-helper.exe",
-          "ade-sim-helper"
+          "ade-sim-helper",
+          "ade-media",
+          "ade-desktop-driver.exe"
         ]
       },
       {
@@ -338,7 +358,12 @@
         "to": "NOTICE"
       }
     ],
+    "beforePack": "./scripts/sentry-before-pack.cjs",
     "afterPack": "./scripts/after-pack-runtime-fixes.cjs",
+    "afterSign": "./scripts/after-sign-notarize.cjs",
+    "toolsets": {
+      "nsis": "1.2.1"
+    },
     "publish": {
       "provider": "github",
       "owner": "arul28",
@@ -372,11 +397,29 @@
           "to": "ade-cli/windows-firewall-rules.ps1"
         },
         {
+          "from": "scripts/windows-update-progress.ps1",
+          "to": "ade-cli/windows-update-progress.ps1"
+        },
+        {
           "from": "resources/runtime",
           "to": "runtime",
           "filter": [
             "ade-win32-x64.exe",
             "ade-win32-x64.native.tar.gz"
+          ]
+        },
+        {
+          "from": "resources/native",
+          "to": "native",
+          "filter": [
+            "ade-now-playing.exe"
+          ]
+        },
+        {
+          "from": "resources/native/ade-music-host",
+          "to": "native/ade-music-host",
+          "filter": [
+            "**/*"
           ]
         }
       ]
@@ -402,7 +445,7 @@
       "category": "public.app-category.developer-tools",
       "extendInfo": {
         "NSAppleEventsUsageDescription": "ADE launches agent terminals that can use local app automation through Codex Computer Use.",
-        "NSMicrophoneUsageDescription": "ADE uses your microphone for on-device voice-to-text dictation, and — when you start a voice call with your CTO — to send your speech to OpenAI using the API key you provide.",
+        "NSMicrophoneUsageDescription": "ADE uses your microphone for on-device voice-to-text dictation, and — when you start a voice conversation in a chat — to send your speech to OpenAI.",
         "NSScreenCaptureUsageDescription": "ADE captures the window in front when you press both Command keys, so you can ask the CTO about what you are looking at.",
         "NSLocalNetworkUsageDescription": "ADE finds and connects to your other Macs and devices running ADE on your local network.",
         "NSBonjourServices": [
@@ -437,9 +480,9 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "provisioningProfile": "build/ade-desktop.provisionprofile",
-      "notarize": true,
+      "notarize": false,
       "mergeASARs": false,
-      "x64ArchFiles": "**/{*darwin-arm64*,*darwin-x64*,darwin-arm64,darwin-x64,whisper-cli}{,/**}",
+      "x64ArchFiles": "**/{*darwin-arm64*,*darwin-x64*,darwin-arm64,darwin-x64,transcribe-cli}{,/**}",
       "artifactName": "ADE-${version}-${arch}.${ext}",
       "extraResources": [
         {
@@ -451,18 +494,16 @@
           ]
         },
         {
-          "from": "resources/native/ade-attention-notch",
-          "to": "native/ade-attention-notch"
-        },
-        {
           "from": "resources/native/ade-desktop-driver",
           "to": "native/ade-desktop-driver"
         },
         {
-          "from": "resources/native/ADEAttentionNotch_ADEAttentionNotch.bundle",
-          "to": "native/ADEAttentionNotch_ADEAttentionNotch.bundle",
+          "from": "resources/native/ade-music-host",
+          "to": "native/ade-music-host",
           "filter": [
-            "**/*"
+            "ade-music-host",
+            "page/**/*",
+            "page-spotify/**/*"
           ]
         }
       ]

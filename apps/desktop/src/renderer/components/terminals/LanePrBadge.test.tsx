@@ -58,6 +58,15 @@ function openLanePrHoverCard(): HTMLElement {
   return screen.getByTestId("lane-pr-hover-card");
 }
 
+/** Opens the multi-PR hover list on LanePrBadgePopover's pill. */
+function openPopoverHoverCard(): HTMLElement {
+  const pill = screen.getByRole("button", { name: /PR #101/ });
+  const trigger = pill.parentElement;
+  if (!(trigger instanceof HTMLElement)) throw new Error("popover hover trigger not found");
+  fireEvent.mouseEnter(trigger);
+  return screen.getByTestId("lane-pr-hover-card");
+}
+
 afterEach(cleanup);
 
 describe("LanePrBadge", () => {
@@ -68,7 +77,7 @@ describe("LanePrBadge", () => {
     expect(screen.queryByRole("button", { name: /other pull requests/ })).toBeNull();
   });
 
-  it("shows a counter and lets the hover list open a specific PR", () => {
+  it("shows a caret and lets the hover list open a specific PR or the list", () => {
     const onOpen = vi.fn();
     const onOpenList = vi.fn();
     const previous = pr({
@@ -87,13 +96,16 @@ describe("LanePrBadge", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Open 2 pull requests for this lane" })).toBeTruthy();
+    const pill = screen.getByRole("button", { name: /1 other pull requests on this lane/ });
+    expect(pill).toBeTruthy();
+    expect(screen.getByTestId("lane-pr-badge-caret")).toBeTruthy();
     const hoverCard = openLanePrHoverCard();
-    expect(hoverCard.parentElement).toBe(document.body);
+    // Portaled out of the pill so row/pill overflow cannot clip the list.
+    expect(pill.contains(hoverCard)).toBe(false);
     fireEvent.click(screen.getByTitle("Pull request #100 · Merged · Previous work"));
     expect(onOpen).toHaveBeenCalledWith(previous);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open 2 pull requests for this lane" }));
+    fireEvent.click(screen.getByText("Show all in Pull requests"));
     expect(onOpenList).toHaveBeenCalledTimes(1);
   });
 
@@ -169,16 +181,17 @@ describe("LanePrBadge", () => {
     await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
-  it("keeps a popover count non-interactive without a list handler", () => {
-    render(
-      <LanePrBadgePopover
-        prs={[tag(), tag({ id: "pr-100", githubPrNumber: 100, title: "Previous work", state: "merged" })]}
-        onActivate={vi.fn()}
-      />,
-    );
+  it("adds a Show all row to the multi-PR hover list only when a list handler is given", () => {
+    const prs = [tag(), tag({ id: "pr-100", githubPrNumber: 100, title: "Previous work", state: "merged" })];
 
-    const count = screen.getByTitle("Hover to inspect all pull requests for this lane");
-    expect(count.tagName).toBe("SPAN");
-    expect(count.getAttribute("role")).toBeNull();
+    const { unmount } = render(<LanePrBadgePopover prs={prs} onActivate={vi.fn()} />);
+    openPopoverHoverCard();
+    expect(screen.getByText("Previous work")).toBeTruthy();
+    expect(screen.queryByText("Show all in Pull requests")).toBeNull();
+
+    unmount();
+    render(<LanePrBadgePopover prs={prs} onActivate={vi.fn()} onOpenList={vi.fn()} />);
+    openPopoverHoverCard();
+    expect(screen.getByText("Show all in Pull requests")).toBeTruthy();
   });
 });

@@ -106,14 +106,18 @@ struct PersonalChatsScreen: View {
 
   private var chatList: some View {
     ScrollView {
-      LazyVStack(spacing: 10) {
-        ForEach(visibleSessions) { summary in
+      // One kit panel, hairlines between rows.
+      LazyVStack(spacing: 0) {
+        ForEach(Array(visibleSessions.enumerated()), id: \.element.id) { index, summary in
+          if index > 0 {
+            Rectangle().fill(ADEKit.rule).frame(height: 0.75).padding(.leading, 70)
+          }
           NavigationLink {
             PersonalChatDestination(summary: summary)
           } label: {
             PersonalChatRow(summary: summary)
           }
-          .buttonStyle(.plain)
+          .buttonStyle(ADEKitRowButtonStyle())
           .contextMenu {
             if summary.archivedAt == nil {
               Button {
@@ -139,6 +143,7 @@ struct PersonalChatsScreen: View {
           }
         }
       }
+      .adeKitCard(padding: nil)
       .frame(maxWidth: 680)
       .frame(maxWidth: .infinity)
       .padding(.horizontal, 16)
@@ -151,16 +156,16 @@ struct PersonalChatsScreen: View {
   private var emptyState: some View {
     VStack(spacing: 16) {
       ZStack {
-        Circle().fill(ADEColor.accent.opacity(0.12)).frame(width: 76, height: 76)
+        Circle().fill(ADEKit.track).frame(width: 64, height: 64)
         Image(systemName: searchText.isEmpty ? "bubble.left.and.bubble.right.fill" : "magnifyingglass")
-          .font(.system(size: 29, weight: .semibold))
-          .foregroundStyle(ADEColor.accent)
+          .font(.system(size: 24, weight: .regular))
+          .foregroundStyle(ADEColor.textMuted)
       }
       Text(searchText.isEmpty ? "Start a conversation" : "No matching chats")
         .font(.system(.title3, design: .rounded).weight(.bold))
         .foregroundStyle(ADEColor.textPrimary)
       Text(searchText.isEmpty
-        ? "Ask a question, explore an idea, or get something done without choosing a project."
+        ? "Chats here aren't tied to a project."
         : "Try another title, model, or phrase.")
         .font(.subheadline)
         .foregroundStyle(ADEColor.textSecondary)
@@ -171,12 +176,10 @@ struct PersonalChatsScreen: View {
           newChatPresented = true
         } label: {
           Label("Start a chat", systemImage: "plus")
-            .font(.headline)
-            .padding(.horizontal, 18)
-            .frame(minHeight: 46)
+            .padding(.horizontal, 6)
         }
-        .buttonStyle(.glassProminent)
-        .tint(ADEColor.accent)
+        .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
+        .frame(maxWidth: 240)
         .disabled(!canCreateChat)
         .accessibilityHint(canCreateChat
           ? "Starts a conversation that is not linked to a project."
@@ -287,9 +290,9 @@ private struct PersonalChatRow: View {
   var body: some View {
     HStack(spacing: 13) {
       ZStack(alignment: .bottomTrailing) {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .fill(providerTint(summary.provider).opacity(0.15))
-          .frame(width: 43, height: 43)
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .fill(ADEKit.track)
+          .frame(width: 40, height: 40)
           .overlay(
             WorkProviderBareLogo(
               provider: summary.provider,
@@ -301,7 +304,7 @@ private struct PersonalChatRow: View {
         Circle()
           .fill(workChatStatusTint(status))
           .frame(width: 9, height: 9)
-          .overlay(Circle().stroke(ADEColor.cardBackground, lineWidth: 2))
+          .overlay(Circle().stroke(ADEKit.surface, lineWidth: 2))
       }
 
       VStack(alignment: .leading, spacing: 4) {
@@ -324,7 +327,7 @@ private struct PersonalChatRow: View {
         Text(subtitle)
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(2)
+          .lineLimit(1)
         if subtitle != modelContext {
           Text(modelContext)
             .font(.caption2.weight(.medium))
@@ -333,17 +336,11 @@ private struct PersonalChatRow: View {
         }
       }
 
-      Image(systemName: "chevron.right")
-        .font(.caption.bold())
-        .foregroundStyle(ADEColor.textMuted)
+      ADESettingsChevron()
     }
-    .padding(13)
-    .background(ADEColor.cardBackground.opacity(0.66), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 15, style: .continuous)
-        .stroke(status == "awaiting-input" ? ADEColor.warning.opacity(0.4) : ADEColor.border.opacity(0.7), lineWidth: 1)
-    )
-    .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+    .padding(.horizontal, ADEKit.inset)
+    .padding(.vertical, 11)
+    .contentShape(Rectangle())
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(accessibilityLabel)
     .accessibilityHint("Opens this chat.")
@@ -359,11 +356,9 @@ private struct PersonalChatDestination: View {
       initialOpeningPrompt: nil,
       initialSession: makePersonalChatSessionStub(summary),
       initialChatSummary: summary,
-      initialTranscript: nil,
       transitionNamespace: nil,
       isLive: summary.archivedAt == nil,
       navigationChrome: .pushedDetail,
-      forceFreshTranscriptOnOpen: true,
       showsLaneActions: false,
       navigationTitleOverride: summary.title,
       lanes: [],
@@ -420,7 +415,7 @@ struct PersonalChatNewScreen: View {
   @State private var reasoningEffort = ""
   @State private var codexFastMode = false
   @State private var draft = ""
-  @State private var composerHeight: CGFloat = 88
+  @State private var attachments: [WorkChatInputAttachment] = []
   @State private var composerFocused = true
   @State private var modelPickerPresented = false
   @State private var selectedModelOption: WorkModelOption?
@@ -518,19 +513,45 @@ struct PersonalChatNewScreen: View {
     }
   }
 
+  /// The app's shared glass prompt box. A personal chat has no project, so
+  /// there is nothing to attach or stash; the ⋯ menu carries the model.
   private var composer: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      WorkPlainComposerTextView(
-        text: $draft,
-        isFocused: $composerFocused,
-        measuredHeight: $composerHeight,
-        placeholder: "Message ADE…",
-        acceptsPastedImages: false,
-        onPasteImages: { _ in }
-      )
-      .frame(minHeight: 54, idealHeight: composerHeight, maxHeight: min(180, composerHeight))
-
-      HStack(spacing: 10) {
+    ADEPlainGlassComposer(
+      text: $draft,
+      isFocused: $composerFocused,
+      attachments: $attachments,
+      placeholder: "Message ADE…",
+      acceptsPastedImages: false,
+      sendEnabled: canCreateChat && !busy && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      sending: busy,
+      sendAccessibilityLabel: "Start chat",
+      disabledSendAccessibilityLabel: canCreateChat
+        ? "Enter a message to start"
+        : "Connect to a compatible ADE machine to start a chat",
+      dictationTargetId: "personal-new-chat",
+      onSend: { Task { await create() } },
+      menu: { startDictation in
+        Menu {
+          Button { modelPickerPresented = true } label: {
+            Label("Model · \(workKnownModelDisplayName(modelId) ?? modelId)", systemImage: "cpu")
+          }
+          .disabled(!canChooseModel || busy)
+          if SpeechDictationService.isAvailable {
+            Button(action: startDictation) {
+              Label("Dictate", systemImage: "mic")
+            }
+          }
+        } label: {
+          Image(systemName: "ellipsis")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 36, height: 36)
+            .contentShape(Circle())
+            .frame(minWidth: 44, minHeight: 44)
+        }
+        .accessibilityLabel("Composer options")
+      },
+      controls: {
         Button { modelPickerPresented = true } label: {
           HStack(spacing: 7) {
             WorkProviderBareLogo(
@@ -542,12 +563,12 @@ struct PersonalChatNewScreen: View {
             Text(workKnownModelDisplayName(modelId) ?? modelId)
               .font(.caption.weight(.semibold))
               .lineLimit(1)
-            Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .bold))
+            Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
           }
-          .foregroundStyle(ADEColor.textSecondary)
+          .foregroundStyle(ADEColor.textPrimary)
           .padding(.horizontal, 10)
-          .frame(minHeight: 44)
-          .background(ADEColor.surfaceBackground.opacity(0.7), in: Capsule())
+          .frame(minHeight: workChatComposerChipRowHeight)
+          .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .disabled(!canChooseModel || busy)
@@ -555,22 +576,8 @@ struct PersonalChatNewScreen: View {
         .accessibilityHint(canChooseModel
           ? "Opens the model picker."
           : "Connect to a compatible ADE machine to choose a model.")
-        Spacer(minLength: 8)
-        ADEComposerSendButton(
-          enabled: canCreateChat && !busy && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-          sending: busy,
-          accessibilityLabelText: "Start chat",
-          disabledAccessibilityLabel: canCreateChat
-            ? "Enter a message to start"
-            : "Connect to a compatible ADE machine to start a chat"
-        ) {
-          Task { await create() }
-        }
       }
-    }
-    .padding(14)
-    .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-    .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 1))
+    )
     .padding(.horizontal, 16)
     .padding(.bottom, 10)
   }
@@ -608,6 +615,7 @@ struct PersonalChatNewScreen: View {
         codexConfigSource: wire.codexConfigSource,
         opencodePermissionMode: wire.opencodePermissionMode,
         droidPermissionMode: wire.droidPermissionMode,
+        musePermissionMode: wire.musePermissionMode,
         cursorModeId: wire.cursorModeId
       )
       ADEHaptics.success()

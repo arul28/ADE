@@ -3,10 +3,13 @@ import type {
   AgentChatCompactProvider,
   AgentChatContextUsageState,
   AgentChatEvent,
+  ContextCompactFailReason,
 } from "./types";
 
+export type { ContextCompactFailReason };
+
 /** Providers whose `/compact` slash is a real compact action, not a normal prompt. */
-export type ManualCompactProvider = "claude" | "codex" | "pi";
+type ManualCompactProvider = "claude" | "codex" | "pi" | "opencode";
 
 /** Matches the host `/compact` slash, including optional trailing instructions. */
 export function isManualCompactCommand(text: string | null | undefined): boolean {
@@ -21,6 +24,7 @@ export function providerSupportsManualCompact(
     case "claude":
     case "codex":
     case "pi":
+    case "opencode":
       return true;
     default:
       return false;
@@ -43,12 +47,13 @@ export function resolveContextCompactControl(args: {
   provider?: string | null;
   state: AgentChatContextUsageState;
   enabled: boolean;
+  openCodeCompactAvailable?: boolean;
   turnActive?: boolean;
   busy?: boolean;
   pendingInput?: boolean;
   inputLocked?: boolean;
 }): ContextCompactControl {
-  if (!args.enabled || args.inputLocked || !providerSupportsManualCompact(args.provider)) {
+  if ((args.provider === "opencode" && !args.openCodeCompactAvailable) || !args.enabled || args.inputLocked || !providerSupportsManualCompact(args.provider)) {
     return HIDDEN_CONTEXT_COMPACT;
   }
   switch (args.state) {
@@ -74,12 +79,13 @@ export function resolveContextCompactControl(args: {
 
 export type ContextCompactEvent = Extract<AgentChatEvent, { type: "context_compact" }>;
 
-export type ContextCompactFailReason = "interrupted" | "timed_out" | "teardown";
-
 export type NormalizedContextCompact = {
   trigger: "manual" | "auto" | "ade_fallback";
   state: "started" | "completed" | "failed";
   failReason?: ContextCompactFailReason;
+  failDetail?: string;
+  summary?: string;
+  accountLabel?: string;
   turnId?: string;
   compactionId?: string;
   preTokens?: number;
@@ -98,10 +104,12 @@ const PROVIDER_TINTS: Record<AgentChatCompactProvider, { ring: string; border: s
   cursor: { ring: "ring-violet-400/25", border: "border-violet-400/30" },
   droid: { ring: "ring-orange-400/25", border: "border-orange-400/30" },
   pi: { ring: "ring-orange-500/25", border: "border-orange-500/30" },
+  muse: { ring: "ring-blue-400/25", border: "border-blue-400/30" },
   qwen: { ring: "ring-indigo-400/25", border: "border-indigo-400/30" },
   kimi: { ring: "ring-teal-400/25", border: "border-teal-400/30" },
   grok: { ring: "ring-zinc-300/25", border: "border-zinc-300/30" },
   copilot: { ring: "ring-emerald-400/25", border: "border-emerald-400/30" },
+  devin: { ring: "ring-purple-400/25", border: "border-purple-400/30" },
 };
 
 export function isContextCompactionChatEvent(
@@ -116,6 +124,9 @@ export function normalizeContextCompactEvent(event: AgentChatEvent): NormalizedC
       trigger: event.trigger,
       state: event.state ?? "completed",
       failReason: event.failReason,
+      failDetail: event.failDetail,
+      summary: event.summary,
+      accountLabel: event.accountLabel,
       turnId: event.turnId,
       compactionId: event.compactionId,
       preTokens: event.preTokens,
@@ -132,6 +143,9 @@ export function normalizeContextCompactEvent(event: AgentChatEvent): NormalizedC
       trigger: event.trigger,
       state: event.state,
       failReason: event.failReason,
+      failDetail: event.failDetail,
+      summary: event.summary,
+      accountLabel: event.accountLabel,
       turnId: event.turnId,
       compactionId: event.compactionId ?? event.turnId,
     };
@@ -145,12 +159,23 @@ export function contextCompactMergeKey(event: Pick<NormalizedContextCompact, "co
   return "legacy";
 }
 
+/**
+ * Short token count shared by the chat divider and the context dial:
+ * 972 -> "972", 6279 -> "6.3k", 142_000 -> "142k", 1_000_000 -> "1M".
+ * `Number(...)` drops a trailing ".0", so 1000 reads "1k", not "1.0k".
+ */
+/** "6.3k", "400k", "1M": one decimal at most, no trailing ".0". */
+export function abbreviateTokenCount(n: number): string {
+  // The thresholds are where rounding reaches the next unit: 999,950 reads
+  // "1M", not "1000k"; 999.5 reads "1k", not "1000".
+  if (n >= 999_950) return `${Number((n / 1_000_000).toFixed(1))}M`;
+  if (n >= 999.5) return `${Number((n / 1_000).toFixed(1))}k`;
+  return String(Math.round(n));
+}
+
 export function formatCompactTokenCount(value: number | null | undefined): string | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 10_000) return `${Math.round(value / 1_000)}k`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
-  return value.toLocaleString();
+  return abbreviateTokenCount(value);
 }
 
 export function formatCompactDuration(durationMs: number | null | undefined): string | null {
@@ -167,7 +192,7 @@ export function resolveProviderTint(provider?: AgentChatCompactProvider | string
   ring: string;
   border: string;
 } {
-  if (provider && provider in PROVIDER_TINTS) {
+  if (provider && Object.hasOwn(PROVIDER_TINTS, provider)) {
     return PROVIDER_TINTS[provider as AgentChatCompactProvider];
   }
   return PROVIDER_TINTS.claude;
@@ -217,6 +242,9 @@ export function mergeNormalizedContextCompact(
     turnId: incoming.turnId ?? previous.turnId,
     compactionId: incoming.compactionId ?? previous.compactionId,
     failReason: incoming.failReason ?? previous.failReason,
+    failDetail: incoming.failDetail ?? previous.failDetail,
+    summary: incoming.summary ?? previous.summary,
+    accountLabel: incoming.accountLabel ?? previous.accountLabel,
     preTokens: incoming.preTokens ?? previous.preTokens,
     postTokens: incoming.postTokens ?? previous.postTokens,
     tokensRemoved: incoming.tokensRemoved ?? previous.tokensRemoved,
@@ -236,6 +264,9 @@ export function toContextCompactChatEvent(
     ...(compact.turnId ? { turnId: compact.turnId } : {}),
     ...(compact.compactionId ? { compactionId: compact.compactionId } : {}),
     ...(compact.failReason ? { failReason: compact.failReason } : {}),
+    ...(compact.failDetail ? { failDetail: compact.failDetail } : {}),
+    ...(compact.summary ? { summary: compact.summary } : {}),
+    ...(compact.accountLabel ? { accountLabel: compact.accountLabel } : {}),
     ...(compact.preTokens != null ? { preTokens: compact.preTokens } : {}),
     ...(compact.postTokens != null ? { postTokens: compact.postTokens } : {}),
     ...(compact.tokensRemoved != null ? { tokensRemoved: compact.tokensRemoved } : {}),
@@ -255,8 +286,15 @@ export function compactionFailLabel(reason?: ContextCompactFailReason): string {
   switch (reason) {
     case "timed_out":
       return "Compaction timed out";
+    // An interrupted compaction was aborted, not broken: Claude Code's own
+    // `/compact` says "Compaction canceled." when it aborts, and an ACP
+    // provider's `cancelled` status maps to this same reason. Saying "failed"
+    // spent the alarm on an outcome the model (or the person's Stop) chose.
     case "interrupted":
+      return "Compaction cancelled";
     case "teardown":
+    case "provider_error":
+    case "quota":
     case undefined:
       return "Compaction failed";
     default: {

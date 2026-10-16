@@ -10,6 +10,12 @@ import SwiftUI
 // PROJECT IN PLACE (no active-project switch), reports the created chat back
 // through `onCreated`, and collapses. The hub surfaces a toast; it does NOT
 // navigate into the chat.
+//
+// The picker also lists the projects of the other live machines. Sending to
+// one of those makes its machine primary first (the old primary stays
+// connected), then creates the chat there the same way. The draft stays in the
+// box until the switch succeeds, and the hub keeps the composer on screen
+// while it runs (`onMachineSwitch`), so a failed switch shows its error here.
 
 // MARK: - Public surface (the hub depends on these names)
 
@@ -51,10 +57,14 @@ let hubComposerSpring = Animation.spring(response: 0.34, dampingFraction: 0.86)
 
 struct HubInlineComposer: View {
   @EnvironmentObject private var syncService: SyncService
+  @EnvironmentObject private var machineFleet: MachineFleet
 
   /// Owned by the hub so taps on the list behind the composer can collapse it.
   @Binding var expanded: Bool
   let onCreated: (HubCreatedChat) -> Void
+  /// True while a send is switching the primary machine. The hub keeps the
+  /// composer mounted meanwhile, though the primary is not connected.
+  var onMachineSwitch: (Bool) -> Void = { _ in }
 
   // Composer selection (seeded from the app-wide "last used" record in init so
   // the provider/model onChange handlers don't reset runtimeMode on first
@@ -74,6 +84,11 @@ struct HubInlineComposer: View {
   // auto-create sentinel; both are resolved against the TARGET project on send.
   @State private var pickedProjectId: String = ""
   @State private var selectedLaneId: String = ""
+  /// The machine of the picked project when it is not the primary one.
+  @State private var pickedMachineKey: String?
+  /// A send to another machine is switching the primary and then sending:
+  /// the roster refreshes this causes must not reset the chosen destination.
+  @State private var holdsDestination = false
 
   // UI / flow.
   @State private var draft: String = ""
@@ -94,9 +109,14 @@ struct HubInlineComposer: View {
 
   private let dictationTargetId = "hub-new-chat-drawer"
 
-  init(expanded: Binding<Bool>, onCreated: @escaping (HubCreatedChat) -> Void) {
+  init(
+    expanded: Binding<Bool>,
+    onCreated: @escaping (HubCreatedChat) -> Void,
+    onMachineSwitch: @escaping (Bool) -> Void = { _ in }
+  ) {
     self._expanded = expanded
     self.onCreated = onCreated
+    self.onMachineSwitch = onMachineSwitch
     var restoredProvider = "claude"
     var restoredModelId = "claude-sonnet-5"
     if let saved = WorkComposerPreferences.load() {
@@ -157,7 +177,16 @@ struct HubInlineComposer: View {
   }
 
   private var pickedProject: MobileProjectSummary? {
-    syncService.projects.first { $0.id == pickedProjectId }
+    if pickedMachineKey != nil { return pickedRemoteProject?.asRemoteMachineProjectSummary }
+    return syncService.projects.first { $0.id == pickedProjectId }
+  }
+
+  private var pickedRemoteMachine: MachineFleet.Machine? {
+    pickedMachineKey.flatMap { machineFleet.machine(for: $0) }
+  }
+
+  private var pickedRemoteProject: RemoteRosterProject? {
+    pickedRemoteMachine?.projects.first { $0.projectId == pickedProjectId }
   }
 
   private var lanesForPickedProject: [RemoteRosterLane] {
@@ -208,7 +237,9 @@ struct HubInlineComposer: View {
   }
 
   private var canUploadAttachments: Bool {
-    attachmentsAvailable
+    // Another machine's project: that machine is checked once it is primary.
+    if pickedMachineKey != nil { return true }
+    return attachmentsAvailable
       && syncService.connectionState == .connected
   }
 
@@ -289,17 +320,25 @@ struct HubInlineComposer: View {
       // binding — drop focus so the keyboard goes down with the panel.
       if !nowExpanded { composerFocused = false }
     }
-    // The keyboard can disappear without SwiftUI clearing focus (interactive
-    // scroll dismissal, hardware-keyboard toggles). Never leave the panel
-    // expanded with no keyboard and no way out — unless a picker or dictation
-    // legitimately owns the screen.
+    // The keyboard can disappear while the panel is open (interactive scroll
+    // dismissal). Never leave the panel expanded once the field lost focus —
+    // unless a picker or dictation legitimately owns the screen. A field that
+    // keeps focus means a hardware keyboard took over (iPad, a paired keyboard,
+    // the simulator): its software keyboard "hides" the moment it shows, and
+    // collapsing then made the composer impossible to open. The hub's tap
+    // outside still collapses it.
     .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
       guard expanded,
             !modelPickerPresented,
             !destinationPickerPresented,
             presentedPicker == nil,
             !isDictating else { return }
-      collapse()
+      // The text view reports a resign in `textViewDidEndEditing`, which can
+      // land just after this notification; read focus on the next turn.
+      DispatchQueue.main.async {
+        guard expanded, !composerFocused else { return }
+        collapse()
+      }
     }
     .onChange(of: composerSelection) { _, newValue in
       WorkComposerPreferences.save(newValue)
@@ -308,6 +347,7 @@ struct HubInlineComposer: View {
     // roster refreshes) — keep the persisted destination honest against them.
     .onChange(of: syncService.rosterRevision) { _, _ in reconcileDestination() }
     .onChange(of: syncService.projects.map(\.id)) { _, _ in reconcileDestination() }
+    .onChange(of: machineFleet.machines) { _, _ in reconcileDestination() }
     .sheet(isPresented: $modelPickerPresented, onDismiss: { composerFocused = true }) {
       WorkModelPickerSheet(
         currentModelId: modelId,
@@ -338,32 +378,34 @@ struct HubInlineComposer: View {
     Button {
       destinationPickerPresented = true
     } label: {
-      HStack(spacing: 8) {
-        Image(systemName: "folder.fill")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(ADEColor.accent)
+      HStack(spacing: 7) {
+        HubProjectIcon(iconDataUrl: pickedProject?.iconDataUrl, isActive: false, size: 18)
 
-        Text(pickedProject?.displayName ?? "Select project")
-          .font(.system(.subheadline, design: .rounded).weight(.semibold))
+        Text(hubComposerDestinationTitle(
+          projectName: pickedProject?.displayName,
+          machineName: pickedRemoteMachine?.name
+        ))
+          .font(.system(size: 13.5, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
 
-        Image(systemName: "chevron.compact.right")
-          .font(.system(size: 12, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+        Image(systemName: "chevron.right")
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
 
         laneTag
 
         Spacer(minLength: 4)
 
         Image(systemName: "chevron.up.chevron.down")
-          .font(.system(size: 11, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
       }
       .padding(.horizontal, 12)
-      .padding(.vertical, 9)
-      .background(ADEColor.cardBackground.opacity(0.62), in: Capsule(style: .continuous))
-      .overlay(Capsule(style: .continuous).stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
+      .frame(minHeight: 36)
+      // Floats over the list behind the scrim, so it sits on the solid kit
+      // surface rather than a translucent track.
+      .adeKitPill()
       .contentShape(Capsule())
     }
     .buttonStyle(.plain)
@@ -373,6 +415,8 @@ struct HubInlineComposer: View {
       }
     )
     .onPreferenceChange(HubDestinationTopKey.self) { destinationControlTopY = $0 }
+    // Fixed while a send runs: it switches machines to reach this destination.
+    .disabled(busy)
     .accessibilityLabel("Destination")
     .accessibilityValue("\(pickedProject?.displayName ?? "No project"), \(selectedLaneName)")
     .accessibilityHint("Choose the project and lane for this chat.")
@@ -392,23 +436,17 @@ struct HubInlineComposer: View {
     if isAutoCreateLane {
       HStack(spacing: 4) {
         Image(systemName: "sparkles")
-          .font(.system(size: 10, weight: .bold))
+          .font(.system(size: 10, weight: .semibold))
         Text("Auto-create lane")
-          .font(.system(.caption, design: .rounded).weight(.medium))
+          .font(.system(size: 12.5, weight: .medium))
           .lineLimit(1)
       }
-      .foregroundStyle(
-        LinearGradient(
-          colors: [ADEColor.accent, ADEColor.purpleAccent],
-          startPoint: .leading,
-          endPoint: .trailing
-        )
-      )
+      .foregroundStyle(ADEColor.textSecondary)
     } else {
       HStack(spacing: 5) {
         Circle().fill(selectedLaneTint).frame(width: 7, height: 7)
         Text(selectedLaneName)
-          .font(.system(.caption, design: .rounded).weight(.medium))
+          .font(.system(size: 12.5, weight: .medium))
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
       }
@@ -428,9 +466,12 @@ struct HubInlineComposer: View {
 
   private var destinationPicker: some View {
     VStack(spacing: 0) {
-      sectionLabel("PROJECT")
+      sectionLabel("Project")
       ScrollView {
         LazyVStack(spacing: 2) {
+          if !machineFleet.composerDestinationMachines.isEmpty {
+            HubComposerMachineHeader(name: syncService.focusedMachineDisplayName)
+          }
           if syncService.projects.isEmpty {
             emptyPickerRow("No projects on this machine")
           } else {
@@ -438,14 +479,20 @@ struct HubInlineComposer: View {
               projectRow(project)
             }
           }
+          ForEach(machineFleet.composerDestinationMachines) { machine in
+            HubComposerMachineHeader(name: machine.name)
+            ForEach(machine.projects, id: \.projectId) { project in
+              projectRow(project.asRemoteMachineProjectSummary, machineKey: machine.machineKey)
+            }
+          }
         }
         .padding(4)
       }
       .frame(maxHeight: .infinity)
 
-      Divider().overlay(ADEColor.glassBorder)
+      Rectangle().fill(ADEKit.rule).frame(height: 0.75)
 
-      sectionLabel("LANE")
+      sectionLabel("Lane")
       ScrollView {
         LazyVStack(spacing: 2) {
           autoCreateLaneRow
@@ -458,17 +505,12 @@ struct HubInlineComposer: View {
       .frame(maxHeight: .infinity)
     }
     .frame(width: 320, height: destinationPickerHeight)
-    .background(ADEColor.cardBackground.opacity(0.98))
-    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.8))
+    .background(ADEKit.surface)
   }
 
   private func sectionLabel(_ text: String) -> some View {
     HStack {
-      Text(text)
-        .font(.system(.caption2, design: .rounded).weight(.bold))
-        .tracking(0.6)
-        .foregroundStyle(ADEColor.textMuted)
+      ADEEyebrow(text)
       Spacer(minLength: 0)
     }
     .padding(.horizontal, 12)
@@ -478,16 +520,18 @@ struct HubInlineComposer: View {
 
   private func emptyPickerRow(_ text: String) -> some View {
     Text(text)
-      .font(.system(.caption, design: .rounded))
+      .font(.system(size: 12.5))
       .foregroundStyle(ADEColor.textMuted)
       .frame(maxWidth: .infinity)
       .padding(.vertical, 12)
   }
 
-  private func projectRow(_ project: MobileProjectSummary) -> some View {
-    let isSelected = project.id == pickedProjectId
+  /// `machineKey`: the project's machine when it is not the primary one.
+  private func projectRow(_ project: MobileProjectSummary, machineKey: String? = nil) -> some View {
+    let isSelected = project.id == pickedProjectId && machineKey == pickedMachineKey
     return Button {
-      guard project.id != pickedProjectId else { return }
+      guard !isSelected else { return }
+      pickedMachineKey = machineKey
       pickedProjectId = project.id
       // Switching projects resets only that project's lane selection.
       selectedLaneId = defaultLaneId(forProjectId: project.id)
@@ -495,7 +539,7 @@ struct HubInlineComposer: View {
       HStack(spacing: 9) {
         HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: isSelected)
         Text(project.displayName)
-          .font(.system(.footnote, design: .rounded).weight(isSelected ? .semibold : .regular))
+          .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -508,7 +552,7 @@ struct HubInlineComposer: View {
       .padding(.horizontal, 8)
       .padding(.vertical, 6)
       .background(
-        isSelected ? ADEColor.accent.opacity(0.12) : Color.clear,
+        isSelected ? ADEKit.pressed : Color.clear,
         in: RoundedRectangle(cornerRadius: 8, style: .continuous)
       )
       .contentShape(Rectangle())
@@ -523,17 +567,12 @@ struct HubInlineComposer: View {
     } label: {
       HStack(spacing: 8) {
         Image(systemName: "sparkles")
-          .font(.system(size: 12, weight: .bold))
-          .foregroundStyle(ADEColor.accent)
+          .font(.system(size: 12, weight: .regular))
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(width: 22)
         Text("Auto-create lane")
-          .font(.system(.footnote, design: .rounded).weight(.medium))
-          .foregroundStyle(
-            LinearGradient(
-              colors: [ADEColor.accent, ADEColor.purpleAccent],
-              startPoint: .leading,
-              endPoint: .trailing
-            )
-          )
+          .font(.system(size: 14, weight: isAutoCreateLane ? .semibold : .regular))
+          .foregroundStyle(ADEColor.textPrimary)
           .frame(maxWidth: .infinity, alignment: .leading)
         if isAutoCreateLane {
           Image(systemName: "checkmark")
@@ -544,7 +583,7 @@ struct HubInlineComposer: View {
       .padding(.horizontal, 8)
       .padding(.vertical, 7)
       .background(
-        isAutoCreateLane ? ADEColor.accent.opacity(0.12) : Color.clear,
+        isAutoCreateLane ? ADEKit.pressed : Color.clear,
         in: RoundedRectangle(cornerRadius: 8, style: .continuous)
       )
       .contentShape(Rectangle())
@@ -563,8 +602,9 @@ struct HubInlineComposer: View {
       VStack(alignment: .leading, spacing: 3) {
         HStack(spacing: 8) {
           Circle().fill(tint).frame(width: 8, height: 8)
+            .frame(width: 22)
           Text(lane.name)
-            .font(.system(.footnote, design: .rounded).weight(isSelected ? .semibold : .regular))
+            .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -580,17 +620,17 @@ struct HubInlineComposer: View {
               .font(.system(size: 9, weight: .regular))
               .foregroundStyle(ADEColor.textMuted.opacity(0.6))
             Text(branch)
-              .font(.system(size: 10, design: .rounded))
-              .foregroundStyle(ADEColor.textMuted.opacity(0.9))
+              .font(.adeMono(10.5))
+              .foregroundStyle(ADEColor.textMuted)
               .lineLimit(1)
           }
-          .padding(.leading, 16)
+          .padding(.leading, 30)
         }
       }
       .padding(.horizontal, 8)
       .padding(.vertical, branch.isEmpty ? 6 : 5)
       .background(
-        isSelected ? ADEColor.accent.opacity(0.12) : Color.clear,
+        isSelected ? ADEKit.pressed : Color.clear,
         in: RoundedRectangle(cornerRadius: 8, style: .continuous)
       )
       .contentShape(Rectangle())
@@ -600,137 +640,135 @@ struct HubInlineComposer: View {
 
   // MARK: Composer card
 
-  /// One card that morphs between two densities: minimized it reads as the old
-  /// "type to vibecode" capsule (sparkles + field + send), expanded it grows the
-  /// controls row (model/mode/fast/dictation) beneath the field.
+  /// The app's shared glass prompt box (`ADEGlassComposerCard`): folded to
+  /// [⋯][field][send] while the drawer is closed, the full composer with the
+  /// model/mode controls once it opens. The drawer owns the fold (`isExpanded`
+  /// also covers pickers and dictation), so the card never folds under a sheet.
   private var composerCard: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      WorkChatInputAttachmentTray(attachments: $attachments)
-        .fixedSize(horizontal: false, vertical: true)
-        .layoutPriority(2)
-
-      VStack(alignment: .leading, spacing: 12) {
-        HStack(alignment: .center, spacing: 10) {
-          if !isExpanded {
-            Image(systemName: "sparkles")
-              .font(.system(size: 14, weight: .semibold))
-              .foregroundStyle(ADEColor.accent)
-              .transition(.opacity)
-          }
-
-          WorkPlainComposerTextView(
-            text: $draft,
-            isFocused: Binding(
-              get: { composerFocused },
-              set: { composerFocused = $0 }
-            ),
-            measuredHeight: $composerTextHeight,
-            placeholder: "Type to vibecode…",
-            acceptsPastedImages: attachmentsAvailable,
-            onPasteImages: { images in
-              workChatInputPasteImages(images, into: $attachments)
+    let collapsed = !isExpanded
+    return ADEGlassComposerCard(
+      collapsed: collapsed,
+      isDictating: isDictating,
+      onFold: { intent in
+        switch intent {
+        case .collapse: collapse()
+        case .expand, .focusChanged:
+          composerFocused = true
+          withAnimation(hubComposerSpring) { expanded = true }
+        }
+      },
+      accessory: {
+        if !attachments.isEmpty {
+          WorkChatInputAttachmentTray(
+            attachments: $attachments,
+            compact: collapsed,
+            onExpand: {
+              composerFocused = true
+              withAnimation(hubComposerSpring) { expanded = true }
             }
           )
-          .frame(maxWidth: .infinity, minHeight: 28, idealHeight: composerTextHeight, maxHeight: composerTextHeight, alignment: .leading)
-
-          if !isExpanded {
-            ADEComposerSendButton(
-              enabled: canSend && !busy,
-              sending: busy,
-              accessibilityLabelText: "Start chat",
-              disabledAccessibilityLabel: "Enter a message to start"
-            ) {
-              dispatch()
-            }
-            .transition(.opacity)
+          .fixedSize(horizontal: false, vertical: true)
+        }
+      },
+      field: {
+        WorkPlainComposerTextView(
+          text: $draft,
+          isFocused: Binding(
+            get: { composerFocused },
+            set: { composerFocused = $0 }
+          ),
+          measuredHeight: $composerTextHeight,
+          placeholder: "Type to vibecode…",
+          acceptsPastedImages: attachmentsAvailable,
+          onPasteImages: { images in
+            workChatInputPasteImages(images, into: $attachments)
           }
+        )
+        .frame(height: composerTextHeight)
+        .frame(
+          height: collapsed
+            ? min(composerTextHeight, workComposerFoldedFieldHeight(lineHeight: UIFont.preferredFont(forTextStyle: .body).lineHeight))
+            : composerTextHeight,
+          alignment: .top
+        )
+        .clipped()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(minHeight: 44)
+      },
+      menu: {
+        WorkComposerOverflowButton(
+          presentedPicker: $presentedPicker,
+          draft: $draft,
+          attachments: $attachments,
+          canCompose: !busy,
+          attachmentsAvailable: attachmentsAvailable,
+          onDictate: { dictationCoordinator.requestStart() },
+          draftsAvailable: syncService.canInvokeRemoteAction("chat.listDrafts"),
+          scheduleAvailable: syncService.canInvokeRemoteAction("chat.createDraft"),
+          scope: WorkDraftScope(
+            projectId: pickedProjectId.isEmpty ? nil : pickedProjectId
+          ),
+          provider: provider,
+          modelId: modelId,
+          runtimeMode: runtimeMode,
+          extraMenuContent: AnyView(
+            Section {
+              Button {
+                modelPickerPresented = true
+              } label: {
+                Label("Model · \(hubPrettyModelName(modelId))", systemImage: "cpu")
+              }
+            }
+          )
+        )
+      },
+      controls: {
+        ScrollView(.horizontal, showsIndicators: false) {
+          WorkComposerControlsRow(
+            provider: provider,
+            modelDisplayName: hubPrettyModelName(modelId),
+            modelBrandKey: WorkModelMentionDirectory.shared.entry(for: modelId)?.brandKey,
+            reasoningEffort: reasoningEffort,
+            currentMode: runtimeMode,
+            modeOptions: workRuntimeModeOptions(provider: provider),
+            modeLabel: workRuntimeModeLabel(provider: provider, mode: runtimeMode),
+            isCollapsed: isControlsCollapsed,
+            fastModeEnabled: codexFastMode,
+            onOpenModelPicker: { modelPickerPresented = true },
+            onSelectMode: { runtimeMode = $0 }
+          )
+          .padding(.trailing, 4)
+        }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+          proxy.size.width
+        } action: { width in
+          controlsWidth = width
         }
 
-        if isExpanded {
-          HStack(alignment: .center, spacing: 8) {
-            if !isDictating {
-              WorkComposerOverflowButton(
-                presentedPicker: $presentedPicker,
-                draft: $draft,
-                attachments: $attachments,
-                canCompose: !busy,
-                attachmentsAvailable: attachmentsAvailable,
-                onDictate: { dictationCoordinator.requestStart() },
-                stashAvailable: syncService.canInvokeRemoteAction("chat.listPromptStashes"),
-                scope: WorkPromptStashScope(
-                  projectId: pickedProjectId.isEmpty ? nil : pickedProjectId
-                ),
-                provider: provider,
-                modelId: modelId
-              )
+        DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draft)
+      },
+      trailing: {
+        DictationMicButton(
+          draft: $draft,
+          coordinator: dictationCoordinator,
+          targetId: dictationTargetId,
+          showsIdleButton: false,
+          onRecordingChange: { isDictating = $0 }
+        )
+        .frame(maxWidth: isDictating ? .infinity : nil)
 
-              ScrollView(.horizontal, showsIndicators: false) {
-                WorkComposerControlsRow(
-                  provider: provider,
-                  modelDisplayName: hubPrettyModelName(modelId),
-                  reasoningEffort: reasoningEffort,
-                  currentMode: runtimeMode,
-                  modeOptions: workRuntimeModeOptions(provider: provider),
-                  modeLabel: workRuntimeModeLabel(provider: provider, mode: runtimeMode),
-                  isCollapsed: isControlsCollapsed,
-                  fastModeEnabled: codexFastMode,
-                  onOpenModelPicker: { modelPickerPresented = true },
-                  onSelectMode: { runtimeMode = $0 }
-                )
-                .padding(.trailing, 4)
-              }
-              .background(
-                GeometryReader { proxy in
-                  Color.clear
-                    .onAppear { controlsWidth = proxy.size.width }
-                    .onChange(of: proxy.size.width) { _, newValue in
-                      controlsWidth = newValue
-                    }
-                }
-              )
-
-              DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draft)
-            }
-
-            DictationMicButton(
-              draft: $draft,
-              coordinator: dictationCoordinator,
-              targetId: dictationTargetId,
-              showsIdleButton: false,
-              onRecordingChange: { isDictating = $0 }
-            )
-            .frame(maxWidth: isDictating ? .infinity : nil)
-
-            if !isDictating {
-              ADEComposerSendButton(
-                enabled: canSend && !busy,
-                sending: busy,
-                accessibilityLabelText: "Start chat",
-                disabledAccessibilityLabel: "Enter a message to start"
-              ) {
-                dispatch()
-              }
-            }
+        if !isDictating {
+          ADEComposerSendButton(
+            enabled: canSend && !busy,
+            sending: busy,
+            accessibilityLabelText: "Start chat",
+            disabledAccessibilityLabel: "Enter a message to start"
+          ) {
+            dispatch()
           }
-          .transition(.move(edge: .top).combined(with: .opacity))
         }
       }
-      .fixedSize(horizontal: false, vertical: true)
-      .layoutPriority(1)
-    }
-    .padding(.horizontal, 14)
-    .padding(.vertical, isExpanded ? 14 : 10)
-    .background {
-      RoundedRectangle(cornerRadius: isExpanded ? 22 : 26, style: .continuous)
-        .fill(ADEColor.pageBackground)
-      RoundedRectangle(cornerRadius: isExpanded ? 22 : 26, style: .continuous)
-        .fill(ADEColor.composerBackground)
-    }
-    .overlay(
-      RoundedRectangle(cornerRadius: isExpanded ? 22 : 26, style: .continuous)
-        .stroke(isExpanded ? ADEColor.glassBorder : ADEColor.border.opacity(0.8), lineWidth: 1)
     )
-    .shadow(color: Color.black.opacity(isExpanded ? 0.16 : 0), radius: 8, y: 3)
   }
 
   // MARK: Actions
@@ -746,7 +784,27 @@ struct HubInlineComposer: View {
   @MainActor
   private func dispatch() {
     let outgoingAttachments = workChatInputReadyAttachments(attachments)
-    guard canSend else { return }
+    guard canSend else {
+      // A tap during a switch is refused (`busy`) and must not release the
+      // hold; the re-entry after a switch that cannot send does release it.
+      if !busy { holdsDestination = false }
+      return
+    }
+    // Another machine's project: make that machine primary first, before the
+    // draft is cleared, then send as usual.
+    if let key = pickedMachineKey, key != syncService.focusedMachineKey {
+      holdsDestination = true
+      // Set before the task runs, so a second tap cannot start a second switch.
+      busy = true
+      Task {
+        guard await focusPickedMachine(key) else {
+          holdsDestination = false
+          return
+        }
+        dispatch()
+      }
+      return
+    }
     let restoredDraft = draft
     let restoredAttachments = attachments
     collapse()
@@ -757,6 +815,7 @@ struct HubInlineComposer: View {
     WorkComposerDraftStore.clear(WorkComposerDraftStore.hubNewChatKey)
     Task {
       let started = await submit(opener: restoredDraft, attachments: outgoingAttachments)
+      holdsDestination = false
       if !started {
         draft = restoredDraft
         attachments = restoredAttachments
@@ -941,6 +1000,7 @@ struct HubInlineComposer: View {
           codexConfigSource: wire.codexConfigSource,
           opencodePermissionMode: wire.opencodePermissionMode,
           droidPermissionMode: wire.droidPermissionMode,
+          musePermissionMode: wire.musePermissionMode,
           cursorModeId: wire.cursorModeId,
           targetProjectId: targetProjectId,
           targetProjectRootPath: targetProjectRootPath
@@ -1103,9 +1163,52 @@ struct HubInlineComposer: View {
     }
   }
 
+  /// Makes the picked project's machine primary so the chat can be created
+  /// there; the previous primary stays connected. False (with the error set)
+  /// when that machine cannot be reached or does not list the project.
+  @MainActor
+  private func focusPickedMachine(_ key: String) async -> Bool {
+    let machineName = pickedRemoteMachine?.name ?? "that machine"
+    let projectId = pickedProjectId
+    let rootPath = syncNormalizedProjectRootScope(pickedRemoteProject?.rootPath)
+    // The switch reconciles the destination against a roster that may not have
+    // its lanes yet; the lane the user chose belongs to that machine and stays.
+    let laneId = selectedLaneId
+    busy = true
+    errorMessage = nil
+    onMachineSwitch(true)
+    defer { onMachineSwitch(false) }
+    let switched = await syncService.switchFocusKeepingPrevious(toMachineKey: key)
+    busy = false
+    guard switched else {
+      // The switch can retarget the destination mid-way; a retry must still go
+      // to the machine the user picked.
+      pickedMachineKey = key
+      pickedProjectId = projectId
+      selectedLaneId = laneId
+      errorMessage = "Can’t reach \(machineName) right now."
+      return false
+    }
+    // The catalog can name the project by a cached id: match its folder too.
+    guard let project = syncService.projects.first(where: { candidate in
+      candidate.id == projectId
+        || (rootPath != nil && syncNormalizedProjectRootScope(candidate.rootPath) == rootPath)
+    }) else {
+      errorMessage = "\(machineName) no longer has that project."
+      return false
+    }
+    pickedMachineKey = nil
+    pickedProjectId = project.id
+    selectedLaneId = laneId
+    return true
+  }
+
   // MARK: Destination resolution
 
   private func lanes(forProjectId id: String) -> [RemoteRosterLane] {
+    if pickedMachineKey != nil {
+      return pickedRemoteMachine?.projects.first { $0.projectId == id }?.lanes ?? []
+    }
     guard !id.isEmpty, let project = syncService.projects.first(where: { $0.id == id }) else { return [] }
     return syncService.rosterProject(for: project)?.lanes ?? []
   }
@@ -1127,6 +1230,22 @@ struct HubInlineComposer: View {
   /// lane lists: keep a still-valid choice, else fall back to the active project
   /// (then first) and that project's primary/first lane.
   private func reconcileDestination() {
+    guard !holdsDestination else { return }
+    if let key = pickedMachineKey {
+      if key == syncService.focusedMachineKey {
+        // That machine became primary: the same project id names it there.
+        pickedMachineKey = nil
+      } else if pickedRemoteProject != nil {
+        if !isAutoCreateLane, !lanesForPickedProject.contains(where: { $0.id == selectedLaneId }) {
+          selectedLaneId = defaultLaneId(forProjectId: pickedProjectId)
+        }
+        return
+      } else {
+        // The machine went away or no longer has the project.
+        pickedMachineKey = nil
+        pickedProjectId = ""
+      }
+    }
     let projects = syncService.projects
     guard !projects.isEmpty else {
       pickedProjectId = ""
@@ -1184,7 +1303,7 @@ private func hubNormalizedChatProvider(_ provider: String) -> String {
 /// screen's `workCliSupportsReasoningSelection`).
 private func hubCliSupportsReasoning(provider: String) -> Bool {
   let family = providerFamilyKey(provider)
-  return family == "claude" || family == "codex" || family == "droid" || family == "pi"
+  return family == "claude" || family == "codex" || family == "muse" || family == "droid" || family == "pi"
 }
 
 /// Derive a short CLI session title from the opener (mirrors the new-chat
@@ -1211,18 +1330,15 @@ private func hubCliInitialTitle(opener: String, provider: String) -> String {
 private func hubPrettyModelName(_ model: String) -> String {
   let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !trimmed.isEmpty else { return "Model" }
+  if let entry = WorkModelMentionDirectory.shared.entry(for: trimmed) {
+    let title = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !title.isEmpty { return title }
+  }
   if let known = workKnownModelDisplayName(trimmed) {
     return known
   }
-  let lower = trimmed.lowercased()
-  if lower.hasPrefix("claude-") {
-    let tail = trimmed.dropFirst("claude-".count)
-    let joined = tail.split(separator: "-").map { part -> String in
-      let s = String(part)
-      if s.range(of: #"^\d+$"#, options: .regularExpression) != nil { return s }
-      return s.prefix(1).uppercased() + s.dropFirst()
-    }.joined(separator: " ")
-    return "Claude " + joined.replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
+  if let pretty = workPrettyModelNameFromId(trimmed) {
+    return pretty
   }
   return trimmed
 }

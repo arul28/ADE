@@ -1,8 +1,6 @@
 import {
   SCHEDULED_WORK_STATE_KEY,
-  beginIdentityConfirmHold,
   buildCodingAgentSystemPrompt,
-  buildOpenCodePromptParts,
   claudeSdkCreateSessionCompat,
   claudeSdkResumeSessionCompat,
   createAgentChatService,
@@ -18,10 +16,8 @@ import {
   openKvDb,
   path,
   readPersistedChatState,
-  resolveBuiltInBrowserActorCapability,
   runGit,
   spawn,
-  startOpenCodeSession,
   storedWakeup,
   streamText,
   tmpRoot,
@@ -33,139 +29,8 @@ import { beforeEach, describe, expect, it, test, vi } from "vitest";
 
 describe("createAgentChatService", () => {
   describe("lane launch directives", () => {
-    it("injects the selected lane worktree into the first opencode user turn only", async () => {
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
 
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
 
-      await service.runSessionTurn({
-        sessionId: session.id,
-        text: "Inspect the repo and fix the launch bug.",
-      });
-      await service.runSessionTurn({
-        sessionId: session.id,
-        text: "Now add tests.",
-      });
-
-      const promptCalls = vi.mocked(buildOpenCodePromptParts).mock.calls;
-      const firstUserContent = String(promptCalls[0]?.[0]?.prompt ?? "");
-      const secondUserContent = String(promptCalls[1]?.[0]?.prompt ?? "");
-      const openCodeStartCalls = vi.mocked(startOpenCodeSession).mock.calls;
-      const systemPromptCalls = vi.mocked(buildCodingAgentSystemPrompt).mock.calls;
-
-      expect(openCodeStartCalls.length).toBeGreaterThan(0);
-      expect(openCodeStartCalls[0]?.[0]).toEqual(expect.objectContaining({
-        leaseKind: "shared",
-      }));
-      expect(firstUserContent).toContain("[ADE launch directive]");
-      expect(firstUserContent).toContain(tmpRoot);
-      expect(firstUserContent).toContain("Read-only inspection outside that worktree is allowed");
-      expect(firstUserContent).toContain("mutating commands only inside that worktree");
-      expect(systemPromptCalls.at(-1)?.[0]).toEqual(expect.objectContaining({
-        runtime: "opencode",
-      }));
-      expect(secondUserContent).not.toContain("[ADE launch directive]");
-      expect(secondUserContent).not.toContain("CLI controls ADE state");
-    });
-
-    it("gives OpenCode activity guidance an explicit per-chat CLI and runtime target", async () => {
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-      const cliPath = path.join(tmpRoot, "activity-cli", "ade");
-      fs.mkdirSync(path.dirname(cliPath), { recursive: true });
-      fs.writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
-      fs.chmodSync(cliPath, 0o755);
-      const runtimeSocketPath = "/Users/admin/.ade-beta/sock/ade.sock";
-      const staleRuntimeSocketPath = "/Users/admin/.ade/sock/ade.sock";
-      const { service } = createService({
-        runtimeSocketPath,
-        getAdeCliAgentEnv: () => ({
-          PATH: path.dirname(cliPath),
-          ADE_CLI_PATH: cliPath,
-          ADE_RUNTIME_SOCKET_PATH: staleRuntimeSocketPath,
-          ADE_RPC_SOCKET_PATH: staleRuntimeSocketPath,
-          ADE_RPC_URL: staleRuntimeSocketPath,
-        }),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      await service.runSessionTurn({ sessionId: session.id, text: "Check the test state." });
-
-      let promptBody: Record<string, unknown> | undefined;
-      await vi.waitFor(() => {
-        const openCodeState = [...mockState.openCodeSessions.values()].at(-1);
-        promptBody = openCodeState?.promptBodies.at(-1) as Record<string, unknown> | undefined;
-        expect(promptBody).toBeDefined();
-      });
-      const systemPromptArgs = vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0];
-      for (const selector of ["ADE_RPC_URL", "ADE_RPC_SOCKET_PATH", "ADE_RUNTIME_SOCKET_PATH"]) {
-        expect(systemPromptArgs?.sessionActivityGuidance)
-          .toContain(`${selector}='${runtimeSocketPath}'`);
-      }
-      expect(systemPromptArgs?.sessionActivityGuidance).toContain("ADE_DEFAULT_ROLE='agent'");
-      expect(systemPromptArgs?.sessionActivityGuidance).toContain(`ADE_CHAT_SESSION_ID='${session.id}'`);
-      expect(systemPromptArgs?.sessionActivityGuidance)
-        .toContain(`'${cliPath}' chat activity testing --session '${session.id}'`);
-      expect(systemPromptArgs?.sessionActivityGuidance).not.toContain(staleRuntimeSocketPath);
-      await service.dispose({ sessionId: session.id });
-    });
-
-    it("withholds SDK activity guidance for an embedded runtime without RPC", async () => {
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-      const cliPath = path.join(tmpRoot, "activity-cli", "ade");
-      fs.mkdirSync(path.dirname(cliPath), { recursive: true });
-      fs.writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
-      fs.chmodSync(cliPath, 0o755);
-      const { service } = createService({
-        runtimeSocketPath: "/runtime/unserved.sock",
-        sessionActivityReportingEnabled: false,
-        getAdeCliAgentEnv: () => ({
-          PATH: path.dirname(cliPath),
-          ADE_CLI_PATH: cliPath,
-          ADE_RUNTIME_SOCKET_PATH: "/runtime/stable.sock",
-        }),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      await service.runSessionTurn({ sessionId: session.id, text: "Check the test state." });
-
-      let promptBody: Record<string, unknown> | undefined;
-      await vi.waitFor(() => {
-        const openCodeState = [...mockState.openCodeSessions.values()].at(-1);
-        promptBody = openCodeState?.promptBodies.at(-1) as Record<string, unknown> | undefined;
-        expect(promptBody).toBeDefined();
-      });
-      const systemPromptArgs = vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0];
-      expect(systemPromptArgs?.sessionActivityGuidance).toBeNull();
-      await service.dispose({ sessionId: session.id });
-    });
 
     it("starts Codex sessions without ADE-owned tool server injection", async () => {
       const laneRootPath = path.join(tmpRoot, "lane-2");
@@ -580,16 +445,7 @@ describe("createAgentChatService", () => {
         ADE_LANE_ID: "lane-1",
         ADE_PROJECT_ROOT: tmpRoot,
       }));
-      const actorToken = baseEnv?.ADE_BROWSER_ACTOR_TOKEN;
-      expect(resolveBuiltInBrowserActorCapability(actorToken)).toMatchObject({
-        chatSessionId: session.id,
-        laneId: "lane-1",
-        projectRoot: tmpRoot,
-      });
-
       await service.dispose({ sessionId: session.id });
-
-      expect(resolveBuiltInBrowserActorCapability(actorToken)).toBeNull();
     });
 
     it("targets Cursor SDK activity reports at the service runtime and disables them without an exact socket", async () => {
@@ -619,7 +475,7 @@ describe("createAgentChatService", () => {
         activityRuntimeSocketPath: runtimeSocketPath,
       }));
       expect(String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? ""))
-        .toContain(`chat activity testing --session '${session.id}'`);
+        .toContain(`chat activity debugging --session '${session.id}'`);
       await service.dispose({ sessionId: session.id });
 
       mockState.cursorSdkAcquireCalls = [];
@@ -718,58 +574,6 @@ describe("createAgentChatService", () => {
         limit: 500,
         toolTypes: expect.arrayContaining(["codex-chat", "claude-chat", "opencode-chat", "cursor", "droid-chat"]),
       }));
-    });
-
-    it("scopes a CTO confirm hold to the session that is on the call", async () => {
-      // The file-wide mapPermissionToClaude mock collapses every mode to
-      // "plan", which would hide the pinned full-auto entirely.
-      vi.mocked(mapPermissionToClaude).mockImplementation((mode) => {
-        if (mode === "full-auto") return "bypassPermissions";
-        if (mode === "edit") return "acceptEdits";
-        if (mode === "default") return "default";
-        return "plan";
-      });
-      const { service } = createService();
-      const onCall = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "claude-sonnet-5",
-        modelId: "anthropic/claude-sonnet-5",
-        identityKey: "cto",
-      });
-      const elsewhere = await service.createSession({
-        laneId: "lane-2",
-        provider: "claude",
-        model: "claude-sonnet-5",
-        modelId: "anthropic/claude-sonnet-5",
-        identityKey: "cto",
-      });
-      expect(onCall.permissionMode).toBe("full-auto");
-      expect(elsewhere.permissionMode).toBe("full-auto");
-
-      const release = beginIdentityConfirmHold(onCall.id);
-      try {
-        // One brain hosts every open project. A call on one CTO chat must not
-        // make a CTO chat in another project ask before it writes.
-        const held = await service.updateSession({
-          sessionId: onCall.id,
-          permissionMode: "full-auto",
-        });
-        const free = await service.updateSession({
-          sessionId: elsewhere.id,
-          permissionMode: "full-auto",
-        });
-        expect(held.permissionMode).toBe("default");
-        expect(free.permissionMode).toBe("full-auto");
-      } finally {
-        release();
-      }
-
-      const afterCall = await service.updateSession({
-        sessionId: onCall.id,
-        permissionMode: "full-auto",
-      });
-      expect(afterCall.permissionMode).toBe("full-auto");
     });
 
     it("excludes identity sessions by default", async () => {
@@ -1294,7 +1098,7 @@ describe("createAgentChatService", () => {
      * architecture document, the capability manifest) is ~21 KB that a live
      * provider thread already holds; re-staging it every turn grew a real CTO
      * thread from 46k to 237k input tokens in 18 turns and tripped Codex
-     * auto-compaction mid-voice-call.
+     * auto-compaction.
      */
     /**
      * One Claude SDK double for every test in this block, typed at the seam
@@ -1770,9 +1574,8 @@ describe("createAgentChatService", () => {
     });
 
     /**
-     * `runSessionTurn` is the headless path, and the CTO voice's `ask_cto`
-     * turns run on it. It used to skip `refreshCtoLiveStateForTurn` entirely,
-     * so a voice turn reached the model with whatever live state the last
+     * `runSessionTurn` is the headless path. It used to skip
+     * `refreshCtoLiveStateForTurn` entirely, so a headless turn reached the model with whatever live state the last
      * interactive send left behind — and with no reconstruction context at all
      * once that send had consumed it. Stale lanes/PRs/dirty flags are worse
      * than none here, because the doctrine tells the CTO not to re-derive them.

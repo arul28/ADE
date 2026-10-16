@@ -6,6 +6,8 @@ import {
   APPLE_DEVICE_EXISTS_CODE,
   APPLE_HELPER_UNAVAILABLE_CODE,
   APPLE_NO_INSTALLED_SIMULATORS_CODE,
+  APPLE_RUNTIME_NOT_INSTALLED_CODE,
+  APPLE_TEST_RUN_BUSY_CODE,
   APPLE_RECORDING_PINNED_CODE,
   APPLE_ROTATE_NOT_ADOPTED_CODE,
   APPLE_ROTATE_SEND_FAILED_CODE,
@@ -92,6 +94,9 @@ const RULES: readonly Rule[] = [
     sentence: "Could not connect to the video stream.",
     action: "reconnect",
   },
+  // The preload refuses a change while the project tab is switching, because
+  // the project it was meant for is ambiguous. Nothing is wrong with the device.
+  { test: matches(/Project is switching/i), sentence: "ADE was switching projects. Try again." },
   // A viewer asked to watch a device that is off. Watching never boots it.
   { test: includes(APPLE_DEVICE_OFF_CODE), sentence: "The device is off.", action: "start" },
   // The device is off (helper `DeviceSession` refusal, or `simctl` on a shut-down device).
@@ -138,7 +143,9 @@ const RULES: readonly Rule[] = [
   { test: matches(/Apple devices belong to a lane|laneId is required|no Apple device yet/i), sentence: "Open the Apple tab from a lane first." },
   { test: includes(APPLE_START_GIVE_UP_CODE), sentence: "The simulator is taking too long to start.", action: "start" },
   { test: matches(/did not become ready within|CoreSimulator may be stuck/i), sentence: "The simulator is taking too long to start.", action: "start" },
-  { test: matches(/simctl clone did not report a udid/i), sentence: "The simulator could not be cloned." },
+  { test: matches(/simctl create did not report a udid/i), sentence: "The simulator could not be created." },
+  { test: includes(APPLE_RUNTIME_NOT_INSTALLED_CODE), sentence: "That iOS version or model is not installed." },
+  { test: includes(APPLE_TEST_RUN_BUSY_CODE), sentence: "Another test run is in progress." },
   // Launch and ownership.
   { test: includes(IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE), sentence: "Another chat is driving this device." },
   { test: includes(IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE), sentence: "A launch is already in progress." },

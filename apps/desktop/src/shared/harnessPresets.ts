@@ -24,6 +24,8 @@
  * object in memory.
  */
 
+import { openCodeHouseProviderName } from "./opencodeProviders";
+
 /** The harnesses a preset can name — the `AgentChatProvider` ids ADE can run. */
 export const HARNESS_PRESET_BODIES = [
   "claude",
@@ -62,6 +64,12 @@ export function harnessBodyLabel(body: string): string {
   return isHarnessPresetBody(body) ? HARNESS_PRESET_BODY_LABELS[body] : body;
 }
 
+/** A provider signed in inside OpenCode, by ADE's name for it. */
+export function openCodeSourceLabel(providerId: string): string {
+  const id = providerId.trim();
+  return openCodeHouseProviderName(id) ?? id;
+}
+
 /**
  * Providers that hold more than one local sign-in, and are therefore the only
  * ones an `account` or `subscription` source can name. Mirrors
@@ -83,11 +91,16 @@ export function isHarnessPresetAccountProvider(value: unknown): value is Harness
  * - `subscription` — a Claude or Codex subscription used from *another* harness
  *   through ADE's proxy. That needs a second sign-in the proxy holds, which is
  *   why an imported preset can report it as missing.
+ * - `opencode` — a provider signed in *inside OpenCode* (OpenCode Zen, OpenCode
+ *   Go, or any provider connected there), named by OpenCode's provider id. The
+ *   token stays in OpenCode's own store and is read at launch on the machine
+ *   that runs the lane.
  */
 export type HarnessPresetSource =
   | { kind: "account"; provider: HarnessPresetAccountProvider; instanceId: string }
   | { kind: "key"; provider: string; credentialId: string; label: string }
-  | { kind: "subscription"; provider: HarnessPresetAccountProvider };
+  | { kind: "subscription"; provider: HarnessPresetAccountProvider }
+  | { kind: "opencode"; providerId: string };
 
 export type HarnessPresetSourceKind = HarnessPresetSource["kind"];
 
@@ -110,10 +123,26 @@ export const DEFAULT_HARNESS_PRESET_LOGO: HarnessPresetLogo = { kind: "ade" };
 /** "Same as main" — the subagent model follows whatever the preset's model is. */
 export const HARNESS_PRESET_SUBAGENT_INHERIT = "inherit";
 
+/**
+ * The account-settings key the preset list travels under.
+ *
+ * One name, three consumers: the renderer's sync registry, the main-process
+ * bridge that reports preset changes, and anything that has to answer "does the
+ * brain hold this preset yet" before a launch reads it.
+ */
+export const HARNESS_PRESETS_SETTING_KEY = "harnessPresets";
+
 /** "Follows subagents" — a built-in agent takes the subagent model. */
 export const HARNESS_PRESET_AGENT_FOLLOWS = "follows";
 
-/** The built-in agents a Claude preset can pin to a specific model. */
+/**
+ * The subagent roles a preset can name.
+ *
+ * These are the SEMANTIC roles, not any one harness's spelling: each writer
+ * maps them onto its own words (`general-purpose` in Claude Code and Grok,
+ * `general` in OpenCode). Keeping the preset's vocabulary stable is what lets
+ * one preset shape describe four harnesses without a per-harness schema.
+ */
 export const HARNESS_PRESET_AGENT_KEYS = ["explore", "plan", "generalPurpose"] as const;
 export type HarnessPresetAgentKey = (typeof HARNESS_PRESET_AGENT_KEYS)[number];
 
@@ -124,6 +153,138 @@ export const HARNESS_PRESET_AGENT_LABELS: Record<HarnessPresetAgentKey, string> 
 };
 
 export type HarnessPresetAgentOverrides = Partial<Record<HarnessPresetAgentKey, string>>;
+export type HarnessPresetAgentEfforts = Partial<Record<HarnessPresetAgentKey, string>>;
+
+/** One named subagent type a harness exposes by name. */
+export type HarnessSubagentAgentType = { key: HarnessPresetAgentKey; label: string };
+
+/**
+ * What a harness lets a preset say about its subagents.
+ *
+ * Two independent knobs, because no harness has both for free: Claude Code and
+ * Codex take a model and a thinking level for subagents, Grok and OpenCode take
+ * a model only, and the rest take neither. `reason` carries the sentence a
+ * surface shows instead of a dead control — never a silent absence, which reads
+ * as a missing feature rather than a harness that has none.
+ *
+ * Every entry here was read off the harness or its pinned SDK, never guessed:
+ * - claude — `AgentDefinition.effort` and `.model` in `@anthropic-ai/claude-agent-sdk`
+ *   0.3.287 (`sdk.d.ts`), plus `CLAUDE_CODE_SUBAGENT_MODEL(_FORCE)`.
+ * - codex — the `agents` table of codex-cli 0.155.1's own config schema
+ *   (`default_subagent_model`, `default_subagent_reasoning_effort`) and
+ *   `AgentRoleToml { description, config_file, nickname_candidates }`.
+ * - grok — `~/.grok/docs/user-guide/16-subagents.md` and `26-config-reference.md`:
+ *   `subagents.models.<type>` pins a model; a subagent otherwise inherits the
+ *   parent, and no per-subagent effort key exists.
+ * - opencode — `opencode agent list` reports `explore (subagent)` and
+ *   `general (subagent)`, and `opencode agent create --mode subagent -m
+ *   provider/model` writes a per-agent model.
+ */
+export type HarnessSubagentSupport = {
+  /** A subagent can run on a model of its own. */
+  model: boolean;
+  /** A subagent's thinking level can differ from the main thread's. */
+  effort: boolean;
+  /** Named types this harness lets a preset pin individually. */
+  agentTypes: readonly HarnessSubagentAgentType[];
+  /** Why the missing half is missing, in the user's words. Null when both are there. */
+  reason: string | null;
+};
+
+function subagentTypes(...keys: HarnessPresetAgentKey[]): readonly HarnessSubagentAgentType[] {
+  return keys.map((key) => ({ key, label: HARNESS_PRESET_AGENT_LABELS[key] }));
+}
+
+const SUBAGENT_MODEL_ONLY = "OpenCode pins a subagent's model in its own agent config; the thinking level is not a per-agent setting there.";
+
+export const HARNESS_SUBAGENT_SUPPORT: Record<HarnessPresetBody, HarnessSubagentSupport> = {
+  claude: {
+    model: true,
+    effort: true,
+    agentTypes: subagentTypes("explore", "plan", "generalPurpose"),
+    reason: null,
+  },
+  codex: {
+    model: true,
+    effort: true,
+    agentTypes: [],
+    reason: null,
+  },
+  grok: {
+    model: true,
+    effort: false,
+    agentTypes: subagentTypes("explore", "plan", "generalPurpose"),
+    reason: "Grok takes a model per subagent type and no thinking level, so its subagents keep the main thread's effort.",
+  },
+  opencode: {
+    model: true,
+    effort: false,
+    agentTypes: subagentTypes("explore", "generalPurpose"),
+    reason: SUBAGENT_MODEL_ONLY,
+  },
+  droid: {
+    model: false,
+    effort: false,
+    agentTypes: [],
+    reason: "Droid resolves its subagents from droid definitions ADE does not manage, so it runs them on the main model.",
+  },
+  qwen: {
+    model: false,
+    effort: false,
+    agentTypes: [],
+    reason: "Qwen Code runs subagents on the main model.",
+  },
+  pi: {
+    model: false,
+    effort: false,
+    agentTypes: [],
+    reason: "Pi runs subagents on the main model.",
+  },
+  kimi: {
+    model: false,
+    effort: false,
+    agentTypes: [],
+    reason: "Kimi runs subagents on the main model.",
+  },
+  copilot: {
+    model: false,
+    effort: false,
+    agentTypes: [],
+    reason: "GitHub Copilot runs subagents on the main model.",
+  },
+  cursor: {
+    model: false,
+    effort: false,
+    agentTypes: [],
+    reason: "Cursor runs subagents on the main model.",
+  },
+};
+
+/** The knobs one harness exposes, never undefined. */
+export function harnessSubagentSupport(harness: HarnessPresetBody): HarnessSubagentSupport {
+  return HARNESS_SUBAGENT_SUPPORT[harness];
+}
+
+/**
+ * What to show where a subagent model or effort control would be.
+ *
+ * One sentence, harness-named, so the reader learns which harness has the
+ * capability rather than that ADE lacks a button.
+ */
+export function harnessSubagentInheritNote(
+  harness: HarnessPresetBody,
+  knob: "model" | "effort",
+): string {
+  const support = harnessSubagentSupport(harness);
+  if (knob === "model" ? support.model : support.effort) return "";
+  return support.reason
+    ?? `${harnessBodyLabel(harness)} runs subagents on the main model.`;
+}
+
+/** "Subagents run on the main model" — the value a surface shows when unsupported. */
+export function harnessSubagentSameAsMain(harness: HarnessPresetBody): string {
+  return `${harnessBodyLabel(harness)} runs subagents on the main model`;
+}
 
 /**
  * The sentence shown when a built-in agent is pinned to a specific model.
@@ -159,8 +320,12 @@ export type HarnessPreset = {
   reasoningEffort?: string;
   /** `"inherit"` = same as main. Otherwise a model id. */
   subagentModel: string;
+  /** The subagent thinking level, where the harness takes one. Absent = runtime default. */
+  subagentEffort?: string;
   /** Per-built-in-agent pins. `"follows"` = follows the subagent model. */
   agentOverrides: HarnessPresetAgentOverrides;
+  /** Per-built-in thinking levels, where the harness takes them. Absent = follows. */
+  agentEfforts: HarnessPresetAgentEfforts;
   /**
    * No permission mode lives here on purpose. A permission tier belongs to the
    * harness and is chosen at launch in the composer, exactly as it is for every
@@ -214,6 +379,12 @@ function validateSource(source: unknown): string | null {
   if (candidate.kind === "subscription") {
     if (!isHarnessPresetAccountProvider(candidate.provider)) {
       return "Only a Claude or Codex subscription can be borrowed through the proxy.";
+    }
+    return null;
+  }
+  if (candidate.kind === "opencode") {
+    if (!isNonEmptyString(candidate.providerId) || !/^[A-Za-z0-9._-]+$/.test(candidate.providerId.trim())) {
+      return "Choose a provider signed in to OpenCode.";
     }
     return null;
   }
@@ -295,6 +466,19 @@ function normalizeAgentOverrides(value: unknown): HarnessPresetAgentOverrides {
   return out;
 }
 
+function normalizeAgentEfforts(value: unknown): HarnessPresetAgentEfforts {
+  if (!value || typeof value !== "object") return {};
+  const raw = value as Record<string, unknown>;
+  const out: HarnessPresetAgentEfforts = {};
+  for (const key of HARNESS_PRESET_AGENT_KEYS) {
+    const entry = raw[key];
+    // Any non-empty level is kept: a gateway's spelling is not ADE's to police,
+    // exactly as it is for the preset's own `reasoningEffort`.
+    if (isNonEmptyString(entry)) out[key] = entry.trim();
+  }
+  return out;
+}
+
 function normalizeSource(value: unknown): HarnessPresetSource | null {
   if (validateSource(value)) return null;
   const raw = value as Record<string, unknown>;
@@ -312,6 +496,9 @@ function normalizeSource(value: unknown): HarnessPresetSource | null {
       credentialId: String(raw.credentialId).trim(),
       label: isNonEmptyString(raw.label) ? raw.label.trim() : String(raw.provider).trim(),
     };
+  }
+  if (raw.kind === "opencode") {
+    return { kind: "opencode", providerId: String(raw.providerId).trim() };
   }
   return { kind: "subscription", provider: raw.provider as HarnessPresetAccountProvider };
 }
@@ -358,7 +545,9 @@ export function normalizeHarnessPreset(value: unknown): HarnessPreset | null {
     model: raw.model.trim(),
     ...(isNonEmptyString(raw.reasoningEffort) ? { reasoningEffort: raw.reasoningEffort.trim() } : {}),
     subagentModel: isNonEmptyString(raw.subagentModel) ? raw.subagentModel.trim() : HARNESS_PRESET_SUBAGENT_INHERIT,
+    ...(isNonEmptyString(raw.subagentEffort) ? { subagentEffort: raw.subagentEffort.trim() } : {}),
     agentOverrides: normalizeAgentOverrides(raw.agentOverrides),
+    agentEfforts: normalizeAgentEfforts(raw.agentEfforts),
     accentColor,
     logo: normalizeLogo(raw.logo),
     createdAt,
@@ -417,6 +606,9 @@ export function presetSourceLabel(
   if (source.kind === "key") {
     return `API key · ${source.label}`;
   }
+  if (source.kind === "opencode") {
+    return `${openCodeSourceLabel(source.providerId)} · via OpenCode sign-in`;
+  }
   return `${harnessBodyLabel(source.provider)} subscription`;
 }
 
@@ -455,7 +647,9 @@ export type HarnessPresetExport = {
     model: string;
     reasoningEffort?: string;
     subagentModel: string;
+    subagentEffort?: string;
     agentOverrides: HarnessPresetAgentOverrides;
+    agentEfforts: HarnessPresetAgentEfforts;
     accentColor: string;
     logo: HarnessPresetLogo;
   };
@@ -476,6 +670,9 @@ function sourceForExport(source: HarnessPresetSource): HarnessPresetSource {
   }
   if (source.kind === "key") {
     return { kind: "key", provider: source.provider, credentialId: source.credentialId, label: source.label };
+  }
+  if (source.kind === "opencode") {
+    return { kind: "opencode", providerId: source.providerId };
   }
   return { kind: "subscription", provider: source.provider };
 }
@@ -508,6 +705,9 @@ export function exportHarnessPreset(preset: HarnessPreset, now: () => Date = () 
   if (preset.source.kind === "subscription") {
     notes.push("The subscription sign-in is not in this file — whoever imports it signs in through ADE's proxy.");
   }
+  if (preset.source.kind === "opencode") {
+    notes.push("The OpenCode sign-in is not in this file — whoever imports it signs in to that provider in OpenCode.");
+  }
 
   return {
     kind: HARNESS_PRESET_EXPORT_KIND,
@@ -520,7 +720,9 @@ export function exportHarnessPreset(preset: HarnessPreset, now: () => Date = () 
       model: preset.model,
       ...(preset.reasoningEffort ? { reasoningEffort: preset.reasoningEffort } : {}),
       subagentModel: preset.subagentModel,
+      ...(preset.subagentEffort ? { subagentEffort: preset.subagentEffort } : {}),
       agentOverrides: normalizeAgentOverrides(preset.agentOverrides),
+      agentEfforts: normalizeAgentEfforts(preset.agentEfforts),
       accentColor: preset.accentColor,
       logo,
     },
@@ -529,7 +731,7 @@ export function exportHarnessPreset(preset: HarnessPreset, now: () => Date = () 
 }
 
 /** What an imported preset needs before it can run on this machine. */
-export type HarnessPresetMissing = "account" | "key" | "subscription-signin";
+export type HarnessPresetMissing = "account" | "key" | "subscription-signin" | "opencode-signin";
 
 export type HarnessPresetImportContext = {
   /** Provider-instance ids this machine holds. */
@@ -538,6 +740,8 @@ export type HarnessPresetImportContext = {
   credentialIds?: readonly string[];
   /** Whether ADE's proxy can hold a subscription sign-in on this host. */
   proxySignInAvailable?: boolean;
+  /** OpenCode provider ids signed in on this machine. */
+  openCodeProviderIds?: readonly string[];
 };
 
 export type HarnessPresetImportResult = {
@@ -606,6 +810,13 @@ export function importHarnessPreset(
   if (source.kind === "subscription" && context.proxySignInAvailable !== true) {
     missing.push("subscription-signin");
   }
+  if (
+    source.kind === "opencode"
+    && context.openCodeProviderIds
+    && !context.openCodeProviderIds.includes(source.providerId)
+  ) {
+    missing.push("opencode-signin");
+  }
 
   const preset: HarnessPresetDraft = {
     name: isNonEmptyString(raw.name)
@@ -616,7 +827,9 @@ export function importHarnessPreset(
     model: raw.model.trim(),
     ...(isNonEmptyString(raw.reasoningEffort) ? { reasoningEffort: raw.reasoningEffort.trim() } : {}),
     subagentModel: isNonEmptyString(raw.subagentModel) ? raw.subagentModel.trim() : HARNESS_PRESET_SUBAGENT_INHERIT,
+    ...(isNonEmptyString(raw.subagentEffort) ? { subagentEffort: raw.subagentEffort.trim() } : {}),
     agentOverrides: normalizeAgentOverrides(raw.agentOverrides),
+    agentEfforts: normalizeAgentEfforts(raw.agentEfforts),
     accentColor:
       typeof raw.accentColor === "string" && HARNESS_PRESET_ACCENT_PATTERN.test(raw.accentColor)
         ? raw.accentColor.toLowerCase()
@@ -635,6 +848,9 @@ export function importHarnessPreset(
 export function harnessPresetMissingCopy(missing: HarnessPresetMissing): string {
   if (missing === "account") return "This harness names a provider account this computer does not have. Pick one of yours.";
   if (missing === "key") return "This harness names an API key this computer does not hold. Pick one of yours, or add it in Secrets.";
+  if (missing === "opencode-signin") {
+    return "This harness uses a provider signed in to OpenCode, and it is not signed in on this computer. Sign in under Providers › OpenCode.";
+  }
   return "This harness borrows a subscription through ADE's proxy, which is not signed in on this computer yet.";
 }
 

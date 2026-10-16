@@ -11,7 +11,6 @@ describe("dropInheritedCallerIdentity", () => {
     const env: NodeJS.ProcessEnv = {
       ADE_CHAT_SESSION_ID: "43e71799-c4c1-4d55-aef5-2d14c8104cc9",
       ADE_RUN_ID: "run-1",
-      ADE_BROWSER_ACTOR_TOKEN: "token",
       ADE_DEFAULT_ROLE: "cto",
       ADE_HOME: "/Users/me/.ade-alpha",
       PATH: "/usr/bin",
@@ -19,7 +18,7 @@ describe("dropInheritedCallerIdentity", () => {
 
     const dropped = dropInheritedCallerIdentity(env);
 
-    expect(dropped).toEqual(["ADE_CHAT_SESSION_ID", "ADE_BROWSER_ACTOR_TOKEN", "ADE_RUN_ID"]);
+    expect(dropped).toEqual(["ADE_CHAT_SESSION_ID", "ADE_RUN_ID"]);
     for (const key of BRAIN_INHERITED_CALLER_ENV_KEYS) expect(env[key]).toBeUndefined();
     expect(env).toEqual({
       ADE_DEFAULT_ROLE: "cto",
@@ -42,8 +41,15 @@ describe("brain startup sentences", () => {
     expect(describeDroppedCallerIdentity(["ADE_CHAT_SESSION_ID"])).toContain("ADE_CHAT_SESSION_ID");
   });
 
-  it("warns only for a ceiling that refuses cto clients", () => {
+  it("warns only for a ceiling that refuses cto clients, and never for an embedded runtime", () => {
     expect(describeBrainRoleCeiling("cto")).toBeNull();
     expect(describeBrainRoleCeiling("agent")).toContain("ade --role cto serve");
+
+    // An embedded runtime is a guest inside one host's process. It serves that
+    // host at `agent` on purpose, so the desktop, phone and web clients the
+    // sentence warns about are not there to be refused, and the command it
+    // recommends does not apply.
+    expect(describeBrainRoleCeiling("agent", { embedded: true })).toBeNull();
+    expect(describeBrainRoleCeiling("cto", { embedded: true })).toBeNull();
   });
 });

@@ -1,0 +1,29 @@
+---
+title: "v1.2.85"
+description: "Release notes for ADE v1.2.85 - October 1, 2026"
+---
+
+ADE 1.2.85 shows ADE entities in agent replies as live chips, folds chat drawers and cleans up dead agent shells, adds a machine filter to Work, and gives a stuck background service a hard reset.
+
+## Chat
+
+- Lanes, chats, models, permission modes, PRs, commits, Linear issues, skills, timestamps, and line ranges in agent replies render as live chips on desktop, in the `ade code` TUI, and on iOS. A span becomes a chip only when it matches real ADE state (#1411).
+
+## Work
+
+- A chat's shells and subagents fold into one small mark with a count and a status (failed, needs you, or running) (#1408).
+- A dead shell that App Control started under a chat archives itself. A shell that you typed into is never touched, and the transcript stays (#1408).
+- **Settings → Archive** is one place to manage archived items (#1408).
+- The Work filter panel is redesigned on desktop and mobile, and it can filter by machine (#1409).
+- The import hint stays readable at narrow window widths (#1407).
+
+## Accounts
+
+- Account lists show a Claude login as signed in only when the saved login still works (#1406).
+- Two account folders that hold the same login show as one row, and smart balance counts that quota once (#1406).
+- Click an account to pick it for new chats (#1406).
+
+## Recovery
+
+- When macOS loads the background service but never starts it, ADE detects the Login Items state and explains the fix in plain language instead of reporting a crash loop (#1410).
+- A new **Hard reset** starts ADE over on the machine when Repair cannot fix it (#1410).

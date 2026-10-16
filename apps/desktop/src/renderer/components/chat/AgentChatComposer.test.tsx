@@ -18,17 +18,33 @@ import {
   CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE,
   CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE,
   CURSOR_CLOUD_SEND_EMPTY_CONTENT_MESSAGE,
-  cursorBooleanConfigLabel,
-  cursorCloudSendBlock,
+  resolveCloudSendBlock,
   HEIC_CONVERSION_UNAVAILABLE_MESSAGE,
-  nextCursorBooleanConfigValue,
 } from "./AgentChatComposer";
 import {
   createDynamicOpenCodeModelDescriptor,
   replaceDynamicOpenCodeModelDescriptors,
 } from "../../../shared/modelRegistry";
 import { useAppStore } from "../../state/appStore";
+import { AgentChatApiProvider } from "./agentChatApi";
 import { formatChatOutputContextBlock } from "../../../shared/chatOutputContext";
+
+vi.mock("@tanstack/react-virtual", () => ({
+  useVirtualizer: (options: { count: number; estimateSize: () => number; getItemKey?: (index: number) => string | number }) => {
+    const size = options.estimateSize();
+    return {
+      getTotalSize: () => options.count * size,
+      getVirtualItems: () => Array.from({ length: options.count }, (_, index) => ({
+        index,
+        key: options.getItemKey?.(index) ?? index,
+        start: index * size,
+        size,
+      })),
+      measureElement: vi.fn(),
+      scrollToIndex: vi.fn(),
+    };
+  },
+}));
 
 function installMatchMediaMock(): void {
   if (typeof window.matchMedia === "function") return;
@@ -100,7 +116,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  useAppStore.setState({ promptStashButtonEnabled: true });
+  useAppStore.setState({ draftsButtonEnabled: true });
   delete (window as any).ade;
 });
 
@@ -196,13 +212,13 @@ function typeIntoAnswer(text: string): void {
   fireEvent.input(editor);
 }
 
-function installPromptStashBridge(promptStashes: Record<string, unknown>) {
+function installDraftsBridge(drafts: Record<string, unknown>) {
   const previousAde = (window as any).ade ?? {};
   (window as any).ade = {
     ...previousAde,
     agentChat: {
       ...(previousAde.agentChat ?? {}),
-      promptStashes,
+      drafts,
     },
   };
 }
@@ -382,7 +398,7 @@ describe("AgentChatComposer", () => {
     expect(icon.textContent ?? "").not.toContain("GH");
   });
 
-  it("hydrates highlighted assistant output as an inline Chat context chip", async () => {
+  it("hydrates highlighted assistant output as an inline quote chip", async () => {
     const writeClipboardText = vi.fn().mockResolvedValue(undefined);
     (window as any).ade = { app: { writeClipboardText } };
     const block = formatChatOutputContextBlock("retry the lane checkout")!;
@@ -396,7 +412,8 @@ describe("AgentChatComposer", () => {
       if (!el) throw new Error("chat context chip not rendered");
       return el;
     });
-    expect(chip.textContent).toContain("Chat context");
+    expect(chip.textContent).toContain("retry the lane checkout");
+    expect(chip.getAttribute("aria-label")).toContain("Quote");
     fireEvent.click(chip);
     fireEvent.click(screen.getByRole("menuitem", { name: /Copy/ }));
     expect(writeClipboardText).toHaveBeenCalledWith("retry the lane checkout");
@@ -412,7 +429,7 @@ describe("AgentChatComposer", () => {
   });
 
   it("stashes the current prompt with Cmd+S even when its appearance button is hidden", async () => {
-    useAppStore.setState({ promptStashButtonEnabled: false });
+    useAppStore.setState({ draftsButtonEnabled: false });
     const created = {
       id: "stash-1",
       text: "Need a steer message",
@@ -421,14 +438,14 @@ describe("AgentChatComposer", () => {
       createdAt: "2026-07-28T12:00:00.000Z",
     };
     const create = vi.fn().mockResolvedValue(created);
-    installPromptStashBridge({
+    installDraftsBridge({
       list: vi.fn().mockResolvedValue([]),
       create,
       delete: vi.fn().mockResolvedValue(true),
     });
     const props = renderComposer();
 
-    expect(screen.queryByRole("button", { name: "Stash prompt" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save draft" })).toBeNull();
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "s", metaKey: true });
 
     await waitFor(() => expect(create).toHaveBeenCalledWith({
@@ -463,7 +480,7 @@ describe("AgentChatComposer", () => {
     const saveTempAttachment = vi.fn().mockResolvedValue({
       path: storedAttachment.path,
     });
-    const createPromptStash = vi.fn().mockResolvedValue({
+    const createDraft = vi.fn().mockResolvedValue({
       id: "stash-image",
       text: "Need a steer message",
       provider: "codex",
@@ -473,9 +490,9 @@ describe("AgentChatComposer", () => {
     });
     (window as any).ade = {
       agentChat: {
-        promptStashes: {
+        drafts: {
           list: vi.fn().mockResolvedValue([]),
-          create: createPromptStash,
+          create: createDraft,
           delete: vi.fn().mockResolvedValue(true),
         },
         getImageDataUrl,
@@ -487,13 +504,13 @@ describe("AgentChatComposer", () => {
       attachments: [sourceAttachment],
       composerMachineBinding,
     });
-    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledWith(
       sourceAttachment.path,
       composerMachineBinding,
     ));
-    await waitFor(() => expect(createPromptStash).toHaveBeenCalledWith({
+    await waitFor(() => expect(createDraft).toHaveBeenCalledWith({
       text: "Need a steer message",
       provider: "codex",
       modelId: "openai/gpt-5.4",
@@ -669,7 +686,7 @@ describe("AgentChatComposer", () => {
     const menu = screen.getByRole("menu", { name: "Send options" });
     expect(menu.textContent).toContain("After the current tool step.");
     expect(menu.textContent).toContain("When this turn finishes.");
-    expect(menu.textContent).toContain("Stop and redirect Claude now.");
+    expect(menu.textContent).toContain("Redirect Claude now.");
   });
 
   const CURSOR_STEER_OVERRIDES = {
@@ -1702,7 +1719,7 @@ describe("AgentChatComposer", () => {
       modelId: "openai/gpt-5.4",
       createdAt: "2026-08-10T12:00:00.000Z",
     });
-    installPromptStashBridge({
+    installDraftsBridge({
       list: vi.fn().mockResolvedValue([]),
       create,
       delete: vi.fn().mockResolvedValue(true),
@@ -1741,7 +1758,7 @@ describe("AgentChatComposer", () => {
       resolveCreate = resolve;
     }));
     const remove = vi.fn().mockResolvedValue(true);
-    installPromptStashBridge({
+    installDraftsBridge({
       list: vi.fn().mockResolvedValue([]),
       create,
       delete: remove,
@@ -1786,7 +1803,7 @@ describe("AgentChatComposer", () => {
       resolveCreate = resolve;
     }));
     const remove = vi.fn().mockResolvedValue(true);
-    installPromptStashBridge({
+    installDraftsBridge({
       list: vi.fn().mockResolvedValue([]),
       create,
       delete: remove,
@@ -1828,7 +1845,7 @@ describe("AgentChatComposer", () => {
       createdAt: "2026-08-10T12:00:00.000Z",
     });
     const remove = vi.fn().mockResolvedValue(true);
-    installPromptStashBridge({
+    installDraftsBridge({
       list: vi.fn().mockResolvedValue([]),
       create,
       delete: remove,
@@ -1900,6 +1917,35 @@ describe("AgentChatComposer", () => {
         expect(option.textContent?.trim()).toBe(option.getAttribute("aria-label"));
         expect(option.getAttribute("title")?.length).toBeGreaterThan(0);
       }
+    },
+  );
+
+  // Droid's autonomy ladder has no planning rung to withhold.
+  it.each(CAPTION_FREE_PERMISSION_CASES.filter((testCase) => testCase.provider !== "Droid"))(
+    "offers $provider planning only in a project chat, not in a chat without a project",
+    ({ triggerName, overrides }) => {
+      const optionNames = () => {
+        fireEvent.click(screen.getByRole("button", { name: triggerName }));
+        const listbox = screen.getByRole("listbox", { name: triggerName });
+        return Array.from(listbox.querySelectorAll<HTMLElement>('[role="option"]'))
+          .map((option) => option.getAttribute("aria-label") ?? "");
+      };
+
+      renderComposer(overrides);
+      const project = optionNames();
+      expect(project.some((name) => /plan/i.test(name))).toBe(true);
+      cleanup();
+
+      const props = buildComposerProps(overrides);
+      render(
+        <AgentChatApiProvider scope={{ kind: "personal", agentChat: {} as never, modelCatalogScopeKey: "personal" }}>
+          <AgentChatComposer {...props} />
+        </AgentChatApiProvider>,
+      );
+      const personal = optionNames();
+      expect(personal.some((name) => /plan/i.test(name))).toBe(false);
+      // Only planning is withheld; every other mode stays.
+      expect(personal).toEqual(project.filter((name) => !/plan/i.test(name)));
     },
   );
 
@@ -2012,14 +2058,24 @@ describe("AgentChatComposer", () => {
     });
   });
 
-  it("renders the overflow entry directly when only one control survives gating", () => {
-    // A "⋯" that opens onto a single row is a menu pretending to be a button.
-    // Surfaces gate these entries independently, so on a CLI draft only one may
-    // survive — it should be reachable in one click, not two.
-    renderComposer({ turnActive: false, draft: "" });
+  it("Add secret saves the value to the project and puts only its name in the draft", async () => {
+    const set = vi.fn(async () => ({ name: "STRIPE_KEY" }));
+    const list = vi.fn(async () => ({ secrets: [] }));
+    (window as any).ade = { ...(window as any).ade, projectSecrets: { set, list } };
+    const view = renderControlledComposer({ turnActive: false, draft: "Wire up billing." });
 
-    expect(screen.queryByRole("button", { name: "More composer controls" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Issue context" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "More composer controls" }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Add secret/ }));
+    fireEvent.change(screen.getByTestId("add-project-secret-name"), { target: { value: "STRIPE_KEY" } });
+    fireEvent.change(screen.getByTestId("project-secret-value"), { target: { value: "sk_live_not_for_chat" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(set).toHaveBeenCalledWith({ name: "STRIPE_KEY", value: "sk_live_not_for_chat" }));
+    await waitFor(() => expect(view.onDraftChange).toHaveBeenCalled());
+    const draft = (view.onDraftChange as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0] as string;
+    expect(draft.startsWith("Wire up billing.")).toBe(true);
+    expect(draft).toContain("STRIPE_KEY");
+    expect(draft).not.toContain("sk_live_not_for_chat");
   });
 
   it("moves focus through the overflow menu and returns it after keyboard selection", async () => {
@@ -2034,10 +2090,12 @@ describe("AgentChatComposer", () => {
     const trigger = screen.getByRole("button", { name: "More composer controls" });
     fireEvent.click(trigger);
     const issue = screen.getByRole("menuitemcheckbox", { name: /Issue context/ });
+    const addSecret = screen.getByRole("menuitemcheckbox", { name: /Add secret/ });
     const appControl = screen.getByRole("menuitemcheckbox", { name: /App Control/i });
     expect((issue as HTMLButtonElement).disabled).toBe(true);
-    await waitFor(() => expect(document.activeElement).toBe(appControl));
-    fireEvent.keyDown(appControl, { key: "ArrowDown" });
+    // Focus starts on the first enabled row, skipping the disabled one.
+    await waitFor(() => expect(document.activeElement).toBe(addSecret));
+    fireEvent.keyDown(addSecret, { key: "ArrowDown" });
     expect(document.activeElement).toBe(appControl);
     fireEvent.keyDown(appControl, { key: "Enter" });
     expect(onToggleAppControl).toHaveBeenCalledTimes(1);
@@ -2455,7 +2513,9 @@ describe("AgentChatComposer", () => {
     });
 
     expect(screen.getByTestId("ask-question-composer")).toBeTruthy();
-    expect(screen.getByLabelText(/stop/i)).toBeTruthy();
+    // Every provider now has a Stop menu beside the button; the button itself
+    // keeps its own name.
+    expect(screen.getByRole("button", { name: "Stop active turn" })).toBeTruthy();
   });
 
   it("locks the prompt box while a pending question is waiting", () => {
@@ -2900,10 +2960,10 @@ describe("AgentChatComposer", () => {
     fireEvent.click(screen.getByRole("button", { name: /Linear issue/i }));
 
     await waitFor(() => expect(searchLinearIssues).toHaveBeenCalled());
-    const issueIdentifier = (await screen.findAllByText("ADE-123"))[0]!;
+    await screen.findByRole("button", { name: /ADE-123/ });
     // The issue row is a `div role="button"` (the checkbox is a real <button>
     // sibling, so the row can't be a nested <button>).
-    const issueRow = issueIdentifier.closest('[role="button"]');
+    const issueRow = screen.getByRole("button", { name: /ADE-123/ });
     expect(issueRow).toBeTruthy();
     fireEvent.click(issueRow!);
     fireEvent.click(screen.getByRole("button", { name: "Attach issue" }));
@@ -2966,13 +3026,11 @@ describe("AgentChatComposer", () => {
     fireEvent.click(screen.getByRole("button", { name: /Linear issue/i }));
 
     await waitFor(() => expect(screen.getAllByText("ADE-123").length).toBeGreaterThan(0));
-    await new Promise((resolve) => window.setTimeout(resolve, 260));
     expect(searchLinearIssues).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
     await waitFor(() => expect(screen.getAllByText("ADE-124").length).toBeGreaterThan(0));
     expect(searchLinearIssues).toHaveBeenLastCalledWith(expect.objectContaining({ after: "cursor-1" }));
-    await new Promise((resolve) => window.setTimeout(resolve, 260));
 
     expect(searchLinearIssues).toHaveBeenCalledTimes(2);
     expect(screen.getAllByText("ADE-123").length).toBeGreaterThan(0);
@@ -3126,6 +3184,69 @@ describe("AgentChatComposer", () => {
     }
   });
 
+  it.each([
+    {
+      name: "fits a photo pasted from another app through the clipboard reader",
+      droppedPath: "",
+      clipboardImage: { data: "fitted-jpeg", filename: "clipboard.jpg", mimeType: "image/jpeg" },
+      expectReader: true,
+      expected: { attachedPath: "/tmp/ade-clipboard.jpg", error: null },
+    },
+    {
+      name: "falls back to the pasted file when the clipboard holds no picture",
+      droppedPath: "",
+      clipboardImage: null,
+      expectReader: true,
+      expected: { attachedPath: null, error: /too large/i },
+    },
+    {
+      name: "streams a big image file copied in Finder from its path",
+      droppedPath: "/Users/me/Pictures/huge.png",
+      clipboardImage: null,
+      expectReader: false,
+      expected: { attachedPath: "/staged/huge.png", error: null },
+    },
+  ])("oversized image paste: $name", async ({ droppedPath, clipboardImage, expectReader, expected }) => {
+    // A photo copied out of Messages reaches the paste event as a PNG the
+    // browser re-encoded, often several times the 10 MB pasted-bytes ceiling.
+    const readClipboardImage = vi.fn().mockResolvedValue(clipboardImage);
+    const saveTempAttachment = vi.fn().mockResolvedValue({ path: "/tmp/ade-clipboard.jpg" });
+    const stageFileAttachment = vi.fn().mockResolvedValue({ path: "/staged/huge.png" });
+    (window as any).ade = {
+      app: { readClipboardImage },
+      project: { getDroppedPath: vi.fn(() => droppedPath) },
+      agentChat: {
+        saveTempAttachment,
+        stageFileAttachment,
+        getAttachmentStagingMode: vi.fn().mockResolvedValue({ mode: "copy", maxBytes: 50 * 1024 * 1024 }),
+      },
+    };
+    const props = renderComposer({ turnActive: false, draft: "" });
+    const file = new File([new Uint8Array([1, 2, 3])], "image.png", { type: "image/png" });
+    Object.defineProperty(file, "size", { configurable: true, value: 18 * 1024 * 1024 });
+    Object.defineProperty(file, "arrayBuffer", {
+      configurable: true,
+      value: vi.fn(async () => new Uint8Array([1, 2, 3]).buffer),
+    });
+
+    fireEvent.paste(screen.getByPlaceholderText("Type to vibecode..."), {
+      clipboardData: { files: [file], items: [], getData: vi.fn(() => "") },
+    });
+
+    if (expected.attachedPath) {
+      await waitFor(() => expect(props.onAddAttachment).toHaveBeenCalledWith(
+        expect.objectContaining({ path: expected.attachedPath, type: "image" }),
+      ));
+    } else {
+      expect(await screen.findByText(expected.error!)).toBeTruthy();
+      expect(props.onAddAttachment).not.toHaveBeenCalled();
+    }
+    expect(readClipboardImage).toHaveBeenCalledTimes(expectReader ? 1 : 0);
+    if (clipboardImage) {
+      expect(saveTempAttachment).toHaveBeenCalledWith({ data: "fitted-jpeg", filename: "clipboard.jpg" }, null);
+    }
+  });
+
   it("shows a pasted image preview while the temp attachment is still saving", async () => {
     const createObjectURL = vi.fn().mockReturnValue("blob:ade-paste-preview");
     const revokeObjectURL = vi.fn();
@@ -3186,6 +3307,73 @@ describe("AgentChatComposer", () => {
         value: previousRevokeObjectURL,
       });
     }
+  });
+
+  it("folds a large plain-text paste into a text attachment instead of the draft", async () => {
+    if (typeof Blob.prototype.arrayBuffer !== "function") {
+      // jsdom's Blob predates arrayBuffer; the staging bytes leg reads it.
+      Object.defineProperty(Blob.prototype, "arrayBuffer", {
+        configurable: true,
+        value(this: Blob) {
+          return new Promise<ArrayBuffer>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as ArrayBuffer);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsArrayBuffer(this);
+          });
+        },
+      });
+    }
+    const saveTempAttachment = vi.fn().mockResolvedValue({ path: "/tmp/ade-pasted-text.txt" });
+    (window as any).ade = {
+      app: {},
+      agentChat: { saveTempAttachment },
+    };
+
+    const props = renderComposer({ turnActive: false, draft: "" });
+    const pastedLog = Array.from({ length: 200 }, (_, index) => `log line ${index}`).join("\n");
+    const clipboardData = {
+      files: [],
+      items: [],
+      getData: vi.fn((type: string) => (type === "text/plain" ? pastedLog : "")),
+    };
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, "clipboardData", { configurable: true, value: clipboardData });
+    fireEvent(screen.getByPlaceholderText("Type to vibecode..."), pasteEvent);
+
+    await waitFor(() => expect(props.onAddAttachment).toHaveBeenCalledWith({
+      path: "/tmp/ade-pasted-text.txt",
+      type: "file",
+      intent: "user_prompt",
+    }));
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    expect(saveTempAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({ filename: "pasted-text.txt" }),
+      null,
+    );
+    expect(props.onDraftChange).not.toHaveBeenCalledWith(pastedLog);
+  });
+
+  it("leaves a small paste on the native draft path", () => {
+    const saveTempAttachment = vi.fn().mockResolvedValue({ path: "/tmp/unused.txt" });
+    (window as any).ade = {
+      app: {},
+      agentChat: { saveTempAttachment },
+    };
+
+    const props = renderComposer({ turnActive: false, draft: "" });
+    const clipboardData = {
+      files: [],
+      items: [],
+      getData: vi.fn((type: string) => (type === "text/plain" ? "just a sentence" : "")),
+    };
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, "clipboardData", { configurable: true, value: clipboardData });
+    fireEvent(screen.getByPlaceholderText("Type to vibecode..."), pasteEvent);
+
+    expect(pasteEvent.defaultPrevented).toBe(false);
+    expect(saveTempAttachment).not.toHaveBeenCalled();
+    expect(props.onAddAttachment).not.toHaveBeenCalled();
   });
 
   it("clears the drop highlight when a URL drop is rejected", async () => {
@@ -3778,6 +3966,8 @@ describe("AgentChatComposer", () => {
       });
 
       fireEvent.click(screen.getByRole("button", { name: "Context usage: 80% full. Compact context" }));
+      expect(onCompactContext).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Compact now" }));
       expect(onCompactContext).toHaveBeenCalledTimes(1);
       expect(view.onSubmit).not.toHaveBeenCalled();
       expect(view.onDraftChange).not.toHaveBeenCalled();
@@ -3792,9 +3982,10 @@ describe("AgentChatComposer", () => {
         onCompactContext,
       });
 
-      const button = screen.getByRole("button", {
+      fireEvent.click(screen.getByRole("button", {
         name: "Context usage: 80% full. Wait for this turn to finish before compacting.",
-      });
+      }));
+      const button = screen.getByRole("button", { name: "Compact now" });
       expect(button).toHaveProperty("disabled", true);
       fireEvent.click(button);
       expect(onCompactContext).not.toHaveBeenCalled();
@@ -3862,8 +4053,13 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
       modelId: "cursor/composer-cloud",
       availableModelIds: ["cursor/composer-cloud"],
       draft: "Run this in the cloud.",
-      cursorCloudCanLaunch: true,
-      cursorCloudModeActive: true,
+      cloudLaunch: {
+        provider: "cursor" as const,
+        canLaunch: true,
+        active: true,
+        modelReady: true,
+        hasEligibleModels: true,
+      },
       ...overrides,
     };
   }
@@ -3873,8 +4069,7 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
     const onSubmitBlocked = vi.fn();
     const onSubmitToCloud = vi.fn();
     renderComposer(cloudProps({
-      cursorCloudModelReady: false,
-      cursorCloudHasEligibleModels: true,
+      cloudLaunch: { ...cloudProps().cloudLaunch!, modelReady: false },
       onSubmit,
       onSubmitBlocked,
       onSubmitToCloud,
@@ -3894,8 +4089,7 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
     const onSubmitBlocked = vi.fn();
     const onSubmitToCloud = vi.fn();
     renderComposer(cloudProps({
-      cursorCloudModelReady: false,
-      cursorCloudHasEligibleModels: false,
+      cloudLaunch: { ...cloudProps().cloudLaunch!, modelReady: false, hasEligibleModels: false },
       onSubmit,
       onSubmitBlocked,
       onSubmitToCloud,
@@ -3913,8 +4107,7 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
     const onSubmitBlocked = vi.fn();
     renderComposer(cloudProps({
       modelId: "",
-      cursorCloudModelReady: false,
-      cursorCloudHasEligibleModels: true,
+      cloudLaunch: { ...cloudProps().cloudLaunch!, modelReady: false },
       onSubmit,
       onSubmitBlocked,
       onSubmitToCloud: vi.fn(),
@@ -3930,8 +4123,7 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
     const onSubmit = vi.fn();
     const onSubmitToCloud = vi.fn().mockReturnValue(true);
     renderComposer(cloudProps({
-      cursorCloudModelReady: true,
-      cursorCloudHasEligibleModels: true,
+      cloudLaunch: cloudProps().cloudLaunch,
       onSubmit,
       onSubmitToCloud,
     }));
@@ -3942,21 +4134,46 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
     expect(onSubmitToCloud).toHaveBeenCalledWith("Run this in the cloud.");
     expect(onSubmit).not.toHaveBeenCalled();
   });
+
+  it.each([
+    {
+      kind: "folded pasted prompt",
+      attachment: { path: "/tmp/pasted-text.txt", type: "file" as const, intent: "user_prompt" as const },
+      disabled: false,
+    },
+    {
+      kind: "ordinary file",
+      attachment: { path: "/tmp/notes.txt", type: "file" as const },
+      disabled: true,
+    },
+  ])("uses only $kind as linked cloud steer content", ({ attachment, disabled }) => {
+    renderComposer(cloudProps({
+      turnActive: true,
+      draft: "",
+      attachments: [attachment],
+      allowAttachmentOnlySubmit: true,
+      cloudSessionLinked: true,
+      cloudLaunch: { ...cloudProps().cloudLaunch!, canLaunch: false },
+    }));
+
+    expect((screen.getByRole("button", { name: "Send steer message" }) as HTMLButtonElement).disabled)
+      .toBe(disabled);
+  });
 });
 
-describe("cursorCloudSendBlock", () => {
+describe("resolveCloudSendBlock", () => {
   it("names the unloaded catalog first, then the ineligible model, then empty content", () => {
-    expect(cursorCloudSendBlock({
+    expect(resolveCloudSendBlock({
       hasEligibleModels: false,
       modelReady: false,
       hasContent: false,
     })).toEqual({ reason: CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE, notify: true });
-    expect(cursorCloudSendBlock({
+    expect(resolveCloudSendBlock({
       hasEligibleModels: true,
       modelReady: false,
       hasContent: true,
     })).toEqual({ reason: CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE, notify: true });
-    expect(cursorCloudSendBlock({
+    expect(resolveCloudSendBlock({
       hasEligibleModels: true,
       modelReady: true,
       hasContent: false,
@@ -3964,43 +4181,11 @@ describe("cursorCloudSendBlock", () => {
   });
 
   it("lets a ready cloud send through", () => {
-    expect(cursorCloudSendBlock({
+    expect(resolveCloudSendBlock({
       hasEligibleModels: true,
       modelReady: true,
       hasContent: true,
     })).toBeNull();
-  });
-});
-
-describe("Cursor model options in the composer", () => {
-  it("cycles a boolean option Default, On, Off, and back to Default", () => {
-    expect([null, true, false].map(cursorBooleanConfigLabel)).toEqual(["Default", "On", "Off"]);
-    expect(nextCursorBooleanConfigValue(null)).toBe(true);
-    expect(nextCursorBooleanConfigValue(undefined)).toBe(true);
-    expect(nextCursorBooleanConfigValue(true)).toBe(false);
-    expect(nextCursorBooleanConfigValue(false)).toBeNull();
-  });
-
-  it("shows an option the chat never set as Default, and sets it only on a click", () => {
-    const onCursorConfigChange = vi.fn();
-    renderComposer({
-      sessionProvider: "cursor",
-      modelId: "cursor/composer-2",
-      availableModelIds: ["cursor/composer-2"],
-      turnActive: false,
-      onCursorConfigChange,
-      cursorModeSnapshot: {
-        currentModeId: "agent",
-        availableModeIds: ["agent", "plan"],
-        configOptions: [{ id: "max_context", name: "Max context", category: "model", type: "boolean", currentValue: null }],
-      },
-    });
-
-    const chip = screen.getByRole("button", { name: /Max context/ });
-    expect(chip.textContent).toContain("Default");
-    expect(onCursorConfigChange).not.toHaveBeenCalled();
-    fireEvent.click(chip);
-    expect(onCursorConfigChange).toHaveBeenCalledWith("max_context", true);
   });
 });
 

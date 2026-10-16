@@ -1,6 +1,7 @@
 import type {
   AgentChatSessionSummary,
   ListSessionsArgs,
+  SessionActiveGoal,
   TerminalSessionDetail,
   TerminalSessionSummary,
 } from "../../../shared/types";
@@ -112,6 +113,18 @@ export function fallbackUnprojectedChatSession(
   };
 }
 
+/** A goal still in play (not reached, cleared, or cancelled), or null. */
+export function projectActiveGoal(chat: AgentChatSessionSummary): SessionActiveGoal | null {
+  const codex = chat.codexGoal;
+  const codexObjective = codex?.objective?.trim();
+  if (codexObjective && codex?.status !== "complete" && codex?.status !== "cancelled") {
+    return { provider: "codex", objective: codexObjective, status: codex?.status ?? "active" };
+  }
+  const claude = chat.claudeGoal?.condition?.trim();
+  if (claude) return { provider: "claude", objective: claude, status: "active" };
+  return null;
+}
+
 /**
  * Project chat runtime state and spawn lineage onto its terminal row.
  * All desktop surfaces use this mapping so list, detail, and lane summaries do
@@ -142,12 +155,15 @@ export function projectChatOntoSession(
     usageLimitResume: chat.usageLimitResume ?? null,
     chatActivityMode: chatIsPlanning(chat) ? "planning" : null,
     activeBackgroundTaskCount: chat.activeBackgroundTaskCount ?? 0,
+    ...(chat.turnOpenWorkCount != null ? { turnOpenWorkCount: chat.turnOpenWorkCount } : {}),
+    ...(projectActiveGoal(chat) ? { activeGoal: projectActiveGoal(chat) } : {}),
     ...(chat.backgroundWork ? { backgroundWork: chat.backgroundWork } : {}),
     ...(chat.backgroundWorkSince ? { backgroundWorkSince: chat.backgroundWorkSince } : {}),
     ...(chat.runtimeProcesses?.length ? { runtimeProcesses: chat.runtimeProcesses } : {}),
     ...(chat.modelHandoffHistory?.length
       ? { modelHandoffHistory: chat.modelHandoffHistory }
       : {}),
+    ...(chat.crossMachineHandoff ? { crossMachineHandoff: chat.crossMachineHandoff } : {}),
     // Whatever the provider actually reported, and nothing more. A blank or
     // absent model must stay absent on the row: the card renders the chip only
     // when there is a real answer, so "we do not know" and "no model" have to
@@ -167,6 +183,7 @@ export function projectChatOntoSession(
     ...(chat.orchestrationParentSessionId
       ? { orchestrationParentSessionId: chat.orchestrationParentSessionId }
       : {}),
+    ...(chat.launchedBySessionId ? { launchedBySessionId: chat.launchedBySessionId } : {}),
     // Only stamped when there genuinely is an identity parent. Writing an
     // explicit `null` would make every ordinary spawned chat carry the field,
     // and "present but null" and "absent" would then have to mean the same
@@ -180,6 +197,7 @@ export function projectChatOntoSession(
     ...(chat.spawnKind ? { spawnKind: chat.spawnKind } : {}),
     ...(chat.steeringInput ? { steeringInput: true } : {}),
     ...(chat.asyncQuestion ? { asyncQuestion: true } : {}),
+    ...(chat.promptCache ? { chatPromptCache: chat.promptCache } : {}),
     lastActivityAt: chat.lastActivityAt ?? session.lastActivityAt ?? null,
     ...(chat.cursorCloudAgentId ? { cursorCloudAgentId: chat.cursorCloudAgentId } : {}),
     ...(chat.cursorRuntime ? { cursorRuntime: chat.cursorRuntime } : {}),

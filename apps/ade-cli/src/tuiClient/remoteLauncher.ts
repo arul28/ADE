@@ -999,6 +999,7 @@ const TRACKED_CLI_REMOTE_PROVIDERS = new Set([
   "droid",
   "opencode",
   "pi",
+  "muse",
   "qwen",
   "kimi",
   "grok",
@@ -1012,10 +1013,12 @@ const CHAT_BACKED_REMOTE_TOOL_TYPES = new Set([
   "cursor",
   "droid-chat",
   "pi-chat",
+  "muse-chat",
   "qwen-chat",
   "kimi-chat",
   "grok-chat",
   "copilot-chat",
+  "devin-chat",
 ]);
 
 const TRACKED_CLI_REMOTE_TOOL_TYPE_PREFIXES = [
@@ -1024,6 +1027,7 @@ const TRACKED_CLI_REMOTE_TOOL_TYPE_PREFIXES = [
   "droid",
   "opencode",
   "pi",
+  "muse",
   "claude",
   "qwen",
   "kimi",

@@ -27,7 +27,11 @@ const STASH_LIST_FORMAT = "--format=%H%x1f%gd%x1f%cI%x1f%gs";
 
 function createTestGitOperationsService(
   branchRef = "feature/stash-test",
-  overrides: { worktreePath?: string; sessionService?: unknown } = {},
+  overrides: {
+    worktreePath?: string;
+    sessionService?: unknown;
+    listBranchOwners?: () => Array<{ id: string; name: string; branchRef: string }>;
+  } = {},
 ) {
   const mockStart = vi.fn().mockReturnValue({ operationId: "op-1" });
   const mockFinish = vi.fn();
@@ -50,6 +54,7 @@ function createTestGitOperationsService(
         laneType: "worktree",
       }),
       invalidateListCache: mockInvalidateListCache,
+      listBranchOwners: overrides.listBranchOwners ?? vi.fn().mockReturnValue([]),
     } as any,
     operationService: {
       start: mockStart,
@@ -334,6 +339,29 @@ describe("gitOperationsService.pull", () => {
         metadata: expect.objectContaining({ reason: "pull_merge", mode: "merge" }),
       }),
     );
+  });
+
+  it("serializes pulls for the same lane until the active pull completes", async () => {
+    mockGit.getHeadSha.mockResolvedValue("abc123");
+    let finishFirstPull = () => {};
+    mockGit.runGitOrThrow
+      .mockImplementationOnce(() => new Promise<void>((resolve) => {
+        finishFirstPull = resolve;
+      }))
+      .mockResolvedValue(undefined);
+    const { service } = createTestGitOperationsService();
+
+    const firstPull = service.pull({ laneId: "lane-1" });
+    await vi.waitFor(() => expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1));
+
+    const secondPull = service.pull({ laneId: "lane-1", mode: "ff-only" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1);
+
+    finishFirstPull();
+    await Promise.all([firstPull, secondPull]);
+
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(2);
   });
 
   it("rejects unknown pull modes before running git", async () => {
@@ -1218,7 +1246,7 @@ describe("gitOperationsService.generateCommitMessage", () => {
       aiIntegrationService: {
         getFeatureFlag: () => true,
         getStatus: vi.fn(async () => ({
-          availableModelIds: ["anthropic/claude-haiku-4-5"],
+          availableModelIds: ["anthropic/claude-haiku-5-5"],
         })),
         generateCommitMessage: vi.fn(async (args: { prompt: string; model?: string }) => {
           capturedPrompt = args.prompt;
@@ -1250,9 +1278,9 @@ describe("gitOperationsService.generateCommitMessage", () => {
 
     expect(result).toEqual({
       message: "Update git service",
-      model: "anthropic/claude-haiku-4-5",
+      model: "anthropic/claude-haiku-5-5",
     });
-    expect(capturedModel).toBe("anthropic/claude-haiku-4-5");
+    expect(capturedModel).toBe("anthropic/claude-haiku-5-5");
     expect(capturedPrompt).toContain("Changed files:");
     expect(capturedPrompt).toContain("M\tapps/desktop/src/main/foo.ts");
     expect(capturedPrompt).toContain("A\tapps/desktop/src/main/bar.ts");
@@ -1434,7 +1462,7 @@ describe("gitOperationsService.generateCommitMessage", () => {
       aiIntegrationService: {
         getFeatureFlag: () => true,
         getStatus: vi.fn(async () => ({
-          availableModelIds: ["anthropic/claude-haiku-4-5"],
+          availableModelIds: ["anthropic/claude-haiku-5-5"],
         })),
         generateCommitMessage: vi.fn(async () => ({
           text: "Update git service.",
@@ -1462,7 +1490,7 @@ describe("gitOperationsService.generateCommitMessage", () => {
 
     expect(result).toEqual({
       message: "Refs ADE-123: Update git service",
-      model: "anthropic/claude-haiku-4-5",
+      model: "anthropic/claude-haiku-5-5",
     });
   });
 });
@@ -2001,5 +2029,113 @@ describe("gitOperationsService.checkoutBranch", () => {
       }),
     );
     expect(switchBranch).toHaveBeenCalledWith({ laneId: "lane-1", branchName: "feature/foo" });
+  });
+});
+
+describe("gitOperationsService commit history reads", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const DETAILED_LINE =
+    "abc123\u001fab\u001fparent123\u001fArul\u001f2026-04-11T21:00:00.000Z\u001farul@example.com\u001fClaude <noreply@anthropic.com>\u001fInitial commit";
+  const PLAIN_LINE =
+    "abc123\u001fab\u001fparent123\u001fArul\u001f2026-04-11T21:00:00.000Z\u001fInitial commit";
+
+  function mockGitLogLines(): void {
+    mockGit.runGitOrThrow.mockImplementation(async (args: string[]) => {
+      const detailed = args.some((arg) => arg.includes("%ae"));
+      return detailed ? DETAILED_LINE : PLAIN_LINE;
+    });
+    mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+        return { exitCode: 0, stdout: "/tmp/ade-lane\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse") return { exitCode: 1, stdout: "", stderr: "no upstream" };
+      if (args[0] === "for-each-ref") return { exitCode: 0, stdout: "", stderr: "" };
+      if (args[0] === "log") return { exitCode: 0, stdout: "", stderr: "" };
+      return { exitCode: 1, stdout: "", stderr: "unexpected git command" };
+    });
+  }
+
+  it("keys the detailed History read apart from the plain lane read", async () => {
+    mockGitLogLines();
+    const { service } = createTestGitOperationsService();
+
+    const plain = await service.listRecentCommits({ laneId: "lane-1", limit: 20 });
+    const detailed = await service.listRecentCommits({ laneId: "lane-1", limit: 20, scope: "lane" });
+    const withCoAuthors = await service.listRecentCommits({ laneId: "lane-1", limit: 20, includeCoAuthors: true });
+
+    // A shared cache entry would serve one read's rows to another and skip its
+    // git call entirely.
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(3);
+    const formats = mockGit.runGitOrThrow.mock.calls.map((call) => (call[0] as string[]).join(" "));
+    expect(formats.some((format) => format.includes("%ae"))).toBe(true);
+    expect(formats.some((format) => !format.includes("%ae"))).toBe(true);
+    expect(plain[0]?.authorEmail).toBeUndefined();
+    expect(detailed[0]?.authorEmail).toBe("arul@example.com");
+    expect(detailed[0]?.coAuthors).toEqual(["Claude <noreply@anthropic.com>"]);
+    expect(detailed[0]?.subject).toBe("Initial commit");
+    // The lane overview asks for co-authors only: trailers ride along, but a
+    // branch without an upstream still reads as unpushed, as in the plain read.
+    expect(withCoAuthors[0]?.coAuthors).toEqual(["Claude <noreply@anthropic.com>"]);
+    expect(withCoAuthors[0]?.subject).toBe("Initial commit");
+    expect(withCoAuthors[0]?.pushed).toBe(plain[0]?.pushed);
+    expect(detailed[0]?.pushed).not.toBe(plain[0]?.pushed);
+  });
+
+  it("does not serve one page from another page's cache entry", async () => {
+    mockGitLogLines();
+    const { service } = createTestGitOperationsService();
+
+    await service.listRecentCommits({ laneId: "lane-1", limit: 20, skip: 0, scope: "lane" });
+    await service.listRecentCommits({ laneId: "lane-1", limit: 20, skip: 20, scope: "lane" });
+
+    // skip is part of the key: a page-two read must not reuse page one's rows.
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(2);
+    const skipArgs = mockGit.runGitOrThrow.mock.calls.map((call) =>
+      (call[0] as string[]).find((arg) => arg.startsWith("--skip=")));
+    expect(skipArgs).toContain(undefined);
+    expect(skipArgs).toContain("--skip=20");
+  });
+
+  it("drops a lane whose branch was deleted when walking every lane", async () => {
+    mockGitLogLines();
+    mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+        return { exitCode: 0, stdout: "/tmp/ade-lane\n", stderr: "" };
+      }
+      if (args[0] === "for-each-ref") {
+        return { exitCode: 0, stdout: "refs/heads/main\nrefs/heads/ade/alive\n", stderr: "" };
+      }
+      if (args[0] === "log") return { exitCode: 0, stdout: "", stderr: "" };
+      return { exitCode: 1, stdout: "", stderr: "unexpected git command" };
+    });
+    const { service } = createTestGitOperationsService("feature/x", {
+      listBranchOwners: () => [
+        { id: "alive", name: "Alive", branchRef: "ade/alive" },
+        { id: "gone", name: "Deleted", branchRef: "ade/deleted" },
+      ],
+    });
+
+    await expect(service.listRecentCommits({ laneId: "lane-1", limit: 5, scope: "lanes" })).resolves.toBeDefined();
+
+    const logCall = mockGit.runGitOrThrow.mock.calls.find((call) => (call[0] as string[])[0] === "log");
+    expect(logCall).toBeDefined();
+    const logArgs = logCall![0] as string[];
+    expect(logArgs.some((arg) => arg.includes("ade/alive"))).toBe(true);
+    expect(logArgs.some((arg) => arg.includes("ade/deleted"))).toBe(false);
+  });
+
+  it("carries author email and co-authors through a single-commit lookup", async () => {
+    mockGitLogLines();
+    const { service } = createTestGitOperationsService();
+
+    const commit = await service.getCommit({ laneId: "lane-1", commitSha: "abc123" });
+
+    expect(commit?.authorEmail).toBe("arul@example.com");
+    expect(commit?.coAuthors).toEqual(["Claude <noreply@anthropic.com>"]);
+    expect(commit?.subject).toBe("Initial commit");
+    expect(commit?.pushed).toBe(false);
   });
 });

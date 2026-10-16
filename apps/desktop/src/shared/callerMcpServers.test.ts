@@ -56,6 +56,7 @@ describe("callerMcpServers", () => {
         "codex",
         "cursor",
         "droid",
+        "muse",
         "opencode",
         "pi",
       ]);
@@ -106,7 +107,7 @@ describe("callerMcpServers", () => {
       // The refusal message names these. A hand-written list drifts the moment
       // a provider is added.
       expect([...CALLER_MCP_CAPABLE_PROVIDERS].sort())
-        .toEqual(["claude", "codex", "cursor", "droid", "opencode"]);
+        .toEqual(["claude", "codex", "cursor", "droid", "muse", "opencode"]);
       expect(CALLER_MCP_CAPABLE_PROVIDERS).not.toContain("pi");
     });
   });

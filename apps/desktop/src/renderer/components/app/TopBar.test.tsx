@@ -2,9 +2,11 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { TopBar } from "./TopBar";
+import { IssueLaunchHost } from "./IssueLaunchHost";
+import { rememberExplicitRemotePick } from "./usePreferLocalCheckout";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { applyShellHeaderInset } from "../../lib/zoom";
 import { resetAppZoomCacheForTests } from "../../lib/appZoom";
@@ -15,23 +17,12 @@ import {
   resetActivityStoreForTests,
 } from "../../state/activityStore";
 import { ATTENTION_CONTRACT_VERSION } from "../../../shared/types";
-import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../lib/account";
-import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { LINEAR_CONNECTION_CHANGED_EVENT } from "../../lib/linearConnectionEvents";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
-
-const PROJECT_TAB_ROOT_MIME = "application/x-ade-project-root";
-const PROJECT_TAB_WINDOW_MIME = "application/x-ade-window-id";
-
-// The machine menu appends a lane count ("This computer 3 lanes"), so the
-// accessible name has to be matched as a substring. Built from
-// THIS_MACHINE_NAME rather than a literal: this label was macOS-only copy
-// ("This Mac") until ADE shipped on Windows, and re-pinning the string here is
-// exactly what made the rename break these tests. The helper owns the name.
-const THIS_MACHINE_NAME_PATTERN = new RegExp(THIS_MACHINE_NAME);
 
 vi.mock("../settings/SyncDevicesSection", () => ({
   useSyncConnections: () => ({ loading: false, status: null, devices: [], busy: false }),
@@ -201,34 +192,6 @@ function resetStore() {
       displayName: "Remote App",
     })),
   } as any);
-}
-
-function makeDataTransfer(data: Record<string, string>, dropEffect = "move") {
-  return {
-    dropEffect,
-    effectAllowed: "move",
-    types: Object.keys(data),
-    getData: vi.fn((type: string) => data[type] ?? ""),
-    setData: vi.fn(),
-  };
-}
-
-function markHandledProjectTabDrop(rootPath: string, sourceWindowId = "1") {
-  window.localStorage.setItem(
-    `ade.projectTabDropHandled.v1:${sourceWindowId}:${encodeURIComponent(rootPath)}`,
-    String(Date.now()),
-  );
-}
-
-function fireProjectTabDragEnd(
-  element: HTMLElement,
-  dataTransfer: ReturnType<typeof makeDataTransfer>,
-) {
-  const event = createEvent.dragEnd(element, { dataTransfer });
-  Object.defineProperty(event, "clientX", { value: -1 });
-  Object.defineProperty(event, "clientY", { value: 12 });
-  Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
-  fireEvent(element, event);
 }
 
 async function flushMicrotasks(count = 1) {
@@ -682,17 +645,27 @@ describe("TopBar", () => {
     expect(onNavigate).toHaveBeenCalledWith("/chats");
   });
 
-  it("returns to Chats when the projectless New Tab is closed", () => {
+  it.each([
+    // [Chats open, Browser open, Music open, where closing the projectless New Tab lands]
+    [true, true, true, "/chats"],
+    [false, true, true, "/browser"],
+    [false, false, true, "/music"],
+    [false, false, false, null],
+  ])("closing the projectless New Tab with Chats=%s Browser=%s Music=%s lands on %s", (chats, browser, music, route) => {
     const { onNavigate } = renderChatsTopBar({
       personalChatsRouteActive: false,
-      storeOverrides: { isNewTabOpen: true },
+      storeOverrides: {
+        isNewTabOpen: true,
+        personalChatsTabOpen: chats,
+        browserTabOpen: browser,
+        musicTabOpen: music,
+      },
     });
 
     fireEvent.click(screen.getByTitle("Close new tab"));
 
     expect(useAppStore.getState().cancelNewTab).toHaveBeenCalledOnce();
-    expect(onNavigate).toHaveBeenCalledOnce();
-    expect(onNavigate).toHaveBeenCalledWith("/chats");
+    expect(onNavigate.mock.calls).toEqual(route ? [[route]] : []);
   });
 
   it("closes an inactive Chats tab without navigating away from New Tab", () => {
@@ -735,6 +708,47 @@ describe("TopBar", () => {
 
     expect(onNavigate).toHaveBeenCalledWith("/work", { replace: true });
     expect(useAppStore.getState().switchProjectToPath).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a loaded background project", "/Users/arul/Loaded", 1],
+    ["a project that is not loaded", "/Users/arul/Cold", 0],
+    ["the project in front", "/Users/arul/ADE", 0],
+  ])("on the press of the tab of %s, the switches started are %i", async (_name, root, switchesOnPress) => {
+    const front = "/Users/arul/ADE";
+    const loaded = "/Users/arul/Loaded";
+    useAppStore.setState({
+      project: { rootPath: front, displayName: "ADE" },
+      projectHydrated: true,
+      showWelcome: false,
+      openProjectTabRoots: [front, loaded, "/Users/arul/Cold"],
+      projectInfoByRoot: {
+        [front]: { rootPath: front, displayName: "ADE" },
+        [loaded]: { rootPath: loaded, displayName: "Loaded" },
+      },
+    } as any);
+    render(<TopBar />);
+    const tab = await screen.findByTitle(root);
+    const switchProjectToPath = useAppStore.getState().switchProjectToPath as ReturnType<typeof vi.fn>;
+
+    // jsdom has no PointerEvent, so a pointer event is a mouse event with the two pointer fields.
+    const pointer = (type: "pointerdown" | "pointerup") => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 });
+      Object.defineProperties(event, { pointerType: { value: "mouse" }, pointerId: { value: 1 } });
+      act(() => {
+        tab.dispatchEvent(event);
+      });
+    };
+    pointer("pointerdown");
+    expect(switchProjectToPath).toHaveBeenCalledTimes(switchesOnPress);
+
+    // The release of the same press: a tab that switched on the press does
+    // nothing more, and a tab that waited switches now (the front one never).
+    pointer("pointerup");
+    fireEvent.click(tab);
+    const expected = root === front ? 0 : 1;
+    expect(switchProjectToPath).toHaveBeenCalledTimes(expected);
+    if (expected) expect(switchProjectToPath).toHaveBeenCalledWith(root);
   });
 
   it("drops the project tab's active styling while the Chats tab is the foreground surface", () => {
@@ -822,78 +836,9 @@ describe("TopBar", () => {
     expect(screen.getByTitle(rootPath)).toBeTruthy();
   });
 
-  it("keeps a local and a remote checkout of one repo as two open tabs", async () => {
+  describe("an active remote copy of a repo this computer has", () => {
+    const origin = "git@github.com:arul28/ADE.git";
     const binding = {
-      kind: "remote" as const,
-      key: "remote:studio:project-1",
-      targetId: "studio",
-      runtimeName: "MacBook Pro (97)",
-      projectId: "project-1",
-      rootPath: "/srv/ade/ADE",
-      displayName: "ADE",
-    };
-    (globalThis.window.ade.project.listRecent as any).mockResolvedValue([
-      {
-        rootPath: "/Users/arul/ADE",
-        displayName: "ADE",
-        exists: true,
-        lastOpenedAt: "2026-04-22T00:00:00.000Z",
-        kind: "local",
-        laneCount: 3,
-        gitOriginUrl: "git@github.com:arul28/ADE.git",
-      },
-    ]);
-    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any).mockResolvedValue(
-      makeRemoteConnectionSnapshot("studio", "MacBook Pro (97)", {
-        projects: [
-          {
-            projectId: "project-1",
-            rootPath: "/srv/ade/ADE",
-            displayName: "ADE",
-            addedAt: 0,
-            lastOpenedAt: 0,
-            // The SSH and HTTPS forms of one origin must still join.
-            gitOriginUrl: "https://github.com/arul28/ADE",
-          },
-        ],
-      }),
-    );
-    useAppStore.setState({
-      project: { rootPath: binding.rootPath, displayName: "ADE", baseRef: "main" },
-      projectBinding: binding,
-      openRemoteProjectTabs: [binding],
-      openProjectTabRoots: ["/Users/arul/ADE"],
-      projectHydrated: true,
-      showWelcome: false,
-    } as any);
-
-    render(<TopBar />);
-
-    // Both checkouts are open, so both keep a tab. Collapsing them left one tab
-    // whose machine followed whichever was active, which read as the tab you
-    // just left jumping to the other machine.
-    expect(
-      await screen.findByTitle("MacBook Pro (97): /srv/ade/ADE (Connected)"),
-    ).toBeTruthy();
-    await waitFor(() => {
-      expect(screen.queryByTitle("/Users/arul/ADE")).toBeTruthy();
-    });
-    expect(screen.getByText("MacBook Pro (97)")).toBeTruthy();
-
-    // Each tab reaches its own checkout directly — no machine menu detour.
-    fireEvent.click(screen.getByTitle("/Users/arul/ADE"));
-
-    expect(useAppStore.getState().switchProjectToPath).toHaveBeenCalledWith(
-      "/Users/arul/ADE",
-    );
-  });
-
-  it("rebinds the current tab when the machine is switched, instead of opening a second one", async () => {
-    // Both switch paths only ADD the destination to the open-tab lists, and two
-    // OPEN checkouts of one origin are deliberately kept as separate tabs — so
-    // leaving the outgoing checkout open turned a machine switch into a new tab
-    // at the end of the strip. Nothing here is platform-specific.
-    const remoteBinding = {
       kind: "remote" as const,
       key: "remote:studio:project-1",
       targetId: "studio",
@@ -902,119 +847,98 @@ describe("TopBar", () => {
       rootPath: "/srv/ade/ADE",
       displayName: "ADE",
     };
-    (globalThis.window.ade.project.listRecent as any).mockResolvedValue([
-      {
-        rootPath: "/Users/arul/ADE",
-        displayName: "ADE",
-        exists: true,
-        lastOpenedAt: "2026-04-22T00:00:00.000Z",
-        kind: "local",
-        laneCount: 3,
-        gitOriginUrl: "git@github.com:arul28/ADE.git",
-      },
-    ]);
-    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any).mockResolvedValue(
-      makeRemoteConnectionSnapshot("studio", "Mac Studio", {
-        projects: [
-          {
-            projectId: "project-1",
-            rootPath: "/srv/ade/ADE",
-            displayName: "ADE",
-            addedAt: 0,
-            lastOpenedAt: 0,
-            gitOriginUrl: "https://github.com/arul28/ADE",
-          },
-        ],
-      }),
-    );
-    // Stands in for the real action, which binds the tab and records the tab entry.
-    const switchRemoteProject = vi.fn(async () => {
-      act(() => {
+
+    function bindRemoteWithLocalCopy(switchProjectToPath: ReturnType<typeof vi.fn>) {
+      (globalThis.window.ade.project.listRecent as any).mockResolvedValue([
+        {
+          rootPath: "/Users/arul/ADE",
+          displayName: "ADE",
+          exists: true,
+          lastOpenedAt: "2026-04-22T00:00:00.000Z",
+          kind: "local",
+          laneCount: 3,
+          gitOriginUrl: origin,
+        },
+      ]);
+      (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any).mockResolvedValue(
+        makeRemoteConnectionSnapshot("studio", "Mac Studio", {
+          projects: [
+            {
+              projectId: "project-1",
+              rootPath: "/srv/ade/ADE",
+              displayName: "ADE",
+              addedAt: 0,
+              lastOpenedAt: 0,
+              // The SSH and HTTPS forms of one origin must still match.
+              gitOriginUrl: "https://github.com/arul28/ADE",
+            },
+          ],
+        }),
+      );
+      useAppStore.setState({
+        project: { rootPath: binding.rootPath, displayName: "ADE", baseRef: "main" },
+        projectBinding: binding,
+        openRemoteProjectTabs: [binding],
+        openProjectTabRoots: ["/Users/arul/Other"],
+        projectHydrated: true,
+        showWelcome: false,
+        switchProjectToPath,
+      } as any);
+    }
+
+    it("moves the tab to this computer's checkout in place", async () => {
+      const switchProjectToPath = vi.fn(async (rootPath: string) => {
         useAppStore.setState({
-          project: { rootPath: remoteBinding.rootPath, displayName: "ADE", baseRef: "main" },
-          projectBinding: remoteBinding,
-          openRemoteProjectTabs: [remoteBinding],
+          project: { rootPath, displayName: "ADE", baseRef: "main" },
+          projectBinding: { kind: "local", key: `local:${rootPath}`, rootPath, displayName: "ADE" },
         } as any);
       });
-      return remoteBinding;
-    });
-    useAppStore.setState({
-      project: { rootPath: "/Users/arul/ADE", displayName: "ADE", baseRef: "main" },
-      projectBinding: {
-        kind: "local",
-        key: "local:/Users/arul/ADE",
-        rootPath: "/Users/arul/ADE",
-        displayName: "ADE",
-      },
-      openRemoteProjectTabs: [],
-      openProjectTabRoots: ["/Users/arul/ADE"],
-      projectHydrated: true,
-      showWelcome: false,
-      switchRemoteProject,
-    } as any);
+      bindRemoteWithLocalCopy(switchProjectToPath);
 
-    render(<TopBar />);
-    await screen.findByTitle("/Users/arul/ADE");
-
-    const caret = screen.getByLabelText("Machines for ADE");
-    fireEvent.mouseDown(caret);
-    fireEvent.click(caret);
-    fireEvent.click(await screen.findByRole("menuitemradio", { name: /Mac Studio/ }));
-
-    await waitFor(() => {
-      expect(switchRemoteProject).toHaveBeenCalledWith("studio", "project-1");
-      // The checkout we switched AWAY from stops being an open tab: the group
-      // stays one tab whose machine changed.
-      expect(useAppStore.getState().openProjectTabRoots).not.toContain("/Users/arul/ADE");
-    });
-    await waitFor(() => {
-      expect(screen.queryByTitle("/Users/arul/ADE")).toBeNull();
-    });
-    expect(screen.getByTitle("Mac Studio: /srv/ade/ADE (Connected)")).toBeTruthy();
-  });
-
-  it("offers to add a machine from a repo tab that only has one", async () => {
-    render(<TopBar />);
-
-    const tab = await screen.findByTitle("/Users/arul/ADE");
-    // A single-machine group spends no tab width naming the machine.
-    expect(tab.textContent).not.toContain(THIS_MACHINE_NAME);
-
-    const caret = screen.getByLabelText("Machines for ADE");
-    fireEvent.mouseDown(caret);
-    fireEvent.click(caret);
-    expect(screen.getByRole("menuitemradio", { name: THIS_MACHINE_NAME_PATTERN })).toBeTruthy();
-    const connectItem = screen.getByRole("menuitem", { name: /Connect another machine/ });
-    expect(connectItem).toBeTruthy();
-    fireEvent.keyDown(window, { key: "ArrowUp" });
-    expect(document.activeElement).toBe(connectItem);
-
-    fireEvent.mouseDown(caret);
-    fireEvent.click(caret);
-    expect(screen.queryByRole("menuitemradio", { name: THIS_MACHINE_NAME_PATTERN })).toBeNull();
-  });
-
-  it("routes \"Connect another machine\" to the hosted connections chip in web mode", async () => {
-    // The hosted client has no header Connections panel, so the menu item used
-    // to do nothing at all.
-    (globalThis.window as unknown as { __adeWebClient?: boolean }).__adeWebClient = true;
-    const opened = vi.fn();
-    window.addEventListener("ade-web:open-connections", opened);
-    try {
       render(<TopBar />);
-      await screen.findByTitle("/Users/arul/ADE");
-      const caret = screen.getByLabelText("Machines for ADE");
-      fireEvent.mouseDown(caret);
-      fireEvent.click(caret);
-      fireEvent.click(screen.getByRole("menuitem", { name: /Connect another machine/ }));
 
-      expect(opened).toHaveBeenCalledOnce();
-      expect((opened.mock.calls[0][0] as CustomEvent<{ tab: string }>).detail.tab)
-        .toBe("machines");
-    } finally {
-      window.removeEventListener("ade-web:open-connections", opened);
-      delete (globalThis.window as unknown as { __adeWebClient?: boolean }).__adeWebClient;
-    }
+      await waitFor(() => {
+        expect(switchProjectToPath).toHaveBeenCalledWith("/Users/arul/ADE", { skipWorktreeGate: true });
+      });
+      await waitFor(() => {
+        expect(useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key))
+          .not.toContain(binding.key);
+      });
+      // One tab for the repo, on this computer: no second ADE tab.
+      await waitFor(() => {
+        expect(screen.queryByTitle("Mac Studio: /srv/ade/ADE (Connected)")).toBeNull();
+        expect(screen.getByTitle("/Users/arul/ADE")).toBeTruthy();
+      });
+      expect(useAppStore.getState().closeProject).not.toHaveBeenCalled();
+    });
+
+    it("puts the remote project back when the local checkout fails to open", async () => {
+      const switchProjectToPath = vi.fn(async () => {
+        throw new Error("not a git repository");
+      });
+      bindRemoteWithLocalCopy(switchProjectToPath);
+
+      render(<TopBar />);
+
+      await waitFor(() => {
+        expect(useAppStore.getState().switchRemoteProject).toHaveBeenCalledWith("studio", "project-1");
+      });
+      expect(switchProjectToPath).toHaveBeenCalledTimes(1);
+      expect(useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key))
+        .toContain(binding.key);
+    });
+
+    it("stays on the remote copy a machine picker chose on purpose", async () => {
+      const switchProjectToPath = vi.fn(async () => undefined);
+      bindRemoteWithLocalCopy(switchProjectToPath);
+      rememberExplicitRemotePick(binding.key);
+
+      render(<TopBar />);
+
+      expect(await screen.findByTitle("Mac Studio: /srv/ade/ADE (Connected)")).toBeTruthy();
+      await flushMicrotasks(5);
+      expect(switchProjectToPath).not.toHaveBeenCalled();
+    });
   });
 
   it("renders a remote project tab with the connections control without immediate polling", async () => {
@@ -1039,8 +963,6 @@ describe("TopBar", () => {
 
     expect(await screen.findByTitle("Mac Studio: /srv/ade/remote-app (Connected)")).toBeTruthy();
     expect(screen.getByText("Remote App")).toBeTruthy();
-    // Machines are named absolutely: the label is the machine, never "remote".
-    expect(screen.getByLabelText("Machine: Mac Studio")).toBeTruthy();
     expect(await screen.findByRole("button", { name: "Connections, connected" })).toBeTruthy();
     expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
   });
@@ -1087,7 +1009,7 @@ describe("TopBar", () => {
     );
 
     render(<TopBar />);
-    fireEvent.click(await screen.findByTitle("Close remote project"));
+    fireEvent.click(await screen.findByTitle("Close project"));
 
     expect(switchProjectToPath).toHaveBeenCalledWith("/Users/arul/ADE");
     expect(
@@ -1361,25 +1283,6 @@ describe("TopBar", () => {
     expect(indicator.getAttribute("title")).not.toContain("agent process");
   });
 
-  it("consolidates a cross-window project tab dropped onto the same project", async () => {
-    render(<TopBar />);
-
-    const tab = await screen.findByTitle("/Users/arul/ADE");
-    await waitFor(() => {
-      expect(globalThis.window.ade.app.getWindowSession).toHaveBeenCalled();
-    });
-
-    fireEvent.drop(tab, {
-      dataTransfer: makeDataTransfer({
-        "application/x-ade-project-root": "/Users/arul/ADE",
-        "application/x-ade-window-id": "2",
-      }),
-    });
-
-    expect(globalThis.window.ade.app.closeWindow).toHaveBeenCalledWith(2);
-    expect(useAppStore.getState().switchProjectToPath).not.toHaveBeenCalled();
-  });
-
   it("does not render the active remote project as a local project tab", async () => {
     const remoteBinding = {
       kind: "remote" as const,
@@ -1559,84 +1462,40 @@ describe("TopBar", () => {
     expect(screen.getByTitle("/Users/arul/ADE")).toBeTruthy();
   });
 
-  it("does not detach again after a project tab is dropped onto an ADE target", async () => {
-    render(<TopBar />);
-
-    const tab = await screen.findByTitle("/Users/arul/ADE");
-
-    markHandledProjectTabDrop("/Users/arul/ADE");
-    fireProjectTabDragEnd(
-      tab,
-      makeDataTransfer(
-        {
-          [PROJECT_TAB_ROOT_MIME]: "/Users/arul/ADE",
-          [PROJECT_TAB_WINDOW_MIME]: "1",
-        },
-        "move",
-      ),
-    );
-
-    expect(globalThis.window.ade.app.openProjectInNewWindow).not.toHaveBeenCalled();
-  });
-
-  it("detaches when a project tab is dragged over an ADE window but no ADE tab bar handles it", async () => {
-    render(<TopBar />);
-
-    const tab = await screen.findByTitle("/Users/arul/ADE");
-
-    fireProjectTabDragEnd(
-      tab,
-      makeDataTransfer(
-        {
-          [PROJECT_TAB_ROOT_MIME]: "/Users/arul/ADE",
-          [PROJECT_TAB_WINDOW_MIME]: "1",
-        },
-        "move",
-      ),
-    );
-
-    expect(globalThis.window.ade.app.openProjectInNewWindow).toHaveBeenCalledWith("/Users/arul/ADE");
-  });
-
-  it("detaches a project tab when it is dragged outside without an ADE drop target", async () => {
-    render(<TopBar />);
-
-    const tab = await screen.findByTitle("/Users/arul/ADE");
-
-    fireProjectTabDragEnd(tab, makeDataTransfer({}, "none"));
-
-    expect(globalThis.window.ade.app.openProjectInNewWindow).toHaveBeenCalledWith("/Users/arul/ADE");
-  });
-
-  it("keeps the source project tab active until the detached window is bound", async () => {
-    let resolveOpen!: (value: { windowId: number; project: { rootPath: string; name: string } }) => void;
-    const openPromise = new Promise<{ windowId: number; project: { rootPath: string; name: string } }>((resolve) => {
-      resolveOpen = resolve;
+  it("restores a local tab whose project was unloaded while the window sat on another machine", async () => {
+    // The window's tab set keeps every root; only loaded projects come back in
+    // `openProjectTabs`. A fresh renderer knows no local roots of its own.
+    const remoteBinding = {
+      kind: "remote" as const,
+      key: "remote:target-1:project-a",
+      targetId: "target-1",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/srv/ade/remote-app",
+      displayName: "Remote App",
+    };
+    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
+      .mockResolvedValue(makeRemoteConnectionSnapshot("target-1"));
+    useAppStore.setState({
+      project: { rootPath: remoteBinding.rootPath, displayName: remoteBinding.displayName, baseRef: "main" } as any,
+      projectBinding: remoteBinding,
+      openProjectTabRoots: [],
+    } as any);
+    (globalThis.window.ade.app.getWindowSession as any).mockResolvedValueOnce({
+      windowId: 1,
+      project: null,
+      binding: remoteBinding,
+      openProjectTabs: [{ rootPath: "/Users/arul/Loaded", displayName: "Loaded", baseRef: "main" }],
+      openProjectTabRoots: ["/Users/arul/Idle", "/Users/arul/Loaded"],
     });
-    globalThis.window.ade.app.openProjectInNewWindow = vi.fn(() => openPromise) as any;
-    const closeProject = useAppStore.getState().closeProject;
+
     render(<TopBar />);
-
-    const tab = await screen.findByTitle("/Users/arul/ADE");
-    fireProjectTabDragEnd(tab, makeDataTransfer({}, "none"));
-
-    expect(globalThis.window.ade.app.openProjectInNewWindow).toHaveBeenCalledWith("/Users/arul/ADE");
-    await act(async () => {
-      await flushMicrotasks();
-    });
-    expect(closeProject).not.toHaveBeenCalled();
-
-    await act(async () => {
-      resolveOpen({
-        windowId: 2,
-        project: { rootPath: "/Users/arul/ADE", name: "ADE" },
-      });
-      await openPromise;
-    });
 
     await waitFor(() => {
-      expect(closeProject).toHaveBeenCalled();
+      expect(useAppStore.getState().openProjectTabRoots).toEqual(["/Users/arul/Idle", "/Users/arul/Loaded"]);
     });
+    expect(screen.getByTitle("/Users/arul/Idle")).toBeTruthy();
+    expect(screen.getByTitle("/Users/arul/Loaded")).toBeTruthy();
   });
 
   it("opens mobile sync from the connections control", async () => {
@@ -2020,7 +1879,8 @@ describe("TopBar", () => {
     } as any;
     globalThis.window.ade.lanes.create = createLane as any;
 
-    render(<TopBar />);
+    // The launch modal is app-wide (mounted once in AppShell), so mount it beside the bar.
+    render(<><TopBar /><IssueLaunchHost /></>);
 
     await act(async () => {
       window.dispatchEvent(new Event("focus"));
@@ -2034,15 +1894,10 @@ describe("TopBar", () => {
     });
     screen.getByRole("dialog", { name: /linear quick view/i });
 
-    // Single-issue flow now routes through the unified launch dock: select the
-    // issue row (a `div role="button"`), choose "Create lane only", then submit
-    // the launch-config modal. Lane-only submit creates the lane without an
-    // agent, so it still calls lanes.create directly.
-    const issueRow = (await screen.findAllByText("ADE-123"))[0]!.closest('[role="button"]');
-    expect(issueRow).toBeTruthy();
-    fireEvent.click(issueRow!);
-    fireEvent.click(await screen.findByRole("button", { name: /create lane only/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /^create 1 lane$/i }));
+    // The quick view opens directly on this issue's detail and offers a
+    // lane-only action. Submit that action through the launch-config modal.
+    fireEvent.click(await screen.findByRole("button", { name: /lane only/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^create lane$/i }));
 
     await waitFor(() => {
       // Lane-only launch leaves the branch override blank, so createLane is
@@ -2058,151 +1913,10 @@ describe("TopBar", () => {
     });
   });
 
-  it("opens the Linear quick view directly from a Linear issue deeplink request", async () => {
-    const issue = {
-      id: "issue-2",
-      identifier: "ADE-124",
-      title: "Route issue deeplinks to Linear pane",
-      description: "Open the Linear issue browser from ADE links.",
-      url: "https://linear.app/ade/issue/ADE-124/route-issue-deeplinks",
-      projectId: "project-1",
-      projectSlug: "desktop",
-      projectName: "Desktop",
-      teamId: "team-1",
-      teamKey: "ADE",
-      teamName: "ADE",
-      stateId: "state-1",
-      stateName: "In Progress",
-      stateType: "started",
-      priority: 2,
-      priorityLabel: "high",
-      labels: [],
-      metadataTags: [],
-      assigneeId: "user-1",
-      assigneeName: "Arul",
-      creatorId: "user-1",
-      creatorName: "Arul",
-      blockerIssueIds: [],
-      hasOpenBlockers: false,
-      dueDate: null,
-      estimate: 3,
-      archivedAt: null,
-      completedAt: null,
-      canceledAt: null,
-      startedAt: null,
-      createdAt: "2026-04-22T00:00:00.000Z",
-      updatedAt: "2026-04-22T01:00:00.000Z",
-      raw: {},
-    };
-    const searchLinearIssues = vi.fn(async () => ({
-      issues: [issue],
-      pageInfo: { hasNextPage: false, endCursor: null },
-    }));
-    globalThis.window.ade.cto = {
-      getLinearConnectionStatus: vi.fn(async () => ({
-        tokenStored: true,
-        connected: true,
-        viewerId: "user-1",
-        viewerName: "Arul",
-        checkedAt: "2026-04-22T01:00:00.000Z",
-        authMode: "manual",
-        oauthAvailable: true,
-        tokenExpiresAt: null,
-        message: null,
-      })),
-      getLinearQuickView: vi.fn(async () => ({
-        connection: {
-          tokenStored: true,
-          connected: true,
-          viewerId: "user-1",
-          viewerName: "Arul",
-          checkedAt: "2026-04-22T01:00:00.000Z",
-          authMode: "manual",
-          oauthAvailable: true,
-          tokenExpiresAt: null,
-          message: null,
-        },
-        organization: null,
-        viewer: null,
-        projects: [],
-        teams: [],
-        assignedIssues: [],
-        recentIssues: [],
-        fetchedAt: "2026-04-22T01:00:00.000Z",
-        sdk: { packageName: "@linear/sdk", surfaces: ["viewer", "issues"] },
-      })),
-      getLinearIssuePickerData: vi.fn(async () => ({
-        projects: [],
-        users: [],
-        states: [],
-      })),
-      searchLinearIssues,
-    } as any;
-
-    render(<TopBar />);
-
-    await act(async () => {
-      requestLinearIssueQuickView({ issueIdentifier: "ADE-124", source: "deeplink" });
-      await flushMicrotasks(2);
-    });
-
-    await waitFor(() => {
-      expect(screen.getByRole("dialog", { name: /linear quick view/i })).toBeTruthy();
-    });
-    await waitFor(() => {
-      expect(searchLinearIssues).toHaveBeenCalledWith(expect.objectContaining({ query: "ADE-124" }));
-    });
-    await waitFor(() => {
-      expect(screen.getAllByText("Route issue deeplinks to Linear pane").length).toBeGreaterThan(0);
-    });
-  });
-
-  it("shows a setup state when a Linear issue deeplink is opened without a Linear connection", async () => {
-    window.location.hash = "";
-    globalThis.window.ade.cto = {
-      getLinearConnectionStatus: vi.fn(async () => ({
-        tokenStored: false,
-        connected: false,
-        viewerId: null,
-        viewerName: null,
-        checkedAt: "2026-04-22T01:00:00.000Z",
-        authMode: "manual",
-        oauthAvailable: true,
-        tokenExpiresAt: null,
-        message: "Connect Linear first.",
-      })),
-    } as any;
-
-    render(<TopBar />);
-
-    await act(async () => {
-      requestLinearIssueQuickView({ issueIdentifier: "ADE-125", source: "deeplink" });
-      await flushMicrotasks(2);
-    });
-
-    expect(await screen.findByText("Connect Linear to open ADE-125")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /open linear settings/i }));
-    expect(window.location.hash).toBe("#/settings?tab=integrations#linear-connection");
-  });
-
-  it("offers the project picker when a Linear issue deeplink opens without an ADE project", async () => {
-    window.location.hash = "#/chats";
-    useAppStore.setState({ project: null, projectBinding: null } as any);
-
-    render(<TopBar />);
-
-    await act(async () => {
-      requestLinearIssueQuickView({ issueIdentifier: "ADE-126", source: "deeplink" });
-      await flushMicrotasks(2);
-    });
-
-    expect(await screen.findByText("Open the ADE project for ADE-126")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /open project picker/i }));
-    expect(useAppStore.getState().showWelcome).toBe(true);
-    expect(window.location.hash).toBe("#/work");
-  });
-
-  it("reveals Linear quick view after a later connection refresh", async () => {
+  it.each([
+    ["window focus", "focus"],
+    ["a Settings connection change", LINEAR_CONNECTION_CHANGED_EVENT],
+  ])("reveals Linear quick view after a later connection refresh on %s", async (_trigger, eventName) => {
     const disconnected = {
       tokenStored: true,
       connected: false,
@@ -2228,13 +1942,17 @@ describe("TopBar", () => {
       getLinearConnectionStatus,
     } as any;
 
+    // The button only shows on a loaded project surface (the previous test
+    // leaves the welcome page up).
+    useAppStore.setState({ projectHydrated: true, showWelcome: false } as any);
+
     render(<TopBar />);
 
     expect(getLinearConnectionStatus).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: /linear quick view/i })).toBeNull();
 
     await act(async () => {
-      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event(eventName));
       await flushMicrotasks();
     });
     await waitFor(() => {
@@ -2243,14 +1961,54 @@ describe("TopBar", () => {
     expect(screen.queryByRole("button", { name: /linear quick view/i })).toBeNull();
 
     await act(async () => {
-      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event(eventName));
       await flushMicrotasks();
     });
 
     expect(await screen.findByRole("button", { name: /linear quick view/i })).toBeTruthy();
   });
 
-  it("keeps button hidden while disconnected but retries on a 3s interval", async () => {
+  it("re-checks a Settings connection change that arrives while a check is in flight", async () => {
+    const disconnected = {
+      tokenStored: true,
+      connected: false,
+      viewerId: null,
+      viewerName: null,
+      checkedAt: "2026-04-22T01:00:00.000Z",
+      authMode: "manual",
+      oauthAvailable: true,
+      tokenExpiresAt: null,
+      message: null,
+    };
+    let finishStaleCheck!: (status: typeof disconnected) => void;
+    const getLinearConnectionStatus = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { finishStaleCheck = resolve; }))
+      .mockResolvedValue({ ...disconnected, connected: true, viewerId: "user-1", viewerName: "Arul" });
+    globalThis.window.ade.cto = { getLinearConnectionStatus } as any;
+    useAppStore.setState({ projectHydrated: true, showWelcome: false } as any);
+
+    render(<TopBar />);
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await flushMicrotasks();
+    });
+    expect(getLinearConnectionStatus).toHaveBeenCalledTimes(1);
+
+    // The key is saved while the first check is still waiting on the brain.
+    await act(async () => {
+      window.dispatchEvent(new Event(LINEAR_CONNECTION_CHANGED_EVENT));
+      await flushMicrotasks();
+    });
+    await act(async () => {
+      finishStaleCheck(disconnected);
+      await flushMicrotasks(4);
+    });
+
+    expect(await screen.findByRole("button", { name: /linear quick view/i })).toBeTruthy();
+    expect(getLinearConnectionStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps button hidden while disconnected and retries only on the slow backstop", async () => {
     vi.useFakeTimers();
     const getLinearConnectionStatus = vi.fn(async () => ({
       tokenStored: true,
@@ -2279,7 +2037,13 @@ describe("TopBar", () => {
 
       const callsBefore = getLinearConnectionStatus.mock.calls.length;
       await act(async () => {
-        vi.advanceTimersByTime(6_000);
+        vi.advanceTimersByTime(30_000);
+        await flushMicrotasks(2);
+      });
+      expect(getLinearConnectionStatus.mock.calls.length).toBe(callsBefore);
+
+      await act(async () => {
+        vi.advanceTimersByTime(31_000);
         await flushMicrotasks(2);
       });
       expect(getLinearConnectionStatus.mock.calls.length).toBeGreaterThan(callsBefore);
@@ -2336,19 +2100,6 @@ describe("TopBar", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it("shows project icon replacement errors", async () => {
-    globalThis.window.ade.project.chooseIcon = vi.fn(async () => {
-      throw new Error("Failed to set project icon: Project icon must be 10 MB or smaller.");
-    }) as any;
-
-    render(<TopBar />);
-
-    fireEvent.click(await screen.findByLabelText("Project icon"));
-    fireEvent.click(await screen.findByText("Replace"));
-
-      expect((await screen.findByRole("alert")).textContent).toMatch(/Project icon must be .* smaller/i);
   });
 
   it("confirms before closing a project tab", async () => {

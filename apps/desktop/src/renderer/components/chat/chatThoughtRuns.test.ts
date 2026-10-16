@@ -5,6 +5,7 @@ import {
   drawsNothingBetweenThoughts,
   mergeAdjacentThoughtRows,
   thoughtRunKeyByMemberKey,
+  type TranscriptRowDrawContext,
 } from "./chatThoughtRuns";
 
 const at = (second: number) => new Date(Date.UTC(2026, 8, 23, 12, 0, second)).toISOString();
@@ -98,6 +99,17 @@ describe("mergeAdjacentThoughtRows", () => {
     expect(mergeAdjacentThoughtRows(acrossTurns)).toBe(acrossTurns);
   });
 
+  it.each<[string, ChatTranscriptGroupedEnvelope["event"], TranscriptRowDrawContext | undefined]>([
+    ["a queued steer", { type: "user_message", text: "also this", deliveryState: "queued", steerId: "s-1", turnId: "turn-1" }, undefined],
+    ["a legacy retry notice", { type: "system_notice", noticeKind: "warning", message: "Claude API retry 1/3", turnId: "turn-1" }, undefined],
+    ["a stale stop receipt", { type: "interrupt_receipt", turnId: "turn-1", stillQueuedUuids: ["u-1"] } as ChatTranscriptGroupedEnvelope["event"], { staleInterruptReceipts: new Set(["turn-1:u-1"]) }],
+    ["an expired queue recovery", { type: "queue_recovery", recoveryId: "q-1", state: "expired", messageCount: 1, turnId: "turn-1" } as ChatTranscriptGroupedEnvelope["event"], undefined],
+    ["a restored queue recovery", { type: "queue_recovery", recoveryId: "q-1", state: "restored", messageCount: 1, turnId: "turn-1" } as ChatTranscriptGroupedEnvelope["event"], undefined],
+  ])("does not split a run across %s", (_label, event, context) => {
+    const rows = [thought("r-a", "A.", 1), { key: "hidden", timestamp: at(2), event }, thought("r-b", "B.", 3)];
+    expect(mergeAdjacentThoughtRows(rows, undefined, context).map((row) => row.key)).toEqual(["hidden", "r-a"]);
+  });
+
   it("steps over rows that draw nothing and moves them ahead of the merged row", () => {
     const rows = [thought("r-a", "A.", 1), spawnNotice("n-1", 2), thought("r-b", "B.", 3), spawnNotice("n-2", 4)];
     expect(drawsNothingBetweenThoughts(rows[1]!)).toBe(true);
@@ -107,11 +119,20 @@ describe("mergeAdjacentThoughtRows", () => {
     expect(merged.map((row) => row.key)).toEqual(["n-1", "r-a", "n-2"]);
   });
 
-  it("keeps the live streaming thought out of an earlier run so its key never changes", () => {
-    const rows = [thought("r-a", "Done thinking.", 2), thought("r-live", "Still", 5)];
-    expect(mergeAdjacentThoughtRows(rows, "r-live")).toBe(rows);
-    // Once it stops being live it joins the run.
-    expect(mergeAdjacentThoughtRows(rows, null).map((row) => row.key)).toEqual(["r-a"]);
+  it("lets the streaming thought join the run above it under the run's first key", () => {
+    // Cursor: thought -> hidden command -> thought. The command is not drawn,
+    // so the live thought sits right under the finished one.
+    const before = mergeAdjacentThoughtRows([thought("r-a", "Done thinking.", 2, { startSecond: 1 })]);
+    const streaming = mergeAdjacentThoughtRows([
+      thought("r-a", "Done thinking.", 2, { startSecond: 1 }),
+      thought("r-live", "Still", 5, { startSecond: 4 }),
+    ]);
+    // Same drawn key before and while it streams: the row never remounts.
+    expect(before.map((row) => row.key)).toEqual(["r-a"]);
+    expect(streaming.map((row) => row.key)).toEqual(["r-a"]);
+    expect(thoughtRunKeyByMemberKey(streaming).get("r-live")).toBe("r-a");
+    // The live timer counts from the streaming member, not from the run's start.
+    expect(reasoningEvent(streaming[0]!).latestStartTimestamp).toBe(at(4));
   });
 
   it("reuses the previous merged envelope when nothing about the run changed", () => {
@@ -120,15 +141,15 @@ describe("mergeAdjacentThoughtRows", () => {
     const previous = collectMergedThoughtRows(first);
 
     // Same member envelopes (a delta elsewhere): same merged envelope.
-    const again = mergeAdjacentThoughtRows([...rows], null, previous);
+    const again = mergeAdjacentThoughtRows([...rows], previous);
     expect(again[0]).toBe(first[0]);
 
     // Rebuilt but equal members (a regrouping pass): still the same envelope.
-    const rebuilt = mergeAdjacentThoughtRows([thought("r-a", "A.", 1), thought("r-b", "B.", 3), text("t-1", 4)], null, previous);
+    const rebuilt = mergeAdjacentThoughtRows([thought("r-a", "A.", 1), thought("r-b", "B.", 3), text("t-1", 4)], previous);
     expect(rebuilt[0]).toBe(first[0]);
 
     // A member that changed: a new envelope.
-    const changed = mergeAdjacentThoughtRows([thought("r-a", "A.", 1), thought("r-b", "B, more.", 3)], null, previous);
+    const changed = mergeAdjacentThoughtRows([thought("r-a", "A.", 1), thought("r-b", "B, more.", 3)], previous);
     expect(changed[0]).not.toBe(first[0]);
     expect(reasoningEvent(changed[0]!).text).toContain("B, more.");
   });

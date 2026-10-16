@@ -8,8 +8,9 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
+import { confirmDialog } from "../ui/dialog/confirm";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { macDesktopPaneCaption } from "../../../shared/types/macDesktop";
+import { desktopProductName, macDesktopPaneCaption } from "../../../shared/types/macDesktop";
 import type {
   MacDesktopDisplay,
   MacDesktopLeaseState,
@@ -21,6 +22,7 @@ import { RECORDING_RECEIPT_MS, revealProofArtifactRow } from "../shared/recordin
 import { macDesktopApi } from "./macDesktopApi";
 import { macDesktopMissingPermissions, type MacDesktopPermissionCheck } from "./MacDesktopPermissionCard";
 import { useWorkToolsMaximize } from "../terminals/workToolsMaximize";
+import type { DesktopWorkTool } from "../terminals/workTools";
 import {
   displayPointToViewPoint,
   macDesktopContentBox,
@@ -116,6 +118,12 @@ export type ChatMacDesktopPanelProps = {
   /** The chat the tab is attached to, for lease and proof attribution. */
   sessionId: string | null;
   runtimePin: OpenProjectBinding | null;
+  /**
+   * Which tool opened this pane. The pane names itself from the host's status,
+   * but the first read has not answered while it says "Checking", so without
+   * this a Windows host read "Checking Mac Desktop…".
+   */
+  desktopTool?: DesktopWorkTool;
 };
 
 export function useMacDesktopPanelController({
@@ -123,6 +131,7 @@ export function useMacDesktopPanelController({
   laneName,
   sessionId,
   runtimePin,
+  desktopTool = "mac-desktop",
 }: ChatMacDesktopPanelProps) {
   // The machine on the other end of the pin, for the one failure that is about
   // it rather than about this screen: a brain with no `mac_desktop` domain.
@@ -215,7 +224,7 @@ export function useMacDesktopPanelController({
    * The decoder's home, which is a node and not a place in the tree.
    *
    * Entering full screen moves the picture from the pane into an overlay, and
-   * every React way of doing that — a second `H264VideoCanvas`, the same
+   * every React way of doing that — a second `H264StreamView`, the same
    * element rendered under a different parent, a portal whose container
    * changes — unmounts the canvas and restarts the decode: the stream drops,
    * reconnects, and the status pill flashes "Starting" on every toggle. So the
@@ -295,6 +304,7 @@ export function useMacDesktopPanelController({
    * for Reset while a display may still exist.
    */
   const [confirmStop, setConfirmStop] = useState(false);
+  const [restartingCapture, setRestartingCapture] = useState(false);
   /** The video has been connecting for longer than a connect ever takes. */
   const [connectSlow, setConnectSlow] = useState(false);
   /** The stopped-video card's Details fold. */
@@ -642,7 +652,7 @@ export function useMacDesktopPanelController({
         : await macDesktopApi().startRecording({
           laneId,
           chatSessionId: sessionId,
-          caption: macDesktopPaneCaption("recording", laneName),
+          caption: macDesktopPaneCaption("recording", laneName, desktopProductName(status?.platform)),
         }, pinRef.current);
       setStatus((current) => (current ? { ...current, recording: next } : current));
       setCaptureError(null);
@@ -663,7 +673,7 @@ export function useMacDesktopPanelController({
     } finally {
       setBusy(false);
     }
-  }, [display, errorText, laneId, laneName, recording?.running, sessionId, setStatus]);
+  }, [display, errorText, laneId, laneName, recording?.running, sessionId, setStatus, status?.platform]);
 
   /** Save screenshot: one picture of the lane's screen, filed as proof. */
   const saveScreenshot = useCallback(async () => {
@@ -673,7 +683,7 @@ export function useMacDesktopPanelController({
       const shot = await macDesktopApi().screenshot({
         laneId,
         chatSessionId: sessionId,
-        caption: macDesktopPaneCaption("screenshot", laneName),
+        caption: macDesktopPaneCaption("screenshot", laneName, desktopProductName(status?.platform)),
       }, pinRef.current);
       setCaptureError(null);
       if (shot.proofArtifactId) {
@@ -691,7 +701,7 @@ export function useMacDesktopPanelController({
     } finally {
       setScreenshotPending(false);
     }
-  }, [display, errorText, laneId, laneName, sessionId]);
+  }, [display, errorText, laneId, laneName, sessionId, status?.platform]);
 
   /**
    * The receipt's Open, the way the Apple pane's does it: the proof row when
@@ -940,6 +950,33 @@ export function useMacDesktopPanelController({
     setCheckingPermissions(false);
   }, [display, errorText, refreshStatus, setStatus, setStatusError]);
 
+  /**
+   * "Restart capture", after a yes/no question: a new driver process and a new
+   * screen for this lane. For a driver whose streams stop sending frames
+   * while its screenshots still work; Reconnect only restarts the stream
+   * inside the same stuck process. The old process takes
+   * its screens with it, so the lane's open apps stay open on the main screen.
+   */
+  const restartCapture = useCallback(async () => {
+    const confirmed = await confirmDialog({
+      title: "Restart the capture?",
+      message: "Apps open here stay open and move to your main screen.",
+      confirmLabel: "Restart",
+    });
+    if (!confirmed) return;
+    setRestartingCapture(true);
+    setStatusError(null);
+    try {
+      await macDesktopApi().recheckPermissions({ restartDriver: true }, pinRef.current);
+      await refreshStatus().catch(() => undefined);
+      await start();
+    } catch (error) {
+      setStatusError(errorText(error) ?? "Could not restart the capture. Try again.");
+    } finally {
+      setRestartingCapture(false);
+    }
+  }, [errorText, refreshStatus, setStatusError, start]);
+
   /** Reads the status again after a failed read, and nothing more. */
   const readAgain = useCallback(async () => {
     setStatusError(null);
@@ -958,6 +995,7 @@ export function useMacDesktopPanelController({
 
 
   return {
+    desktopTool,
     laneId, laneName, sessionId, runtimePin, machineFacts,
     status, setStatus, statusError, setStatusError, readError, unconfirmed, refreshStatus, stopDisplay, stopping,
     start, starting, gaveUp, cursor, notParked, dismissNotParked, appsLeftOpen, dismissAppLeftOpen,
@@ -967,6 +1005,7 @@ export function useMacDesktopPanelController({
     viewRect, selectedWindowId, setSelectedWindowId, lastObservation, surfaceNode, videoHost, canvasSlot,
     attachCanvasSlot, attachSurface, errorText, display, lease, windows, supported, iHaveControl, parkedWindows,
     claimAppIcons, missingPermissions, permissionCheck, setPermissionCheck, confirmStop, setConfirmStop,
+    restartingCapture, restartCapture,
     connectSlow, setConnectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live, connecting,
     cursorPoint, contentBox, lastFrame, handoverFrame, returnControl, takeControl, realInput, recording,
     toggleRecording, saveScreenshot, openReceipt, nowTick, recordingRunning, present, refreshClaimable, claimWindow,

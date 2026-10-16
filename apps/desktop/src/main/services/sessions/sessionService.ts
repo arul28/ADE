@@ -1,9 +1,13 @@
 import fs from "node:fs";
 import type { AdeDb, RemoteSettleTupleChange } from "../state/kvDb";
+import type { Logger } from "../logging/logger";
+import { deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
 import { DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS } from "../runtime/processRegistryService";
+import { chatToolProvider, isChatToolType } from "../../../shared/sessionSpawnNesting";
 import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
+import { createAgentShellCleanup } from "./agentShellCleanup";
 import type { SettleAbortedReason, SettleAbortedSession, SettleSessionsOutcome } from "./settlingStateRegistry";
-import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome } from "./sessionSettleTeardown";
+import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome, SubagentLink } from "./sessionSettleTeardown";
 import { settleSourceMayInterruptActiveTurn } from "./sessionSettleTeardown";
 import type {
   ClaudeSessionPointer,
@@ -21,9 +25,16 @@ import type {
   TerminalToolType,
   ListSessionsArgs,
   UpdateSessionMetaArgs,
+  SessionActivityReport,
+  SessionActivityValue,
 } from "../../../shared/types";
 import { normalizeSessionStatusNote } from "../../../shared/sessionStatusNote";
-import { isSessionActivityValue, normalizeSessionActivityReport } from "../../../shared/sessionActivity";
+import {
+  isSessionActivityValue,
+  nextAgentActivityReport,
+  nextDetectedActivityReport,
+  normalizeSessionActivityReport,
+} from "../../../shared/sessionActivity";
 import {
   isTrackedAgentCliToolType,
   parseSessionSettleOverride,
@@ -179,6 +190,7 @@ function isResumeProvider(value: unknown): value is TerminalResumeProvider {
     || value === "droid"
     || value === "opencode"
     || value === "pi"
+    || value === "muse"
     || value === "qwen"
     || value === "kimi"
     || value === "grok"
@@ -186,7 +198,11 @@ function isResumeProvider(value: unknown): value is TerminalResumeProvider {
 }
 
 function normalizeAttentionSource(value: unknown): SessionAttentionSource | null {
-  return value === "agent_explicit" || value === "provider_structured" || value === "user"
+  return value === "agent_explicit"
+    || value === "provider_structured"
+    || value === "user"
+    || value === "linear"
+    || value === "turn_end_question"
     ? value
     : null;
 }
@@ -273,6 +289,9 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
   const orchestrationParentSessionId = typeof record.orchestrationParentSessionId === "string"
     ? record.orchestrationParentSessionId.trim()
     : "";
+  const launchedBySessionId = typeof record.launchedBySessionId === "string"
+    ? record.launchedBySessionId.trim()
+    : "";
   const spawnKind = record.spawnKind === "subagent" || record.spawnKind === "peer"
     ? record.spawnKind
     : null;
@@ -286,6 +305,7 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
       ...(model ? { model } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(fastMode !== null ? { fastMode } : {}),
+      ...(fastMode === true && launchRecord.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
       ...(claudePermissionMode ? { claudePermissionMode: claudePermissionMode as TerminalResumeMetadata["launch"]["claudePermissionMode"] } : {}),
       ...(codexApprovalPolicy ? { codexApprovalPolicy: codexApprovalPolicy as TerminalResumeMetadata["launch"]["codexApprovalPolicy"] } : {}),
       ...(codexSandbox ? { codexSandbox: codexSandbox as TerminalResumeMetadata["launch"]["codexSandbox"] } : {}),
@@ -310,6 +330,7 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
     ...(presetId ? { presetId } : {}),
     ...(credentialId ? { credentialId } : {}),
     ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
+    ...(launchedBySessionId ? { launchedBySessionId } : {}),
     ...(spawnKind ? { spawnKind } : {}),
   };
 }
@@ -423,13 +444,21 @@ function normalizeSessionIds(sessionIds: string[]): string[] {
   ));
 }
 
+export type SettledChat = { sessionId: string; laneId: string; provider: string | null };
+type SettleCommitGuard = (sessionId: string) => boolean;
+
 export function createSessionService({
   db,
+  logger,
   runSettleTeardown,
   onRemoteSettleWrite,
   onSettleResidue,
+  onChatSettled,
+  listSubagentLinks,
 }: {
   db: AdeDb;
+  /** Optional: only the delete cascade's best-effort PR-link purge reports through it. */
+  logger?: Logger;
   /**
    * Stop the session's background work. Injected rather than per-call: teardown
    * is a service capability, not something a caller decides.
@@ -457,6 +486,22 @@ export function createSessionService({
   onRemoteSettleWrite?: (args: { columns: string[]; changesetSessionCount: number }) => void;
   /** Fired only for residue attached to a settle that actually landed. */
   onSettleResidue?: (args: { provider: string | null; items: SettleResidueItem[] }) => void;
+  /**
+   * Fired after a chat's settle that this host declared has landed. Not fired
+   * for a shell or a tracked CLI session. A subagent that follows its settled
+   * parent is not reported: the caller settled one chat, and a listener must
+   * hear about one. A peer's settle is not reported either; the host that
+   * declared it reports it.
+   */
+  onChatSettled?: (chat: SettledChat) => void;
+  /**
+   * The subagents of these sessions (not peers). Late-bound like teardown,
+   * because the chat service that knows the lineage is built later. A settled
+   * parent settles its subagents too, so a lane is not left holding orphan
+   * subagents of work the user already filed away; unsettling the parent
+   * brings them back.
+   */
+  listSubagentLinks?: (parentSessionIds: readonly string[]) => Promise<SubagentLink[]>;
 }) {
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
@@ -486,24 +531,45 @@ export function createSessionService({
     return true;
   };
 
+  /**
+   * The one writer for `activity_status_json`. Skips the write (and the change
+   * broadcast) when the row already holds exactly this report, so a detector
+   * re-confirming its state or a turn-start clear on an empty row costs a PK
+   * read and nothing else.
+   */
+  const writeSessionActivityRow = (
+    sessionId: string,
+    next: (current: SessionActivityReport | null, nowIso: string) => SessionActivityReport | null | undefined,
+  ): boolean => {
+    const trimmed = sessionId.trim();
+    if (!trimmed) return false;
+    const existing = db.get<{ activityStatusJson: string | null }>(
+      "select activity_status_json as activityStatusJson from terminal_sessions where id = ? limit 1",
+      [trimmed],
+    );
+    if (!existing) return false;
+    const current = normalizeSessionActivityReport(existing.activityStatusJson);
+    const nowIso = new Date().toISOString();
+    const report = next(current, nowIso);
+    // `undefined` means "leave the row as it is"; `null` clears it.
+    if (report === undefined) return true;
+    const json = report ? JSON.stringify(report) : null;
+    if (json === (current ? JSON.stringify(current) : null)) return true;
+    db.run(
+      "update terminal_sessions set activity_status_json = ?, activity_status_changed_at = ? where id = ?",
+      [json, nowIso, trimmed],
+    );
+    emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+    return true;
+  };
+
   const writeSessionActivity = (sessionId: string, value: unknown): boolean => {
     if (value !== null && !isSessionActivityValue(value)) {
       throw new Error("setSessionActivity requires a supported activity value or null.");
     }
-    return mutateSessionMeta(sessionId, (id) => {
-      const changedAt = new Date().toISOString();
-      const report = value === null
-        ? null
-        : {
-            value,
-            source: "agent" as const,
-            updatedAt: changedAt,
-          };
-      db.run(
-        "update terminal_sessions set activity_status_json = ?, activity_status_changed_at = ? where id = ?",
-        [report ? JSON.stringify(report) : null, changedAt, id],
-      );
-    });
+    return writeSessionActivityRow(sessionId, (current, nowIso) => (
+      value === null ? null : nextAgentActivityReport(current, value, nowIso)
+    ));
   };
 
   /**
@@ -664,6 +730,7 @@ export function createSessionService({
       "droid",
       "opencode",
       "pi",
+      "muse",
       "claude-orchestrated",
       "codex-orchestrated",
       "opencode-orchestrated",
@@ -671,16 +738,19 @@ export function createSessionService({
       "claude-chat",
       "opencode-chat",
       "pi-chat",
+      "muse-chat",
       "cursor",
       "droid-chat",
       "qwen",
       "kimi",
       "grok",
       "copilot",
+      "devin",
       "qwen-chat",
       "kimi-chat",
       "grok-chat",
       "copilot-chat",
+      "devin-chat",
       "aider",
       "continue",
       "other"
@@ -703,6 +773,8 @@ export function createSessionService({
     if (normalized.startsWith("chat:kimi:")) return "kimi-chat";
     if (normalized.startsWith("chat:grok:")) return "grok-chat";
     if (normalized.startsWith("chat:copilot:")) return "copilot-chat";
+    if (normalized.startsWith("chat:devin:")) return "devin-chat";
+    if (normalized.startsWith("chat:muse:")) return "muse-chat";
     if (normalized === "chat:codex" || normalized.startsWith("chat:codex:")) return "codex-chat";
     return toolType;
   };
@@ -764,6 +836,9 @@ export function createSessionService({
       ownerProcessStartedAt: normalizeOwnerProcessStartedAt(row.ownerProcessStartedAt),
       ...(isTrackedAgentCliToolType(toolType) && resumeMetadata?.orchestrationParentSessionId
         ? { orchestrationParentSessionId: resumeMetadata.orchestrationParentSessionId }
+        : {}),
+      ...(isTrackedAgentCliToolType(toolType) && resumeMetadata?.launchedBySessionId
+        ? { launchedBySessionId: resumeMetadata.launchedBySessionId }
         : {}),
       ...(isTrackedAgentCliToolType(toolType) && resumeMetadata?.spawnKind
         ? { spawnKind: resumeMetadata.spawnKind }
@@ -853,6 +928,9 @@ export function createSessionService({
         } else if (toolType === "copilot-chat") {
           legacyChatClauses.push("lower(coalesce(s.resume_command, '')) like ?");
           legacyChatParams.push("chat:copilot:%");
+        } else if (toolType === "devin-chat") {
+          legacyChatClauses.push("lower(coalesce(s.resume_command, '')) like ?");
+          legacyChatParams.push("chat:devin:%");
         }
       }
 
@@ -882,21 +960,29 @@ export function createSessionService({
   const settleMany = (
     sessionIds: string[],
     options: { outcome?: string; settledAt?: string; source?: SessionSettleSource } = {},
+    announce: ((chat: SettledChat) => void) | null = null,
+    commitGuard?: SettleCommitGuard,
+    commitGuardResult?: { rejected: boolean },
+    expectedLifecycleRevision?: number,
   ): string[] => {
     const ids = normalizeSessionIds(sessionIds);
     if (!ids.length) return [];
     const placeholders = ids.map(() => "?").join(", ");
-    const newlySettled = db.all<{ id: string }>(
+    const settling = db.all<{ id: string; laneId: string; toolType: string | null; resumeCommand: string | null }>(
       `
-        select id from terminal_sessions
+        select id, lane_id as laneId, tool_type as toolType, resume_command as resumeCommand from terminal_sessions
         where (settled_at is null or settle_override is not null)
           and id in (${placeholders})
       `,
       ids,
-    ).map((row) => row.id);
-    if (!newlySettled.length) return [];
+    );
+    const newlySettled = settling.map((row) => row.id);
+    if (!newlySettled.length) {
+      if (commitGuard && commitGuardResult) commitGuardResult.rejected = true;
+      return [];
+    }
     const hasOutcome = Object.prototype.hasOwnProperty.call(options, "outcome");
-    writeSettleLifecycle({
+    const writeSettle = () => writeSettleLifecycle({
       intent: {
         kind: "settle",
         settledAt: normalizeIsoTimestamp(options.settledAt) ?? new Date().toISOString(),
@@ -911,8 +997,64 @@ export function createSessionService({
       guard: "(settled_at is null or settle_override is not null)",
       sessionIds: newlySettled,
     });
+    if (commitGuard) {
+      if (newlySettled.length !== 1) {
+        throw new Error("A guarded settle commit must name exactly one session.");
+      }
+      const savepoint = "session_settle_commit_guard";
+      db.run(`savepoint ${savepoint}`);
+      try {
+        if (!commitGuard(newlySettled[0])) {
+          db.run(`rollback to savepoint ${savepoint}`);
+          db.run(`release savepoint ${savepoint}`);
+          if (commitGuardResult) commitGuardResult.rejected = true;
+          return [];
+        }
+        // The commit guard's write acquires SQLite's write lock. Re-read the
+        // shared lifecycle revision while that lock is held so a sibling
+        // process's activity or reopen between teardown and this transaction
+        // cannot be overwritten by this settle.
+        if (
+          expectedLifecycleRevision !== undefined
+          && settleLifecycle.readRevision(newlySettled[0]) !== expectedLifecycleRevision
+        ) {
+          db.run(`rollback to savepoint ${savepoint}`);
+          db.run(`release savepoint ${savepoint}`);
+          if (commitGuardResult) commitGuardResult.rejected = true;
+          return [];
+        }
+        writeSettle();
+        db.run(`release savepoint ${savepoint}`);
+      } catch (error) {
+        try {
+          db.run(`rollback to savepoint ${savepoint}`);
+          db.run(`release savepoint ${savepoint}`);
+        } catch {
+          // Preserve the original guard or lifecycle write error.
+        }
+        throw error;
+      }
+    } else {
+      writeSettle();
+    }
     for (const id of newlySettled) {
       emitChanged({ sessionId: id, reason: "meta-updated" });
+    }
+    if (announce) {
+      for (const row of settling) {
+        // The same inference a session row gets when it is read: an old chat
+        // row can carry tool type "other" and name its provider only in its
+        // resume command.
+        const toolType = inferToolTypeFromResumeCommand(normalizeToolType(row.toolType), row.resumeCommand);
+        if (!isChatToolType(toolType)) continue;
+        // The settle has landed. A listener that throws must not turn it into
+        // a failed settle; the listener reports its own failure.
+        try {
+          announce({ sessionId: row.id, laneId: row.laneId, provider: chatToolProvider(toolType) });
+        } catch {
+          // See above.
+        }
+      }
     }
     return newlySettled;
   };
@@ -959,6 +1101,9 @@ export function createSessionService({
   const settleManyWithTeardown = async (
     sessionIds: string[],
     options: { outcome?: string; settledAt?: string; source?: SessionSettleSource } = {},
+    /** Null for subagents that follow a settled parent; see `onChatSettled`. */
+    announce: ((chat: SettledChat) => void) | null = onChatSettled ?? null,
+    commitGuard?: SettleCommitGuard,
   ): Promise<SettleSessionsOutcome> => {
     const ids = normalizeSessionIds(sessionIds);
     const settled: string[] = [];
@@ -1041,8 +1186,19 @@ export function createSessionService({
           return outcome;
         }
 
-        const changed = settleMany([id], options);
+        const commitGuardResult = { rejected: false };
+        const changed = settleMany(
+          [id],
+          options,
+          announce,
+          commitGuard,
+          commitGuardResult,
+          commitGuard ? revisionBefore : undefined,
+        );
         outcome.settled.push(...changed);
+        if (commitGuardResult.rejected) {
+          outcome.aborted.push({ sessionId: id, reason: "lifecycle_changed" });
+        }
         if (changed.length && teardown?.confirmed && !teardown.residue.length) {
           // A settle that DID confirm everything must clear the previous
           // record, or the row keeps reporting "1 job could not be stopped"
@@ -1109,6 +1265,32 @@ export function createSessionService({
       aborted.push(...outcome.aborted);
     }
 
+    // Subagents follow a parent that is settled, whether by this call or an
+    // earlier one (so a retry reaches a subagent that refused last time). They
+    // are settled through the same window (teardown included), and the
+    // recursion reaches grandchildren. A subagent that refuses is left as it is
+    // and is not reported as an abort: the caller asked about the parent, and
+    // the PR-merge poller must not treat a busy subagent as a failure to file
+    // the merged lane.
+    const settledParents = ids.filter((id) => settled.includes(id) || settledAtMs(id) != null);
+    if (settledParents.length && listSubagentLinks) {
+      const requested = new Set(ids);
+      let childIds: string[] = [];
+      try {
+        childIds = (await listSubagentLinks(settledParents)).map((child) => child.sessionId);
+      } catch {
+        childIds = [];
+      }
+      // Only subagents still unsettled: that ends the recursion even if
+      // lineage ever formed a cycle, and an already-settled subagent does not
+      // get a second teardown.
+      const children = [...new Set(childIds)].filter((childId) => !requested.has(childId) && settledAtMs(childId) == null);
+      if (children.length) {
+        const followers = await settleManyWithTeardown(children, options, null);
+        settled.push(...followers.settled);
+      }
+    }
+
     return { settled, aborted };
   };
 
@@ -1145,6 +1327,74 @@ export function createSessionService({
     return abortedBy
       ? { found: true, settled: false, abortedBy }
       : { found: true, settled: true };
+  };
+
+  const archiveSession = (sessionId: string, archivedAt: string = new Date().toISOString()): boolean => {
+    const trimmed = sessionId.trim();
+    if (!trimmed) return false;
+    const existing = db.get<{ present: number }>(
+      "select 1 as present from terminal_sessions where id = ? limit 1",
+      [trimmed],
+    );
+    if (!existing) return false;
+    db.run("update terminal_sessions set archived_at = coalesce(archived_at, ?) where id = ?", [archivedAt, trimmed]);
+    emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+    return true;
+  };
+
+  const agentShells = createAgentShellCleanup({ db, archiveSession: (sessionId) => archiveSession(sessionId) });
+
+  const settledAtMs = (sessionId: string): number | null => {
+    const row = db.get<{ settledAt: string | null }>(
+      "select settled_at as settledAt from terminal_sessions where id = ? limit 1",
+      [sessionId],
+    );
+    const ms = row?.settledAt ? Date.parse(row.settledAt) : Number.NaN;
+    return Number.isFinite(ms) ? ms : null;
+  };
+
+  /**
+   * The undo half of the settle cascade. Call before unsettling `parentIds`;
+   * run the returned step after. It brings back their subagents that were
+   * settled with their own parent or later. A subagent the user settled on its
+   * own before its parent stays settled.
+   */
+  const prepareSubagentUnsettle = (parentIds: readonly string[], unsettle: (ids: string[]) => void): (() => void) => {
+    if (!listSubagentLinks) return () => {};
+    const parentSettledAt = new Map<string, number>();
+    for (const id of parentIds) {
+      const ms = settledAtMs(id);
+      if (ms != null) parentSettledAt.set(id, ms);
+    }
+    if (!parentSettledAt.size) return () => {};
+    return () => {
+      void listSubagentLinks([...parentSettledAt.keys()])
+        .then((children) => {
+          const settledWithParent = children
+            .filter(({ sessionId, parentSessionId }) => {
+              const ms = settledAtMs(sessionId);
+              const parentMs = parentSettledAt.get(parentSessionId);
+              return ms != null && parentMs != null && ms >= parentMs;
+            })
+            .map(({ sessionId }) => sessionId);
+          if (settledWithParent.length) unsettle(settledWithParent);
+        })
+        .catch(() => {});
+    };
+  };
+
+  const unsettleSessions = (sessionIds: string[]): void => {
+    const ids = normalizeSessionIds(sessionIds);
+    if (!ids.length) return;
+    const unsettleSubagents = prepareSubagentUnsettle(ids, unsettleSessions);
+    writeSettleLifecycle({
+      intent: { kind: "unsettleDeclared" },
+      sessionIds: ids,
+    });
+    for (const id of ids) {
+      emitChanged({ sessionId: id, reason: "meta-updated" });
+    }
+    unsettleSubagents();
   };
 
   return {
@@ -1770,14 +2020,16 @@ export function createSessionService({
       });
     },
 
-    /** Clears a declared settle plus any `'settled'` override. */
+    /** Clears a declared settle plus any `'settled'` override, and the settle cascade's. */
     unsettleSession(sessionId: string): boolean {
+      const unsettleSubagents = prepareSubagentUnsettle([sessionId.trim()], unsettleSessions);
       const changed = mutateSessionMeta(sessionId, (id) => {
         writeSettleLifecycle({
           intent: { kind: "unsettleDeclared" },
           sessionIds: [id],
         });
       });
+      if (changed) unsettleSubagents();
       return changed;
     },
 
@@ -1923,18 +2175,9 @@ export function createSessionService({
       }
     },
 
-    archiveSession(sessionId: string, archivedAt: string = new Date().toISOString()): boolean {
-      const trimmed = sessionId.trim();
-      if (!trimmed) return false;
-      const existing = db.get<{ present: number }>(
-        "select 1 as present from terminal_sessions where id = ? limit 1",
-        [trimmed],
-      );
-      if (!existing) return false;
-      db.run("update terminal_sessions set archived_at = coalesce(archived_at, ?) where id = ?", [archivedAt, trimmed]);
-      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
-      return true;
-    },
+    archiveSession,
+
+    agentShells,
 
     unarchiveSession(sessionId: string): boolean {
       const trimmed = sessionId.trim();
@@ -2076,8 +2319,9 @@ export function createSessionService({
     async settleSessionsReportingAborts(
       sessionIds: string[],
       options: { outcome?: string; settledAt?: string; source?: SessionSettleSource } = {},
+      commitGuard?: SettleCommitGuard,
     ): Promise<SettleSessionsOutcome> {
-      return await settleManyWithTeardown(sessionIds, options);
+      return await settleManyWithTeardown(sessionIds, options, onChatSettled ?? null, commitGuard);
     },
 
     /** Sessions currently mid-settle, for the visible `Settling…` state. */
@@ -2085,17 +2329,7 @@ export function createSessionService({
       return settleLifecycle.settling.settlingSessionIds();
     },
 
-    unsettleSessions(sessionIds: string[]): void {
-      const ids = normalizeSessionIds(sessionIds);
-      if (!ids.length) return;
-      writeSettleLifecycle({
-        intent: { kind: "unsettleDeclared" },
-        sessionIds: ids,
-      });
-      for (const id of ids) {
-        emitChanged({ sessionId: id, reason: "meta-updated" });
-      }
-    },
+    unsettleSessions,
 
     // -----------------------------------------------------------------------
     // Snooze — synced VISIBILITY overlay. It never touches lifecycle columns
@@ -2259,8 +2493,31 @@ export function createSessionService({
       });
     },
 
-    clearAttentionRequest(sessionId: string): boolean {
+    /**
+     * Clears the attention marker. `expectedSource` fences the owner; the
+     * optional timestamp fence preserves a same-source request newer than the
+     * event asking for the clear.
+     */
+    clearAttentionRequest(
+      sessionId: string,
+      expectedSource?: SessionAttentionSource,
+      notNewerThan?: string,
+    ): boolean {
       return mutateSessionMeta(sessionId, (id) => {
+        const timestampFence = notNewerThan ? normalizeIsoTimestamp(notNewerThan) : null;
+        // A timestamp fence is meaningful only with an ownership fence. Do not
+        // let an invalid or unowned conditional clear degrade to an unguarded
+        // delete.
+        if (notNewerThan && (!expectedSource || !timestampFence)) return;
+        if (expectedSource) {
+          db.run(
+            timestampFence
+              ? "update terminal_sessions set attention_requested_at = null, attention_message = null, attention_source = null where id = ? and attention_source = ? and attention_requested_at <= ?"
+              : "update terminal_sessions set attention_requested_at = null, attention_message = null, attention_source = null where id = ? and attention_source = ?",
+            timestampFence ? [id, expectedSource, timestampFence] : [id, expectedSource],
+          );
+          return;
+        }
         db.run(
           "update terminal_sessions set attention_requested_at = null, attention_message = null, attention_source = null where id = ?",
           [id],
@@ -2298,9 +2555,40 @@ export function createSessionService({
       });
     },
 
-    /** Clear an agent activity report at a real turn boundary, not on PTY keystrokes. */
+    /** Clear the activity at a real turn boundary, not on PTY keystrokes. */
     clearSessionActivity(sessionId: string): boolean {
       return writeSessionActivity(sessionId, null);
+    },
+
+    /**
+     * Store what ADE's tool-call detector sees for a live chat turn. The
+     * detector is the primary source; an agent report from this turn survives
+     * only while it still covers the detected activity (see
+     * `nextDetectedActivityReport`).
+     */
+    setDetectedSessionActivity(
+      sessionId: string,
+      value: SessionActivityValue,
+      turnStartedAt: string | null,
+      options: { onlyIfEmpty?: boolean; contextTokens?: number; failDetail?: string } = {},
+    ): boolean {
+      return writeSessionActivityRow(sessionId, (current, nowIso) => (
+        options.onlyIfEmpty && current
+          ? undefined
+          : (() => {
+              const details = {
+                ...(options.contextTokens !== undefined ? { contextTokens: options.contextTokens } : {}),
+                ...(options.failDetail ? { failDetail: options.failDetail } : {}),
+              };
+              const next = nextDetectedActivityReport(current, value, { turnStartedAt, nowIso });
+              if (next) return { ...next, ...details };
+              // Same activity, newer details (a token count for "compacting", a
+              // reason for "compaction_failed"): keep the report, update them.
+              const changed = current?.value === value && Object.entries(details)
+                .some(([key, detail]) => (current as Record<string, unknown>)[key] !== detail);
+              return changed && current ? { ...current, ...details } : undefined;
+            })()
+      ));
     },
 
     clearTurnStartMarkers(sessionId: string): boolean {
@@ -2334,6 +2622,18 @@ export function createSessionService({
       // already cascaded here.
       settleLifecycle.forget(trimmed);
       clearSettleResidue(trimmed);
+      // PR links are routing metadata for one chat; a link outliving its chat
+      // pins its lane's PR (the primary lane can never shed those). The row is
+      // already gone, so a failed purge must not report the delete as failed —
+      // but it still says so, because the orphan it leaves is otherwise invisible.
+      try {
+        deletePullRequestChatLinksForSessions(db, [trimmed]);
+      } catch (error) {
+        logger?.warn("sessions.pr_chat_link_purge_failed", {
+          sessionId: trimmed,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       emitChanged({ sessionId: trimmed, reason: "deleted" });
       return true;
     },

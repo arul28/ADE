@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import type { OpenProjectBinding } from "../../shared/types";
 import { THIS_MACHINE_NAME } from "../../shared/machineIdentity";
 import { waitForWorkSurfaceOnScreen } from "./workToolOnScreen";
+import { isAddressedToThisDesktop } from "./desktopClient";
 import type {
   WorkToolShowAck,
   WorkToolShowRequest,
@@ -31,8 +32,13 @@ import type {
  *   spent: replaying it later would reopen a tool the user may since have
  *   closed. The agent is told `held`.
  * - `declined`: this handler could not act on it. Only this is held.
+ * - `{ shownAs }`: "shown, but as this other surface" — a screen or app show
+ *   whose tools pane is closed is answered by the lane's floating player, which
+ *   is the same picture in a different container. The agent is owed that, not
+ *   the pane it asked for (see `WorkToolShowAck.shownAs`).
  */
-export type WorkToolShowOutcome = "shown" | "opened" | "declined";
+export type WorkToolShowShownAs = { shownAs: WorkToolShowSurface };
+export type WorkToolShowOutcome = "shown" | "opened" | "declined" | WorkToolShowShownAs;
 
 export type WorkToolShowHandler = {
   chatSessionId: string;
@@ -79,7 +85,7 @@ async function offer(request: WorkToolShowRequest): Promise<WorkToolShowOutcome>
   for (const handler of [...handlers]) {
     if (!handles(handler, request)) continue;
     const next = await tryShow(handler, request);
-    if (next === "shown") return next;
+    if (typeof next === "object" || next === "shown") return next;
     if (next === "opened") outcome = next;
   }
   return outcome;
@@ -95,7 +101,7 @@ function hold(request: WorkToolShowRequest, heldAtMs: number = nowMs()): void {
   while (holds.length > HOLD_CAP) holds.shift();
 }
 
-type ShowAnswer = Pick<WorkToolShowAck, "status" | "opened">;
+type ShowAnswer = Pick<WorkToolShowAck, "status" | "opened" | "shownAs">;
 
 /**
  * Take a request off the wire. Returns what to tell the brain, or null for a
@@ -103,6 +109,9 @@ type ShowAnswer = Pick<WorkToolShowAck, "status" | "opened">;
  * for an automatic offer nobody took.
  */
 export async function answerWorkToolShowRequest(request: WorkToolShowRequest): Promise<ShowAnswer | null> {
+  // Meant for the desktop the user is talking from. Not marked seen: if that
+  // desktop does not answer, the brain sends the same request to everyone.
+  if (!isAddressedToThisDesktop(request.targetClientId)) return null;
   if (seen.has(request.requestId)) return null;
   seen.add(request.requestId);
   if (seen.size > SEEN_CAP) {
@@ -110,6 +119,7 @@ export async function answerWorkToolShowRequest(request: WorkToolShowRequest): P
     if (oldest) seen.delete(oldest);
   }
   const outcome = await offer(request);
+  if (typeof outcome === "object") return { status: "shown", shownAs: outcome.shownAs };
   if (outcome === "shown") return { status: "shown" };
   if (request.auto) return null;
   // Opened but not confirmed on screen: spent, never replayed.

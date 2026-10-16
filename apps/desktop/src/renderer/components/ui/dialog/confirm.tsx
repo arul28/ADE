@@ -19,6 +19,14 @@ import { Dialog } from "./Dialog";
 export type ConfirmDialogOptions = {
   title: string;
   message?: ReactNode;
+  /** Content under the message (e.g. the list a decision affects). */
+  children?: ReactNode;
+  /**
+   * Optional checkboxes under the body, in order. Present, the confirm
+   * resolves each one's state by `key` alongside the yes/no; absent, it is a
+   * plain confirm.
+   */
+  checkboxes?: readonly ConfirmDialogCheckbox[];
   confirmLabel?: string;
   cancelLabel?: string;
   /** Icon tile + confirm button tone. Defaults to `error` when destructive, else `accent`. */
@@ -28,11 +36,31 @@ export type ConfirmDialogOptions = {
   /** Show the tone icon tile. Default: shown when `tone` is set or `destructive`. */
   icon?: boolean;
   /**
-   * Withdraw the question: aborting closes the dialog and resolves `false`.
-   * For confirms that stop applying while open, or whose owner unmounts.
+   * Withdraw the question: aborting closes the dialog and resolves `false`
+   * (and the checkbox's default). For confirms that stop applying while open,
+   * or whose owner unmounts.
    */
   signal?: AbortSignal;
 };
+
+export type ConfirmDialogCheckbox = {
+  key: string;
+  label: ReactNode;
+  /** Defaults on: the caller is offering to do something helpful. */
+  defaultChecked?: boolean;
+};
+
+/** A confirm that carries checkboxes: the yes/no, and each box by its key. */
+export type CheckboxConfirmResult = {
+  confirmed: boolean;
+  checked: Record<string, boolean>;
+};
+
+function defaultChecked(options: ConfirmDialogOptions): Record<string, boolean> {
+  return Object.fromEntries(
+    (options.checkboxes ?? []).map((box) => [box.key, box.defaultChecked ?? true]),
+  );
+}
 
 export type PromptDialogOptions = {
   title: string;
@@ -60,7 +88,7 @@ type PromptRequest = {
 };
 
 type Request =
-  | { id: number; kind: "confirm"; options: ConfirmDialogOptions; resolve: (value: boolean) => void }
+  | { id: number; kind: "confirm"; options: ConfirmDialogOptions; resolve: (value: CheckboxConfirmResult) => void }
   | PromptRequest;
 
 let nextId = 1;
@@ -118,19 +146,24 @@ function ensureHost() {
   root.render(<RegisteredDialogHost fallback />);
 }
 
-export function confirmDialog(options: ConfirmDialogOptions): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
+/**
+ * The one confirm request. `confirmDialog` unwraps the yes/no; a caller that
+ * asked for a checkbox uses `checkboxConfirmDialog` and gets both halves.
+ */
+function confirmRequest(options: ConfirmDialogOptions): Promise<CheckboxConfirmResult> {
+  return new Promise<CheckboxConfirmResult>((resolve) => {
     const { signal } = options;
+    const unchecked = { confirmed: false, checked: defaultChecked(options) };
     if (signal?.aborted) {
-      resolve(false);
+      resolve(unchecked);
       return;
     }
     const id = nextId++;
     const onAbort = () => {
-      if (remove(id)) resolve(false);
+      if (remove(id)) resolve(unchecked);
     };
     signal?.addEventListener("abort", onAbort, { once: true });
-    const settle = (value: boolean) => {
+    const settle = (value: CheckboxConfirmResult) => {
       signal?.removeEventListener("abort", onAbort);
       resolve(value);
     };
@@ -138,6 +171,10 @@ export function confirmDialog(options: ConfirmDialogOptions): Promise<boolean> {
     ensureHost();
     emit();
   });
+}
+
+export async function confirmDialog(options: ConfirmDialogOptions): Promise<boolean> {
+  return (await confirmRequest(options)).confirmed;
 }
 
 export function promptDialog(options: PromptDialogOptions): Promise<string | null> {
@@ -157,13 +194,23 @@ export function promptDialog(options: PromptDialogOptions): Promise<string | nul
   });
 }
 
+/**
+ * `confirmDialog` plus checkboxes. Resolves the yes/no and each checkbox's
+ * state so the caller can pass the choices on without a second prompt.
+ */
+export async function checkboxConfirmDialog(
+  options: ConfirmDialogOptions & { checkboxes: readonly ConfirmDialogCheckbox[] },
+): Promise<CheckboxConfirmResult> {
+  return await confirmRequest(options);
+}
+
 /** Test helper: cancel everything still open. */
 export function __resetDialogRequestsForTests() {
   const pending = requests;
   requests = [];
   emit();
   for (const request of pending) {
-    if (request.kind === "confirm") request.resolve(false);
+    if (request.kind === "confirm") request.resolve({ confirmed: false, checked: {} });
     else request.resolve(null);
   }
   removeFallbackHost();
@@ -240,14 +287,34 @@ function ConfirmDialogView({
   onResult,
 }: {
   options: ConfirmDialogOptions;
-  onResult: (confirmed: boolean) => void;
+  onResult: (result: CheckboxConfirmResult) => void;
 }): JSX.Element {
   const tone: NoticeTone = options.tone ?? (options.destructive ? "error" : "accent");
+  const [checked, setChecked] = useState(() => defaultChecked(options));
+  const settle = (confirmed: boolean) => onResult({ confirmed, checked });
+  const checkboxes = options.checkboxes ?? [];
+  const body = options.children != null || checkboxes.length > 0 ? (
+    <>
+      {options.children != null ? (
+        <div className="ade-dialog-checkbox-content">{options.children}</div>
+      ) : null}
+      {checkboxes.map((box) => (
+        <label key={box.key} className="ade-dialog-checkbox">
+          <input
+            type="checkbox"
+            checked={checked[box.key] ?? false}
+            onChange={(event) => setChecked((current) => ({ ...current, [box.key]: event.target.checked }))}
+          />
+          <span>{box.label}</span>
+        </label>
+      ))}
+    </>
+  ) : undefined;
   return (
     <Dialog
       open
       onOpenChange={(next) => {
-        if (!next) onResult(false);
+        if (!next) settle(false);
       }}
       role="alertdialog"
       layer="nestedDialog"
@@ -258,10 +325,12 @@ function ConfirmDialogView({
       description={options.message}
       hideClose
       actions={[
-        { label: options.cancelLabel ?? "Cancel", variant: "secondary", onClick: () => onResult(false) },
-        { label: options.confirmLabel ?? "OK", variant: "solid", autoFocus: true, onClick: () => onResult(true) },
+        { label: options.cancelLabel ?? "Cancel", variant: "secondary", onClick: () => settle(false) },
+        { label: options.confirmLabel ?? "OK", variant: "solid", autoFocus: true, onClick: () => settle(true) },
       ]}
-    />
+    >
+      {body}
+    </Dialog>
   );
 }
 

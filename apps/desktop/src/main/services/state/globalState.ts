@@ -8,7 +8,13 @@ import type {
   OpenProjectBinding,
   RecentProjectRemoteRef,
   RecentlyInstalledUpdate,
+  UpdateInterruptedChat,
 } from "../../../shared/types";
+import type {
+  BuiltInBrowserAgentAccessMode,
+  BuiltInBrowserAgentChatGrant,
+  BuiltInBrowserAgentLaneGrant,
+} from "../../../shared/types/builtInBrowser";
 import { projectRefStateKey } from "../../../shared/projectIdentity";
 import { sanitizePortableGitRemote } from "../../../shared/crossMachineHandoff";
 
@@ -40,11 +46,26 @@ export function recentProjectKey(
   return projectRefStateKey(proj);
 }
 
+export type UpdateWorkspaceState = {
+  localRoots: string[];
+  activeLocalRoot?: string | null;
+};
+
 export type PendingInstallUpdate = {
   fromVersion: string;
   targetVersion: string;
   releaseNotesUrl: string | null;
   requestedAt: string;
+  /**
+   * Chats ADE armed a "continue" row for before this install, when the user
+   * asked for it. Written by the quit that installs and read by the launch that
+   * lands it, so the post-update notice can name what came back.
+   *
+   * Lives inside `pendingInstallUpdate` on purpose: an install that fails or is
+   * declined clears the whole pending record, so a resume list can never drift
+   * onto a later, unrelated update.
+   */
+  resumedChats?: UpdateInterruptedChat[];
 };
 
 // Consecutive installs of the same version that quit without landing. The
@@ -78,6 +99,16 @@ export type GlobalState = {
   recentProjects?: RecentProject[];
   pendingInstallUpdate?: PendingInstallUpdate;
   recentlyInstalledUpdate?: RecentlyInstalledUpdate;
+  /**
+   * Open local project tabs, written as they change. Read only on the launch
+   * that just finished installing an update.
+   */
+  updateWorkspace?: UpdateWorkspaceState;
+  /**
+   * Set only by the update quit. The next launch reopens `updateWorkspace`
+   * once, then clears this so a later ordinary launch stays on welcome.
+   */
+  restoreUpdateWorkspaceOnLaunch?: boolean;
   failedInstallAttempts?: FailedInstallAttempts;
   autoUpdatePreferences?: AutoUpdatePreferences;
   /** Whether ADE may hold this machine awake while agents run. Default: never. */
@@ -94,16 +125,46 @@ export type GlobalState = {
    * is set, which is what makes the CLI stop emitting it.
    */
   claudeResumeReturnDismissed?: boolean;
+  /**
+   * False once the person ticked "Don't ask again" on the quit confirmation.
+   * Absent means ask. Settings turns it back on. Never silences the warning
+   * shown when quitting would stop running agents.
+   */
+  askBeforeQuit?: boolean;
+  /**
+   * "Agents can use the ADE browser" and the lanes and chats the user allowed.
+   * Machine-wide because the browser's signed-in profile is one per install.
+   * Absent: every agent may use it (the default).
+   */
+  builtInBrowserAgentAccess?: {
+    mode?: BuiltInBrowserAgentAccessMode;
+    laneGrants?: BuiltInBrowserAgentLaneGrant[];
+    chatGrants?: BuiltInBrowserAgentChatGrant[];
+  };
 };
 
 export function readGlobalState(filePath: string): GlobalState {
   try {
-    const raw = fs.readFileSync(filePath, "utf8");
-    const parsed = JSON.parse(raw) as GlobalState;
-    return parsed && typeof parsed === "object" ? parsed : {};
+    return readGlobalStateForUpdate(filePath);
   } catch {
     return {};
   }
+}
+
+/**
+ * `readGlobalState` for a read-modify-write: a missing file is `{}`, but an
+ * unreadable or corrupt one throws, so the write cannot wipe what it held.
+ */
+export function readGlobalStateForUpdate(filePath: string): GlobalState {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+  const parsed = JSON.parse(raw) as GlobalState;
+  return parsed && typeof parsed === "object" ? parsed : {};
 }
 
 export function writeGlobalState(filePath: string, state: GlobalState): void {

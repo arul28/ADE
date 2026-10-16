@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { resolveLaneCreateRemoteBase, resolveLaneCreateRemoteBaseDetailed } from "./laneCreateRemoteBase";
+import { readGitLaneBaseFreshness, resolveLaneCreateRemoteBase, resolveLaneCreateRemoteBaseDetailed } from "./laneCreateRemoteBase";
 
 const roots: string[] = [];
 
@@ -46,19 +46,137 @@ afterEach(() => {
 describe("resolveLaneCreateRemoteBase", () => {
   it("returns the tracked upstream when it resolves, with the fetch outcome", async () => {
     const { deps } = setup(true);
-    await expect(resolveLaneCreateRemoteBaseDetailed(deps)).resolves.toEqual({ baseRef: "origin/main", fetchSucceeded: true });
+    await expect(resolveLaneCreateRemoteBaseDetailed(deps)).resolves.toMatchObject({ baseRef: "origin/main", fetchSucceeded: true });
   });
 
   it("returns null (local default) when the configured upstream is gone", async () => {
     const { deps } = setup(false);
     await expect(resolveLaneCreateRemoteBase(deps)).resolves.toBeNull();
-    await expect(resolveLaneCreateRemoteBaseDetailed(deps)).resolves.toEqual({ baseRef: null, fetchSucceeded: true });
+    await expect(resolveLaneCreateRemoteBaseDetailed(deps)).resolves.toMatchObject({ baseRef: null, fetchSucceeded: true });
     expect(deps.onWarning).toHaveBeenCalledWith(expect.stringContaining("no longer exists"));
+  });
+
+  it("reads how old the base was before the fetch can restamp it", async () => {
+    const { repo, deps } = setup(true);
+    let fetchStarted = false;
+    (deps.gitService as unknown as { fetch: ReturnType<typeof vi.fn> }).fetch.mockImplementation(async () => {
+      fetchStarted = true;
+    });
+    const readFreshness = vi.fn(async () => {
+      expect(fetchStarted).toBe(false);
+      return { lastFetchedAtMs: 1, committedAtMs: 1, behindLocal: 0 };
+    });
+    await resolveLaneCreateRemoteBaseDetailed({ ...deps, readFreshness });
+    expect(readFreshness).toHaveBeenCalledWith(expect.objectContaining({
+      ref: "origin/main",
+      cwd: repo,
+    }));
+  });
+
+  it("takes last-fetched time from the reflog, not the commit date", async () => {
+    const { repo } = setup(true);
+    execFileSync("git", ["commit", "--amend", "--no-edit", "--date", "2020-01-01T00:00:00Z"], {
+      cwd: repo,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_DATE: "2020-01-01T00:00:00Z",
+        GIT_COMMITTER_DATE: "2020-01-01T00:00:00Z",
+      },
+    });
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+    const freshness = await readGitLaneBaseFreshness({
+      ref: "origin/main",
+      cwd: repo,
+      localBranch: "main",
+    });
+    expect(freshness.committedAtMs).toBeLessThan(Date.parse("2021-01-01T00:00:00Z"));
+    expect(freshness.lastFetchedAtMs).toBeGreaterThan(Date.now() - 120_000);
+  });
+
+  it("branches from the snapshot taken before a fresh fetch times out", async () => {
+    const { deps } = setup(true);
+    const gitService = deps.gitService as unknown as {
+      fetch: ReturnType<typeof vi.fn>;
+      listBranches: ReturnType<typeof vi.fn>;
+    };
+    let fetchStarted = false;
+    const gitAfterFetch: string[] = [];
+    gitService.listBranches.mockImplementation(async () => {
+      if (fetchStarted) gitAfterFetch.push("listBranches");
+      return [{ name: "main", isCurrent: true, isRemote: false, upstream: "origin/main" }];
+    });
+    const refResolves = vi.fn(async () => {
+      if (fetchStarted) gitAfterFetch.push("refResolves");
+      return true;
+    });
+    const readFreshness = vi.fn(async () => {
+      if (fetchStarted) gitAfterFetch.push("readFreshness");
+      return { lastFetchedAtMs: Date.now(), committedAtMs: Date.now(), behindLocal: 0 };
+    });
+    gitService.fetch.mockImplementation(() => {
+      fetchStarted = true;
+      return new Promise(() => {});
+    });
+    await expect(resolveLaneCreateRemoteBaseDetailed({
+      ...deps,
+      fetchTimeoutMs: 0,
+      readFreshness,
+      refResolves,
+    })).resolves.toMatchObject({
+      baseRef: "origin/main",
+      fetchSucceeded: false,
+      fetchOutcome: "timeout",
+    });
+    expect(gitAfterFetch).toEqual([]);
+  });
+
+  it("returns no base when the fetch is cancelled, without another branch listing", async () => {
+    const { deps } = setup(true);
+    const gitService = deps.gitService as unknown as {
+      fetch: ReturnType<typeof vi.fn>;
+      listBranches: ReturnType<typeof vi.fn>;
+    };
+    const controller = new AbortController();
+    const fetchArgs: Array<{ signal?: AbortSignal }> = [];
+    gitService.fetch.mockImplementation(async (args: { signal?: AbortSignal }) => {
+      fetchArgs.push(args);
+      controller.abort();
+      throw new Error("git was cancelled");
+    });
+    await expect(resolveLaneCreateRemoteBaseDetailed({
+      ...deps,
+      signal: controller.signal,
+      refResolves: async () => true,
+    })).resolves.toMatchObject({
+      baseRef: null,
+      fetchSucceeded: false,
+      fetchOutcome: "failed",
+      fetchError: "cancelled",
+    });
+    expect(fetchArgs.map((args) => args.signal)).toEqual([controller.signal]);
+    expect(gitService.listBranches).toHaveBeenCalledTimes(1);
+  });
+
+  it("still fetches when the pre-fetch branch list fails", async () => {
+    const { deps } = setup(true);
+    const gitService = deps.gitService as unknown as {
+      fetch: ReturnType<typeof vi.fn>;
+      listBranches: ReturnType<typeof vi.fn>;
+    };
+    gitService.listBranches
+      .mockRejectedValueOnce(new Error("index locked"))
+      .mockResolvedValueOnce([{ name: "main", isCurrent: true, isRemote: false, upstream: "origin/main" }]);
+    await expect(resolveLaneCreateRemoteBaseDetailed({
+      ...deps,
+      refResolves: async () => true,
+    })).resolves.toMatchObject({ baseRef: "origin/main", fetchSucceeded: true, fetchOutcome: "ok" });
+    expect(gitService.fetch).toHaveBeenCalledTimes(1);
+    expect(gitService.listBranches).toHaveBeenCalledTimes(2);
   });
 
   it("reports a failed fetch structurally instead of through the warning text", async () => {
     const { deps } = setup(true);
     (deps.gitService as unknown as { fetch: ReturnType<typeof vi.fn> }).fetch.mockRejectedValueOnce(new Error("offline"));
-    await expect(resolveLaneCreateRemoteBaseDetailed(deps)).resolves.toEqual({ baseRef: "origin/main", fetchSucceeded: false });
+    await expect(resolveLaneCreateRemoteBaseDetailed(deps)).resolves.toMatchObject({ baseRef: "origin/main", fetchSucceeded: false, fetchOutcome: "failed" });
   });
 });

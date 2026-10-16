@@ -192,10 +192,21 @@ if (normalized !== contents) {
 
 for (const entryPath of bundledRuntimeEntryPaths) {
   const entryContents = await fs.readFile(entryPath, "utf8");
-  if (/require\((["'])@opencode-ai\/sdk\1\)/.test(entryContents)) {
+  // @opencode/client and its @opencode/* + effect dependencies are ESM-only
+  // devDependencies: tsup must inline them, and no packaged tree ships them.
+  const openCodeRequire = /require\((["'])(@opencode\/(?!cli(?:-|["'/]))[^"']+|effect(?:\/[^"']*)?)\1\)/.exec(entryContents);
+  if (openCodeRequire) {
     throw new Error(
-      `[ade-cli:build] ${path.relative(packageRoot, entryPath)} contains a bare require("@opencode-ai/sdk"); ` +
-        "inline the ESM-only SDK in tsup instead.",
+      `[ade-cli:build] ${path.relative(packageRoot, entryPath)} contains a bare require("${openCodeRequire[2]}"); ` +
+        "inline the ESM-only OpenCode client in tsup instead.",
+    );
+  }
+  // @muse-code/sdk is an ESM-only devDependency too: inlined, never shipped.
+  const museSdkRequire = /require\((["'])(@muse-code\/sdk(?:\/[^"']*)?)\1\)/.exec(entryContents);
+  if (museSdkRequire) {
+    throw new Error(
+      `[ade-cli:build] ${path.relative(packageRoot, entryPath)} contains a bare require("${museSdkRequire[2]}"); ` +
+        "inline the ESM-only Muse SDK in tsup instead.",
     );
   }
 }

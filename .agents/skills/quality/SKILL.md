@@ -39,6 +39,11 @@ Both tracks run **in parallel**. Reviewers **return findings** (severity +
 `file:line` + evidence + proposed fix); they do **not** apply fixes — the
 synthesis step owns all edits so dedupe and severity-gating happen in one place.
 
+- **Subagent limits.** Follow the **Subagents** rules in `AGENTS.md`. A track
+  agent is a leaf: it reviews its track itself and does not start parallel
+  reviewers or other subagents. Put that sentence in each track's brief. When
+  the user has asked to limit agents, run both tracks yourself, one after the
+  other, and the delta re-reviews in step 7 are always yours.
 - **Any runtime** — spawn one agent per track; the lead runs synthesis.
 - **Claude Code with agent teams** (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`,
   already set in `.claude/settings.json`) — realize the tracks as a team, one
@@ -227,6 +232,12 @@ Apply all three reference files:
    a default requirement (see **Windows parity rules** above), so this file
    applies to every diff, not only obviously path-or-process work.
 
+Also flag, as a correctness finding, any new failure that disappears: a
+`catch` that recovers silently or returns a fallback without `captureError` /
+`captureProblem` or a `logger.warn`/`logger.error` line. ADE only learns about
+those through Sentry (`docs/logging.md`, "Error tracking (Sentry)"); `/test`
+runs the full Sentry gate.
+
 Return prioritized findings. Mark each fix **unambiguous + behavior-preserving**
 (synthesis may auto-apply) or **needs human judgment** (synthesis surfaces it).
 
@@ -295,14 +306,19 @@ Cite the doc section in the finding.
    fix-induced correctness regressions and maintainability debt before `/test`
    or `/ship`.
 
-   **Cap: one full review, then at most two delta re-reviews.** If the second
-   delta re-review still finds a Blocker, High, or Medium, fix it and run one
-   last delta check. Do not loop further:
-   - Fix a Blocker, High, or Medium from the last check, but leave it out of
-     the reviewed range: set `qualityReviewedSha` (step 10) to the commit
-     before that fix, so the next delta review at push time covers it.
-   - List a Low from the last check under **Leftovers** in the summary. It is
-     not a gate row and does not block `/ship`.
+   **Cap: one full review, then at most two delta re-reviews.** The cap limits
+   how many times you *review*. It never limits what you *fix*. If the second
+   delta re-review still finds anything, run one last delta check, then stop
+   reviewing:
+   - Fix every accepted finding from the last check, at any severity, Low
+     included. Leave those fixes out of the reviewed range: set
+     `qualityReviewedSha` (step 10) to the commit before them, so the next
+     delta review at push time covers them.
+   - **Leftovers** is only for a Low you could not fix in this run, with the
+     reason (for example, the code it needs to change is owned by another
+     lane). A small, clear fix is never a leftover. A finding that matches one
+     of step 8's three gate reasons goes to the gate, not to Leftovers.
+     Leftovers are not gate rows and do not block `/ship`.
 
    A long chain of re-reviews usually chases fix-induced regressions, not real
    progress. The cap never moves a finding to the gate; only step 8's three
@@ -330,8 +346,10 @@ Cite the doc section in the finding.
    A finding you neither fixed nor gated is a bug in your run.
 9. **Harvest the PR (mandatory when a PR exists).** *After* the independent
    review, follow **Early PR and harvests → Harvest** in the ship playbook.
-   Read whatever CI jobs and review bots (Greptile, Codex, CodeRabbit) have
-   finished on the pushed head, and do not wait for the rest. Drop comments
+   Run `node scripts/ship-poll.mjs --pr <n> --text` and act on all of it: CI,
+   open review threads, review-body findings (bots put findings outside the
+   diff there, not in a thread), new comments and bot notices. Do not wait for
+   anything still running, and do not substitute a hand-written check. Drop comments
    this run already fixed. Verify each remaining comment like a Track A/B
    finding (step 4), then fix it (step 6) and re-review the fix delta (step 7).
    Rerun each failed CI test file locally. Fix the failures the code causes, and
@@ -367,7 +385,7 @@ the two permitted reasons — not findings you chose to defer.
 - Auto-applied: [count] (safe correctness fixes + structural judo moves)
 - Re-review passes: [n]
 - Reviewed head: `qualityReviewedSha` [sha]
-- Leftovers (Low, found by the last capped check): [list | none]
+- Leftovers (Low from the last capped check that could not be fixed, each with the reason): [list | none]
 
 ### PR harvest
 - PR: #[n] ([opened by this run | existing | skipped — reason])
@@ -398,5 +416,5 @@ Next: /test (pass it the "For /test" list and the accepted correctness
 findings; it adds a test only where no existing test would catch the bug).
 
 **Before you print this:** every accepted finding is in "Auto-applied", the
-Gate section, or (Low from the last capped check only) Leftovers. If one is in neither, go back to step 6 and fix it.
+Gate section, or (an unfixable Low from the last capped check only, with its reason) Leftovers. If one is in neither, go back to step 6 and fix it.
 ```

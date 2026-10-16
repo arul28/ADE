@@ -22,6 +22,25 @@ export const ACCOUNT_SCOPE_ALL = "all";
 
 const REPO_SCOPE_PREFIX = "repo:";
 
+const DEVICE_KEY_PREFIX = "device.";
+
+/**
+ * The account-store key for one computer's own copy of a setting, filed under
+ * the account-wide scope (`ACCOUNT_SCOPE_ALL`).
+ *
+ * For preferences that differ per computer but that another process on that
+ * computer must read (the brain reads the Apple remote-streaming cap and
+ * recording overlays), so they cannot live only in the renderer's storage. The
+ * device goes in the KEY rather than the scope: the relay accepts only `all`
+ * and `repo:` scopes and keys of `[A-Za-z0-9._-]`. Null when the device id is
+ * unknown or would not make a valid key.
+ */
+export function accountDeviceSettingKey(deviceId: string | null | undefined, key: string): string | null {
+  const id = deviceId?.trim();
+  if (!id || !/^[A-Za-z0-9_-]+$/.test(id)) return null;
+  return `${DEVICE_KEY_PREFIX}${id}.${key}`;
+}
+
 /**
  * Strips anything credential-shaped before a host.
  *

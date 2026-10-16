@@ -1,3 +1,4 @@
+import { StringDecoder } from "node:string_decoder";
 import { PairedRuntimeSupersededError } from "./pairedRuntimeErrors";
 import { syntheticCallerId } from "../../../shared/syntheticCallerId";
 import type { JsonRpcId, JsonRpcRequest, JsonRpcTransport } from "../../../../../ade-cli/src/jsonrpc";
@@ -98,7 +99,12 @@ export class RuntimeRpcClient {
     private readonly transport: RuntimeRpcTransport,
     private readonly timeoutMs = 10 * 60 * 1000,
   ) {
-    this.transport.onData((chunk) => this.onData(chunk.toString("utf8")));
+    // A reply larger than one read arrives in pieces, and a piece can end
+    // inside a multi-byte character. The decoder keeps the incomplete bytes for
+    // the next piece. Decoding each piece alone turned that character into
+    // U+FFFD, at a different place on every read of the same data.
+    const decoder = new StringDecoder("utf8");
+    this.transport.onData((chunk) => this.onData(decoder.write(chunk)));
     this.transport.onError?.((error) => {
       // `cause` keeps the transport's typed error, so a caller can tell an
       // over-budget channel close from a lost machine.
@@ -126,7 +132,6 @@ export class RuntimeRpcClient {
     clientName: string,
     version: string,
     options: {
-      desktopBridgeAuthToken?: string | null;
       timeoutMs?: number;
     } = {},
   ): Promise<unknown> {
@@ -137,9 +142,6 @@ export class RuntimeRpcClient {
         callerId: syntheticCallerId(clientName),
         role: "cto",
       },
-      ...(options.desktopBridgeAuthToken?.trim()
-        ? { desktopBridgeAuthToken: options.desktopBridgeAuthToken.trim() }
-        : {}),
     }, {
       ...(options.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });

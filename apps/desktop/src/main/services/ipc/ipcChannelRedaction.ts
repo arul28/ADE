@@ -18,6 +18,9 @@ export const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
   [IPC.ptySendToSession]: new Set(["text"]),
   [IPC.ptyWrite]: new Set(["data"]),
   [IPC.appOpenExternal]: new Set(["url"]),
+  // A link a user handed to a browser can be a signed or presigned URL, or an
+  // OAuth callback still carrying its `code`.
+  [IPC.appOpenInBrowser]: new Set(["url"]),
   [IPC.builtInBrowserNavigate]: new Set(["url"]),
   [IPC.builtInBrowserCreateTab]: new Set(["url"]),
   [IPC.builtInBrowserShowPanel]: new Set(["url"]),
@@ -27,17 +30,14 @@ export const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
   [IPC.accountPairMachine]: new Set(["machineKey"]),
   [IPC.accountRenameMachine]: new Set(["machineKey", "customName"]),
   [IPC.accountRemoveMachine]: new Set(["machineKey"]),
-  [IPC.attentionNotchPublishSnapshot]: new Set(["items"]),
-  [IPC.attentionNotchPublishToast]: new Set(["title", "subtitle"]),
   // A Pi sign-in prompt answer is the credential itself when Pi asks for an
   // API key, so it must never reach a verbose IPC trace.
   [IPC.aiPiLoginSubmit]: new Set(["value"]),
-  // All three key-store channels carry the raw provider credential as `key`.
+  // Both key-store channels carry the raw provider credential as `key`.
   // These entries are the ONLY thing redacting it: the generic guard below
   // does not treat a bare `key` as a secret, because it is the ordinary word
   // for a lookup key on channels that carry nothing sensitive.
   [IPC.aiStoreApiKey]: new Set(["key"]),
-  [IPC.aiStoreMachineApiKey]: new Set(["key"]),
   [IPC.aiSetOpencodeProviderKey]: new Set(["key"]),
   // A project secret's whole point is that its value never leaves the store in
   // the clear. `value` is too ordinary a word for the generic guard, `content`
@@ -45,6 +45,9 @@ export const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
   [IPC.projectSecretsSet]: new Set(["value"]),
   [IPC.projectSecretsPreviewEnvImport]: new Set(["content"]),
   [IPC.projectSecretsImportEnv]: new Set(["secrets"]),
+  // An answer can be a secret: the private secret card and every `isSecret`
+  // question send their value here, under a generic word.
+  [IPC.agentChatRespondToInput]: new Set(["answers", "responseText"]),
 };
 
 /**

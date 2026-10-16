@@ -261,7 +261,7 @@ describe("createAgentChatService", () => {
       }
     });
 
-    it("warns without killing a Codex turn after ten minutes of mid-turn inactivity", async () => {
+    it("waits on open work, then warns without killing a Codex turn after ten silent minutes", async () => {
       vi.useFakeTimers();
       try {
         const events: AgentChatEventEnvelope[] = [];
@@ -289,6 +289,28 @@ describe("createAgentChatService", () => {
           },
         });
         await Promise.resolve();
+        // A running subagent call is open work: the turn is waiting on it, so
+        // ten silent minutes are not a stall.
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+        expect(events.some((event) => event.event.type === "codex_turn_stalled")).toBe(false);
+
+        // Once the work ends (here the spawn fails, which ends the subagent),
+        // a turn that stays silent is still caught.
+        mockState.emitCodexPayload({
+          method: "item/completed",
+          params: {
+            turnId: "turn-1",
+            item: {
+              id: "collab-1",
+              type: "collabAgentToolCall",
+              tool: "spawn_agent",
+              prompt: "Inspect one bounded area.",
+              status: "failed",
+            },
+          },
+        });
+        await Promise.resolve();
+        expect(events.some((event) => event.event.type === "subagent_result")).toBe(true);
         await vi.advanceTimersByTimeAsync(10 * 60_000);
 
         await waitForFakeTimers(() => {
@@ -1227,6 +1249,44 @@ describe("createAgentChatService", () => {
             && event.event.reason === "no_progress"
           )).toBe(true);
         });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("trusts the app-server's open items over ADE's own record when it answers", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        // The server reports the turn still running with no open item: the
+        // subagent call ADE saw start is not open there any more.
+        mockState.codexResponseOverrides.set("thread/turns/list", () => ({
+          data: [{ id: "turn-1", status: "inProgress", items: [] }],
+          nextCursor: null,
+        }));
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.5" });
+        await service.sendMessage({ sessionId: session.id, text: "Run the task." }, { awaitDispatch: true });
+        mockState.emitCodexPayload({
+          method: "item/started",
+          params: {
+            turnId: "turn-1",
+            item: { id: "collab-1", type: "collabAgentToolCall", tool: "spawn_agent", prompt: "Look.", status: "inProgress" },
+          },
+        });
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+        await waitForFakeTimers(() => {
+          expect(events.some((event) =>
+            event.event.type === "codex_turn_stalled"
+            && event.event.reason === "no_progress"
+          )).toBe(true);
+        });
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/turns/list")).toBe(true);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/interrupt")).toBe(false);
       } finally {
         vi.useRealTimers();
       }

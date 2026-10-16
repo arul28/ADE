@@ -6,18 +6,19 @@ import {
   createService,
   detectAllAuth,
   fs,
+  installRealTranscriptParser,
   makeDefaultClaudeSession,
   mockState,
   path,
   query,
   readPersistedChatState,
   renameSession,
-  startOpenCodeSession,
   streamText,
   tmpRoot,
   waitFor,
   waitForEvent,
   waitForSessionTitle,
+  writeTestTranscriptEnvelopes,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
 
@@ -121,40 +122,6 @@ describe("createAgentChatService", () => {
       expect(names).not.toContain("/apps");
     });
 
-    it("returns local and filesystem-backed skill commands for an opencode session", async () => {
-      const skillDir = path.join(tmpRoot, ".agents", "skills", "deploy-helper");
-      fs.mkdirSync(skillDir, { recursive: true });
-      fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
-        "---",
-        "name: deploy-helper",
-        "description: Use this skill for deployment help",
-        "---",
-        "",
-        "Deploy safely.",
-        "",
-      ].join("\n"));
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-
-      const commands = service.getSlashCommands({ sessionId: session.id });
-      expect(commands.length).toBeGreaterThanOrEqual(1);
-
-      const clearCmd = commands.find((c: any) => c.name === "/clear");
-      expect(clearCmd).toBeDefined();
-      expect(clearCmd!.source).toBe("local");
-      expect(commands).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          name: "/deploy-helper",
-          description: "Use this skill for deployment help",
-          source: "sdk",
-        }),
-      ]));
-    });
 
     it("returns Claude and Codex prompt commands plus /clear for a droid lane", async () => {
       const claudeCommandsDir = path.join(tmpRoot, ".claude", "commands");
@@ -747,6 +714,125 @@ describe("createAgentChatService", () => {
     expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
   });
 
+  describe("leading-slash prompts on OpenCode", () => {
+    // OpenCode fails the whole turn with "Command not found: <name>" for a
+    // name it does not list, so only its own commands may reach its command
+    // endpoint. ADE's skills arrive expanded; any other `/word` is text.
+    it.each([
+      {
+        label: "expands an ADE project skill",
+        text: "/ship resume for lane x",
+        prompt: "Ship the lane.\n\nTask: resume for lane x",
+      },
+      {
+        label: "sends an unknown name as the user's text",
+        text: "/nonexistentcmd hello",
+        prompt: "/nonexistentcmd hello",
+      },
+      {
+        label: "runs a command OpenCode lists",
+        text: "/init the repo",
+        command: { name: "init", text: "the repo" },
+      },
+      {
+        // The chat's first turn: nothing has listed OpenCode's commands yet.
+        label: "runs OpenCode's own command over a same-named ADE skill on the first turn",
+        text: "/ship resume for lane x",
+        openCodeCommands: ["init", "ship"],
+        command: { name: "ship", text: "resume for lane x" },
+      },
+    ])("$label", async ({ text, prompt, command, openCodeCommands }) => {
+      const skillDir = path.join(tmpRoot, ".claude", "skills", "ship");
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+        "---",
+        "name: ship",
+        "description: Ship the lane",
+        "---",
+        "",
+        "Ship the lane.",
+        "",
+        "Task: $ARGUMENTS",
+        "",
+      ].join("\n"));
+      mockState.openCodeCommands = openCodeCommands ?? ["init"];
+
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+      await service.sendMessage({ sessionId: session.id, text }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(events.some((entry) => entry.event.type === "done")).toBe(true);
+      });
+      expect(events.filter((entry) => entry.event.type === "error")).toEqual([]);
+      if (command) {
+        expect(mockState.openCodeCommandCalls).toEqual([expect.objectContaining(command)]);
+        expect(mockState.openCodePromptCalls).toEqual([]);
+      } else {
+        expect(mockState.openCodeCommandCalls).toEqual([]);
+        expect(mockState.openCodePromptCalls).toEqual([expect.objectContaining({ text: prompt })]);
+      }
+    });
+
+    it("logs a failed turn and does not call a harness refusal a missing CLI", async () => {
+      mockState.openCodePromptError = new Error("Command not found: ship");
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, logger } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+      await service.sendMessage({ sessionId: session.id, text: "please ship it" }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(events.some((entry) => entry.event.type === "error")).toBe(true);
+      });
+      const error = events.find((entry) => entry.event.type === "error")!.event as any;
+      expect(error.errorInfo?.category).not.toBe("agent_cli_missing");
+      expect(error.errorInfo?.agentCli).toBeUndefined();
+      expect(logger.warn).toHaveBeenCalledWith("agent_chat.turn_error", expect.objectContaining({
+        sessionId: session.id,
+        provider: "opencode",
+        category: expect.any(String),
+        message: expect.stringContaining("Command not found: ship"),
+      }));
+    });
+
+    it("redacts secrets in a failed turn's log and never logs the user prompt", async () => {
+      // Low-entropy and built at runtime: a real-looking key literal would trip
+      // the repo's gitleaks secret-scan, and `redactSecrets` still strips it.
+      const secret = "z".repeat(40);
+      mockState.openCodePromptError = new Error(`Command not found: ship — Bearer ${secret} rejected`);
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, logger } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+      await service.sendMessage({ sessionId: session.id, text: "PROMPTMARKER please ship it" }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(events.some((entry) => entry.event.type === "error")).toBe(true);
+      });
+      const logCall = logger.warn.mock.calls.find(([event]) => event === "agent_chat.turn_error");
+      const logged = logCall?.[1] as { message?: string } | undefined;
+      expect(logged?.message, "the failed turn is logged").toBeTruthy();
+      expect(logged?.message).not.toContain(secret);
+      expect(logged?.message).not.toContain("PROMPTMARKER");
+      expect(logged?.message?.length).toBeLessThanOrEqual(300);
+    });
+  });
+
   describe("Codex 0.149 app-server composer commands", () => {
     const pin149 = () => {
       mockState.codexResponseOverrides.set("initialize", { userAgent: "codex/0.149.1" });
@@ -1303,31 +1389,6 @@ describe("createAgentChatService", () => {
       await waitForSessionTitle(sessionService, session.id, "Manual Title");
     });
 
-    it("lets OpenCode session.updated titles beat ADE AI fallback", async () => {
-      streamText.mockReturnValue({
-        fullStream: (async function* () {
-          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
-        })(),
-      });
-      mockState.openCodeTitleForNextPrompt = "OpenCode Native Title";
-      const { service, sessionService, aiIntegrationService } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-
-      await service.sendMessage({ sessionId: session.id, text: "Use runtime title." }, { awaitDispatch: true });
-
-      await waitForSessionTitle(sessionService, session.id, "OpenCode Native Title");
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
-        expect.objectContaining({ taskType: "handoff_summary" }),
-      );
-      expect(vi.mocked(startOpenCodeSession).mock.calls.at(-1)?.[0]).toEqual(
-        expect.objectContaining({ title: null }),
-      );
-    });
 
     it("adopts Droid SDK session_title_updated titles", async () => {
       const { service, sessionService } = createService();
@@ -1918,6 +1979,40 @@ describe("createAgentChatService", () => {
       expect(result.skipped).toEqual(["statusLine"]);
       expect(sessionService.get(session.id)?.title).toBe(generatedMetadata.chatTitle);
       expect(sessionService.setStatusNote).not.toHaveBeenCalled();
+    });
+
+    it("hands the namer each streamed reply as whole words, one paragraph per message", async () => {
+      installAutoTitleAuth();
+      installRealTranscriptParser();
+      const { service, aiIntegrationService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-2",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+      });
+      const at = "2026-10-09T21:25:49.000Z";
+      writeTestTranscriptEnvelopes(session.id, [
+        { sessionId: session.id, timestamp: at, event: { type: "user_message", text: "What can you do alone?" } },
+        ...["Anything that raises a", " Windows admin (UAC) prompt,", " I can't click through."].map((text) => ({
+          sessionId: session.id,
+          timestamp: at,
+          event: { type: "text" as const, text, turnId: "turn-1", messageId: "msg-1" },
+        })),
+        { sessionId: session.id, timestamp: at, event: { type: "text", text: "Nothing is started yet.", turnId: "turn-1", messageId: "msg-2" } },
+      ] as AgentChatEventEnvelope[]);
+      aiIntegrationService.summarizeTerminal.mockResolvedValue({
+        text: JSON.stringify(generatedMetadata),
+        structuredOutput: generatedMetadata,
+      } as never);
+
+      await service.regenerateSessionMetadata({ sessionId: session.id, fields: ["statusLine"] });
+
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(expect.objectContaining({
+        prompt: expect.stringContaining(
+          "Anything that raises a Windows admin (UAC) prompt, I can't click through.\n\nNothing is started yet.",
+        ),
+      }));
     });
 
     it("keeps a same-text manual rename made while generation is in flight", async () => {

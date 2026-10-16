@@ -192,6 +192,7 @@ export function repairClaudeTranscriptFileSync(
 export function resolveClaudeSdkTranscriptPath(
   sessionId: string | null | undefined,
   cwd: string | null | undefined,
+  configHome?: string | null,
 ): string | null {
   const id = typeof sessionId === "string" ? sessionId.trim() : "";
   if (!id) return null;
@@ -199,9 +200,12 @@ export function resolveClaudeSdkTranscriptPath(
   // be interpolated into a path (e.g. "../") and target an unrelated file.
   if (!/^[A-Za-z0-9_-]+$/.test(id)) return null;
 
-  const configDir = process.env.CLAUDE_CONFIG_DIR?.trim().length
-    ? process.env.CLAUDE_CONFIG_DIR.trim()
-    : path.join(os.homedir(), ".claude");
+  // A chat on another Claude account resumes from that account's config home,
+  // not this process's, so the caller names it.
+  const configDir = configHome?.trim()
+    || (process.env.CLAUDE_CONFIG_DIR?.trim().length
+      ? process.env.CLAUDE_CONFIG_DIR.trim()
+      : path.join(os.homedir(), ".claude"));
   const projectsDir = path.join(configDir, "projects");
 
   if (cwd && cwd.trim().length) {
@@ -225,9 +229,10 @@ export function resolveClaudeSdkTranscriptPath(
 export function repairClaudeResumeTranscript(
   sessionId: string | null | undefined,
   cwd: string | null | undefined,
+  configHome?: string | null,
   makeId: () => string = defaultMakeId,
 ): ClaudeTranscriptRepairResult {
-  const filePath = resolveClaudeSdkTranscriptPath(sessionId, cwd);
+  const filePath = resolveClaudeSdkTranscriptPath(sessionId, cwd, configHome);
   if (!filePath) return NO_OP;
   return repairClaudeTranscriptFileSync(filePath, makeId);
 }

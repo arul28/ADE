@@ -25,18 +25,22 @@ export type ProxySubscriptionConnectionUnavailable = {
   reason: "proxy-stopped";
 };
 
+export type ProxyEndpointParts = {
+  port: number;
+  apiKey: string;
+  authDir: string;
+  configPath: string;
+};
+
 /**
- * Read the proxy's connection for one provider straight off this machine.
- *
- * A persisted PID is only a process-existence hint. The supervisor records a
- * recent successful health response as well, which prevents PID reuse or a
- * hung process from receiving provider credentials. Tests can inject a live
- * health check for a state that has not yet received its first timestamp.
+ * The proxy's live endpoint (port + shared client key), independent of any
+ * provider login. Routes that ADE translates through the proxy need only this;
+ * subscription routes additionally need a login's prefix (below).
  */
-export function defaultReadProxyConnection(
+export function defaultReadProxyEndpoint(
   adeHome: string,
   options: { healthCheck?: (port: number) => boolean } = {},
-): (provider: ProxySubscriptionProvider) => ProxySubscriptionConnectionParts | ProxySubscriptionConnectionUnavailable | null {
+): () => ProxyEndpointParts | ProxySubscriptionConnectionUnavailable | null {
   const isLivePid = (pid: unknown): boolean => {
     if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
     try {
@@ -47,7 +51,7 @@ export function defaultReadProxyConnection(
     }
   };
 
-  return (provider) => {
+  return () => {
     const proxyDir = path.join(adeHome, "proxy");
     let port: number | null = null;
     let pid: number | null = null;
@@ -95,10 +99,11 @@ export function defaultReadProxyConnection(
       return { reason: "proxy-stopped" };
     }
 
+    const configPath = path.join(proxyDir, "config.yaml");
     let apiKey: string | null = null;
     let authDir = path.join(proxyDir, "auth");
     try {
-      const config = parseYaml(fs.readFileSync(path.join(proxyDir, "config.yaml"), "utf8")) as {
+      const config = parseYaml(fs.readFileSync(configPath, "utf8")) as {
         "api-keys"?: unknown;
         "auth-dir"?: unknown;
       };
@@ -111,6 +116,27 @@ export function defaultReadProxyConnection(
       return null;
     }
     if (!apiKey) return null;
+    return { port, apiKey, authDir, configPath };
+  };
+}
+
+/**
+ * Read the proxy's connection for one provider straight off this machine.
+ *
+ * A persisted PID is only a process-existence hint. The supervisor records a
+ * recent successful health response as well, which prevents PID reuse or a
+ * hung process from receiving provider credentials. Tests can inject a live
+ * health check for a state that has not yet received its first timestamp.
+ */
+export function defaultReadProxyConnection(
+  adeHome: string,
+  options: { healthCheck?: (port: number) => boolean } = {},
+): (provider: ProxySubscriptionProvider) => ProxySubscriptionConnectionParts | ProxySubscriptionConnectionUnavailable | null {
+  const readEndpoint = defaultReadProxyEndpoint(adeHome, options);
+  return (provider) => {
+    const endpoint = readEndpoint();
+    if (!endpoint || "reason" in endpoint) return endpoint;
+    const { port, apiKey, authDir } = endpoint;
 
     let entries: string[];
     try {

@@ -3,7 +3,6 @@ import {
   ArrowClockwise,
   CaretLeft,
   CaretRight,
-  DesktopTower,
   Plus,
   TerminalWindow,
   UserCircle,
@@ -42,7 +41,11 @@ import {
   discoveredPairingInput,
   discoveredTargetInput,
   formatRemoteTargetError,
+  describeMachineUpdateAttempt,
   isMachineVersionOutdated,
+  machineUpdateGraceMs,
+  machineUpdatePhase,
+  outdatedMachines,
   isSshOnlyDiscovered,
   machineMatchesSavedTarget,
   newestKnownAdeVersion,
@@ -53,9 +56,12 @@ import {
   isMachineConnected,
 } from "../../../shared/machinePresence";
 import { SavedMachineRow } from "./SavedMachineRow";
+import { MachinesBehindBanner } from "./MachinesBehindBanner";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
+import { isMachineUpdateBusy, requestMachineUpdates, useMachineUpdates } from "./machineUpdates";
 import { DiscoveredMachineRow } from "./DiscoveredMachineRow";
 import { AccountMachineRow } from "./AccountMachineRow";
+import { accountRowKey, useRowActions } from "./useRowActions";
 import {
   helperTextStyle,
   iconActionButtonStyle,
@@ -199,12 +205,21 @@ export function RemoteTargetList({
   );
   const [loading, setLoading] = useState(true);
   const [loadingDiscovered, setLoadingDiscovered] = useState(true);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const {
+    busyById,
+    setRowBusy,
+    finishRowAction,
+    beginConnectAttempt,
+    isConnectAttemptCurrent,
+    endConnectAttempt,
+    dropConnectAttempt,
+    trackPairing,
+    isPairingInFlight,
+  } = useRowActions();
+  // An add/edit form submit is in flight. Locks the forms, never the rows.
   const [saving, setSaving] = useState(false);
-  const [updatingTargetId, setUpdatingTargetId] = useState<string | null>(null);
-  const [updateResultByTargetId, setUpdateResultByTargetId] = useState<
-    Record<string, { ok: boolean; message: string }>
-  >({});
+  const machineUpdates = useMachineUpdates();
+  const { attempts: updateResultByTargetId, nowMs: updateClockMs } = machineUpdates;
   const updateSnapshot = useAutoUpdateSnapshot();
   const [trustingHostKey, setTrustingHostKey] = useState(false);
   const [formPrefill, setFormPrefill] =
@@ -226,8 +241,6 @@ export function RemoteTargetList({
   const [localMachineIdentity, setLocalMachineIdentity] =
     useState<{ machineKey: string; deviceId: string } | null>(null);
   const [pairingPrefill, setPairingPrefill] = useState<string | null>(null);
-  const [accountConnectingMachineKey, setAccountConnectingMachineKey] =
-    useState<string | null>(null);
   const [accountRowErrors, setAccountRowErrors] = useState<
     Record<string, string>
   >({});
@@ -286,6 +299,15 @@ export function RemoteTargetList({
     [],
   );
 
+  const clearAccountRowStage = useCallback((machineKey: string) => {
+    setAccountRowStages((current) => {
+      if (!(machineKey in current)) return current;
+      const next = { ...current };
+      delete next[machineKey];
+      return next;
+    });
+  }, []);
+
   // Never surface THIS Mac in its own account list. Match on the stable
   // machineKey OR deviceId reported by the local identity IPC (#A3).
   const visibleAccountMachines = useMemo(() => {
@@ -325,18 +347,49 @@ export function RemoteTargetList({
     [connectionSnapshot],
   );
 
-  const sections = useMemo(
-    () =>
-      assignMachineSections({
-        targets,
-        statusById,
-        connectedFallbackId: connected?.target.id ?? null,
-        discoveredMachines,
-        accountMachines: visibleAccountMachines,
-        includeDiscoveredRows: false,
+  // Machines waiting to come back from an update, as a stable key: the clock
+  // moves on every render, and the sections only change when this set does.
+  const restartingKey = Object.entries(machineUpdates.attempts)
+    .filter(([, attempt]) =>
+      attempt.pendingVersion != null
+      && machineUpdates.nowMs - attempt.startedAtMs < machineUpdateGraceMs(attempt))
+    .map(([id, attempt]) => `${id}\t${attempt.pendingVersion}`)
+    .sort()
+    .join("\n");
+  const sections = useMemo(() => {
+    const assigned = assignMachineSections({
+      targets,
+      statusById,
+      connectedFallbackId: connected?.target.id ?? null,
+      discoveredMachines,
+      accountMachines: visibleAccountMachines,
+      includeDiscoveredRows: false,
+    });
+    // A machine restarting for an update drops its connection on purpose.
+    // It stays where it was, under Connected, until it is back or the update
+    // gives up, instead of jumping to Available with an error.
+    const pendingById = new Map(
+      (restartingKey ? restartingKey.split("\n") : []).map((entry) => {
+        const [id, version] = entry.split("\t");
+        return [id, version] as const;
       }),
-    [targets, statusById, connected, discoveredMachines, visibleAccountMachines],
-  );
+    );
+    // Once the machine reports the new version the update is over, and a
+    // later disconnect is an ordinary one.
+    const restarting = (row: (typeof assigned.available)[number]): boolean => {
+      if (row.kind !== "saved") return false;
+      const pending = pendingById.get(row.target.id);
+      return pending != null && (!row.version || isMachineVersionOutdated(row.version, pending));
+    };
+    const moved = [...assigned.available, ...assigned.unavailable].filter(restarting);
+    if (moved.length === 0) return assigned;
+    return {
+      ...assigned,
+      connected: [...assigned.connected, ...moved],
+      available: assigned.available.filter((row) => !restarting(row)),
+      unavailable: assigned.unavailable.filter((row) => !restarting(row)),
+    };
+  }, [targets, statusById, connected, discoveredMachines, visibleAccountMachines, restartingKey]);
 
   const loadTargets = useCallback(async () => {
     setLoading(true);
@@ -513,11 +566,16 @@ export function RemoteTargetList({
   /**
    * Reveals the host-key prompt when this machine's SSH identity still has to
    * be confirmed, and reports which case it is. Returns null when the identity
-   * is already trusted and the connect may proceed.
+   * is already trusted and the connect may proceed. A connect that was
+   * cancelled while the probe ran reveals nothing.
    */
   const blockingHostKeyTrust = useCallback(
-    async (targetId: string): Promise<"needs_trust" | "changed" | null> => {
+    async (
+      targetId: string,
+      stillWanted: () => boolean,
+    ): Promise<"needs_trust" | "changed" | null> => {
       const status = await window.ade.remoteRuntime.getSshHostKeyTrust(targetId);
+      if (!stillWanted()) return null;
       if (status.state === "needs_trust" || status.state === "changed") {
         setHostKeyTrust(status);
         setError(null);
@@ -533,17 +591,22 @@ export function RemoteTargetList({
 
   const connectTarget = useCallback(
     async (targetId: string, options: ConnectTargetOptions = {}) => {
-      setBusyId(targetId);
+      const attempt = beginConnectAttempt(targetId);
+      const stillWanted = () => isConnectAttemptCurrent(targetId, attempt);
       setSelectedId(targetId);
       try {
         if (!options.skipHostKeyTrustCheck) {
-          const blocked = await blockingHostKeyTrust(targetId);
+          const blocked = await blockingHostKeyTrust(targetId, stillWanted);
+          if (!stillWanted()) return null;
           if (blocked) {
             options.onTrustRequired?.(blocked);
             return null;
           }
         }
         const result = await window.ade.remoteRuntime.connect(targetId);
+        // Cancelled or removed while main was connecting: the snapshot already
+        // says what this machine is now, so this late answer is not news.
+        if (!stillWanted()) return null;
         const connectedTarget = {
           ...result.target,
           lastConnectedAt: result.target.lastConnectedAt ?? Date.now(),
@@ -601,12 +664,15 @@ export function RemoteTargetList({
         onConnected?.(result);
         return result;
       } catch (err) {
+        // A cancelled attempt fails by design; that is not an error to show.
+        if (!stillWanted()) return null;
         let trustState: "needs_trust" | "changed" | null = null;
         try {
-          trustState = await blockingHostKeyTrust(targetId);
+          trustState = await blockingHostKeyTrust(targetId, stillWanted);
         } catch {
           // Preserve the connect failure when a follow-up trust probe also fails.
         }
+        if (!stillWanted()) return null;
         if (trustState) {
           options.onTrustRequired?.(trustState);
         } else {
@@ -616,10 +682,18 @@ export function RemoteTargetList({
         }
         return null;
       } finally {
-        setBusyId(null);
+        endConnectAttempt(targetId, attempt);
       }
     },
-    [blockingHostKeyTrust, nextLocalConnectionSnapshotUpdatedAt, onConnected, targets],
+    [
+      beginConnectAttempt,
+      blockingHostKeyTrust,
+      endConnectAttempt,
+      isConnectAttemptCurrent,
+      nextLocalConnectionSnapshotUpdatedAt,
+      onConnected,
+      targets,
+    ],
   );
 
   const trustAndConnect = useCallback(async () => {
@@ -642,12 +716,11 @@ export function RemoteTargetList({
     }
   }, [connectTarget, selectedHostKeyTrust]);
 
-  const saveTargetAndConnect = useCallback(
+  const persistTargetAndConnect = useCallback(
     async (
       input: RemoteRuntimeTargetInput,
       replacedTargetId: string | null = null,
     ) => {
-      setSaving(true);
       try {
         const target = await window.ade.remoteRuntime.saveTarget(input);
         if (replacedTargetId && replacedTargetId !== target.id) {
@@ -668,11 +741,24 @@ export function RemoteTargetList({
         }
       } catch (err) {
         setError(formatRemoteTargetError(err));
+      }
+    },
+    [connectTarget],
+  );
+
+  const saveTargetAndConnect = useCallback(
+    async (
+      input: RemoteRuntimeTargetInput,
+      replacedTargetId: string | null = null,
+    ) => {
+      setSaving(true);
+      try {
+        await persistTargetAndConnect(input, replacedTargetId);
       } finally {
         setSaving(false);
       }
     },
-    [connectTarget],
+    [persistTargetAndConnect],
   );
 
   const saveAndConnect = useCallback(
@@ -703,22 +789,26 @@ export function RemoteTargetList({
       if (isSshOnlyDiscovered(machine)) return;
       const input = discoveredTargetInput(machine);
       if (!input) return;
-      setBusyId(machine.id);
+      setRowBusy(machine.id, "connect");
       setSelectedId(null);
       setHostKeyTrust(null);
       setError(null);
       try {
-        await saveTargetAndConnect(input);
+        // Once saved, the machine is a saved row with its own Cancel.
+        await persistTargetAndConnect(input);
       } finally {
-        setBusyId(null);
+        setRowBusy(machine.id, null);
       }
     },
-    [openNearbyPairing, saveTargetAndConnect],
+    [openNearbyPairing, persistTargetAndConnect, setRowBusy],
   );
 
   const connectAccountMachine = useCallback(
     async (machine: AdeAccountMachine) => {
       const machineKey = machine.machineKey;
+      const rowKey = accountRowKey(machineKey);
+      // A cancelled pairing still running in main would race a second one.
+      if (isPairingInFlight(rowKey)) return;
       clearAccountConnectionToast(machineKey);
       setAccountRowErrors((current) => {
         if (!(machineKey in current)) return current;
@@ -726,19 +816,21 @@ export function RemoteTargetList({
         delete next[machineKey];
         return next;
       });
-      setAccountRowStages((current) => {
-        if (!(machineKey in current)) return current;
-        const next = { ...current };
-        delete next[machineKey];
-        return next;
-      });
-      setAccountConnectingMachineKey(machineKey);
-      setBusyId(`account:${machineKey}`);
+      clearAccountRowStage(machineKey);
+      const attempt = beginConnectAttempt(rowKey);
+      const stillWanted = () => isConnectAttemptCurrent(rowKey, attempt);
       setSelectedId(null);
       setHostKeyTrust(null);
       try {
-        const paired = await window.ade.account.pairMachine(machineKey);
+        // Pairing itself cannot be interrupted; a cancel during it just stops
+        // the flow here, leaving the paired machine saved but not connected.
+        const paired = await trackPairing(
+          rowKey,
+          window.ade.account.pairMachine(machineKey),
+        );
+        if (!stillWanted()) return;
         await loadTargets();
+        if (!stillWanted()) return;
         let connectionErrorReported = false;
         const result = await connectTarget(paired.targetId, {
           skipHostKeyTrustCheck: true,
@@ -762,6 +854,7 @@ export function RemoteTargetList({
             }));
           },
         });
+        if (!stillWanted()) return;
         if (!result) {
           if (!connectionErrorReported) {
             setAccountRowErrors((current) => ({
@@ -780,28 +873,31 @@ export function RemoteTargetList({
           );
         }
       } catch (err) {
+        if (!stillWanted()) return;
         setAccountRowErrors((current) => ({
           ...current,
           [machineKey]: formatRemoteTargetError(err),
         }));
       } finally {
-        setAccountRowStages((current) => {
-          if (!(machineKey in current)) return current;
-          const next = { ...current };
-          delete next[machineKey];
-          return next;
-        });
-        setAccountConnectingMachineKey((current) =>
-          current === machineKey ? null : current,
-        );
-        setBusyId(null);
+        // A cancelled attempt was already cleaned up by the cancel, and a newer
+        // attempt on this machine owns the row state now.
+        if (stillWanted()) {
+          clearAccountRowStage(machineKey);
+          endConnectAttempt(rowKey, attempt);
+        }
       }
     },
     [
+      beginConnectAttempt,
       clearAccountConnectionToast,
+      clearAccountRowStage,
       connectTarget,
+      endConnectAttempt,
+      isConnectAttemptCurrent,
+      isPairingInFlight,
       loadTargets,
       showAccountConnectionToast,
+      trackPairing,
     ],
   );
 
@@ -814,6 +910,80 @@ export function RemoteTargetList({
     [connectTarget, loadTargets],
   );
 
+  /** Shows the target as idle right away, ahead of main's snapshot event. */
+  const markTargetIdle = useCallback(
+    (targetId: string) => {
+      setConnected((current) =>
+        current?.target.id === targetId ? null : current,
+      );
+      setConnectionSnapshot((current) => {
+        if (!current) return current;
+        const connections = current.connections.map((entry) =>
+          entry.target.id === targetId
+            ? {
+                ...entry,
+                state: "idle" as const,
+                lastError: null,
+                connectedAt: null,
+              }
+            : entry,
+        );
+        return {
+          connections,
+          connectedCount: connections.filter(
+            (entry) => entry.state === "connected",
+          ).length,
+          updatedAt: nextLocalConnectionSnapshotUpdatedAt(),
+        };
+      });
+    },
+    [nextLocalConnectionSnapshotUpdatedAt],
+  );
+
+  /**
+   * Stops this computer's attempts on a machine: the renderer flows that are
+   * still running for it (a target connect, an account pairing) drop out
+   * without reporting, and nothing else in the list is touched.
+   */
+  const abandonConnectAttempts = useCallback(
+    (targetId: string | null, machineKey: string | null) => {
+      if (targetId) dropConnectAttempt(targetId);
+      if (machineKey) {
+        dropConnectAttempt(accountRowKey(machineKey));
+        clearAccountRowStage(machineKey);
+      }
+      if (targetId) {
+        setHostKeyTrust((current) =>
+          current?.targetId === targetId ? null : current,
+        );
+      }
+    },
+    [clearAccountRowStage, dropConnectAttempt],
+  );
+
+  /**
+   * Cancel on a connecting or reconnecting row. Main's disconnect invalidates
+   * the in-flight connect for this target only, and marking it manual keeps
+   * automatic reconnect from starting it again behind the user's back; an
+   * explicit Connect clears that again.
+   */
+  const cancelConnect = useCallback(
+    async (targetId: string | null, machineKey: string | null) => {
+      abandonConnectAttempts(targetId, machineKey);
+      if (!targetId) return;
+      setRowBusy(targetId, "cancel");
+      try {
+        await window.ade.remoteRuntime.disconnect(targetId, { manual: true });
+        markTargetIdle(targetId);
+      } catch (err) {
+        setError(formatRemoteTargetError(err));
+      } finally {
+        finishRowAction(targetId, "cancel");
+      }
+    },
+    [abandonConnectAttempts, finishRowAction, markTargetIdle, setRowBusy],
+  );
+
   const disconnectTarget = useCallback(
     async (targetId: string) => {
       const target = targets.find((entry) => entry.id === targetId) ?? null;
@@ -821,42 +991,20 @@ export function RemoteTargetList({
         const shouldDisconnect = await onDisconnectRequested(target);
         if (!shouldDisconnect) return;
       }
-      setBusyId(targetId);
+      setRowBusy(targetId, "disconnect");
       setSelectedId(targetId);
       try {
         await window.ade.remoteRuntime.disconnect(targetId, { manual: true });
-        setConnected((current) =>
-          current?.target.id === targetId ? null : current,
-        );
-        setConnectionSnapshot((current) => {
-          if (!current) return current;
-          const connections = current.connections.map((entry) =>
-            entry.target.id === targetId
-              ? {
-                  ...entry,
-                  state: "idle" as const,
-                  lastError: null,
-                  connectedAt: null,
-                }
-              : entry,
-          );
-          return {
-            connections,
-            connectedCount: connections.filter(
-              (entry) => entry.state === "connected",
-            ).length,
-            updatedAt: nextLocalConnectionSnapshotUpdatedAt(),
-          };
-        });
+        markTargetIdle(targetId);
         setError(null);
         setHostKeyTrust(null);
       } catch (err) {
         setError(formatRemoteTargetError(err));
       } finally {
-        setBusyId(null);
+        finishRowAction(targetId, "disconnect");
       }
     },
-    [nextLocalConnectionSnapshotUpdatedAt, onDisconnectRequested, targets],
+    [finishRowAction, markTargetIdle, onDisconnectRequested, setRowBusy, targets],
   );
 
   const removeTarget = useCallback(
@@ -866,30 +1014,45 @@ export function RemoteTargetList({
         const shouldRemove = await onRemoveRequested(target);
         if (!shouldRemove) return;
       }
-      setBusyId(targetId);
+      // Removing a machine that is still connecting cancels that attempt
+      // first: the renderer flow drops out here, and main's removeTarget
+      // disconnects the target (ending its in-flight connect) before deleting.
+      abandonConnectAttempts(
+        targetId,
+        target?.pairedMachine?.machineKey ?? null,
+      );
+      setRowBusy(targetId, "remove");
       try {
         await window.ade.remoteRuntime.removeTarget(targetId);
         setTargets((current) =>
           current.filter((entry) => entry.id !== targetId),
         );
-        if (selectedId === targetId) {
-          setSelectedId(null);
-          setConnected(null);
-        }
+        setConnected((current) =>
+          current?.target.id === targetId ? null : current,
+        );
+        if (selectedId === targetId) setSelectedId(null);
         if (formPrefill?.targetId === targetId) setFormPrefill(null);
         if (testingId === targetId) setTestingId(null);
         setError(null);
       } catch (err) {
         setError(formatRemoteTargetError(err));
       } finally {
-        setBusyId(null);
+        setRowBusy(targetId, null);
       }
     },
-    [formPrefill?.targetId, onRemoveRequested, selectedId, targets, testingId],
+    [
+      abandonConnectAttempts,
+      formPrefill?.targetId,
+      onRemoveRequested,
+      selectedId,
+      setRowBusy,
+      targets,
+      testingId,
+    ],
   );
 
   const setTargetAutoConnect = useCallback(async (targetId: string, enabled: boolean) => {
-    setBusyId(targetId);
+    setRowBusy(targetId, "autoConnect");
     try {
       const updated = await window.ade.remoteRuntime.setAutoConnect(targetId, enabled);
       setTargets((current) => current.map((target) => (
@@ -908,9 +1071,9 @@ export function RemoteTargetList({
     } catch (err) {
       setError(formatRemoteTargetError(err));
     } finally {
-      setBusyId(null);
+      setRowBusy(targetId, null);
     }
-  }, [nextLocalConnectionSnapshotUpdatedAt]);
+  }, [nextLocalConnectionSnapshotUpdatedAt, setRowBusy]);
 
   const totalRows =
     sections.connected.length +
@@ -970,51 +1133,56 @@ export function RemoteTargetList({
     [updateSnapshot.currentVersion, updateSnapshot.latestKnownVersion],
   );
 
-  const updateAndRestartTarget = useCallback(
-    async (targetId: string, targetVersion: string | null, machineName: string) => {
-      if (!window.ade.remoteRuntime.updateAndRestart) return;
-      setUpdatingTargetId(targetId);
-      setUpdateResultByTargetId((current) => {
-        if (!(targetId in current)) return current;
-        const next = { ...current };
-        delete next[targetId];
-        return next;
-      });
-      try {
-        const result = await window.ade.remoteRuntime.updateAndRestart(
-          targetId,
-          targetVersion,
-        );
-        setUpdateResultByTargetId((current) => ({
-          ...current,
-          [targetId]: {
-            ok: result.ok,
-            message:
-              result.message?.trim() ||
-              `${machineName} updated — reconnecting…`,
-          },
-        }));
-      } catch (err) {
-        setUpdateResultByTargetId((current) => ({
-          ...current,
-          [targetId]: { ok: false, message: extractError(err) },
-        }));
-      } finally {
-        setUpdatingTargetId(null);
-      }
-    },
-    [],
-  );
-
   function renderSection(section: MachineSection) {
     const rows = sections[section];
     if (rows.length === 0) return null;
+    // Connected machines behind the newest ADE this computer knows about.
+    const behindMachines = section === "connected"
+      ? outdatedMachines(
+          rows.flatMap((row) =>
+            row.kind === "saved" && row.connected
+              ? [{ id: row.target.id, name: row.target.name, version: row.version }]
+              : []),
+          newestKnownVersion,
+        )
+      : [];
+    const updateAllBusy = behindMachines.some((machine) =>
+      isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));
     return (
       <div style={{ display: "grid", gap: 8 }}>
+        {behindMachines.length > 1 ? (
+          <MachinesBehindBanner
+            count={behindMachines.length}
+            targetVersion={newestKnownVersion}
+            busy={updateAllBusy}
+            onUpdateAll={() => void requestMachineUpdates(behindMachines, newestKnownVersion)}
+          />
+        ) : null}
         <div style={sectionHeaderStyle}>{SECTION_LABELS[section]}</div>
         {rows.map((row) => {
           if (row.kind === "saved") {
             const pairAgainMachine = accountMachineForTarget(row.target);
+            const pairedMachineKey = row.target.pairedMachine?.machineKey ?? null;
+            const rowAction = busyById[row.target.id] ?? null;
+            // An account pairing for this machine ("Pair again") counts too.
+            const pairingThisMachine =
+              pairedMachineKey != null &&
+              busyById[accountRowKey(pairedMachineKey)] === "connect";
+            const rowConnecting = rowAction === "connect" || pairingThisMachine;
+            // A cancelled pairing still finishing in main locks Connect and
+            // "Pair again" here too; either would race it.
+            const pairingStopping =
+              pairedMachineKey != null &&
+              busyById[accountRowKey(pairedMachineKey)] === "stopping";
+            const updateAttempt = updateResultByTargetId[row.target.id] ?? null;
+            const updateStatus = updateAttempt
+              ? describeMachineUpdateAttempt(updateAttempt, row, updateClockMs)
+              : null;
+            const updatePhase = machineUpdatePhase({
+              checking: machineUpdates.checkingIds.has(row.target.id),
+              sending: machineUpdates.updatingIds.has(row.target.id),
+              status: updateStatus,
+            });
             return (
               <SavedMachineRow
                 key={row.id}
@@ -1022,7 +1190,11 @@ export function RemoteTargetList({
                 section={section}
                 selected={selectedId === row.target.id}
                 connected={connected}
-                busyId={busyId}
+                connecting={rowConnecting}
+                busy={
+                  (rowAction != null && rowAction !== "connect") ||
+                  pairingStopping
+                }
                 saving={saving}
                 formPrefill={formPrefill}
                 testOpen={testingId === row.target.id}
@@ -1034,31 +1206,30 @@ export function RemoteTargetList({
                     : null) ?? error
                 }
                 stageLabel={
-                  row.target.pairedMachine?.machineKey &&
-                  accountConnectingMachineKey ===
-                    row.target.pairedMachine.machineKey
-                    ? accountRowStages[
-                        row.target.pairedMachine.machineKey
-                      ] ?? null
+                  pairedMachineKey && pairingThisMachine
+                    ? accountRowStages[pairedMachineKey] ?? null
                     : null
                 }
                 transientStatus={
                   accountToastByTargetId.get(row.target.id) ?? null
                 }
                 updateTargetVersion={
-                  row.connected &&
-                  isMachineVersionOutdated(row.version, newestKnownVersion)
-                    ? newestKnownVersion
-                    : null
+                  updatePhase && updateAttempt?.pendingVersion
+                    ? updateAttempt.pendingVersion
+                    : row.connected &&
+                        isMachineVersionOutdated(row.version, newestKnownVersion)
+                      ? newestKnownVersion
+                      : null
                 }
-                updating={updatingTargetId === row.target.id}
-                updateStatus={updateResultByTargetId[row.target.id] ?? null}
-                localAdeVersion={updateSnapshot.currentVersion}
+                updatePhase={updatePhase}
+                power={pairAgainMachine?.power ?? null}
+                updating={machineUpdates.updatingIds.has(row.target.id) || updateStatus?.inFlight === true}
+                checkingUpdate={machineUpdates.checkingIds.has(row.target.id)}
+                updateStatus={updateStatus ? { ok: updateStatus.ok, message: updateStatus.message } : null}
                 onUpdateAndRestart={(targetVersion) =>
-                  void updateAndRestartTarget(
-                    row.target.id,
+                  void requestMachineUpdates(
+                    [{ id: row.target.id, name: row.target.name, version: row.version }],
                     targetVersion,
-                    row.target.name,
                   )
                 }
                 hostKeyTrust={
@@ -1081,6 +1252,9 @@ export function RemoteTargetList({
                 onToggleTest={toggleTest}
                 onToggleEdit={toggleEditForm}
                 onRemove={(targetId) => void removeTarget(targetId)}
+                onCancelConnect={(targetId) =>
+                  void cancelConnect(targetId, pairedMachineKey)
+                }
                 onSaveAndConnect={saveAndConnect}
                 onAutoConnectChange={(targetId, enabled) => {
                   void setTargetAutoConnect(targetId, enabled);
@@ -1099,9 +1273,9 @@ export function RemoteTargetList({
                 key={row.id}
                 row={row}
                 section={section}
-                busy={busyId != null}
+                busy={busyById[accountRowKey(row.machine.machineKey)] != null}
                 connecting={
-                  accountConnectingMachineKey === row.machine.machineKey
+                  busyById[accountRowKey(row.machine.machineKey)] === "connect"
                 }
                 connected={isMachineConnected(row.machine, connectedIds)}
                 error={accountRowErrors[row.machine.machineKey] ?? null}
@@ -1136,6 +1310,9 @@ export function RemoteTargetList({
                 detailOpen={testingId === row.id}
                 onToggleDetail={toggleTest}
                 onConnect={(machine) => void connectAccountMachine(machine)}
+                onCancelConnect={(machine) =>
+                  void cancelConnect(row.matchedTargetId, machine.machineKey)
+                }
                 onRenamed={onAccountMachinesChanged}
               />
             );
@@ -1145,8 +1322,7 @@ export function RemoteTargetList({
               key={row.id}
               machine={row.machine}
               section={section}
-              busyId={busyId}
-              saving={saving}
+              busy={busyById[row.machine.id] != null}
               testOpen={testingId === row.machine.id}
               onConnect={(machine) => void connectDiscoveredMachine(machine)}
               onToggleTest={toggleTest}
@@ -1227,15 +1403,14 @@ export function RemoteTargetList({
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
-                color: COLORS.textPrimary,
+                color: COLORS.textSecondary,
                 fontFamily: SANS_FONT,
-                fontSize: 15,
-                fontWeight: 700,
+                fontSize: 12,
+                fontWeight: 600,
                 minHeight: 28,
               }}
             >
-              <DesktopTower size={18} weight="regular" color={COLORS.textSecondary} />
-              Machines
+              Your machines
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
@@ -1322,13 +1497,13 @@ export function RemoteTargetList({
               <PairMachineForm
                 defaultDeviceName={localMachineName}
                 initialInput={pairingPrefill}
-                busy={saving || busyId != null}
+                busy={saving}
                 onPaired={onPaired}
               />
             ) : null}
             {addMode === "ssh" ? (
               <RemoteTargetForm
-                busy={saving || busyId != null}
+                busy={saving}
                 submitLabel="Connect"
                 onSubmit={saveAndConnect}
               />
@@ -1352,8 +1527,7 @@ export function RemoteTargetList({
                     key={machine.id}
                     machine={machine}
                     section={machine.connectable === false ? "unavailable" : "available"}
-                    busyId={busyId}
-                    saving={saving}
+                    busy={busyById[machine.id] != null}
                     testOpen={testingId === machine.id}
                     onConnect={(next) => void connectDiscoveredMachine(next)}
                     onToggleTest={toggleTest}

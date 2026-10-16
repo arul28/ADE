@@ -1,54 +1,39 @@
 import React from "react";
-import { ArrowSquareOut, Copy, FileText } from "@phosphor-icons/react";
-import { COLORS } from "../../../lanes/laneDesignTokens";
 import type { ViewerProps } from "./types";
-import { joinDisplayPath } from "../pathDisplay";
+import { DocumentSurface } from "./DocumentSurface";
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+/**
+ * The fallback for documents with no in-app renderer: Word files (no preview
+ * yet) and the legacy binary Office formats.
+ *
+ * `.doc` / `.xls` / `.ppt` are OLE compound files, not zip packages, so the
+ * spreadsheet and presentation viewers cannot read them — the reference
+ * implementation routed them at a zip parser and failed on every one. Here
+ * they stay on this card and say why, which is the difference between "ADE
+ * cannot show this" and "this file is broken".
+ */
+const LEGACY_OFFICE_EXTENSIONS: Record<string, string> = {
+  ".doc": "Legacy .doc files cannot be previewed in ADE. Open it externally, or save it as .docx.",
+  ".xls": "Legacy .xls files cannot be previewed in ADE. Open it externally, or save it as .xlsx.",
+  ".ppt": "Legacy .ppt files cannot be previewed in ADE. Open it externally, or save it as .pptx.",
+};
+
+function legacyNoticeFor(relativePath: string): string | null {
+  const lower = relativePath.toLowerCase();
+  const dot = lower.lastIndexOf(".");
+  if (dot < 0) return null;
+  return LEGACY_OFFICE_EXTENSIONS[lower.slice(dot)] ?? null;
 }
 
 export function DocumentViewer({ rootPath, tab, content }: ViewerProps) {
-  const absolutePath = joinDisplayPath(rootPath, tab.path);
-  const openExternally = () => {
-    void window.ade.app.openPathInEditor?.({ rootPath, relativePath: tab.path, target: "default" }).catch(() => {});
-  };
-  const copyPath = () => {
-    void window.ade.app.writeClipboardText?.(absolutePath);
-  };
-
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
-      <FileText size={42} color={COLORS.textDim} weight="thin" />
-      <div className="text-sm" style={{ color: COLORS.textMuted }}>
-        {tab.title}
-      </div>
-      <div className="max-w-xl text-xs leading-5" style={{ color: COLORS.textDim }}>
-        {content.mimeType ?? "document"} · {formatBytes(content.size)}
-      </div>
-      <div className="max-w-xl truncate text-xs" title={absolutePath} style={{ color: COLORS.textDim }}>
-        {absolutePath}
-      </div>
-      <div className="mt-1 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={copyPath}
-          className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs"
-          style={{ border: `1px solid ${COLORS.border}`, color: COLORS.textPrimary }}
-        >
-          <Copy size={14} /> Copy full path
-        </button>
-        <button
-          type="button"
-          onClick={openExternally}
-          className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs"
-          style={{ border: `1px solid ${COLORS.border}`, color: COLORS.textPrimary }}
-        >
-          <ArrowSquareOut size={14} /> Open externally
-        </button>
-      </div>
-    </div>
+    <DocumentSurface
+      rootPath={rootPath}
+      relativePath={tab.path}
+      title={tab.title}
+      mimeType={content.mimeType ?? null}
+      size={content.size}
+      notice={legacyNoticeFor(tab.path)}
+    />
   );
 }

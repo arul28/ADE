@@ -7,8 +7,12 @@ import {
   autoResumeScheduleId,
   isAutoResumeScheduledWork,
   isPendingAutoResumeScheduledWork,
+  isPendingUpdateResumeScheduledWork,
+  isUpdateResumeScheduledWork,
   isUsageLimitChatError,
   sessionAutoContinueAtUsageLimit,
+  UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
+  updateResumeScheduleId,
 } from "./chatAutoResume";
 
 describe("isUsageLimitChatError", () => {
@@ -23,9 +27,12 @@ describe("isUsageLimitChatError", () => {
     expect(isUsageLimitChatError({ errorInfo: "rate-limit-exceeded" })).toBe(true);
   });
 
-  it("recognises the limit in the human message when no code is attached", () => {
-    expect(isUsageLimitChatError({ message: "You've hit your usage limit." })).toBe(true);
-    expect(isUsageLimitChatError({ message: "429 Rate limit reached for this model." })).toBe(true);
+  it.each([
+    "You've hit your usage limit.",
+    "429 Rate limit reached for this model.",
+    "You're out of usage. Switch to Auto, or ask your admin to increase your limit.",
+  ])("recognises the provider limit message %s without a code", (message) => {
+    expect(isUsageLimitChatError({ message })).toBe(true);
   });
 
   it("does not treat other failures as usage limits", () => {
@@ -120,6 +127,28 @@ describe("isPendingAutoResumeScheduledWork", () => {
     expect(isPendingAutoResumeScheduledWork({ id: "wakeup:session-a", status: "scheduled" }))
       .toBe(false);
     expect(isPendingAutoResumeScheduledWork(null)).toBe(false);
+  });
+});
+
+describe("isUpdateResumeScheduledWork", () => {
+  const row = { id: updateResumeScheduleId("session-a"), source: UPDATE_RESUME_SCHEDULED_WORK_SOURCE } as const;
+
+  it("claims only rows tagged update_restart", () => {
+    expect(isUpdateResumeScheduledWork(row)).toBe(true);
+    // The update tag has no pre-tag history to fall back on, so the
+    // deterministic id alone is not a recogniser.
+    expect(isUpdateResumeScheduledWork({ id: updateResumeScheduleId("session-a") })).toBe(false);
+    expect(isUpdateResumeScheduledWork({ source: AUTO_RESUME_SCHEDULED_WORK_SOURCE })).toBe(false);
+    expect(isUpdateResumeScheduledWork(null)).toBe(false);
+  });
+
+  it("treats live statuses as pending and terminal ones as not", () => {
+    for (const status of ["scheduled", "paused", "fired"] as const) {
+      expect(isPendingUpdateResumeScheduledWork({ ...row, status })).toBe(true);
+    }
+    for (const status of ["done", "completed", "cancelled"] as const) {
+      expect(isPendingUpdateResumeScheduledWork({ ...row, status })).toBe(false);
+    }
   });
 });
 

@@ -11,6 +11,7 @@ import { useEffect } from "react";
 
 import { rootAppStoreApi } from "../state/appStore";
 import { fetchAccountStatus, subscribeAccountStatus } from "./account";
+import { registerAccountSettingsSync } from "./accountSettingsFlush";
 import {
   startAccountSettingsSync,
 } from "./accountSettingsSync";
@@ -38,6 +39,18 @@ export function useAccountSettingsSync(): void {
   useEffect(() => {
     let signedIn = false;
     let accountUserId: string | null = null;
+    // Per-device settings (Apple devices) file under this computer's sync
+    // device id. It arrives asynchronously; when it does, re-run the pull so
+    // those rows hydrate without waiting for the next tick.
+    let localDeviceId: string | null = null;
+    let notifyDeviceId: (() => void) | null = null;
+    const sync = window.ade?.sync;
+    void (sync?.getLocalStatus ? sync.getLocalStatus() : sync?.getStatus?.())
+      ?.then((status) => {
+        localDeviceId = status?.localDevice?.deviceId?.trim() || null;
+        if (localDeviceId) notifyDeviceId?.();
+      })
+      .catch(() => undefined);
     const stop = startAccountSettingsSync({
       store: rootAppStoreApi,
       getApi: () => window.ade?.accountSettings ?? null,
@@ -55,10 +68,23 @@ export function useAccountSettingsSync(): void {
           listener();
         }),
       getProjectRemote: () => null,
+      getLocalDeviceId: () => localDeviceId,
+      subscribeLocalDeviceId: (listener) => {
+        notifyDeviceId = listener;
+        return () => {
+          notifyDeviceId = null;
+        };
+      },
     });
     // Seeds `signedIn` through the status bus above, which is also what a later
     // sign-in arrives on. One subscriber, one path.
     void fetchAccountStatus().catch(() => undefined);
-    return stop;
+    // Published so a save or a launch can await the brain's own answer instead
+    // of racing the 30-second tick; see `accountSettingsFlush`.
+    registerAccountSettingsSync(stop);
+    return () => {
+      registerAccountSettingsSync(null);
+      stop();
+    };
   }, []);
 }

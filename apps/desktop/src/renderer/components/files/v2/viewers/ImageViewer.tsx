@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowsOut, MagnifyingGlassMinus, MagnifyingGlassPlus } from "@phosphor-icons/react";
+import { ArrowsOut, Check, Copy, DownloadSimple, MagnifyingGlassMinus, MagnifyingGlassPlus } from "@phosphor-icons/react";
+import { showToast } from "../../../app/toast/toastStore";
+import { copyPictureToClipboard, saveMediaAs } from "../../../ui/MediaLightbox";
 import { COLORS } from "../../../lanes/laneDesignTokens";
 import { streamFileBytes } from "../streamBytes";
 import type { ViewerProps } from "./types";
@@ -97,6 +99,23 @@ export function ImageViewer({ files, workspaceId, content, tab }: ViewerProps) {
     setOffset({ x: 0, y: 0 });
   };
 
+  const [copied, setCopied] = useState(false);
+  const fileName = tab.path.split(/[\\/]/).pop() || tab.title;
+  const copy = async () => {
+    if (!src) return;
+    try {
+      await copyPictureToClipboard(src);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch (err) {
+      showToast({
+        title: "Could not copy the picture",
+        message: err instanceof Error ? err.message : String(err),
+        tone: "error",
+      });
+    }
+  };
+
   const transform = useMemo(
     () => (fit ? undefined : `translate(${offset.x}px, ${offset.y}px) scale(${scale})`),
     [fit, offset.x, offset.y, scale],
@@ -105,21 +124,27 @@ export function ImageViewer({ files, workspaceId, content, tab }: ViewerProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b px-3 py-1.5" style={{ borderColor: COLORS.border }}>
-        <button type="button" onClick={() => applyZoom(1 / 1.2)} title="Zoom out" className="rounded p-1 hover:bg-white/5">
+        <button type="button" onClick={() => applyZoom(1 / 1.2)} title="Zoom out" className="rounded p-1 hover:bg-fg/5">
           <MagnifyingGlassMinus size={15} />
         </button>
         <span className="w-12 text-center text-xs tabular-nums" style={{ color: COLORS.textMuted }}>
           {Math.round(scale * 100)}%
         </span>
-        <button type="button" onClick={() => applyZoom(1.2)} title="Zoom in" className="rounded p-1 hover:bg-white/5">
+        <button type="button" onClick={() => applyZoom(1.2)} title="Zoom in" className="rounded p-1 hover:bg-fg/5">
           <MagnifyingGlassPlus size={15} />
         </button>
-        <button type="button" onClick={resetFit} title="Fit to window" className="rounded p-1 hover:bg-white/5">
+        <button type="button" onClick={resetFit} title="Fit to window" className="rounded p-1 hover:bg-fg/5">
           <ArrowsOut size={15} />
         </button>
         <span className="ml-auto text-xs" style={{ color: COLORS.textDim }}>
           {formatBytes(content.size)}
         </span>
+        <button type="button" disabled={!src} onClick={() => void copy()} title={copied ? "Copied" : "Copy picture"} aria-label={copied ? "Copied" : "Copy picture"} className="rounded p-1 hover:bg-fg/5 disabled:opacity-40">
+          {copied ? <Check size={15} weight="bold" /> : <Copy size={15} />}
+        </button>
+        <button type="button" disabled={!src} onClick={() => src && saveMediaAs(src, fileName)} title="Download" aria-label="Download" className="rounded p-1 hover:bg-fg/5 disabled:opacity-40">
+          <DownloadSimple size={15} />
+        </button>
       </div>
       <div
         ref={containerRef}

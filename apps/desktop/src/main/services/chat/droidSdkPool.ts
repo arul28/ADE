@@ -1,3 +1,4 @@
+import { captureWorkerFailure } from "../../sentry/workerFailures";
 import { fork, type ChildProcess, type ForkOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -349,6 +350,7 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
         message: message.message,
         detail: message.detail,
       });
+      captureWorkerFailure("droid", message);
     }
   });
 

@@ -2,49 +2,31 @@ import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useSt
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
 import {
+  Archive,
+  ArrowLeft,
   Bell,
   Brain,
   ChartLineUp,
   ChatCircle,
+  DeviceMobile,
   GearSix,
   GitBranch,
   HardDrives,
   Key,
   MagnifyingGlass,
   Palette,
+  Plugs,
   PlugsConnected,
-  Pulse as PulseIcon,
   UserCircle,
 } from "@phosphor-icons/react";
-import { AccountPage } from "../account/AccountPage";
-import { ActivitySection } from "../settings/ActivitySection";
-import { AppearanceSection } from "../settings/AppearanceSection";
-import { ChatSection } from "../settings/ChatSection";
-import { BudgetCapSettings } from "../settings/BudgetCapEditor";
-import { AboutSection } from "../settings/AboutSection";
-import { AdeCliSection } from "../settings/AdeCliSection";
-import { AdeUsageSection } from "../settings/AdeUsageSection";
-import { DictationSection } from "../settings/DictationSection";
-import { GitHubIntegrationSection } from "../settings/GitHubIntegrationSection";
-import { KeepAwakeSection } from "../settings/KeepAwakeSection";
-import { CaptureGestureSection } from "../settings/CaptureGestureSection";
-import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
-import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
-import { LinearIntegrationSection } from "../settings/LinearIntegrationSection";
-import { NotificationsSection } from "../settings/NotificationsSection";
-import { PrChatTranscriptsSection } from "../settings/PrChatTranscriptsSection";
-import { BrowserLinksSection } from "../settings/BrowserLinksSection";
-import { ProductAnalyticsSection } from "../settings/ProductAnalyticsSection";
-import { DiagnosticsSharingSection } from "../settings/DiagnosticsSharingSection";
-import { ProjectSection } from "../settings/ProjectSection";
-import { OpenAiKeySection } from "../settings/OpenAiKeySection";
-import { ProvidersSection } from "../settings/ProvidersSection";
-import { providerDescriptor } from "../settings/providers/descriptors";
-import { SecretsSection } from "../settings/SecretsSection";
-import { SessionLifecycleSection } from "../settings/SessionLifecycleSection";
-import { StorageSection } from "../settings/StorageSection";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
-import { WebSettingsSection } from "../settings/WebScopePill";
+import { SettingsMachineScopeProvider } from "../settings/SettingsMachineScope";
+import {
+  SettingsMachineEyebrow,
+  SettingsMachineNavRow,
+  useSettingsMachinePage,
+} from "../settings/SettingsMachinesNav";
+import { useProjectMachines, type ProjectMachine } from "../../state/projectMachines";
 import { Banner } from "../ui/notice";
 import { SettingsSidebarHeader } from "../settings/SettingsSidebarHeader";
 import {
@@ -55,6 +37,8 @@ import {
   searchSettingsEntries,
   clearWebMachineBindingResolver,
   setWebMachineBindingResolver,
+  setStandaloneSettingsResolver,
+  clearStandaloneSettingsResolver,
   settingsEntriesForTab,
   settingsTabLabel,
   type SettingEntry,
@@ -63,12 +47,20 @@ import {
   type SettingsTab,
   SETTINGS_GROUPS,
   groupScopeHint,
+  isMachineSettingsTab,
+  isThisComputerOnlyTab,
 } from "../settings/settingsManifest";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useAppStore } from "../../state/appStore";
-import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
-import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
+import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { COLORS, SANS_FONT, LABEL_STYLE, fgTint } from "../lanes/laneDesignTokens";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "./projectSidebar/ProjectSidebarSlot";
+import {
+  BOUND_MACHINE_ENTRY_IDS,
+  STANDALONE_TAB_IDS,
+  TabContent,
+  decodeSettingsHash,
+} from "../settings/settingsTabContent";
 
 /**
  * The settings shell. Tabs, ordering, deep links, and search all resolve
@@ -84,30 +76,41 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   general: GearSix,
   appearance: Palette,
   chat: ChatCircle,
+  apple: DeviceMobile,
   agents: Brain,
   "lanes-git": GitBranch,
   integrations: PlugsConnected,
   notifications: Bell,
-  activity: PulseIcon,
+  mcp: Plugs,
   secrets: Key,
   storage: HardDrives,
+  archive: Archive,
   stats: ChartLineUp,
 };
+
+/** Tabs whose content sits in the centred `SettingsColumn`. */
+const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>([
+  "appearance",
+  "chat",
+  "apple",
+  "notifications",
+  "mcp",
+  "stats",
+  "secrets",
+  "general",
+  "agents",
+  "lanes-git",
+  "integrations",
+  "storage",
+  "archive",
+]);
+
 
 /** Tour targets kept stable across the nine-tab split. */
 const TOUR_IDS: Partial<Record<SettingsTabId, string>> = {
   agents: "backgroundJobs",
   "lanes-git": "laneTemplates",
 };
-
-/**
- * Every setting on a tab, unreachable ones included. `WebSettingsSection` needs
- * the full list to tell "this section has nowhere to write" apart from "this
- * section was handed no ids".
- */
-function settingsEntryIdsForTab(tab: SettingsTabId): string[] {
-  return SETTINGS_ENTRIES.filter((entry) => entry.tab === tab).map((entry) => entry.id);
-}
 
 /** Whether anything on this tab needs a machine to write to. */
 function tabHasMachineSettings(tab: SettingsTabId): boolean {
@@ -131,252 +134,6 @@ function WebNoMachineNotice() {
         title: "Connect to a project to edit machine settings.",
       }}
     />
-  );
-}
-
-/**
- * A `location.hash` as the manifest wants it: no leading `#`, percent-decoding
- * applied, and a malformed escape treated as literal text rather than thrown.
- *
- * Three call sites decoded the hash themselves — provider deeplinks, tab
- * resolution, and the scroll effect — which meant three chances for one of them
- * to forget the try/catch and take the settings page down on a URL a user can
- * type by hand.
- */
-function decodeSettingsHash(hash: string): string {
-  const raw = hash.replace(/^#/, "");
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
-}
-
-/** `#ai-provider-<id>` — the deeplink form of one provider's page. */
-const PROVIDER_ANCHOR_PREFIX = "ai-provider-";
-
-/** `#ai-harnesses` — the deeplink form of the harnesses page. */
-const HARNESSES_ANCHOR = "ai-harnesses";
-
-function providerIdFromHash(hash: string): string | null {
-  const raw = decodeSettingsHash(hash);
-  if (!raw.startsWith(PROVIDER_ANCHOR_PREFIX)) return null;
-  return raw.slice(PROVIDER_ANCHOR_PREFIX.length) || null;
-}
-
-/**
- * Agents & Models. One provider's page is a sub-view of this tab rather than a
- * route of its own: `?provider=<id>`, with `#ai-provider-<id>` accepted so the
- * manifest entry for each provider deeplinks straight to it. While a provider
- * is open the tab shows only that page — the OpenAI voice key below the
- * provider list is not part of the provider you drilled into. Dictation lives
- * on the chat tab; scheduled work lives on activity.
- */
-function AgentsTabContent() {
-  const location = useLocation();
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const requested = searchParams.get("provider")?.trim() || providerIdFromHash(location.hash);
-  const providerId = requested && providerDescriptor(requested) ? requested : null;
-  const harnessesOpen =
-    searchParams.get("harnesses") === "1" || decodeSettingsHash(location.hash) === HARNESSES_ANCHOR;
-
-  const handleProviderChange = useCallback((next: string | null) => {
-    const nextParams = new URLSearchParams(searchParams);
-    if (next) nextParams.set("provider", next);
-    else nextParams.delete("provider");
-    nextParams.delete("harnesses");
-    navigate(
-      {
-        pathname: location.pathname,
-        search: `?${nextParams.toString()}`,
-        hash: next ? `#${PROVIDER_ANCHOR_PREFIX}${next}` : "",
-      },
-      { replace: true },
-    );
-  }, [location.pathname, navigate, searchParams]);
-
-  // Harnesses is the tab's second sub-view. It carries its own search param so
-  // the back button leaves it, and the manifest anchor still deeplinks to it.
-  const handleHarnessesChange = useCallback((next: boolean) => {
-    const nextParams = new URLSearchParams(searchParams);
-    nextParams.delete("provider");
-    if (next) nextParams.set("harnesses", "1");
-    else nextParams.delete("harnesses");
-    navigate(
-      {
-        pathname: location.pathname,
-        search: `?${nextParams.toString()}`,
-        hash: next ? `#${HARNESSES_ANCHOR}` : "",
-      },
-      { replace: true },
-    );
-  }, [location.pathname, navigate, searchParams]);
-
-  if (harnessesOpen) {
-    return (
-      <WebSettingsSection entryIds={["agents.harnesses"]}>
-        <ProvidersSection
-          providerParam={null}
-          onProviderChange={handleProviderChange}
-          harnessesParam
-          onHarnessesChange={handleHarnessesChange}
-        />
-      </WebSettingsSection>
-    );
-  }
-
-  if (providerId) {
-    return (
-      <WebSettingsSection entryIds={[`agents.provider.${providerId}`]}>
-        <ProvidersSection forceRefreshOnMount providerParam={providerId} onProviderChange={handleProviderChange} />
-      </WebSettingsSection>
-    );
-  }
-
-  return (
-    <>
-      <WebSettingsSection entryIds={["agents.providers"]}>
-        <ProvidersSection
-          forceRefreshOnMount
-          providerParam={null}
-          onProviderChange={handleProviderChange}
-          harnessesParam={false}
-          onHarnessesChange={handleHarnessesChange}
-        />
-      </WebSettingsSection>
-      <WebSettingsSection entryIds={["agents.openai-key"]}>
-        <OpenAiKeySection />
-      </WebSettingsSection>
-    </>
-  );
-}
-
-/**
- * One rendered section of a tab, and the manifest settings it holds.
- *
- * `"tab"` means "every entry on this tab", which is what a section that IS the
- * whole tab wants; naming them again would be a second list to keep in sync.
- */
-type TabSection = {
-  entryIds: readonly string[] | "tab";
-  render: () => React.ReactNode;
-};
-
-/**
- * What each tab renders, as data rather than as an eleven-arm switch.
- *
- * Every arm was the same shape — a `WebSettingsSection` wrapping one or two
- * section components — so the switch was a table written out longhand, and the
- * `entryIds` list beside each section is the part that actually matters: on the
- * desktop `WebSettingsSection` is a passthrough, and in the browser it uses
- * those ids to drop sections the manifest marks unreachable and head the rest
- * with their scope.
- *
- * `agents` is absent because it is a sub-view router, not a list of sections;
- * `TabContent` handles it directly.
- */
-const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
-  account: [
-    {
-      entryIds: ["account.profile"],
-      // The account page, without its own page chrome.
-      render: () => (
-        <div id="account-profile" data-settings-anchor="account-profile">
-          <AccountPage embedded />
-        </div>
-      ),
-    },
-  ],
-  general: [
-    {
-      entryIds: ["general.about", "general.auto-updates"],
-      // About has no section file of its own, so the page supplies its anchor.
-      render: () => (
-        <div id="about" data-settings-anchor="about">
-          <AboutSection />
-        </div>
-      ),
-    },
-    { entryIds: ["general.project"], render: () => <ProjectSection /> },
-    { entryIds: ["general.ade-cli"], render: () => <AdeCliSection /> },
-    { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection /> },
-    { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection /> },
-    { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection /> },
-    { entryIds: ["general.analytics"], render: () => <ProductAnalyticsSection /> },
-    { entryIds: ["general.diagnostics-sharing"], render: () => <DiagnosticsSharingSection /> },
-  ],
-  appearance: [{ entryIds: "tab", render: () => <AppearanceSection /> }],
-  chat: [
-    {
-      entryIds: "tab",
-      render: () => (
-        <>
-          <ChatSection />
-          {/* Voice input is chat dictation, so it lives with chat. */}
-          <DictationSection />
-        </>
-      ),
-    },
-  ],
-  "lanes-git": [
-    {
-      entryIds: [
-        "lanes-git.new-lane-base",
-        "lanes-git.auto-rebase",
-        "lanes-git.rebase-suggestions",
-        "lanes-git.rebase-min-behind",
-      ],
-      render: () => <LaneBehaviorSection />,
-    },
-    { entryIds: ["lanes-git.lane-templates"], render: () => <LaneTemplatesSection /> },
-    { entryIds: ["lanes-git.pr-chat-transcripts"], render: () => <PrChatTranscriptsSection /> },
-  ],
-  integrations: [
-    { entryIds: ["integrations.github"], render: () => <GitHubIntegrationSection /> },
-    { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection /> },
-  ],
-  notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
-  activity: [{ entryIds: "tab", render: () => <ActivitySection /> }],
-  secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
-  storage: [
-    {
-      entryIds: ["storage.usage", "storage.lane-rules", "storage.diagnostics"],
-      render: () => <StorageSection />,
-    },
-    { entryIds: ["storage.session-lifecycle"], render: () => <SessionLifecycleSection /> },
-  ],
-  stats: [
-    {
-      entryIds: ["stats.usage", "agents.budget"],
-      render: () => (
-        <>
-          <AdeUsageSection />
-          {/* The spend cap lives where spend lives. */}
-          <BudgetCapSettings />
-        </>
-      ),
-    },
-  ],
-};
-
-function TabContent({ tab }: { tab: SettingsTabId }) {
-  // Providers is the one tab that is not a list of sections: it routes between
-  // the grid and one provider's page off `?provider=`.
-  if (tab === "agents") return <AgentsTabContent />;
-  const sections = TAB_SECTIONS[tab];
-  if (!sections) return null;
-  return (
-    <>
-      {sections.map((section) => {
-        const entryIds = section.entryIds === "tab" ? settingsEntryIdsForTab(tab) : section.entryIds;
-        return (
-          <WebSettingsSection key={entryIds.join(",")} entryIds={entryIds}>
-            {section.render()}
-          </WebSettingsSection>
-        );
-      })}
-    </>
   );
 }
 
@@ -413,7 +170,7 @@ function CrossTabResults({
               padding: "5px 10px",
               fontFamily: SANS_FONT,
               fontSize: 11,
-              background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+              background: fgTint(4),
               border: `1px solid ${COLORS.borderMuted}`,
               borderRadius: 999,
               cursor: "pointer",
@@ -453,13 +210,33 @@ const FLASH_STYLES = (
 );
 
 
-export function SettingsPage({ active = true }: { active?: boolean } = {}) {
+export function SettingsPage({
+  active = true,
+  standalone = false,
+  onClose,
+}: { active?: boolean; standalone?: boolean; onClose?: () => void } = {}) {
   const location = useLocation();
   const navigate = useNavigate();
   // Read-only: every write to the settings URL goes through `navigate` so the
   // hash survives alongside the search params.
   const [searchParams] = useSearchParams();
   const tabParam = searchParams.get("tab");
+  // Machines pages exist once per machine; `?machine=<id>` picks which. Absent
+  // means This computer. The hosted web client has no "This computer", so it
+  // keeps the single bound-machine view it always had.
+  const machineParam = searchParams.get("machine");
+  const machinesEnabled = !isWebClientMode();
+  const { machines } = useProjectMachines(active && machinesEnabled);
+  // With no `?machine=`, a link to a setting about the tab's own machine
+  // (GitHub, Linear, link opening) lands on that machine; anything else lands
+  // on This computer. For a tab open on this computer the two agree.
+  const linkedEntryId = location.hash ? resolveSettingsHash(decodeSettingsHash(location.hash))?.id ?? null : null;
+  const defaultMachineId = linkedEntryId && BOUND_MACHINE_ENTRY_IDS.has(linkedEntryId)
+    ? (machines.find((machine) => machine.isActiveBinding)?.machineId ?? THIS_MACHINE_ID)
+    : THIS_MACHINE_ID;
+  const selectedMachine: ProjectMachine | null = machinesEnabled
+    ? (machines.find((machine) => machine.machineId === (machineParam ?? defaultMachineId)) ?? machines[0] ?? null)
+    : null;
   // Machine-scoped settings write to the machine the active project tab is
   // bound to, so on web they exist only while one is open. The manifest is what
   // nav, search and the palette all consult, and it has no store of its own —
@@ -482,10 +259,31 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     return () => clearWebMachineBindingResolver(installed);
   }, []);
   const webMachineSectionsHidden = isWebClientMode() && !machineBound;
+  // Standalone Settings, opened from the new-project screen. Installed during
+  // render like the web resolver, because the manifest answers
+  // `isSettingAvailable` mid-render. Only the standalone page installs one, and
+  // its unmount clears only its own: the project page's unmount can land in
+  // the same commit as the standalone page's first render.
+  const standaloneResolverRef = useRef<() => boolean>(() => true);
+  if (standalone) setStandaloneSettingsResolver(standaloneResolverRef.current);
+  useEffect(() => {
+    if (!standalone) return undefined;
+    const installed = standaloneResolverRef.current;
+    return () => clearStandaloneSettingsResolver(installed);
+  }, [standalone]);
   // Tabs the web client cannot serve still resolve — a deeplink or palette
   // entry naming one should land somewhere real rather than on an empty page,
   // so it falls through to the first tab this renderer does serve.
-  const tabs = useMemo(() => availableSettingsTabs(), [machineBound]);
+  const tabs = useMemo(
+    () => {
+      const all = availableSettingsTabs();
+      return standalone ? all.filter((tab) => STANDALONE_TAB_IDS.has(tab.id)) : all;
+    },
+    // `machineBound` is read by the manifest's web resolver, not here: the
+    // list has to be recomputed when it changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [machineBound, standalone],
+  );
   // Explicit, so reordering the sidebar cannot move where Settings opens.
   const defaultTab = tabs.some((tab) => tab.id === DEFAULT_SETTINGS_TAB)
     ? DEFAULT_SETTINGS_TAB
@@ -509,6 +307,11 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
       : null;
 
   const [section, setSection] = useState<SettingsTabId>(resolvedTab ?? defaultTab);
+  // The machine the open page is about. A page that describes this computer's
+  // own screen (Appearance) is always This computer, whatever `?machine=` says.
+  const pageMachine: ProjectMachine | null = isThisComputerOnlyTab(section)
+    ? (machines.find((machine) => machine.machineId === THIS_MACHINE_ID) ?? selectedMachine)
+    : selectedMachine;
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -556,10 +359,18 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     );
   }, [active, location.pathname, navigate, searchParams]);
 
-  const navigateToTab = useCallback((next: SettingsTabId, hash?: string) => {
+  const navigateToTab = useCallback((next: SettingsTabId, hash?: string, machineId?: string) => {
     setSection(next);
     const nextParams = new URLSearchParams(searchParams);
     nextParams.set("tab", next);
+    // The machine travels with Machines pages only. Account and Project pages
+    // have no machine, and a stale one in the URL would mislead the next link.
+    // Appearance describes this computer's own screen, so it never carries one.
+    const targetMachine = isMachineSettingsTab(next) && !isThisComputerOnlyTab(next)
+      ? (machineId ?? nextParams.get("machine"))
+      : null;
+    if (targetMachine && targetMachine !== THIS_MACHINE_ID) nextParams.set("machine", targetMachine);
+    else nextParams.delete("machine");
     navigate(
       { pathname: location.pathname, search: `?${nextParams.toString()}`, hash: hash ? `#${hash}` : "" },
       { replace: true },
@@ -643,27 +454,32 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     });
   }, [trimmedQuery, matchesThisTab, section]);
 
-  const repoGroupLabel = useAppStore((state) => state.project?.displayName) ?? "This repository";
+  const projectDisplayName = useAppStore((state) => state.project?.displayName);
+  const hasOpenProject = Boolean(projectDisplayName);
+  const repoGroupLabel = projectDisplayName ?? "This repository";
   const hasProjectSidebar = useHasProjectSidebar();
 
-  const renderTabButton = (tab: SettingsTab) => {
+  const renderTabButton = (tab: SettingsTab, machine?: ProjectMachine) => {
     const Icon = TAB_ICONS[tab.id];
-    const isActive = section === tab.id;
-    const isHovered = hoveredId === tab.id;
+    const isActive = section === tab.id && (!machine || pageMachine?.machineId === machine.machineId);
+    const hoverKey = machine ? `${machine.machineId}:${tab.id}` : tab.id;
+    const isHovered = hoveredId === hoverKey;
+    // Tour anchors stay on This computer's copy of each page.
+    const tourId = !machine || machine.isThisMachine ? `settings.${TOUR_IDS[tab.id] ?? tab.id}` : undefined;
     return (
       <button
-        key={tab.id}
+        key={hoverKey}
         type="button"
-        data-tour={`settings.${TOUR_IDS[tab.id] ?? tab.id}`}
-        onClick={() => navigateToTab(tab.id)}
-        onMouseEnter={() => setHoveredId(tab.id)}
+        data-tour={tourId}
+        onClick={() => navigateToTab(tab.id, undefined, machine?.machineId)}
+        onMouseEnter={() => setHoveredId(hoverKey)}
         onMouseLeave={() => setHoveredId(null)}
         style={{
           display: "flex",
           width: "100%",
           alignItems: "center",
           gap: 9,
-          padding: "6px 10px",
+          padding: machine ? "5px 10px 5px 30px" : "6px 10px",
           border: "none",
           background: isActive
             ? "var(--shell-sidebar-item-active-bg)"
@@ -695,24 +511,87 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     <SettingsSidebarHeader onOpenAccount={() => navigateToTab("account")} />
   );
 
+  // The machine a Machines page is about, as the section components see it.
+  const machinePageScope = useSettingsMachinePage(
+    pageMachine && isMachineSettingsTab(section) ? pageMachine : null,
+  );
+
   const activeTab = tabs.find((tab) => tab.id === section)
     ?? tabs.find((tab) => tab.id === defaultTab)
     ?? tabs[0];
+  // A provider detail (or Harnesses) is a sub-view of the Providers tab. The
+  // shell header owns the back affordance so it sits on the title row rather
+  // than floating below it.
+  const subViewOpen = Boolean(searchParams.get("provider")?.trim()) || searchParams.get("harnesses") === "1";
+  const closeSubView = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("provider");
+    next.delete("harnesses");
+    const search = next.toString();
+    navigate({ pathname: location.pathname, search: search ? `?${search}` : "", hash: "" }, { replace: true });
+  };
   const tabEntryCount = settingsEntriesForTab(section).length;
   const noMatchesHere = trimmedQuery.length > 0 && (matchesThisTab?.length ?? 0) === 0;
 
   // Inside a project the section list lives in the project sidebar. Outside
   // one (the hosted web client, tests) the page keeps its own column.
+  const renderMachineRow = (machine: ProjectMachine, machineTabs: SettingsTab[]) => {
+    const onMachinePage = isMachineSettingsTab(section);
+    const selected = pageMachine?.machineId === machine.machineId;
+    // A row opens the page you are on when that machine has it, else its first.
+    const landingTab = onMachinePage && machineTabs.some((tab) => tab.id === section)
+      ? section
+      : (machineTabs[0]?.id ?? DEFAULT_SETTINGS_TAB);
+    return (
+      <SettingsMachineNavRow
+        key={machine.machineId}
+        machine={machine}
+        selected={selected}
+        active={selected && onMachinePage}
+        onOpen={() => navigateToTab(landingTab, undefined, machine.machineId)}
+      >
+        {machineTabs.map((tab) => renderTabButton(tab, machine))}
+      </SettingsMachineNavRow>
+    );
+  };
+
   const sectionList = (
     <>
       {SETTINGS_GROUPS.map((group) => {
         const groupTabs = tabs.filter((tab) => tab.group === group.id);
-        // A group with nothing in it is not rendered. That is how the repo
-        // group disappears when Settings is opened outside a project: there
-        // is no repository to name and nothing filed under one.
+        // A group with nothing reachable in it is not rendered (the hosted web
+        // client drops whole pages whose writes have nowhere to land).
         if (!groupTabs.length) return null;
-        const label = group.label
-          ?? (group.id === "repo" ? repoGroupLabel : THIS_MACHINE_NAME);
+        const label = group.label ?? THIS_MACHINE_NAME;
+        const hint = group.id === "project" && hasOpenProject
+          ? `${repoGroupLabel}. ${groupScopeHint(group.id)}`
+          : groupScopeHint(group.id);
+        if (group.id === "machines" && machinesEnabled && machines.length > 0) {
+          return (
+            <div key={group.id} style={{ marginBottom: 14 }}>
+              <div
+                style={{
+                  ...LABEL_STYLE,
+                  fontFamily: SANS_FONT,
+                  paddingLeft: 10,
+                  marginBottom: 6,
+                  color: "var(--shell-sidebar-item-fg)",
+                  opacity: 0.75,
+                }}
+                title={groupScopeHint(group.id)}
+              >
+                {group.label}
+              </div>
+              {machines.map((machine) => renderMachineRow(
+                machine,
+                // Appearance has one page, under This computer.
+                machine.machineId === THIS_MACHINE_ID
+                  ? groupTabs
+                  : groupTabs.filter((tab) => !isThisComputerOnlyTab(tab.id)),
+              ))}
+            </div>
+          );
+        }
         return (
           <div key={group.id} style={{ marginBottom: 14 }}>
             <div
@@ -727,7 +606,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
                 color: "var(--shell-sidebar-item-fg)",
                 opacity: 0.75,
               }}
-              title={groupScopeHint(group.id)}
+              title={hint}
             >
               {label}
             </div>
@@ -775,10 +654,15 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
             A browser has no "this one", and every section already states its
             own scope, so web gets the per-section lines instead. */}
         {FLASH_STYLES}
-        {isWebClientMode() ? null : <RemoteSettingsBanner />}
+        {/* Machines pages name their own machine below; the remote banner is
+            for Account and Project pages, which follow the tab's binding. */}
+        {isWebClientMode() || machinePageScope ? null : <RemoteSettingsBanner />}
         {webMachineSectionsHidden && tabHasMachineSettings(section) ? <WebNoMachineNotice /> : null}
 
-        <header style={{ marginBottom: 20 }}>
+        {/* Pages built on the centred settings column get a page wrapper of the
+            same measure, so the title and search line up with the content. */}
+        <div className={CENTERED_COLUMN_TABS.has(section) ? "ade-settings-page--column" : undefined}>
+        <header className="ade-settings-page-header" style={{ marginBottom: 20 }}>
           <div
             style={{
               display: "flex",
@@ -788,7 +672,31 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
               flexWrap: "wrap",
             }}
           >
-            <div style={{ minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+              {/* Standalone Settings has no project to return to but the
+                  new-project screen, so it carries its own Back. */}
+              {standalone && onClose ? (
+                <button
+                  type="button"
+                  aria-label="Back to new project"
+                  onClick={onClose}
+                  style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, border: "none", background: "transparent", color: COLORS.textMuted, cursor: "pointer", flexShrink: 0, marginLeft: -6 }}
+                >
+                  <ArrowLeft size={18} weight="bold" />
+                </button>
+              ) : null}
+              {subViewOpen ? (
+                <button
+                  type="button"
+                  aria-label="Back"
+                  onClick={closeSubView}
+                  style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, border: "none", background: "transparent", color: COLORS.textMuted, cursor: "pointer", flexShrink: 0, marginLeft: -6 }}
+                >
+                  <ArrowLeft size={18} weight="bold" />
+                </button>
+              ) : null}
+              <div style={{ minWidth: 0 }}>
+                {machinePageScope ? <SettingsMachineEyebrow page={machinePageScope} /> : null}
               <h1
                 style={{
                   margin: 0,
@@ -810,6 +718,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
                   {activeTab.description}
                 </p>
               ) : null}
+              </div>
             </div>
 
             <label
@@ -881,7 +790,16 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
         ) : null}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
-          <TabContent tab={section} />
+          {machinePageScope ? (
+            // Keyed by machine so nothing one machine loaded can linger into,
+            // or be saved onto, the next machine's page.
+            <SettingsMachineScopeProvider key={machinePageScope.machineId} scope={machinePageScope}>
+              <TabContent tab={section} machine={machinePageScope} standalone={standalone} />
+            </SettingsMachineScopeProvider>
+          ) : (
+            <TabContent tab={section} machine={null} />
+          )}
+        </div>
         </div>
       </div>
     </div>

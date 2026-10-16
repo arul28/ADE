@@ -1,6 +1,6 @@
 ---
 title: "Context and artifacts"
-description: "What's in a chat's context — the lane it starts in, attachments, the transcript, and how summaries carry work forward."
+description: "What's in a chat's context — the lane it starts in, attachments, the transcript, compaction, and how summaries carry work forward."
 icon: "database"
 ---
 
@@ -33,7 +33,45 @@ The transcript persists to disk, so a session survives an app restart. When you 
 
 ## The context window
 
-Long chats eventually fill the model's context window. Providers compact context automatically as it fills, and ADE shows a marker in the transcript when that happens. Compaction markers are part of the session history: started/completed updates merge together, and the next turn stays attached to the same chat instead of looking like a new conversation.
+Long chats eventually fill the model's context window. Each provider compacts by itself as the context fills: it replaces older messages with a summary for the model. Your visible chat stays as it was.
+
+### The context meter
+
+The ring next to the send button shows how much of the model's window the chat uses. A small tick on the ring marks where the provider compacts. Click the ring to see the numbers, for example `312k of 1M used · compacts at 400k`, and to use **Compact now**. Compact now works for Claude, Codex, Pi, and OpenCode.
+
+### Compaction in the transcript
+
+Each compaction is one quiet row in the transcript:
+
+- **Running:** `Compacting context · 481k tokens`. The chat's row in the sidebar and on the Work tab shows **Compacting…**.
+- **Done:** `Context compacted · 481k → 6k · 28 s`, and who started it: `you asked`, `automatic`, or `ADE (near limit)`. Click the row to read the summary when the provider gives one.
+- **Failed:** `Compaction failed · weekly limit on Work`, with **Retry**. A failed compaction does not change the meter.
+
+### Set when a provider compacts
+
+Open **Settings → Providers** and choose a provider. Find **Auto-compact**.
+
+| Provider | What you can set |
+|---|---|
+| Claude | **Auto-compact at**: Auto (recommended) or 100k to 1M. You can also turn auto-compact off. |
+| Codex | **Auto-compact at**: a token count, capped at the model's window. |
+| OpenCode | Auto-compact on or off, the compaction buffer, and the recent tokens to keep. |
+| Pi | Auto-compact on or off, the reserve tokens, and the recent tokens to keep. |
+| Cursor, Droid, and other agents | Nothing. These compact by themselves. |
+
+If you have more than one Claude or Codex account, each account card has its own **Auto-compact** choice. "Same as provider default" uses the provider setting. A change applies at the next turn.
+
+<Tip>
+On a 1M-token Claude model, Claude compacts late by default. Each step of a turn re-reads the whole context, so a very long chat uses your plan limit fast. A lower value, such as 400k, compacts sooner and uses less of your limit. The summary keeps less detail.
+</Tip>
+
+### Compact first after an hour away
+
+Claude keeps a chat's context in a cache for one hour. After that, your next message sends the whole context again. When a Claude chat has been idle for an hour and holds 100k tokens or more, a **Compact first** pill appears next to the context meter. Turn it on, and ADE compacts the chat first and then sends your message. If the compaction fails, ADE does not send the message.
+
+In **Settings → Providers → Claude**, **After an hour idle** sets the pill to **Ask** (the default), **Always compact first**, or **Never**.
+
+Compaction markers are part of the session history: started and completed updates merge into one row, and the next turn stays in the same chat.
 
 When a session gets long:
 

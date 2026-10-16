@@ -18,19 +18,9 @@ import {
   clearClaudeCredentialCache,
   invalidateCachedClaudeCredentials,
   readClaudeCredentials,
-  readClaudeCredentialsWithRefresh,
+  readClaudeLogin,
   readCodexCredentials,
-  refreshClaudeCredentials,
 } from "./providerCredentialSources";
-
-function createLogger() {
-  return {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  };
-}
 
 function setPlatform(value: NodeJS.Platform): void {
   Object.defineProperty(process, "platform", { value, configurable: true });
@@ -54,14 +44,6 @@ function fakeShellChild(stdout: string, exitCode = 0) {
   return child;
 }
 
-function jsonResponse(status: number, body: unknown): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: async () => body,
-  } as unknown as Response;
-}
-
 const originalPlatform = process.platform;
 
 beforeEach(() => {
@@ -74,82 +56,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   setPlatform(originalPlatform);
   clearClaudeCredentialCache();
-});
-
-describe("refreshClaudeCredentials", () => {
-  it("stops retrying a refresh token the endpoint rejected", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(400, { error: "invalid_grant" }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(refreshClaudeCredentials("dead-token")).resolves.toBeNull();
-    await expect(refreshClaudeCredentials("dead-token")).resolves.toBeNull();
-    await expect(refreshClaudeCredentials("dead-token")).resolves.toBeNull();
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not block a different refresh token after one is rejected", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(400, { error: "invalid_grant" }))
-      .mockResolvedValueOnce(jsonResponse(200, { access_token: "fresh", expires_in: 3600 }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(refreshClaudeCredentials("dead-token")).resolves.toBeNull();
-    const refreshed = await refreshClaudeCredentials("new-token");
-
-    expect(refreshed?.accessToken).toBe("fresh");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("backs off after a transient network failure", async () => {
-    const fetchMock = vi.fn().mockRejectedValue(new Error("network down"));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(refreshClaudeCredentials("token")).resolves.toBeNull();
-    await expect(refreshClaudeCredentials("token")).resolves.toBeNull();
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("treats a token-endpoint 429 as transient, not a 24h rejection", async () => {
-    vi.useFakeTimers();
-    try {
-      const fetchMock = vi.fn().mockResolvedValue(jsonResponse(429, { error: "rate_limited" }));
-      vi.stubGlobal("fetch", fetchMock);
-
-      await expect(refreshClaudeCredentials("token")).resolves.toBeNull();
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-
-      // Still blocked inside the 10-minute transient window…
-      vi.setSystemTime(Date.now() + 5 * 60_000);
-      await expect(refreshClaudeCredentials("token")).resolves.toBeNull();
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-
-      // …but retried once the transient window has passed.
-      vi.setSystemTime(Date.now() + 6 * 60_000);
-      await expect(refreshClaudeCredentials("token")).resolves.toBeNull();
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("keeps a rejected (4xx) token blocked past the transient window", async () => {
-    vi.useFakeTimers();
-    try {
-      const fetchMock = vi.fn().mockResolvedValue(jsonResponse(400, { error: "invalid_grant" }));
-      vi.stubGlobal("fetch", fetchMock);
-
-      await expect(refreshClaudeCredentials("token")).resolves.toBeNull();
-      vi.setSystemTime(Date.now() + 60 * 60_000);
-      await expect(refreshClaudeCredentials("token")).resolves.toBeNull();
-
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 });
 
 describe("readClaudeCredentials", () => {
@@ -175,48 +81,87 @@ describe("claudeKeychainServiceName", () => {
   });
 });
 
-describe("readClaudeCredentialsWithRefresh", () => {
-  it("returns null instead of expired credentials when refresh fails", async () => {
-    setPlatform("darwin");
-    const expired = {
-      claudeAiOauth: {
-        accessToken: "expired-access",
-        refreshToken: "dead-refresh",
-        expiresAt: Date.now() - 60 * 60_000,
-      },
-    };
-    vi.spyOn(fs.promises, "readFile").mockResolvedValue(JSON.stringify(expired));
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(400, { error: "invalid_grant" }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    const logger = createLogger();
-    await expect(
-      readClaudeCredentialsWithRefresh(logger, { allowKeychain: false }),
-    ).resolves.toBeNull();
-
-    // A second background poll must not attempt the refresh again.
-    await expect(
-      readClaudeCredentialsWithRefresh(logger, { allowKeychain: false }),
-    ).resolves.toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(mockState.spawn).not.toHaveBeenCalled();
-  });
-
-  it("falls back to a usable file token when the Keychain read fails on a user-initiated read", async () => {
-    setPlatform("darwin");
-    mockState.spawn.mockImplementation(() => fakeShellChild("", 1));
-    const fileCreds = {
+describe("readClaudeLogin", () => {
+  it("reports a live file token as ok", async () => {
+    setPlatform("linux");
+    vi.spyOn(fs.promises, "readFile").mockResolvedValue(JSON.stringify({
       claudeAiOauth: {
         accessToken: "file-access",
         refreshToken: "file-refresh",
         expiresAt: Date.now() + 8 * 60 * 60_000,
       },
-    };
-    vi.spyOn(fs.promises, "readFile").mockResolvedValue(JSON.stringify(fileCreds));
+    }));
 
-    const creds = await readClaudeCredentials();
-    expect(creds?.accessToken).toBe("file-access");
-    expect(creds?.source).toBe("claude-credentials-file");
+    await expect(readClaudeLogin({ allowKeychain: false })).resolves.toEqual({
+      state: "ok",
+      credentials: expect.objectContaining({ accessToken: "file-access" }),
+    });
+  });
+
+  it("reports an expired token as expired when the CLI can still refresh it", async () => {
+    setPlatform("linux");
+    vi.spyOn(fs.promises, "readFile").mockResolvedValue(JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "expired-access",
+        refreshToken: "live-refresh",
+        expiresAt: Date.now() - 60 * 60_000,
+      },
+    }));
+
+    // ADE never spends the refresh token itself; the CLI does on its next run.
+    await expect(readClaudeLogin({ allowKeychain: false })).resolves.toEqual({ state: "expired" });
+  });
+
+  it("reports an expired token with no refresh token as signed out", async () => {
+    setPlatform("linux");
+    vi.spyOn(fs.promises, "readFile").mockResolvedValue(JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "expired-access",
+        expiresAt: Date.now() - 60 * 60_000,
+      },
+    }));
+
+    await expect(readClaudeLogin({ allowKeychain: false })).resolves.toEqual({ state: "signed_out" });
+  });
+
+  it("reports a missing login as signed out and caches the miss for background reads", async () => {
+    setPlatform("linux");
+    const readFileSpy = vi.spyOn(fs.promises, "readFile").mockRejectedValue(
+      Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
+    );
+
+    await expect(readClaudeLogin({ allowKeychain: false })).resolves.toEqual({ state: "signed_out" });
+    // A background poll reuses the miss instead of re-probing on every tick.
+    await expect(readClaudeLogin({ allowKeychain: false })).resolves.toEqual({ state: "signed_out" });
+    expect(readFileSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports unreadable when the Keychain read fails and no file token exists", async () => {
+    setPlatform("darwin");
+    mockState.spawn.mockImplementation(() => fakeShellChild("", 1));
+    vi.spyOn(fs.promises, "readFile").mockRejectedValue(
+      Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
+    );
+
+    // A failed Keychain read proves nothing about the login; it is not a miss.
+    await expect(readClaudeLogin()).resolves.toEqual({ state: "unreadable" });
+  });
+
+  it("falls back to a usable file token when the Keychain read fails", async () => {
+    setPlatform("darwin");
+    mockState.spawn.mockImplementation(() => fakeShellChild("", 1));
+    vi.spyOn(fs.promises, "readFile").mockResolvedValue(JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "file-access",
+        refreshToken: "file-refresh",
+        expiresAt: Date.now() + 8 * 60 * 60_000,
+      },
+    }));
+
+    await expect(readClaudeLogin()).resolves.toEqual({
+      state: "ok",
+      credentials: expect.objectContaining({ accessToken: "file-access", source: "claude-credentials-file" }),
+    });
   });
 
   it("lets background polls reuse credentials cached from a Keychain read", async () => {
@@ -234,15 +179,17 @@ describe("readClaudeCredentialsWithRefresh", () => {
     );
 
     // A user-initiated read (Settings, provider status) hits the Keychain.
-    const fromKeychain = await readClaudeCredentials();
-    expect(fromKeychain?.accessToken).toBe("live-access");
-    expect(fromKeychain?.source).toBe("macos-keychain");
+    await expect(readClaudeLogin()).resolves.toEqual({
+      state: "ok",
+      credentials: expect.objectContaining({ accessToken: "live-access", source: "macos-keychain" }),
+    });
 
     // A background poll (Keychain forbidden) must reuse the cached login
     // rather than falling back to the (missing/stale) credentials file.
-    const logger = createLogger();
-    const background = await readClaudeCredentialsWithRefresh(logger, { allowKeychain: false });
-    expect(background?.accessToken).toBe("live-access");
+    await expect(readClaudeLogin({ allowKeychain: false })).resolves.toEqual({
+      state: "ok",
+      credentials: expect.objectContaining({ accessToken: "live-access" }),
+    });
     expect(readFileSpy).not.toHaveBeenCalled();
   });
 });
@@ -278,10 +225,12 @@ describe("per-account credential reads", () => {
     mockState.spawn.mockImplementation(() => fakeShellChild(JSON.stringify(liveClaudeCreds("work-access"))));
     fileReader({});
 
-    const creds = await readClaudeCredentials({ configHome });
+    const login = await readClaudeLogin({ configHome });
 
-    expect(creds?.accessToken).toBe("work-access");
-    expect(creds?.source).toBe("macos-keychain");
+    expect(login).toEqual({
+      state: "ok",
+      credentials: expect.objectContaining({ accessToken: "work-access", source: "macos-keychain" }),
+    });
     const command = String(mockState.spawn.mock.calls[0]?.[1]?.[1] ?? "");
     expect(command).toContain(`-s '${scopedService}'`);
     expect(command).not.toContain("Claude Code-credentials'");
@@ -294,9 +243,12 @@ describe("per-account credential reads", () => {
       [path.join(configHome, ".credentials.json")]: liveClaudeCreds("work-access"),
     });
 
-    const creds = await readClaudeCredentials({ allowKeychain: false, configHome });
+    const login = await readClaudeLogin({ allowKeychain: false, configHome });
 
-    expect(creds?.accessToken).toBe("work-access");
+    expect(login).toEqual({
+      state: "ok",
+      credentials: expect.objectContaining({ accessToken: "work-access" }),
+    });
     expect(mockState.spawn).not.toHaveBeenCalled();
   });
 
@@ -308,15 +260,16 @@ describe("per-account credential reads", () => {
       Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
     );
 
-    await expect(readClaudeCredentials({ configHome })).resolves.toEqual(
-      expect.objectContaining({ accessToken: "work-access" }),
-    );
-    const background = await readClaudeCredentialsWithRefresh(createLogger(), {
-      allowKeychain: false,
-      configHome,
+    await expect(readClaudeLogin({ configHome })).resolves.toEqual({
+      state: "ok",
+      credentials: expect.objectContaining({ accessToken: "work-access" }),
     });
+    const background = await readClaudeLogin({ allowKeychain: false, configHome });
 
-    expect(background?.accessToken).toBe("work-access");
+    expect(background).toEqual({
+      state: "ok",
+      credentials: expect.objectContaining({ accessToken: "work-access" }),
+    });
     expect(readFileSpy).not.toHaveBeenCalled();
   });
 
@@ -327,24 +280,17 @@ describe("per-account credential reads", () => {
       [path.join(workHome, ".credentials.json")]: liveClaudeCreds("work-access"),
       [path.join(os.homedir(), ".claude", ".credentials.json")]: liveClaudeCreds("default-access"),
     });
-    const logger = createLogger();
 
-    const first = await readClaudeCredentialsWithRefresh(logger, { allowKeychain: false });
-    const second = await readClaudeCredentialsWithRefresh(logger, {
-      allowKeychain: false,
-      configHome: workHome,
-    });
+    const first = await readClaudeLogin({ allowKeychain: false });
+    const second = await readClaudeLogin({ allowKeychain: false, configHome: workHome });
     // Both are now cached; neither may answer with the other's token.
-    const firstAgain = await readClaudeCredentialsWithRefresh(logger, { allowKeychain: false });
-    const secondAgain = await readClaudeCredentialsWithRefresh(logger, {
-      allowKeychain: false,
-      configHome: workHome,
-    });
+    const firstAgain = await readClaudeLogin({ allowKeychain: false });
+    const secondAgain = await readClaudeLogin({ allowKeychain: false, configHome: workHome });
 
-    expect(first?.accessToken).toBe("default-access");
-    expect(second?.accessToken).toBe("work-access");
-    expect(firstAgain?.accessToken).toBe("default-access");
-    expect(secondAgain?.accessToken).toBe("work-access");
+    expect(first).toEqual({ state: "ok", credentials: expect.objectContaining({ accessToken: "default-access" }) });
+    expect(second).toEqual({ state: "ok", credentials: expect.objectContaining({ accessToken: "work-access" }) });
+    expect(firstAgain).toEqual({ state: "ok", credentials: expect.objectContaining({ accessToken: "default-access" }) });
+    expect(secondAgain).toEqual({ state: "ok", credentials: expect.objectContaining({ accessToken: "work-access" }) });
     expect(spy).toHaveBeenCalledTimes(2);
   });
 
@@ -354,37 +300,35 @@ describe("per-account credential reads", () => {
     fileReader({
       [path.join(os.homedir(), ".claude", ".credentials.json")]: liveClaudeCreds("default-access"),
     });
-    const logger = createLogger();
 
     // The scoped account has no credentials file at all: that must record a
     // miss for THAT home only.
     await expect(
-      readClaudeCredentialsWithRefresh(logger, { allowKeychain: false, configHome: emptyHome }),
-    ).resolves.toBeNull();
+      readClaudeLogin({ allowKeychain: false, configHome: emptyHome }),
+    ).resolves.toEqual({ state: "signed_out" });
     await expect(
-      readClaudeCredentialsWithRefresh(logger, { allowKeychain: false }),
-    ).resolves.toEqual(expect.objectContaining({ accessToken: "default-access" }));
+      readClaudeLogin({ allowKeychain: false }),
+    ).resolves.toEqual({ state: "ok", credentials: expect.objectContaining({ accessToken: "default-access" }) });
   });
 
   it("invalidates and clears per account", async () => {
     const workHome = path.join(os.tmpdir(), "ade-instance-claude-work");
     cacheClaudeCredentials({ accessToken: "default-access" });
     cacheClaudeCredentials({ accessToken: "work-access" }, workHome);
-    const logger = createLogger();
     fileReader({});
 
     invalidateCachedClaudeCredentials(workHome);
     await expect(
-      readClaudeCredentialsWithRefresh(logger, { allowKeychain: false, configHome: workHome }),
-    ).resolves.toBeNull();
+      readClaudeLogin({ allowKeychain: false, configHome: workHome }),
+    ).resolves.toEqual({ state: "signed_out" });
     await expect(
-      readClaudeCredentialsWithRefresh(logger, { allowKeychain: false }),
-    ).resolves.toEqual(expect.objectContaining({ accessToken: "default-access" }));
+      readClaudeLogin({ allowKeychain: false }),
+    ).resolves.toEqual({ state: "ok", credentials: expect.objectContaining({ accessToken: "default-access" }) });
 
     clearClaudeCredentialCache();
     await expect(
-      readClaudeCredentialsWithRefresh(logger, { allowKeychain: false }),
-    ).resolves.toBeNull();
+      readClaudeLogin({ allowKeychain: false }),
+    ).resolves.toEqual({ state: "signed_out" });
   });
 
   it("reads Codex auth from the account's home, outranking CODEX_HOME", async () => {

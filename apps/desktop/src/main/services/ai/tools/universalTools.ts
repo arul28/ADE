@@ -17,9 +17,12 @@ import {
   isEnoentError,
   isWithinDir,
   resolvePathWithinRoot,
+  signalProcessGroup,
   type DirtyFileTextLookup,
 } from "../../shared/utils";
 import { terminateProcessTree } from "../../shared/processExecution";
+import { userProcessEnv } from "../../shared/hostRuntimeEnv";
+import { GIT_READ_ENV } from "../../git/gitReadEnv";
 
 const execFileAsync = promisify(execFile);
 
@@ -1391,7 +1394,7 @@ function createBashTool(
       const killProc = (proc: ReturnType<typeof spawn>, signal: NodeJS.Signals = "SIGTERM"): void => {
         if (process.platform !== "win32" && typeof proc.pid === "number") {
           try {
-            process.kill(-proc.pid, signal);
+            signalProcessGroup(proc.pid, signal);
             return;
           } catch {
             // Fall back to killing the direct child when process-group teardown is unavailable.
@@ -1413,8 +1416,8 @@ function createBashTool(
               windowsHide: true,
               env:
                 process.platform === "win32"
-                  ? { ...process.env }
-                  : { ...process.env, TERM: "dumb" },
+                  ? userProcessEnv()
+                  : { ...userProcessEnv(), TERM: "dumb" },
             });
             let abortMessage: string | null = null;
             let forceKillId: NodeJS.Timeout | null = null;
@@ -2452,6 +2455,7 @@ function createGitStatusTool(cwd: string) {
         const { stdout } = await execFileAsync("git", ["status", "--porcelain=v1", "-u"], {
           cwd,
           timeout: 15_000,
+          env: { ...process.env, ...GIT_READ_ENV },
         });
         const { stdout: branch } = await execFileAsync(
           "git",
@@ -2489,6 +2493,7 @@ function createGitDiffTool(cwd: string) {
           cwd,
           timeout: 30_000,
           maxBuffer: 5 * 1024 * 1024,
+          env: { ...process.env, ...GIT_READ_ENV },
         });
         const truncated = stdout.length > 200_000;
         return { diff: stdout.slice(0, 200_000), truncated };

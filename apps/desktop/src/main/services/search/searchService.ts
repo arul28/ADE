@@ -18,7 +18,6 @@ import type {
   SearchRebuildResult,
   SearchResultItem
 } from "../../../shared/types/search";
-import { SEARCH_DOC_KINDS, isSearchDocKind } from "../../../shared/types/search";
 import type { Logger } from "../logging/logger";
 import {
   SEARCH_INDEX_SCHEMA_VERSION,
@@ -29,18 +28,19 @@ import {
   type SearchIndexDb
 } from "./searchIndexDb";
 import {
-  buildFtsMatchExpression,
   isMatchAllQuery,
   parseSearchQuery,
   type ParsedSearchQuery
 } from "./searchQueryParser";
 import {
-  SNIPPET_MARK_END,
-  SNIPPET_MARK_START,
-  extractSnippetRanges,
   rankCandidates,
   rankQueryText
 } from "./searchRanking";
+import {
+  effectiveSearchKinds,
+  queryFtsCandidates,
+  type SearchCandidate as Candidate
+} from "./searchIndexQuery";
 import { chunkTerminalTranscript, sanitizeIndexedText } from "./terminalChunking";
 
 /**
@@ -52,10 +52,6 @@ import { chunkTerminalTranscript, sanitizeIndexedText } from "./terminalChunking
  * background queue — never on the PTY/chat hot paths.
  */
 
-const FTS_KINDS: readonly SearchDocKind[] = ["chat", "terminal", "pr", "commit", "branch"];
-
-const FTS_CANDIDATE_LIMIT = 400;
-const MATCH_ALL_LIMIT = 200;
 const DELEGATED_FILE_LIMIT = 30;
 const DELEGATED_ARTIFACT_LIMIT = 200;
 const MAX_DOC_BODY_CHARS = 32_000;
@@ -79,34 +75,6 @@ type QueueEntry = {
   sourceKind: SourceKind;
   id: string;
   dueAt: number;
-};
-
-type DocRow = {
-  doc_id: string;
-  kind: string;
-  lane_id: string | null;
-  lane_name: string | null;
-  session_id: string | null;
-  title: string;
-  rank_title: string | null;
-  snippet_source: string | null;
-  deep_link: string;
-  updated_at: string;
-};
-
-type Candidate = {
-  docId: string;
-  kind: SearchDocKind;
-  title: string;
-  rankTitle: string;
-  laneId: string | null;
-  laneName: string | null;
-  sessionId: string | null;
-  deepLink: string;
-  updatedAt: string;
-  bm25: number;
-  snippet: string;
-  matchRanges: SearchMatchRange[];
 };
 
 export type SearchServiceDeps = {
@@ -307,6 +275,10 @@ export function createSearchService(deps: SearchServiceDeps) {
 
   let repoSlugPass: Promise<{ owner: string; name: string } | null> | null = null;
   let laneBranchPass: Promise<Map<string, string>> | null = null;
+  // A sweep enqueues every PR at once, and each one re-read the whole PR list
+  // and re-synced its chat terms: quadratic in PRs, seconds of brain time per
+  // drain on a repo with a thousand of them. One read per pass serves them all.
+  let prSummariesPass: Promise<PrSummary[]> | null = null;
 
   const stripBranchRef = (branchRef: string | null | undefined): string | null => {
     const trimmed = (branchRef ?? "").trim();
@@ -380,6 +352,8 @@ export function createSearchService(deps: SearchServiceDeps) {
 
   const enqueue = (sourceKind: SourceKind, id: string, debounceMs?: number): void => {
     if (disposed) return;
+    // A PR that changed after this pass read the list must not be indexed from it.
+    if (sourceKind === "pr") prSummariesPass = null;
     const key = `${sourceKind}:${id}`;
     const dueAt = Date.now() + (debounceMs ?? DEBOUNCE_MS[sourceKind]);
     if (unavailable) return;
@@ -403,6 +377,7 @@ export function createSearchService(deps: SearchServiceDeps) {
         if (dueNow.length === 0) break;
         repoSlugPass = null;
         laneBranchPass = null;
+        prSummariesPass = null;
         for (const [key, entry] of dueNow) {
           queue.delete(key);
           try {
@@ -666,7 +641,10 @@ export function createSearchService(deps: SearchServiceDeps) {
 
   const processChatSession = async (sessionId: string): Promise<void> => {
     const session = await resolveSession(sessionId);
-    if (!session) {
+    // Archived sessions are out of search, like archived lanes. Unarchiving
+    // emits a meta change, which re-enqueues the session; its source cursor
+    // went with the docs, so it is indexed again from the start.
+    if (!session || session.archivedAt) {
       removeSessionDocs(sessionId);
       return;
     }
@@ -801,7 +779,10 @@ export function createSearchService(deps: SearchServiceDeps) {
 
   const processTerminalSession = async (sessionId: string): Promise<void> => {
     const session = await resolveSession(sessionId);
-    if (!session) {
+    // Archived sessions are out of search, like archived lanes. Unarchiving
+    // emits a meta change, which re-enqueues the session; its source cursor
+    // went with the docs, so it is indexed again from the start.
+    if (!session || session.archivedAt) {
       removeSessionDocs(sessionId);
       return;
     }
@@ -927,10 +908,25 @@ export function createSearchService(deps: SearchServiceDeps) {
     }
   };
 
+  const prSummariesForPass = (prs: NonNullable<typeof deps.prs>): Promise<PrSummary[]> => {
+    if (!prSummariesPass) {
+      const pending = (async () => {
+        const summaries = await prs.listAll();
+        await syncPrTermsByChatSession(summaries);
+        return summaries;
+      })();
+      prSummariesPass = pending;
+      // A failed listing clears the shared pass, so the next caller retries it.
+      pending.catch(() => {
+        if (prSummariesPass === pending) prSummariesPass = null;
+      });
+    }
+    return prSummariesPass;
+  };
+
   const processPr = async (prId: string): Promise<void> => {
     if (!deps.prs) return;
-    const summaries = await deps.prs.listAll();
-    await syncPrTermsByChatSession(summaries);
+    const summaries = await prSummariesForPass(deps.prs);
     const summary = summaries.find((pr) => pr.id === prId);
     if (!summary) {
       withTransaction(() => deleteDocsWhere("doc_id = ?", [`pr:${prId}`]));
@@ -979,8 +975,7 @@ export function createSearchService(deps: SearchServiceDeps) {
 
   const processPrSweep = async (): Promise<void> => {
     if (!deps.prs) return;
-    const summaries = await deps.prs.listAll();
-    await syncPrTermsByChatSession(summaries);
+    const summaries = await prSummariesForPass(deps.prs);
     const liveIds = new Set(summaries.map((pr) => `pr:${pr.id}`));
     const indexed = all<{ doc_id: string }>("SELECT doc_id FROM docs WHERE kind = 'pr'");
     withTransaction(() => {
@@ -1116,6 +1111,10 @@ export function createSearchService(deps: SearchServiceDeps) {
           if (!liveIds.has(row.session_id)) removeSessionDocs(row.session_id);
         }
         for (const session of sessions) {
+          if (session.archivedAt) {
+            removeSessionDocs(session.id);
+            continue;
+          }
           if (isChatSession(session)) enqueue("chat-session", session.id, 0);
           if (!isChatToolType(session.toolType)) enqueue("terminal-session", session.id, 0);
         }
@@ -1153,25 +1152,6 @@ export function createSearchService(deps: SearchServiceDeps) {
   // Query
   // ---------------------------------------------------------------------
 
-  const effectiveKinds = (args: SearchQueryArgs, parsed: ParsedSearchQuery): SearchDocKind[] => {
-    const suppliedKinds = args.kinds ?? [];
-    const fromArgs = suppliedKinds.filter(isSearchDocKind);
-    // A supplied kinds array whose entries are all invalid (e.g. ["termnal"])
-    // must not silently broaden into the default all-kind set — mirror the
-    // inline `kind:bogus` reject in query() and match nothing instead.
-    if (suppliedKinds.length > 0 && fromArgs.length === 0) return [];
-    const fromQuery = parsed.kinds;
-    if (fromArgs.length > 0 && fromQuery.length > 0) {
-      const intersection = fromArgs.filter((kind) => fromQuery.includes(kind));
-      return intersection.length > 0 ? intersection : [];
-    }
-    if (fromArgs.length > 0) return fromArgs;
-    if (fromQuery.length > 0) return fromQuery;
-    // Linear delegation is opt-in: it can hit the network, so the default
-    // kind set excludes it.
-    return SEARCH_DOC_KINDS.filter((kind) => kind !== "linear");
-  };
-
   const resolveLaneFilter = async (
     args: SearchQueryArgs,
     parsed: ParsedSearchQuery
@@ -1191,141 +1171,6 @@ export function createSearchService(deps: SearchServiceDeps) {
     } catch {
       return requested;
     }
-  };
-
-  const docRowToCandidate = (row: DocRow, bm25: number, marked: string | null): Candidate => {
-    const fromMarked = marked ? extractSnippetRanges(marked) : null;
-    const snippet = fromMarked?.snippet?.trim()
-      ? fromMarked.snippet
-      : (row.snippet_source ?? "").slice(0, 240);
-    return {
-      docId: row.doc_id,
-      kind: row.kind as SearchDocKind,
-      title: row.title,
-      rankTitle: row.rank_title ?? "",
-      laneId: row.lane_id,
-      laneName: row.lane_name,
-      sessionId: row.session_id,
-      deepLink: row.deep_link,
-      updatedAt: row.updated_at,
-      bm25,
-      snippet,
-      matchRanges: fromMarked?.snippet?.trim() ? fromMarked.matchRanges : []
-    };
-  };
-
-  const queryFtsCandidates = (
-    parsed: ParsedSearchQuery,
-    kinds: SearchDocKind[],
-    laneId: string | null,
-    sessionId: string | null,
-    scopeChatSessionId: string | null,
-    excludeSessionContent: boolean
-  ): { candidates: Candidate[]; totals: Partial<Record<SearchDocKind, number>> } => {
-    const ftsKinds = kinds.filter((kind) => FTS_KINDS.includes(kind));
-    if (ftsKinds.length === 0) return { candidates: [], totals: {} };
-
-    const kindPlaceholders = ftsKinds.map(() => "?").join(", ");
-    const filters: string[] = [`d.kind IN (${kindPlaceholders})`];
-    const filterParams: Array<string | number> = [...ftsKinds];
-    if (laneId) {
-      filters.push("d.lane_id = ?");
-      filterParams.push(laneId);
-    }
-    if (sessionId) {
-      filters.push("(d.session_id = ? OR d.owner_session_id = ?)");
-      filterParams.push(sessionId, sessionId);
-    }
-    if (excludeSessionContent) {
-      // Internal callers may explicitly request a metadata-only view.
-      filters.push("d.kind NOT IN ('chat', 'terminal')");
-    } else if (scopeChatSessionId) {
-      // Internal callers may deliberately request a one-session view. Public
-      // ADE RPC/search routes strip this optional filter so bound agents and
-      // unbound shells receive the same project-backed chat results. Terminals
-      // owned by the selected chat match via owner_session_id.
-      filters.push(
-        "(d.kind NOT IN ('chat', 'terminal') OR d.session_id = ? OR d.owner_session_id = ?)"
-      );
-      filterParams.push(scopeChatSessionId, scopeChatSessionId);
-    }
-    if (parsed.sinceIso) {
-      filters.push("d.updated_at >= ?");
-      filterParams.push(parsed.sinceIso);
-    }
-
-    const matchExpr = buildFtsMatchExpression(parsed);
-    if (!matchExpr) {
-      const rows = all<DocRow>(
-        `SELECT d.doc_id, d.kind, d.lane_id, d.lane_name, d.session_id, d.title, d.rank_title,
-                d.snippet_source, d.deep_link, d.updated_at
-         FROM docs d
-         WHERE ${filters.join(" AND ")}
-         ORDER BY d.updated_at DESC, d.doc_id ASC
-         LIMIT ${MATCH_ALL_LIMIT}`,
-        filterParams
-      );
-      const totals: Partial<Record<SearchDocKind, number>> = {};
-      const totalRows = all<{ kind: string; n: number }>(
-        `SELECT d.kind, COUNT(*) AS n FROM docs d WHERE ${filters.join(" AND ")} GROUP BY d.kind`,
-        filterParams
-      );
-      for (const row of totalRows) totals[row.kind as SearchDocKind] = row.n;
-      return { candidates: rows.map((row) => docRowToCandidate(row, 0, null)), totals };
-    }
-
-    const candidateSql = `SELECT d.doc_id, d.kind, d.lane_id, d.lane_name, d.session_id, d.title, d.rank_title,
-              d.snippet_source, d.deep_link, d.updated_at,
-              bm25(docs_fts) AS score,
-              snippet(docs_fts, 1, '${SNIPPET_MARK_START}', '${SNIPPET_MARK_END}', '…', 14) AS marked
-       FROM docs_fts
-       JOIN docs d ON d.id = docs_fts.rowid
-       WHERE docs_fts MATCH ? AND ${filters.join(" AND ")}
-       ORDER BY score ASC, d.updated_at DESC, d.doc_id ASC
-       LIMIT ${FTS_CANDIDATE_LIMIT}`;
-    const rows = all<DocRow & { score: number; marked: string }>(candidateSql, [
-      matchExpr,
-      ...filterParams
-    ]);
-    // The candidate window above is capped in bm25 order, so on very
-    // high-frequency terms a strong TITLE match could fall outside it and
-    // never reach the title-tier promotion. Union in a title-scoped candidate
-    // set so the specified ranking (exact title > prefix > substring > body)
-    // holds regardless of body-match volume.
-    if (rows.length === FTS_CANDIDATE_LIMIT) {
-      const titleExpr = buildFtsMatchExpression(parsed, { column: "rank_title" });
-      if (titleExpr) {
-        const seenDocIds = new Set(rows.map((row) => row.doc_id));
-        for (const row of all<DocRow & { score: number; marked: string }>(candidateSql, [
-          titleExpr,
-          ...filterParams
-        ])) {
-          if (!seenDocIds.has(row.doc_id)) rows.push(row);
-        }
-      }
-    }
-    const totals: Partial<Record<SearchDocKind, number>> = {};
-    const totalRows = all<{ kind: string; n: number }>(
-      `SELECT d.kind, COUNT(*) AS n
-       FROM docs_fts
-       JOIN docs d ON d.id = docs_fts.rowid
-       WHERE docs_fts MATCH ? AND ${filters.join(" AND ")}
-       GROUP BY d.kind`,
-      [matchExpr, ...filterParams]
-    );
-    for (const row of totalRows) totals[row.kind as SearchDocKind] = row.n;
-    // The title-union above can surface docs the body-match COUNT didn't
-    // include; keep totals >= visible candidates per kind so "show more"
-    // affordances never under-count.
-    const candidateCountByKind = new Map<string, number>();
-    for (const row of rows) {
-      candidateCountByKind.set(row.kind, (candidateCountByKind.get(row.kind) ?? 0) + 1);
-    }
-    for (const [kind, count] of candidateCountByKind) {
-      const key = kind as SearchDocKind;
-      totals[key] = Math.max(totals[key] ?? 0, count);
-    }
-    return { candidates: rows.map((row) => docRowToCandidate(row, row.score, row.marked)), totals };
   };
 
   const substringRanges = (text: string, needle: string): SearchMatchRange[] => {
@@ -1554,7 +1399,7 @@ export function createSearchService(deps: SearchServiceDeps) {
     if (parsed.invalidFilters.length > 0) {
       return { results: [], totalByKind: {}, nextCursor: null };
     }
-    const kinds = effectiveKinds(args, parsed);
+    const kinds = effectiveSearchKinds(args, parsed);
     if (kinds.length === 0) return { results: [], totalByKind: {}, nextCursor: null };
     const matchAll = isMatchAllQuery(parsed);
     const laneId = await resolveLaneFilter(args, parsed);
@@ -1563,14 +1408,12 @@ export function createSearchService(deps: SearchServiceDeps) {
 
     const scopeChatSessionId = args.callerScope?.chatSessionId?.trim() || null;
     const excludeSessionContent = args.callerScope?.excludeSessionContent === true;
-    const { candidates: ftsCandidates, totals } = queryFtsCandidates(
-      parsed,
-      kinds,
+    const { candidates: ftsCandidates, totals } = queryFtsCandidates(all, parsed, kinds, {
       laneId,
-      parsed.sessionId,
+      sessionId: parsed.sessionId,
       scopeChatSessionId,
-      excludeSessionContent
-    );
+      excludeSessionContent,
+    });
 
     const delegated: Candidate[] = [];
     // `session:<id>` is also an exact lookup contract, not merely an FTS

@@ -164,6 +164,7 @@ vi.mock("../../state/appStore", async (importOriginal) => {
 // Import the hook under test (after mocks are declared)
 // ---------------------------------------------------------------------------
 import {
+  appendForeignMachinesToBoard,
   buildWorkBoardModel,
   buildWorkTabGroupModel,
   lanePrWaitingReason,
@@ -2209,8 +2210,9 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     await waitFor(() => {
       expect(listSessionsCachedMock).toHaveBeenCalled();
     });
-    await waitFor(() => {
-      expect(setWorkViewStateSpy).toHaveBeenCalled();
+    // Let the initial refresh settle so its writes land before the spies reset.
+    await act(async () => {
+      await Promise.all(listSessionsCachedMock.mock.results.map((call) => call.value));
     });
     focusSessionSpy.mockClear();
     selectLaneSpy.mockClear();
@@ -2238,6 +2240,88 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(focusSessionSpy).not.toHaveBeenCalledWith("stale-pinned-session");
     expect(setWorkViewStateSpy).not.toHaveBeenCalled();
     expect(listSessionsCachedMock).not.toHaveBeenCalled();
+  });
+
+  it("undoes a press-open: the open list, the active item, the selected item, the lane and the seen stamps come back", async () => {
+    const workState = {
+      openItemIds: ["chat-a", "chat-b"],
+      activeItemId: "chat-a" as string | null,
+      selectedItemId: "chat-a" as string | null,
+      workSeenAtBySessionId: { "chat-b": "2026-10-01T00:00:00.000Z" } as Record<string, string>,
+      draftKind: "chat" as const,
+      laneFilter: "all",
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      selectedLaneId: "lane-a",
+      workViewByProject: { "/fake/project": workState },
+    };
+    setWorkViewStateSpy.mockImplementation((_projectRoot: string, next: any) => {
+      const resolved = typeof next === "function" ? next(workState) : { ...workState, ...next };
+      Object.assign(workState, resolved);
+    });
+    listSessionsCachedMock.mockResolvedValue([]);
+
+    const { result, rerender } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(listSessionsCachedMock).toHaveBeenCalled());
+    // The fake store does not notify. One render shows the change, and a
+    // second one shows what the layout effect of the first wrote.
+    const settle = () => {
+      rerender();
+      rerender();
+    };
+    const open = (sessionId: string) => {
+      act(() => {
+        result.current.setSelectedSessionId(sessionId);
+        result.current.openSessionTab(sessionId);
+      });
+      settle();
+    };
+    const undo = (restore: () => void) => {
+      act(() => restore());
+      settle();
+    };
+
+    // A row that was not open: a drag of it must leave nothing opened.
+    const undoNew = result.current.selectionRestorer("chat-x");
+    open("chat-x");
+    expect(workState).toMatchObject({
+      openItemIds: ["chat-a", "chat-b", "chat-x"],
+      activeItemId: "chat-x",
+      selectedItemId: "chat-x",
+    });
+    // Leaving chat-a stamped it as seen; the press is not known to be a drag yet.
+    expect(Object.keys(workState.workSeenAtBySessionId).sort()).toEqual(["chat-a", "chat-b"]);
+    fakeAppStoreState.selectedLaneId = "lane-x";
+    undo(undoNew);
+    expect(workState).toMatchObject({
+      openItemIds: ["chat-a", "chat-b"],
+      activeItemId: "chat-a",
+      selectedItemId: "chat-a",
+    });
+    expect(selectLaneSpy).toHaveBeenLastCalledWith("lane-a");
+    // Neither row was visited: chat-a was not left, chat-x was not opened.
+    expect(workState.workSeenAtBySessionId).toEqual({ "chat-b": "2026-10-01T00:00:00.000Z" });
+
+    // A row that was open already stays in the open list, with the stamp it had.
+    const undoOpen = result.current.selectionRestorer("chat-b");
+    open("chat-b");
+    expect(workState.activeItemId).toBe("chat-b");
+    undo(undoOpen);
+    expect(workState).toMatchObject({
+      openItemIds: ["chat-a", "chat-b"],
+      activeItemId: "chat-a",
+      selectedItemId: "chat-a",
+    });
+    expect(workState.workSeenAtBySessionId).toEqual({ "chat-b": "2026-10-01T00:00:00.000Z" });
+
+    // A real visit still stamps the row that was left.
+    open("chat-b");
+    expect(Object.keys(workState.workSeenAtBySessionId).sort()).toEqual(["chat-a", "chat-b"]);
   });
 
   it("launchPtySession preserves the live optimistic pty id when a stale row has the same session id", async () => {
@@ -3944,8 +4028,31 @@ describe("useWorkSessions — chip filters and lane ordering", () => {
     snoozedUntil: "2099-01-01T00:00:00.000Z",
   });
 
+  it("moves an old local pin onto its row's synced column, and keeps only the pins it could not write", async () => {
+    seedViewState({ pinnedSessionIds: ["session-running", "session-snoozed", "session-not-loaded"] });
+    const updateMeta = vi.fn(async (args: { sessionId: string; pinned?: boolean }) => {
+      if (args.sessionId === "session-snoozed") throw new Error("machine offline");
+    });
+    (window as any).ade.sessions.updateMeta = updateMeta;
+    setWorkViewStateSpy.mockClear();
+    await renderWithSessions([runningSession, snoozedSession]);
+
+    await waitFor(() => {
+      expect(setWorkViewStateSpy.mock.calls.some(([, next]) => typeof next === "function")).toBe(true);
+    });
+    expect(updateMeta).toHaveBeenCalledWith({ sessionId: "session-running", pinned: true });
+    expect(updateMeta).toHaveBeenCalledWith({ sessionId: "session-snoozed", pinned: true });
+    // A row not loaded yet (another machine's) is not written now.
+    expect(updateMeta.mock.calls.some(([args]) => args.sessionId === "session-not-loaded")).toBe(false);
+    const updater = setWorkViewStateSpy.mock.calls.filter(([, next]) => typeof next === "function").at(-1)?.[1] as
+      (prev: Record<string, unknown>) => Record<string, unknown>;
+    // The written pin leaves the local list; the failed and the unloaded ones stay for later.
+    expect(updater({ pinnedSessionIds: ["session-running", "session-snoozed", "session-not-loaded"] }).pinnedSessionIds)
+      .toEqual(["session-snoozed", "session-not-loaded"]);
+  });
+
   it("narrows the buckets and the by-lane grouping but not the exported filtered list", async () => {
-    seedViewState({ workSessionFilters: { status: ["snoozed"], tool: [], hasPr: false, dirtyLane: false } });
+    seedViewState({ workSessionFilters: { status: ["snoozed"], tool: [], hasPr: false, dirtyLane: false, machine: [] } });
     const { result } = await renderWithSessions([runningSession, snoozedSession]);
 
     // The lane/search result is what pane counts describe, so it must stay whole.
@@ -3961,7 +4068,7 @@ describe("useWorkSessions — chip filters and lane ordering", () => {
     // The trap: if the snooze-deadline effect read the chip-filtered list, a
     // snoozed row hidden by a chip would stop scheduling its own wake and never
     // come back. `filtered` still holds it, so the timer still arms.
-    seedViewState({ workSessionFilters: { status: ["running"], tool: [], hasPr: false, dirtyLane: false } });
+    seedViewState({ workSessionFilters: { status: ["running"], tool: [], hasPr: false, dirtyLane: false, machine: [] } });
     const setTimeoutSpy = vi.spyOn(window, "setTimeout");
     const { result } = await renderWithSessions([runningSession, snoozedSession]);
 
@@ -4054,18 +4161,25 @@ describe("buildWorkBoardModel", () => {
     const ended = makeSession("s-ended", "lane-b", { status: "completed", runtimeState: "exited" });
     const settled = makeSession("s-settled", "lane-b", { settledAt: "2026-04-01T13:00:00.000Z" });
     const snoozed = makeSession("s-snoozed", "lane-c", { snoozedUntil: "2099-01-01T00:00:00.000Z" });
+    // The list files a failed turn with the ended rows; the board files it
+    // under Needs you, because it is the user's move.
+    const failed = makeSession("s-failed", "lane-b", { status: "failed", runtimeState: "exited", exitCode: 1 });
+    // A snoozed failure stays in Needs you, as the host publishes it.
+    const snoozedFailed = makeSession("s-snoozed-failed", "lane-c", {
+      status: "failed", runtimeState: "exited", exitCode: 1, snoozedUntil: "2099-01-01T00:00:00.000Z",
+    });
 
     const { buckets } = buildWorkBoardModel({
       runningFiltered: [running],
       needsYouFiltered: [needsYou],
       restingFiltered: [],
-      endedFiltered: [ended],
+      endedFiltered: [ended, failed],
       settledFiltered: [settled],
-      snoozedFiltered: [snoozed],
+      snoozedFiltered: [snoozed, snoozedFailed],
       laneWaitingReason: noPrWait,
     });
 
-    expect(buckets["needs_you"].map((s) => s.id)).toEqual(["s-needs"]);
+    expect(buckets["needs_you"].map((s) => s.id)).toEqual(["s-needs", "s-failed", "s-snoozed-failed"]);
     expect(buckets.working.map((s) => s.id)).toEqual(["s-running"]);
     expect(buckets.waiting.map((s) => s.id)).toEqual(["s-snoozed"]);
     // Ended above settled: settled is the quieter tier and sinks, exactly as
@@ -4077,7 +4191,7 @@ describe("buildWorkBoardModel", () => {
     const placed = WORK_BOARD_COLUMNS.flatMap((column) => buckets[column.key].map((s) => s.id));
     expect(placed).toHaveLength(new Set(placed).size);
     expect(new Set(placed)).toEqual(
-      new Set(["s-needs", "s-running", "s-ended", "s-settled", "s-snoozed"]),
+      new Set(["s-needs", "s-running", "s-ended", "s-settled", "s-snoozed", "s-failed", "s-snoozed-failed"]),
     );
   });
 
@@ -4162,6 +4276,62 @@ describe("buildWorkBoardModel", () => {
       "s-ended",
       "s-settled",
     ]);
+  });
+
+  it("moves a resting row that will start again into Waiting, and says why", () => {
+    // A finished chat parked on a wake, or one whose subagent is still busy, is
+    // not Done: it runs again by itself. An overdue wake and a settled row are.
+    const nowMs = Date.parse("2026-04-01T12:00:00.000Z");
+    const { buckets, waitingReasonBySessionId } = buildWorkBoardModel({
+      runningFiltered: [],
+      needsYouFiltered: [],
+      restingFiltered: [
+        makeSession("s-poller", "lane-a", { nextWakeAt: "2026-04-01T12:12:00.000Z" }),
+        makeSession("s-parent", "lane-a"),
+        makeSession("s-missed", "lane-b", { nextWakeAt: "2026-04-01T11:50:00.000Z" }),
+        makeSession("s-finished", "lane-b"),
+      ],
+      endedFiltered: [],
+      settledFiltered: [makeSession("s-settled-parent", "lane-c")],
+      snoozedFiltered: [],
+      laneWaitingReason: noPrWait,
+      busySubagentParentIds: new Set(["s-parent", "s-settled-parent"]),
+      nowMs,
+    });
+
+    expect(buckets.waiting.map((s) => s.id)).toEqual(["s-poller", "s-parent"]);
+    expect(waitingReasonBySessionId.get("s-poller")).toBe("scheduled");
+    expect(waitingReasonBySessionId.get("s-parent")).toBe("subagent");
+    expect(buckets.done.map((s) => s.id)).toEqual(["s-missed", "s-finished", "s-settled-parent"]);
+    expect(waitingReasonBySessionId.has("s-missed")).toBe(false);
+  });
+
+  it("reads a foreign parent's busy subagent from that machine's whole roster, not the search hits", () => {
+    const parent = makeSession("f-parent", "lane-f", { toolType: "codex-chat", runtimeState: "idle" });
+    const subagent = makeSession("f-sub", "lane-f", {
+      toolType: "codex-chat",
+      runtimeState: "running",
+      spawnKind: "subagent",
+      orchestrationParentSessionId: "f-parent",
+    });
+    const nowMs = Date.parse("2026-04-01T12:00:00.000Z");
+    const empty = { needs_you: [], working: [], waiting: [], done: [] };
+    const { buckets, waitingReasons } = appendForeignMachinesToBoard({
+      buckets: empty,
+      waitingReasons: new Map(),
+      nowMs,
+      machines: [{
+        // A search for the parent's title hides its subagent from the visible rows.
+        sessions: [parent],
+        rosterSessions: [parent, subagent],
+        filingBuckets: new Map(),
+        laneWaitingReason: () => null,
+      }],
+    });
+
+    expect(buckets.waiting.map((s) => s.id)).toEqual(["f-parent"]);
+    expect(waitingReasons.get("f-parent")).toBe("subagent");
+    expect(buckets.done).toEqual([]);
   });
 
   it("keeps the columns a partition when resting rows are present", () => {

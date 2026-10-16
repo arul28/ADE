@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { parseCodexServerVersion } from "./agentChatService";
 import {
-  compactionFailLabel,
   PINNED_CODEX_APP_SERVER_VERSION,
   codexServerSupportsBackgroundTerminals,
   codexServerSupportsDeferGoalContinuation,
+  codexServerSupportsGoalMutationOrigin,
   codexServerSupportsMemoryRpc,
   codexServerSupportsPaginatedHistory,
   codexServerSupportsThreadQueue,
@@ -34,7 +34,7 @@ describe("codex app-server feature gates", () => {
   });
 
   it("pins the app-server version ADE ships", () => {
-    expect(PINNED_CODEX_APP_SERVER_VERSION).toBe("0.156.1");
+    expect(PINNED_CODEX_APP_SERVER_VERSION).toBe("0.162.1");
   });
 
   it("does not invent support when the user-agent is missing", () => {
@@ -42,9 +42,13 @@ describe("codex app-server feature gates", () => {
     expect(codexServerSupportsThreadRevert(null)).toBe(false);
   });
 
-  it("labels compaction failures", () => {
-    expect(compactionFailLabel("timed_out")).toBe("Compaction timed out");
-    expect(compactionFailLabel("interrupted")).toBe("Compaction failed");
-    expect(compactionFailLabel("teardown")).toBe("Compaction failed");
+  it("gates the goal mutation `origin` on 0.162, and on nothing older", () => {
+    // The server reads a missing provenance as "no user authorization", so this
+    // gate is what keeps older servers exactly as they behaved before the field
+    // existed rather than sending them one they do not know.
+    expect(codexServerSupportsGoalMutationOrigin(parseCodexServerVersion("codex/0.161.0"))).toBe(false);
+    expect(codexServerSupportsGoalMutationOrigin(parseCodexServerVersion("codex/0.162.0"))).toBe(true);
+    expect(codexServerSupportsGoalMutationOrigin(parseCodexServerVersion("codex/0.162.1"))).toBe(true);
+    expect(codexServerSupportsGoalMutationOrigin(null)).toBe(false);
   });
 });

@@ -2,7 +2,7 @@ import React, { useRef } from "react";
 
 import { isPerfActive } from "../../perf/markers";
 import type { WorkspacePathLocation } from "./chatWorkspacePaths";
-import { MarkdownBlock, type MosaicRenderContext } from "./chatMarkdownBlock";
+import { MarkdownBlock } from "./chatMarkdownBlock";
 import { useRevealedLength, useSplitRevealed } from "./useRevealedText";
 
 /**
@@ -21,16 +21,13 @@ export const AssistantTextBody = React.memo(function AssistantTextBody({
   text,
   paced,
   onOpenWorkspacePath,
-  mosaic,
-  mosaicScopeKey,
   sceneScopeKey,
   sceneLive,
+  commentKey,
 }: {
   text: string;
   paced: boolean;
   onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
-  mosaic?: MosaicRenderContext;
-  mosaicScopeKey?: string;
   /** What names this row on disk for a scene's still; see `MarkdownBlock`. */
   sceneScopeKey?: string;
   /**
@@ -39,10 +36,16 @@ export const AssistantTextBody = React.memo(function AssistantTextBody({
    * in the transcript would freeze before it had painted.
    */
   sceneLive?: boolean;
+  /**
+   * The row's stable identity, set only once the reply is finished. Thread
+   * comments hang off this element; a streaming reply has none, so the
+   * selection toolbar offers no comment on text that is still changing.
+   */
+  commentKey?: string;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const revealedLength = useRevealedLength(text, paced, hostRef);
-  const { settled, tail } = useSplitRevealed(text, revealedLength);
+  const { settled, tail } = useSplitRevealed(text, revealedLength, paced);
 
   return (
     /*
@@ -62,14 +65,15 @@ export const AssistantTextBody = React.memo(function AssistantTextBody({
       ref={hostRef}
       className="min-w-0"
       data-assistant-output="true"
+      // ⌘F searches and paints this element's text (ChatFindLayer).
+      data-chat-find-text=""
+      data-thread-comment-key={commentKey}
       data-stream-text-len={isPerfActive() ? revealedLength : undefined}
     >
       <MarkdownBlock
         markdown={settled}
         tailMarkdown={tail.length > 0 ? tail : undefined}
         onOpenWorkspacePath={onOpenWorkspacePath}
-        mosaic={mosaic}
-        mosaicScopeKey={mosaicScopeKey}
         sceneScopeKey={sceneScopeKey}
         sceneLive={sceneLive}
       />

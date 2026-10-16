@@ -1,5 +1,5 @@
 export const CODEX_COMPACTION_STALL_MS = 180_000;
-export const PINNED_CODEX_APP_SERVER_VERSION = "0.156.1";
+export const PINNED_CODEX_APP_SERVER_VERSION = "0.162.1";
 
 export type CodexAppServerVersion = {
   major: number;
@@ -25,7 +25,7 @@ export function codexServerSupportsDeferGoalContinuation(version: CodexAppServer
   return codexServerAtLeast(version, 145);
 }
 
-/** Durable FIFO `thread/queue/*` (0.146+; ADE pins 0.156.1). */
+/** Durable FIFO `thread/queue/*` (0.146+; ADE pins 0.162.1). */
 export function codexServerSupportsThreadQueue(version: CodexAppServerVersion | null): boolean {
   return codexServerAtLeast(version, 146);
 }
@@ -59,5 +59,17 @@ export function codexServerSupportsMemoryRpc(version: CodexAppServerVersion | nu
   return codexServerAtLeast(version, 146);
 }
 
+/**
+ * `thread/goal/set` / `thread/goal/clear` `origin` (0.162+), which records
+ * whether a person or the harness mutated the goal.
+ *
+ * The server documents a missing provenance as "supplies no user
+ * authorization", so a goal the user typed must say so or codex will not treat
+ * it as theirs. The field is omitted on anything older — an unknown version
+ * included — which leaves those servers exactly as they behave today.
+ */
+export function codexServerSupportsGoalMutationOrigin(version: CodexAppServerVersion | null): boolean {
+  return codexServerAtLeast(version, 162);
+}
+
 export type { ContextCompactFailReason as CodexCompactionFailReason } from "../../../shared/contextCompaction";
-export { compactionFailLabel } from "../../../shared/contextCompaction";

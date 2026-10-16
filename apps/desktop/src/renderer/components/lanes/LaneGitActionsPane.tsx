@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useStableBinding } from "../../state/laneMachineRouting";
+import type { LaneDiffMode } from "../../../shared/types";
 import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitBranch, GitCommit, Stack, Trash } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -8,6 +10,7 @@ import {
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { selectOtherMachineBranchStates, useLanesForPin } from "../../state/crossMachineLanes";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
+import { isBranchDiffUnsupported } from "../../lib/branchDiffSupport";
 
 const EMPTY_CROSS_MACHINE_LANES: Record<string, never> = {};
 import { modifierKeyLabel } from "../../lib/platform";
@@ -37,6 +40,7 @@ import {
   type MachineBranchState,
 } from "../../../shared/laneDivergence";
 import type {
+  BranchDiffChanges,
   DiffChanges,
   FileChange,
   GitCommitSummary,
@@ -69,7 +73,6 @@ const AUTO_GENERATE_COMMIT_ACTION = "generate commit message";
  * no machine-pin parameter, so these actions cannot run against a chat on
  * another machine. Fail loudly rather than silently acting on the wrong one.
  */
-const LOCAL_ONLY_ACTION_MESSAGE = "This action only works on the machine this project tab is connected to.";
 const MAX_RENDERED_CHANGE_ROWS_PER_SECTION = 300;
 
 export function formatLaneGitError(err: unknown, pin?: OpenProjectBinding | null): string {
@@ -416,6 +419,7 @@ function getAutoRebaseBannerConfig(state: AutoRebaseLaneStatus["state"]): {
 
 function SectionCard({
   title,
+  titleAccessory,
   description,
   aside,
   children,
@@ -427,6 +431,8 @@ function SectionCard({
   bodyStyle,
 }: {
   title: string;
+  /** Sits next to the title, e.g. a changed-file count. */
+  titleAccessory?: React.ReactNode;
   description?: string;
   aside?: React.ReactNode;
   children: React.ReactNode;
@@ -448,8 +454,11 @@ function SectionCard({
         data-testid={dataTestId}
         style={{ display: "flex", flexDirection: "column", minWidth: 0, ...sectionStyle }}
       >
-        <div className="flex shrink-0 items-center justify-between gap-2 px-1 pb-1">
-          <span className={WORK_TOOL_SECTION_LABEL_TEXT}>{title}</span>
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 px-1 pb-1">
+          <span className="flex min-w-0 items-center gap-2">
+            <span className={WORK_TOOL_SECTION_LABEL_TEXT}>{title}</span>
+            {titleAccessory}
+          </span>
           {aside}
         </div>
         <div style={{ display: "flex", flexDirection: "column", minWidth: 0, ...bodyStyle }}>
@@ -614,6 +623,24 @@ function ActionButton({
   );
 }
 
+type ChangeSection = "staged" | "unstaged" | "branch";
+
+/** "Showing first N of M files. Show all" under a capped change list. */
+function TruncatedChangesNotice({ total, noun, onShowAll }: { total: number; noun: string; onShowAll: () => void }) {
+  return (
+    <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, display: "flex", alignItems: "center", gap: 8 }}>
+      <span>Showing first {MAX_RENDERED_CHANGE_ROWS_PER_SECTION} of {total} {noun} files.</span>
+      <button
+        type="button"
+        onClick={onShowAll}
+        style={{ color: COLORS.accent, fontSize: 11, fontFamily: MONO_FONT, cursor: "pointer" }}
+      >
+        Show all
+      </button>
+    </div>
+  );
+}
+
 export function LaneGitActionsPane({
   laneId,
   active = true,
@@ -646,12 +673,12 @@ export function LaneGitActionsPane({
   onRebaseAndPush?: (laneId: string) => Promise<void> | void;
   onViewRebaseDetails?: (laneId?: string | null) => void;
   onResolveRebaseConflict?: (laneId: string, parentLaneId: string | null) => void;
-  onSelectFile: (path: string, mode: "staged" | "unstaged") => void;
+  onSelectFile: (path: string, mode: LaneDiffMode) => void;
   onSelectCommit: (commit: GitCommitSummary | null) => void;
   /** Clears file + commit diff selection (back to file list in this section). */
   onClearDiffSelection?: () => void;
   selectedPath: string | null;
-  selectedMode: "staged" | "unstaged" | null;
+  selectedMode: LaneDiffMode | null;
   /** Defaults to null when omitted (e.g. floating pane / legacy call sites). */
   selectedCommit?: GitCommitSummary | null;
   selectedCommitSha: string | null;
@@ -691,6 +718,9 @@ export function LaneGitActionsPane({
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
   const pin = runtimePin ?? null;
+  // The auto-rebase subscription holds the pin by key: re-subscribing a pinned
+  // pump for every rebuilt pin object would drop the events in between.
+  const stablePin = useStableBinding(pin);
   // Lane ids are only unique per machine, so a pinned panel gets its own cache
   // namespace. Always key through `projectStateKeyForBinding` of the effective
   // session machine: local stays on the checkout path across a bound→pinned
@@ -722,12 +752,30 @@ export function LaneGitActionsPane({
 
   const [loading, setLoading] = useState(false);
   const [changes, setChanges] = useState<DiffChanges>(initialCachedGitState?.changes ?? EMPTY_CHANGES);
+  // The lane whose `changes` are a real read (cached or fetched), not the empty
+  // placeholder a lane opens with. The branch diff waits for it.
+  const [changesReadyForLane, setChangesReadyForLane] = useState<string | null>(
+    initialCachedGitState?.changes ? laneId : null,
+  );
+  // Bumped whenever the pane (re)loads a lane: becoming active again, or the
+  // lane's branch moving. A commit made elsewhere leaves a clean tree clean, so
+  // the change signature alone would not re-read the branch diff then.
+  const [branchReadNonce, setBranchReadNonce] = useState(0);
   const [commitMessage, setCommitMessage] = useState("");
   const syncMode: GitSyncMode = "merge";
   const [stashes, setStashes] = useState<GitStashSummary[]>(initialCachedGitState?.stashes ?? []);
   const [syncStatus, setSyncStatus] = useState<GitUpstreamSyncStatus | null>(initialCachedGitState?.syncStatus ?? null);
   const [forcePushSuggested, setForcePushSuggested] = useState(initialCachedGitState?.forcePushSuggested ?? false);
   const [commitTimelineKey, setCommitTimelineKey] = useState(0);
+  // Branch scope: everything the lane changed since its base, commits and
+  // uncommitted together. `null` means the user has not picked: the panel opens
+  // on Uncommitted while there is something to commit and on Branch when the
+  // tree is clean, which is exactly when Uncommitted would read "+0 -0" for a
+  // lane full of committed work.
+  const [scopeChoice, setScopeChoice] = useState<"branch" | "uncommitted" | null>(null);
+  const [branchChanges, setBranchChanges] = useState<BranchDiffChanges | null>(null);
+  const [branchError, setBranchError] = useState<string | null>(null);
+  const [branchSupported, setBranchSupported] = useState(() => typeof window.ade?.diff?.getBranchChanges === "function");
   const [amendCommit, setAmendCommit] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [autoRebaseStatus, setAutoRebaseStatus] = useState<AutoRebaseLaneStatus | null>(
@@ -747,8 +795,19 @@ export function LaneGitActionsPane({
   const hasStaged = stagedCount > 0;
   const hasUnstaged = changes.unstaged.length > 0;
   const hasUntrackedChanges = changes.unstaged.some((file) => file.kind === "untracked");
-  const [showAllStagedChanges, setShowAllStagedChanges] = useState(false);
-  const [showAllUnstagedChanges, setShowAllUnstagedChanges] = useState(false);
+  // "Show all" holds for one lane on one machine (lane ids are unique only per
+  // machine); another lane or machine starts capped again.
+  const showAllScope = `${projectStateKey}\u0000${laneId ?? ""}`;
+  const [showAllChoice, setShowAllChoice] = useState<{ scope: string; sections: readonly ChangeSection[] }>({ scope: "", sections: [] });
+  const showAllSection = (section: ChangeSection) =>
+    setShowAllChoice((prev) => ({
+      scope: showAllScope,
+      sections: prev.scope === showAllScope ? [...prev.sections, section] : [section],
+    }));
+  const isShowingAll = (section: ChangeSection) =>
+    showAllChoice.scope === showAllScope && showAllChoice.sections.includes(section);
+  const showAllStagedChanges = isShowingAll("staged");
+  const showAllUnstagedChanges = isShowingAll("unstaged");
   const [collapsedChangeFolders, setCollapsedChangeFolders] = useState<Set<string>>(() => new Set());
   const visibleStagedChanges = useMemo(
     () => (showAllStagedChanges ? changes.staged : changes.staged.slice(0, MAX_RENDERED_CHANGE_ROWS_PER_SECTION)),
@@ -760,6 +819,17 @@ export function LaneGitActionsPane({
   );
   const stagedChangeTreeStatsByPath = useMemo(() => buildChangeTreeStatsByPath(changes.staged), [changes.staged]);
   const unstagedChangeTreeStatsByPath = useMemo(() => buildChangeTreeStatsByPath(changes.unstaged), [changes.unstaged]);
+  const branchChangeTreeStatsByPath = useMemo(() => buildChangeTreeStatsByPath(branchChanges?.files ?? []), [branchChanges]);
+  // The branch scope lists every file since the merge base, which on a lane far
+  // from its base is thousands: all of them mounted at once was a ~1 s freeze
+  // opening Lanes. Same cap as the uncommitted sections.
+  const showAllBranchChanges = isShowingAll("branch");
+  const visibleBranchChanges = useMemo(() => {
+    const files = branchChanges?.files ?? [];
+    if (showAllBranchChanges || files.length <= MAX_RENDERED_CHANGE_ROWS_PER_SECTION) return files;
+    return [...files].sort((a, b) => a.path.localeCompare(b.path)).slice(0, MAX_RENDERED_CHANGE_ROWS_PER_SECTION);
+  }, [branchChanges, showAllBranchChanges]);
+  const hiddenBranchChangeCount = Math.max(0, (branchChanges?.files.length ?? 0) - visibleBranchChanges.length);
   const hiddenStagedChangeCount = Math.max(0, changes.staged.length - visibleStagedChanges.length);
   const hiddenUnstagedChangeCount = Math.max(0, changes.unstaged.length - visibleUnstagedChanges.length);
   const responsiveMode = getResponsiveMode(paneWidth);
@@ -818,6 +888,9 @@ export function LaneGitActionsPane({
         setChanges(next);
       }
     } finally {
+      // A failed read still ends the wait: the Branch scope reads on its own
+      // instead of showing "Reading branch changes…" for good.
+      if (isViewingLane(targetLaneId)) setChangesReadyForLane(targetLaneId);
       if (isViewingLane(targetLaneId) && !hasCachedState) {
         setLoading(false);
       }
@@ -879,6 +952,57 @@ export function LaneGitActionsPane({
     setShowAdvanced(false);
   }, [laneId]);
 
+  const hasUncommittedChanges = changes.staged.length + changes.unstaged.length > 0;
+  const gitScope: "branch" | "uncommitted" = !branchSupported
+    ? "uncommitted"
+    : scopeChoice ?? (hasUncommittedChanges ? "uncommitted" : "branch");
+
+  useEffect(() => {
+    setScopeChoice(null);
+    setBranchChanges(null);
+    setBranchError(null);
+  }, [laneId]);
+
+  // Re-read when the working tree's contents change and on every refresh of
+  // history (`commitTimelineKey`): a commit moves files between the two scopes.
+  // Keyed on contents, not the `changes` object: every status refresh hands a
+  // new object, and on a lane far from its base each read costs seconds. Wait
+  // for the first real read, so opening a lane reads the branch diff once. Also
+  // wait for the load below to bump `branchReadNonce`: with cached changes this
+  // effect would otherwise read on mount and again a moment later.
+  const changesSignature = useMemo(
+    () => [changes.staged, changes.unstaged]
+      .map((files) => files.map((file) => `${file.path}\u0000${file.kind}\u0000${file.additions ?? ""}\u0000${file.deletions ?? ""}`).join("\u0001"))
+      .join("\u0002"),
+    [changes],
+  );
+  const changesReady = changesReadyForLane != null && changesReadyForLane === laneId;
+  useEffect(() => {
+    if (gitScope !== "branch" || !laneId || !changesReady || branchReadNonce === 0) return;
+    const getBranchChanges = window.ade?.diff?.getBranchChanges;
+    if (!getBranchChanges) return;
+    let cancelled = false;
+    getBranchChanges({ laneId }, pin)
+      .then((result) => {
+        if (cancelled) return;
+        // Null is a host that predates branch diffs: Uncommitted only.
+        if (result == null) {
+          setBranchSupported(false);
+          return;
+        }
+        setBranchChanges(result);
+        setBranchError(null);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        if (isBranchDiffUnsupported(error)) setBranchSupported(false);
+        else setBranchError(stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [branchReadNonce, changesReady, changesSignature, commitTimelineKey, gitScope, laneId, pin]);
+
   useEffect(() => {
     if (!showAdvanced) return;
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -897,14 +1021,9 @@ export function LaneGitActionsPane({
       }
       return;
     }
-    if (pin) {
-      // `lanes.listAutoRebaseStatuses` has no pin parameter; reading the local
-      // machine's statuses for a foreign lane would be wrong, not merely stale.
-      if (isViewingLane(targetLaneId)) setAutoRebaseStatus(null);
-      return;
-    }
     try {
-      const statuses = await window.ade.lanes.listAutoRebaseStatuses();
+      // The pin reads the statuses of the lane's own machine.
+      const statuses = await window.ade.lanes.listAutoRebaseStatuses(pin);
       const nextStatus = statuses.find((entry) => entry.laneId === targetLaneId) ?? null;
       patchLaneGitActionsCachedState(projectStateKey, targetLaneId, { autoRebaseStatus: nextStatus });
       if (isViewingLane(targetLaneId)) {
@@ -1096,6 +1215,7 @@ export function LaneGitActionsPane({
     const cached = readLaneGitActionsCachedState(projectStateKey, laneId);
     setLoading(false);
     setChanges(cached?.changes ?? EMPTY_CHANGES);
+    setChangesReadyForLane(cached?.changes ? laneId : null);
     setStashes(cached?.stashes ?? []);
     setSyncStatus(cached?.syncStatus ?? null);
     setForcePushSuggested(cached?.forcePushSuggested ?? false);
@@ -1105,6 +1225,7 @@ export function LaneGitActionsPane({
     setConflictState(cached?.conflictState ?? null);
     setStuckRebase(cached?.stuckRebase ?? null);
     if (!active || !laneId) return;
+    setBranchReadNonce((value) => value + 1);
     Promise.all([refreshChanges(laneId), refreshGitMeta(laneId)]).catch((err) => {
       patchLaneGitActionRuntimeState(laneGitActionScopeKey, {
         notice: null,
@@ -1171,7 +1292,7 @@ export function LaneGitActionsPane({
   }, [active, isViewingLane, laneId, pin, projectStateKey]);
 
   useEffect(() => {
-    if (!active || pin) return;
+    if (!active) return;
     const unsubscribe = window.ade.lanes.onAutoRebaseEvent((event) => {
       if (event.type !== "auto-rebase-updated") return;
       if (!laneId) {
@@ -1181,9 +1302,9 @@ export function LaneGitActionsPane({
       const nextStatus = event.statuses.find((entry) => entry.laneId === laneId) ?? null;
       patchLaneGitActionsCachedState(projectStateKey, laneId, { autoRebaseStatus: nextStatus });
       setAutoRebaseStatus(nextStatus);
-    });
+    }, stablePin);
     return unsubscribe;
-  }, [active, laneId, pin, projectStateKey]);
+  }, [active, laneId, stablePin, projectStateKey]);
 
   const changedFileCount = useMemo(() => {
     const paths = new Set<string>();
@@ -1334,8 +1455,21 @@ export function LaneGitActionsPane({
       error: null,
     });
     try {
-      if (pin) throw new Error(LOCAL_ONLY_ACTION_MESSAGE);
-      const created = await window.ade.lanes.createFromUnstaged({ sourceLaneId: actionLaneId, name });
+      const created = await window.ade.lanes.createFromUnstaged({ sourceLaneId: actionLaneId, name }, pin);
+      if (pin) {
+        // The new lane lives on the lane's machine, not in this tab's lane
+        // list or Lanes page, so stay here: the source lane's changes moved
+        // out, and the new lane appears in that machine's lane list.
+        patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
+          busyAction: null,
+          notice: `Moved unstaged changes to new lane ${created.name}.`,
+          error: null,
+        });
+        // Best-effort: the lane already exists, so a failed re-read must not
+        // turn the success into an error.
+        await refreshLaneGitState(actionLaneId).catch(() => undefined);
+        return;
+      }
       patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
         busyAction: null,
         notice: null,
@@ -1361,6 +1495,7 @@ export function LaneGitActionsPane({
     navigate,
     pin,
     projectStateKey,
+    refreshLaneGitState,
     refreshLanes,
     requestTextInput,
     selectLane,
@@ -1472,13 +1607,12 @@ export function LaneGitActionsPane({
         return;
       }
 
-      if (pin) throw new Error(LOCAL_ONLY_ACTION_MESSAGE);
       const start = await window.ade.lanes.rebaseStart({
         laneId,
         scope: "lane_only",
         pushMode: "none",
         actor: "user"
-      });
+      }, pin);
       if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
         throw new Error(start.run.error ?? "Rebase failed.");
       }
@@ -1638,8 +1772,43 @@ export function LaneGitActionsPane({
   const rebaseConflictParentLaneId = autoRebaseStatus?.parentLaneId ?? lane?.parentLaneId ?? null;
   const syncButtonDisabled = !laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty;
 
-  const renderFileRow = (file: FileChange, mode: "staged" | "unstaged") => {
+  const renderFileRow = (file: FileChange, mode: LaneDiffMode) => {
     const rowSelected = selectedPath === file.path && selectedMode === mode;
+    if (mode === "branch") {
+      // Read-only: staging and discarding belong to Uncommitted.
+      return (
+        <div
+          key={`branch:${file.path}`}
+          className="flex items-center gap-2 cursor-pointer transition-all duration-150"
+          style={{
+            padding: "7px 8px",
+            fontSize: 12,
+            fontFamily: MONO_FONT,
+            borderLeft: rowSelected ? `3px solid ${COLORS.accent}` : "3px solid transparent",
+            background: rowSelected ? COLORS.accentSubtle : "transparent",
+            color: rowSelected ? COLORS.textPrimary : COLORS.textMuted,
+          }}
+          onClick={() => {
+            onSelectCommit(null);
+            onSelectFile(file.path, "branch");
+          }}
+          onMouseEnter={(event) => {
+            if (!rowSelected) event.currentTarget.style.background = COLORS.hoverBg;
+          }}
+          onMouseLeave={(event) => {
+            if (!rowSelected) event.currentTarget.style.background = "transparent";
+          }}
+        >
+          <span className="shrink-0" title={`${file.kind} file`} style={{ width: 7, height: 7, borderRadius: "50%", background: getFileKindColor(file.kind) }} />
+          <span className="truncate flex-1" style={{ fontSize: 11 }} title={file.oldPath ? `${file.oldPath} -> ${file.path}` : file.path}>
+            {file.oldPath ? `${file.oldPath} -> ${file.path}` : file.path}
+          </span>
+          {file.additions != null && file.additions > 0 ? <span style={{ fontSize: 10, color: COLORS.success }}>+{file.additions}</span> : null}
+          {file.deletions != null && file.deletions > 0 ? <span style={{ fontSize: 10, color: COLORS.danger }}>-{file.deletions}</span> : null}
+          {file.isBinary ? <span style={inlineBadge(COLORS.textDim, { fontSize: 9 })}>binary</span> : null}
+        </div>
+      );
+    }
     const alsoStaged = mode === "unstaged" && stagedPathSet.has(file.path);
     const alsoUnstaged = mode === "staged" && unstagedPathSet.has(file.path);
     const kindColor = getFileKindColor(file.kind);
@@ -1794,7 +1963,7 @@ export function LaneGitActionsPane({
 
   const renderChangeTreeNode = (
     node: ChangeTreeNode,
-    mode: "staged" | "unstaged",
+    mode: LaneDiffMode,
     depth: number,
     statsByPath: Map<string, ChangeTreeStats>,
   ): React.ReactNode[] => {
@@ -1854,7 +2023,7 @@ export function LaneGitActionsPane({
     return rows;
   };
 
-  const renderChangeTree = (files: FileChange[], mode: "staged" | "unstaged", statsByPath: Map<string, ChangeTreeStats>) => {
+  const renderChangeTree = (files: FileChange[], mode: LaneDiffMode, statsByPath: Map<string, ChangeTreeStats>) => {
     const tree = buildChangeTree(files);
     return renderChangeTreeNode(tree, mode, 0, statsByPath);
   };
@@ -2126,7 +2295,7 @@ export function LaneGitActionsPane({
               disabled={busyAction != null}
               data-testid="git-pane-commit-message"
               className={cn(
-                "h-7 min-w-0 flex-1 rounded-[7px] bg-white/[0.03] px-2 font-sans text-[12px] text-fg/85",
+                "h-7 min-w-0 flex-1 rounded-[7px] bg-fg/[0.03] px-2 font-sans text-[12px] text-fg/85",
                 "placeholder:text-muted-fg outline-none transition-colors duration-[120ms] ease-out",
                 "shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_70%,transparent)]",
                 "focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
@@ -2213,13 +2382,12 @@ export function LaneGitActionsPane({
                       return;
                     }
                     void runAction("rebase", async () => {
-                      if (pin) throw new Error(LOCAL_ONLY_ACTION_MESSAGE);
                       const start = await window.ade.lanes.rebaseStart({
                         laneId,
                         scope: "lane_only",
                         pushMode: "none",
                         actor: "user"
-                      });
+                      }, pin);
                       if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
                         throw new Error(start.run.error ?? "Rebase failed.");
                       }
@@ -2362,6 +2530,11 @@ export function LaneGitActionsPane({
         >
           <SectionCard
             title={diffViewActive ? "Diff" : "Files"}
+            titleAccessory={
+              !diffViewActive && changedFileCount > 0 ? (
+                <span className={WORK_TOOL_CHROME_META}>{changedFileCount}</span>
+              ) : null
+            }
             description={
               diffViewActive
                 ? (selectedCommit
@@ -2379,7 +2552,7 @@ export function LaneGitActionsPane({
               ...(filesSectionIsEmpty && responsiveMode === "narrow" ? {} : { height: "100%" }),
               ...SKIN.cardFill,
             }}
-            headerStyle={{ background: "rgba(255,255,255,0.03)" }}
+            headerStyle={{ background: COLORS.cardBg }}
             bodyStyle={
               diffViewActive
                 ? {
@@ -2409,12 +2582,9 @@ export function LaneGitActionsPane({
                 </SmartTooltip>
               ) : (
               <div className="flex flex-wrap items-center gap-2">
-                {/* A count is a fact you read, not a control you press. The
-                    accent-filled pill was the loudest thing in the pane and it
-                    said "0" most of the time. */}
-                {changedFileCount > 0 ? (
-                    <span className={WORK_TOOL_CHROME_META}>{changedFileCount}</span>
-                ) : null}
+                {/* A count is a fact you read, not a control you press. It sits
+                    beside the "Files" label in the header; the buttons wrap to
+                    their own line when the pane is too narrow for them. */}
                 {changes.unstaged.length > 0 ? (
                   <>
                     <SmartTooltip content={{
@@ -2725,6 +2895,57 @@ export function LaneGitActionsPane({
               )}
             </div>
 
+            {branchSupported ? (
+              <div className="flex items-center gap-2" style={{ padding: "2px 0 4px" }} data-testid="git-pane-scope">
+                <div role="radiogroup" aria-label="Changes scope" className="inline-flex overflow-hidden rounded-md" style={{ border: `1px solid ${COLORS.border}` }}>
+                  {(["branch", "uncommitted"] as const).map((scope) => (
+                    <button
+                      key={scope}
+                      type="button"
+                      role="radio"
+                      aria-checked={gitScope === scope}
+                      onClick={() => setScopeChoice(scope)}
+                      style={{
+                        padding: "3px 10px",
+                        fontSize: 11,
+                        fontFamily: MONO_FONT,
+                        background: gitScope === scope ? COLORS.accentSubtle : "transparent",
+                        color: gitScope === scope ? COLORS.textPrimary : COLORS.textMuted,
+                        border: "none",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {scope === "branch" ? "Branch" : "Uncommitted"}
+                    </button>
+                  ))}
+                </div>
+                {gitScope === "branch" && branchChanges ? (
+                  <span className="truncate" style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }} title={`Since ${branchChanges.mergeBase.slice(0, 9)}, where this lane left ${branchChanges.baseRef}`}>
+                    vs {branchChanges.baseRef} · <span style={{ color: COLORS.success }}>+{branchChanges.additions}</span>{" "}
+                    <span style={{ color: COLORS.danger }}>-{branchChanges.deletions}</span> · {branchChanges.files.length} file{branchChanges.files.length === 1 ? "" : "s"}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+
+            {gitScope === "branch" ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minHeight: 0, overflow: "auto" }} data-testid="git-pane-branch">
+                {branchError ? (
+                  <div className="px-1 py-3 text-[12px] text-muted-fg">{branchError}</div>
+                ) : !branchChanges ? (
+                  <div className="px-1 py-3 text-[12px] text-muted-fg">Reading branch changes…</div>
+                ) : branchChanges.files.length === 0 ? (
+                  <div className="px-1 py-3 text-[12px] text-muted-fg">No changes since {branchChanges.baseRef}.</div>
+                ) : (
+                  <>
+                    {renderChangeTree(visibleBranchChanges, "branch", branchChangeTreeStatsByPath)}
+                    {hiddenBranchChangeCount > 0 ? (
+                      <TruncatedChangesNotice total={branchChanges.files.length} noun="changed" onShowAll={() => showAllSection("branch")} />
+                    ) : null}
+                  </>
+                )}
+              </div>
+            ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1, minHeight: 0, overflow: "auto" }}>
               {changes.staged.length > 0 ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -2736,16 +2957,7 @@ export function LaneGitActionsPane({
                   </div>
                   {renderChangeTree(visibleStagedChanges, "staged", stagedChangeTreeStatsByPath)}
                   {hiddenStagedChangeCount > 0 ? (
-                    <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, display: "flex", alignItems: "center", gap: 8 }}>
-                      <span>Showing first {MAX_RENDERED_CHANGE_ROWS_PER_SECTION} of {changes.staged.length} staged files.</span>
-                      <button
-                        type="button"
-                        onClick={() => setShowAllStagedChanges(true)}
-                        style={{ color: COLORS.accent, fontSize: 11, fontFamily: MONO_FONT, cursor: "pointer" }}
-                      >
-                        Show all
-                      </button>
-                    </div>
+                    <TruncatedChangesNotice total={changes.staged.length} noun="staged" onShowAll={() => showAllSection("staged")} />
                   ) : null}
                 </div>
               ) : null}
@@ -2759,16 +2971,7 @@ export function LaneGitActionsPane({
                   </div>
                   {renderChangeTree(visibleUnstagedChanges, "unstaged", unstagedChangeTreeStatsByPath)}
                   {hiddenUnstagedChangeCount > 0 ? (
-                    <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, display: "flex", alignItems: "center", gap: 8 }}>
-                      <span>Showing first {MAX_RENDERED_CHANGE_ROWS_PER_SECTION} of {changes.unstaged.length} unstaged files.</span>
-                      <button
-                        type="button"
-                        onClick={() => setShowAllUnstagedChanges(true)}
-                        style={{ color: COLORS.accent, fontSize: 11, fontFamily: MONO_FONT, cursor: "pointer" }}
-                      >
-                        Show all
-                      </button>
-                    </div>
+                    <TruncatedChangesNotice total={changes.unstaged.length} noun="unstaged" onShowAll={() => showAllSection("unstaged")} />
                   ) : null}
                 </div>
               ) : null}
@@ -2778,6 +2981,7 @@ export function LaneGitActionsPane({
                   </div>
               ) : null}
             </div>
+            )}
             </>
             )}
           </SectionCard>

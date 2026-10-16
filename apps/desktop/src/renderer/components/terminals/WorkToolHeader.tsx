@@ -25,7 +25,7 @@ import {
 const CONTROL_CLASS = cn(
   "ade-shell-control inline-flex h-6 shrink-0 items-center justify-center gap-1.5 rounded-[6px] px-1.5",
   "border-0 text-[12px] font-medium text-muted-fg",
-  "transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg",
+  "transition-colors duration-[120ms] ease-out hover:bg-fg/[0.06] hover:text-fg",
   "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
 );
 
@@ -317,7 +317,7 @@ export function WorkToolHeader({
             // The picker IS a page you are on, so the button that shows it is
             // lit while you are there — the one state in this bar that is not
             // hover.
-            activeTool === null && "bg-white/[0.06] text-fg",
+            activeTool === null && "bg-fg/[0.06] text-fg",
           )}
           data-variant="ghost"
           data-state={activeTool === null ? "open" : undefined}
@@ -372,7 +372,7 @@ export function WorkToolHeader({
                 <button
                   type="button"
                   aria-label={`${layout.overflow.length} more open tools`}
-                  className={cn(CONTROL_CLASS, "w-6 px-0", "data-[state=open]:bg-white/[0.09] data-[state=open]:text-fg")}
+                  className={cn(CONTROL_CLASS, "w-6 px-0", "data-[state=open]:bg-fg/[0.09] data-[state=open]:text-fg")}
                   data-variant="ghost"
                 >
                   <DotsThree size={16} weight="bold" />
@@ -450,7 +450,7 @@ export function WorkToolHeader({
                   data-tool-dot={entry.id}
                   className={cn(
                     "relative inline-flex h-5 w-5 items-center justify-center rounded-full",
-                    "transition-colors duration-[120ms] ease-out hover:bg-white/[0.06]",
+                    "transition-colors duration-[120ms] ease-out hover:bg-fg/[0.06]",
                     "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
                   )}
                 >
@@ -540,8 +540,8 @@ function WorkToolTab({
             "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
             showLabel ? "px-1.5 pr-[20px]" : "w-6 justify-center px-0",
             active
-              ? "bg-white/[0.07] text-fg"
-              : "bg-transparent text-muted-fg hover:bg-white/[0.04] hover:text-fg",
+              ? "bg-fg/[0.07] text-fg"
+              : "bg-transparent text-muted-fg hover:bg-fg/[0.04] hover:text-fg",
           )}
         >
           <Icon
@@ -586,16 +586,22 @@ function WorkToolTab({
         data-tool-tab-close-mode={showLabel ? "inline" : "corner"}
         className={cn(
           "absolute inline-flex items-center justify-center rounded-[4px]",
-          "text-muted-fg opacity-0 transition-opacity duration-[120ms] ease-out",
-          "hover:bg-white/[0.09] hover:text-fg",
+          "text-muted-fg transition-opacity duration-[120ms] ease-out",
+          "hover:bg-fg/[0.09] hover:text-fg",
           "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-          // Invisible AND untouchable. `opacity-0` alone still hit-tests, which
-          // is how the centred icon-only ✕ used to swallow the tab's own click.
-          "pointer-events-none group-hover/tab:pointer-events-auto",
           "group-hover/tab:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100",
+          // A labelled tab has a reserved slot, so its ✕ is always there and
+          // always clickable: a close button that only appears on hover is one
+          // people never find. The 24px icon-only tab keeps its ✕ out of the
+          // way (invisible AND untouchable; `opacity-0` alone still hit-tests,
+          // which is how the centred ✕ once swallowed the tab's own click)
+          // except on the active tab, where it is the obvious way out.
           showLabel
-            ? "inset-y-0 right-0 my-auto mr-[2px] h-4 w-4"
-            : "right-0 top-0 h-[13px] w-[13px] bg-[var(--color-surface)]",
+            ? "inset-y-0 right-0 my-auto mr-[2px] h-4 w-4 opacity-60"
+            : cn(
+              "right-0 top-0 h-[13px] w-[13px] bg-[var(--color-surface)]",
+              active ? "opacity-60" : "pointer-events-none opacity-0 group-hover/tab:pointer-events-auto",
+            ),
         )}
       >
         <X size={10} weight="bold" />

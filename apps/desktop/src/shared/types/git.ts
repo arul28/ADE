@@ -133,6 +133,31 @@ export type GitCommitSummary = {
   authoredAt: string;
   subject: string;
   pushed: boolean;
+  /** Author email, when the read asked for it (History). */
+  authorEmail?: string;
+  /** `Co-authored-by:` trailer values ("Claude <noreply@anthropic.com>"). */
+  coAuthors?: string[];
+};
+
+/**
+ * Which refs a commit list walks. `lane` is the lane's HEAD. `lanes` is the
+ * lane's HEAD plus every active lane's branch and the lane's base, so one
+ * graph shows where every lane sits.
+ */
+export type GitCommitListScope = "lane" | "lanes";
+
+export type GitListRecentCommitsArgs = {
+  laneId: string;
+  /** Page size; at most 500 per call. */
+  limit?: number;
+  /** Newest commits to skip, for loading older pages. */
+  skip?: number;
+  scope?: GitCommitListScope;
+  /**
+   * Fill `coAuthors` (Co-authored-by trailers) from the same `git log`, without
+   * the rest of the detailed read. A host that predates this leaves it unset.
+   */
+  includeCoAuthors?: boolean;
 };
 
 export type GitFileHistoryEntry = {
@@ -169,7 +194,15 @@ export type GitStashSummary = {
   createdAt: string | null;
 };
 
-export type DiffMode = "unstaged" | "staged" | "commit";
+/**
+ * `branch` is everything the lane changed since its base: the merge-base of the
+ * base and HEAD against the working tree, so commits, uncommitted edits and
+ * untracked files read as one diff per file.
+ */
+export type DiffMode = "unstaged" | "staged" | "commit" | "branch";
+
+/** A lane file selection: every scope but a single commit. */
+export type LaneDiffMode = Exclude<DiffMode, "commit">;
 
 export type FileChange = {
   path: string;
@@ -183,6 +216,17 @@ export type FileChange = {
 export type DiffChanges = {
   unstaged: FileChange[];
   staged: FileChange[];
+};
+
+/** `git.getBranchChanges`: every file the lane changed since its base. */
+export type BranchDiffChanges = {
+  /** The ref the lane is compared with, as shown ("main", "origin/main"). */
+  baseRef: string;
+  /** The commit the diff starts from: merge-base(base, HEAD). */
+  mergeBase: string;
+  files: FileChange[];
+  additions: number;
+  deletions: number;
 };
 
 export type DiffLineStats = {
@@ -483,6 +527,68 @@ export const GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY = {
 
 export type GitHubSetTokenResult = GitHubStatus & {
   credentialVerification: GitHubCredentialVerification;
+};
+
+/** One picture to put in a new GitHub issue (uploaded through `gh --attach`). */
+export type GitHubIssueAttachmentInput = { filename: string; contentType: string; dataBase64: string };
+
+export type GitHubIssueCreateInput = {
+  title: string;
+  body?: string;
+  labels?: string[];
+  assignees?: string[];
+  /** Milestone number. */
+  milestone?: number | null;
+  /** Issue type name (organization repositories). */
+  type?: string | null;
+  /** Make the new issue a sub-issue of this one. */
+  parentNumber?: number | null;
+  attachments?: GitHubIssueAttachmentInput[];
+};
+
+export type GitHubIssueCreateResult = {
+  /** GitHub's REST issue object. */
+  issue: import("../laneGitHubIssue").GitHubIssueLike & { id?: number };
+  /** Steps after the create that did not take (the issue still exists). */
+  warnings: string[];
+};
+
+export type GitHubIssueTypeOption = { id: number | null; name: string; description: string | null; color: string | null };
+
+/** The ADE GitHub App installation's `issues` permission; null when unknown. */
+export type GitHubAppIssuePermission = "write" | "read" | "none";
+
+/**
+ * Whether ADE can change issues in a repository, and through which credential.
+ * `writeSource` null means no credential can: the viewer shows read-only
+ * controls with the reason. `app.needsApproval` (installed, but `Issues` is
+ * not "write") is what raises the "Update GitHub permissions" banner.
+ */
+export type GitHubIssueWriteAccess = {
+  owner: string;
+  name: string;
+  app: {
+    installed: boolean;
+    issuesPermission: GitHubAppIssuePermission | null;
+    /** Installed, but an owner still has to approve `Issues: write`. */
+    needsApproval: boolean;
+    manageUrl: string | null;
+  } | null;
+  writeSource: GitHubCredentialSource | null;
+  checkedAt: string;
+};
+
+/**
+ * Whether a repository uses GitHub issues, and how many are open. One GraphQL
+ * point: the open count from REST `open_issues_count` includes pull requests,
+ * so it cannot drive the Issues button's badge.
+ */
+export type GitHubRepoIssueSummary = {
+  owner: string;
+  name: string;
+  hasIssuesEnabled: boolean;
+  openCount: number;
+  checkedAt: string;
 };
 
 export type GitHubAppInstallationStatus = {

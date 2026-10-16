@@ -1,6 +1,7 @@
 import { app } from "electron";
 import net from "node:net";
-import type { Client } from "ssh2";
+import { captureError } from "../../../shared/sentry/capture";
+import type { Client, ClientChannel } from "ssh2";
 import type {
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
@@ -25,11 +26,16 @@ import {
 import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
-import { isRetryableRemoteAction } from "./retryableRemoteActions";
+import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import {
   IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS,
   IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS,
+  IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS,
+  IOS_SIMULATOR_RUN_TESTS_REMOTE_TRANSPORT_TIMEOUT_MS,
   USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS,
+  ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS,
+  WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS,
+  WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { bootstrapPairedRuntime } from "./pairedRuntimeBootstrap";
 import {
@@ -42,6 +48,7 @@ import {
   DesktopPairedMachineStore,
 } from "./syncPairedMachineStore";
 import type { SyncPortForwardClient } from "./syncPortForwardClient";
+import { buildForwardFailureResponse, looksLikeHttpRequest, loopbackDialFailureReason } from "./forwardFailurePage";
 import type { SyncRuntimeTransport } from "./syncRuntimeTransport";
 import {
   resolveRemoteAttachmentUploadRoute,
@@ -152,12 +159,16 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["chat.suggestLaneNameFromPrompt", 120_000],
   ["chat.generateAutoLaneIdentity", 120_000],
   ["chat.prepareCrossMachineHandoff", 120_000],
+  // A GitHub Stack merge polls GitHub, then cleans up each merged PR.
+  ["pr.land", 120_000],
   ["chat.preflightCrossMachineDestination", 60_000],
   ["chat.acceptCrossMachineHandoff", 180_000],
   // The remote daemon answers Refresh by running the same isolated ledger
   // worker a local one does, so the transport must outlive the worker's own
   // ceiling — and stay under the renderer's IPC budget for this action.
   ["usage.refreshHistory", USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // A provider CLI update on the paired machine; see ACP_PROVIDER_UPDATE_TIMEOUT_MS.
+  ["ai.acpProviderUpdate", ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS],
   // A remote Mac runtime builds with the same xcodebuild a local one does, so
   // the transport has to outlive a cold build. Without these the launch and
   // the three compiling Preview Lab actions fell back to RuntimeRpcClient's
@@ -168,6 +179,19 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["ios_simulator.renderPreview", IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.renderCurrentPreview", IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.ensurePreviewWorkspace", IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["ios_simulator.runTests", IOS_SIMULATOR_RUN_TESTS_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["ios_simulator.deviceCleanup", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // Windows Desktop actions that wait on a person at the Windows PC (UAC,
+  // the password dialog, Windows' sign-in window). From another machine the
+  // 30s default reported a timeout while Windows was still waiting.
+  ["mac_desktop.start", WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["mac_desktop.setupWindows", WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["mac_desktop.takeoverWindows", WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["mac_desktop.useSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // Waits on the user's answer to the shared-seat card, then the start.
+  ["mac_desktop.requestSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // A long Windows `type` is typed one character at a time.
+  ["mac_desktop.type", WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS],
 ]);
 const CONNECT_FAILURE_BASE_BACKOFF_MS = 3_000;
 const CONNECT_FAILURE_MAX_BACKOFF_MS = 15_000;
@@ -195,6 +219,8 @@ const MACHINE_PROJECT_METHOD_CAPABILITY = new Map<string, RemoteRuntimeMachinePr
   ["projects.create", "create"],
   ["projects.clone", "clone"],
   ["projects.listMyGitHubRepos", "listMyGitHubRepos"],
+  ["projects.setIcon", "setIcon"],
+  ["projects.removeIcon", "setIcon"],
 ]);
 
 const MACHINE_PROJECT_CAPABILITY_LABEL: Record<RemoteRuntimeMachineProjectCapability, string> = {
@@ -206,12 +232,13 @@ const MACHINE_PROJECT_CAPABILITY_LABEL: Record<RemoteRuntimeMachineProjectCapabi
   create: "creating remote projects",
   clone: "cloning remote projects",
   listMyGitHubRepos: "listing GitHub repositories on the remote machine",
+  setIcon: "changing project icons",
 };
 
 function shouldRetryRemoteRuntimeAction(
   request: RemoteRuntimeActionRequest,
 ): boolean {
-  return isRetryableRemoteAction(request.domain, request.action);
+  return isReplaySafeAdeAction(request.domain, request.action);
 }
 
 function remoteRuntimeActionCallOptions(
@@ -229,6 +256,14 @@ function remoteRuntimeActionCallOptions(
 function normalizeForwardRemoteHost(value: string | null | undefined): string {
   const trimmed = typeof value === "string" ? value.trim() : "";
   return trimmed || "127.0.0.1";
+}
+
+/** How long a refused SSH forward waits for the browser's first bytes. */
+const SSH_FAILURE_PAGE_WAIT_MS = 2_000;
+
+function isIpv4LoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return normalized === "127.0.0.1" || normalized === "localhost";
 }
 
 function normalizeForwardPort(value: unknown): number {
@@ -379,6 +414,9 @@ export class RemoteConnectionPool {
   private readonly evictionListeners = new Set<
     (targetId: string, error: Error) => void
   >();
+  private readonly connectedListeners = new Set<
+    (targetId: string, result: RemoteRuntimeConnectResult) => void
+  >();
   private readonly portForwardInvalidationListeners = new Set<
     (targetId: string) => void
   >();
@@ -400,6 +438,18 @@ export class RemoteConnectionPool {
     options: RemoteConnectionPoolConnectOptions = {},
   ): Promise<RemoteRuntimeConnectResult> {
     return (await this.connectEntry(target, options)).result;
+  }
+
+  /**
+   * Every connection that opens, including the quiet reconnect a call makes
+   * after the machine restarted. Its result carries the version the machine
+   * runs now, which is how a finished update is seen.
+   */
+  onEntryConnected(listener: (targetId: string, result: RemoteRuntimeConnectResult) => void): () => void {
+    this.connectedListeners.add(listener);
+    return () => {
+      this.connectedListeners.delete(listener);
+    };
   }
 
   onEntryEvicted(listener: (targetId: string, error: Error) => void): () => void {
@@ -483,6 +533,15 @@ export class RemoteConnectionPool {
       }
       this.resolvedEntryPromises.add(entryPromise);
       this.attachEntryLifecycle(target.id, entryPromise, entry);
+      for (const listener of [...this.connectedListeners]) {
+        try {
+          listener(target.id, entry.result);
+        } catch (error) {
+          // The connection still stands; a listener that throws is a bug in
+          // the listener, reported, not a failed connect.
+          captureError(error, { fingerprint: ["remote-connection-pool", "entry-connected-listener"] });
+        }
+      }
       return entry;
     });
     this.entries.set(target.id, entryPromise);
@@ -734,14 +793,49 @@ export class RemoteConnectionPool {
           destroyAcceptedSocket(socket, new Error("The active SSH transport is unavailable."));
           return;
         }
-        activeEntry.ssh.forwardOut(
-          LOCAL_FORWARD_HOST,
-          0,
-          remoteHost,
-          remotePort,
-          (error, stream) => {
+        const ssh = activeEntry.ssh;
+        // A dev server bound only to `[::1]` (Node resolves `localhost` to
+        // IPv6 first on macOS) refuses the IPv4 dial. Try the other loopback
+        // before giving up, the same way the paired transport does.
+        const hosts = isIpv4LoopbackHost(remoteHost) ? [remoteHost, "::1"] : [remoteHost];
+        const dial = (index: number): void => {
+          ssh.forwardOut(LOCAL_FORWARD_HOST, 0, hosts[index]!, remotePort, (error, stream: ClientChannel) => {
+            if (error && index + 1 < hosts.length) {
+              dial(index + 1);
+              return;
+            }
             if (error) {
-              destroyAcceptedSocket(socket, error);
+              // The browser's request is buffered on this paused socket, or
+              // about to be; when it is HTTP, answer with a readable page
+              // rather than an empty response.
+              const answer = (firstBytes: Buffer | null): void => {
+                if (looksLikeHttpRequest(firstBytes)) {
+                  socket.end(buildForwardFailureResponse({
+                    remotePort,
+                    machineLabel: activeEntry.result.target.name?.trim() || null,
+                    reason: loopbackDialFailureReason(error, remotePort),
+                  }));
+                  return;
+                }
+                destroyAcceptedSocket(socket, error);
+              };
+              const buffered = socket.read() as Buffer | null;
+              if (buffered || socket.destroyed) {
+                answer(buffered);
+                return;
+              }
+              // A client that has not spoken yet gets as long as the paired
+              // transport gives it, then a plain close.
+              const timer = setTimeout(() => {
+                socket.off("readable", onReadable);
+                answer(null);
+              }, SSH_FAILURE_PAGE_WAIT_MS);
+              timer.unref?.();
+              const onReadable = (): void => {
+                clearTimeout(timer);
+                answer(socket.read() as Buffer | null);
+              };
+              socket.once("readable", onReadable);
               return;
             }
             const closeBoth = () => {
@@ -757,8 +851,9 @@ export class RemoteConnectionPool {
             socket.once("close", closeBoth);
             stream.once("close", closeBoth);
             socket.pipe(stream).pipe(socket);
-          },
-        );
+          });
+        };
+        dial(0);
       });
 
       return await new Promise<LocalPortForwardEntry>((resolve, reject) => {

@@ -13,8 +13,8 @@ import tailwind from "@tailwindcss/postcss";
  * panel renders see-through with every render test green, and it is exactly
  * what happened: the config defines `surface-raised`, `surface-recessed` and
  * `surface-overlay` but no bare `surface`, so `bg-surface` — on the Mac
- * Desktop video letterbox, its time-lapse card and a TopBar dialog — compiled
- * to nothing and those three panels had no background at all.
+ * Desktop video letterbox and a TopBar dialog — compiled to nothing and those
+ * panels had no background at all.
  *
  * So this compiles the real stylesheet and fails on a dead colour class.
  *
@@ -30,6 +30,8 @@ describe("tailwind token wiring", () => {
   const desktopRoot = path.resolve(__dirname, "..", "..");
   const cssPath = path.join(desktopRoot, "src/renderer/index.css");
   const css = fs.readFileSync(cssPath, "utf8");
+  // The token blocks live in the foundation stylesheet that index.css imports.
+  const tokenCss = fs.readFileSync(path.join(desktopRoot, "src/renderer/styles/foundation.css"), "utf8");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const config = require(path.join(desktopRoot, "tailwind.config.cjs")) as {
     theme?: { extend?: { colors?: Record<string, unknown> } };
@@ -43,13 +45,13 @@ describe("tailwind token wiring", () => {
     expect(fs.existsSync(target), `@config points at a missing file: ${target}`).toBe(true);
   });
 
-  it("backs every colour token with a CSS variable that index.css defines", () => {
+  it("backs every colour token with a CSS variable that the stylesheet defines", () => {
     const colors = (config.theme?.extend?.colors ?? {}) as Record<string, string>;
     for (const [token, value] of Object.entries(colors)) {
       if (typeof value !== "string") continue;
       const variable = value.match(/var\((--[a-z0-9-]+)\)/i)?.[1];
       if (!variable) continue;
-      expect(css.includes(`${variable}:`), `${token} -> ${variable} is never defined in index.css`).toBe(true);
+      expect(tokenCss.includes(`${variable}:`), `${token} -> ${variable} is never defined in foundation.css`).toBe(true);
     }
   });
 
@@ -72,10 +74,15 @@ describe("tailwind token wiring", () => {
      * family rule alone cannot see it — `surface` was defined in both themes
      * and absent from the config, so `bg-surface` compiled to nothing while
      * this guard stayed green. Everything else in a class string (`border-box`
-     * in an inline style, a stock Tailwind colour) is skipped.
+     * in an inline style, a stock Tailwind colour) is skipped. Light mode
+     * restates stock shades (`--color-amber-300`) to repaint them; restating a
+     * Tailwind colour does not make it vocabulary, so those names stay out.
      */
+    const stockShade = /^(?:red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|slate|gray|zinc|neutral|stone)-\d+$/;
     const defined = new Set(
-      [...css.matchAll(/--color-([a-z0-9-]+)\s*:/g)].map((match) => match[1]!),
+      [...css.matchAll(/--color-([a-z0-9-]+)\s*:/g)]
+        .map((match) => match[1]!)
+        .filter((name) => !stockShade.test(name)),
     );
     const ours = (name: string): boolean =>
       defined.has(name)

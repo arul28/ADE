@@ -67,10 +67,14 @@ export function FilesTab(props: FilesTabProps) {
   // a binding is forwarded, so a malformed history entry cannot aim file calls
   // at a machine that does not exist.
   const navigationPin = readOpenProjectBinding(navigationState?.filesPin);
-  const navigationOpenRequest: FilesNavigationOpenRequest | null = navigationOpenPath || navigationSearchQuery
+  const navigationLaneId = typeof navigationState?.laneId === "string" ? navigationState.laneId : null;
+  // A lane on another machine with no file: Files moves to that machine and
+  // shows the lane (the Lanes tab's "Open files" for a foreign lane).
+  const laneOnlyRequest = Boolean(navigationLaneId && navigationPin);
+  const navigationOpenRequest: FilesNavigationOpenRequest | null = navigationOpenPath || navigationSearchQuery || laneOnlyRequest
     ? {
         path: navigationOpenPath,
-        laneId: typeof navigationState?.laneId === "string" ? navigationState.laneId : null,
+        laneId: navigationLaneId,
         nonce: location.key,
         line: readPositiveInteger(navigationState?.startLine),
         column: readPositiveInteger(navigationState?.startColumn),

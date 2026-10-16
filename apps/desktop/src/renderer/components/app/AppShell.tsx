@@ -1,19 +1,25 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { AccountSignedOutBanner } from "../account/AccountSignedOutBanner";
+import { IssueSheetHost } from "../issues/IssueSheetHost";
+import { IssueCreateHost } from "../issues/IssueCreateHost";
+import { IssueLaunchHost } from "./IssueLaunchHost";
 import { CommandPalette } from "./CommandPalette";
 import { IntegrationBanners } from "./IntegrationBanners";
 import { isCssZoomedBrowserSurface } from "../../lib/webClientMode";
 import { TopBar } from "./TopBar";
+import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 import { useProjectSidebarShortcuts } from "./projectSidebar/useProjectSidebarShortcuts";
 import { ProjectTransitionErrorAlert } from "./ProjectTransitionErrorAlert";
 import { TabBackground } from "../ui/TabBackground";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { APP_BANNER_PRIORITY, AppBannerHost, useAppBanner } from "../ui/notice";
+import { ProjectMoveHost } from "../projectMove/ProjectMoveHost";
 import type {
   AiSettingsStatus,
   GitHubStatus,
   ProjectInfo,
+  KeybindingsSnapshot,
   OpenProjectBinding,
   SyncRoleSnapshot,
   SyncRouteHealth,
@@ -48,21 +54,65 @@ import { ChatLaunchesSlideOut, useChatLaunchSlideOutVisible } from "./ChatLaunch
 import { useChatLaunchSync } from "../../state/useChatLaunchSync";
 import { AutoUpdateBanner } from "./AutoUpdateBanner";
 import { BrainRecoveryNotice } from "./BrainRecoveryNotice";
-import { FolderSimpleDashed } from "@phosphor-icons/react";
+import { AppFallbackBanner } from "./AppFallbackBanner";
+import { FolderSimpleDashed, ShieldWarning } from "@phosphor-icons/react";
+import { ELEVATED_DESKTOP_MESSAGE, ELEVATED_DESKTOP_TITLE } from "../../../shared/types/builtInBrowser";
 import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
 import { dismissToast, showToast } from "./toast/toastStore";
 import { usePrEventToasts } from "./toast/usePrEventToasts";
 import { useStaleCliToast } from "./toast/useStaleCliToast";
+import { ARCHIVE_SETTINGS_ROUTE, useArchiveReminderBanner } from "./useArchiveReminderBanner";
 import { useLaneEventToasts } from "./toast/useLaneEventToasts";
 import { useAutoDiagnosticsToast } from "./toast/useAutoDiagnosticsToast";
 import { useProductAnalyticsLifecycle } from "../analytics/ProductAnalyticsLifecycle";
 import { useAppWideSessionAttention } from "../../hooks/useAppWideSessionAttention";
 import { useCtoAttention } from "../../hooks/useCtoAttention";
 import { ActivityPane } from "../activity/ActivityPane";
-import { CtoVoiceHudHost } from "../cto/CtoVoiceHudHost";
 import { GlobalCaptureGestureHost } from "../capture/GlobalCaptureGestureHost";
 import { useActivitySync } from "../activity/useActivitySync";
 import { isActivityRoute } from "../../lib/legacyRoutes";
+import {
+  BROWSER_TAB_KEYBINDING,
+  BROWSER_TAB_ROUTE,
+  browserTabAvailable,
+  isBrowserTabRoute,
+} from "../browser/browserTab";
+import {
+  MUSIC_TAB_KEYBINDING,
+  MUSIC_TAB_ROUTE,
+  isMusicTabRoute,
+  musicTabAvailable,
+} from "../music/musicTab";
+import { setMusicTabOpener } from "../music/musicStore";
+
+/**
+ * A shortcut that opens a machine tab (Browser, Music) from anywhere, project
+ * or not. Like the command palette it works while a field has focus; a handler
+ * that already used the chord wins by calling preventDefault first.
+ */
+function useOpenMachineTabShortcut(
+  keybindings: KeybindingsSnapshot | null,
+  shortcut: { id: string; fallback: string },
+  available: boolean,
+  open: () => void,
+): void {
+  const binding = useMemo(
+    () => getEffectiveBinding(keybindings, shortcut.id, shortcut.fallback),
+    [keybindings, shortcut.fallback, shortcut.id],
+  );
+  useEffect(() => {
+    if (!available) return undefined;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing) return;
+      if (!eventMatchesBinding(e, binding)) return;
+      e.preventDefault();
+      if (e.repeat) return;
+      open();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [available, binding, open]);
+}
 
 function primaryTabPath(pathname: string): string {
   const roots = ["/hub", "/activity", "/attention", "/lanes", "/files", "/work", "/prs", "/history", "/automations", "/cto", "/settings"];
@@ -82,6 +132,8 @@ const PRODUCT_ANALYTICS_ROUTE_ROOTS = [
   "/cto",
   "/settings",
   "/chats",
+  "/browser",
+  "/music",
 ] as const;
 
 /**
@@ -186,6 +238,14 @@ function writeStoredProjectRoute(projectRoot: string, route: string): void {
 
 const FEEDBACK_PROGRESS_TOAST_ID = "ade-feedback-report-progress";
 
+/**
+ * The shell renders several times during one project or tab switch, and its
+ * two handlers for the top bar are new closures each time. The top bar (every
+ * project tab, tool button and tooltip) renders only when one of its own
+ * values changes.
+ */
+const ShellTopBar = memoWithLatestHandlers<NonNullable<Parameters<typeof TopBar>[0]>>(TopBar);
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -213,6 +273,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const setPersonalChatsTabOpen = useAppStore(
     (s) => s.setPersonalChatsTabOpen,
   );
+  const setBrowserTabOpen = useAppStore((s) => s.setBrowserTabOpen);
   const openRepo = useAppStore((s) => s.openRepo);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const closeProject = useAppStore((s) => s.closeProject);
@@ -244,6 +305,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   };
   const isPersonalChatsRoute =
     location.pathname === "/chats" || location.pathname.startsWith("/chats/");
+  // Machine-level like Chats. Desktop only: the hosted client has no browser view.
+  const isBrowserRoute = isBrowserTabRoute(location.pathname) && browserTabAvailable();
+  // Music is machine-level too, and desktop only (the player is a local process).
+  const isMusicRoute = isMusicTabRoute(location.pathname) && musicTabAvailable();
   const activityDeepLink = isActivityRoute(location.pathname);
   const isAccountRoute =
     location.pathname === "/account" || location.pathname.startsWith("/account/");
@@ -263,6 +328,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     isWorkAdjacentRoute,
     lanes,
     navigate,
+  });
+  const openArchiveSettings = useCallback(() => navigate(ARCHIVE_SETTINGS_ROUTE), [navigate]);
+  useArchiveReminderBanner({
+    projectRoot: project?.rootPath ?? null,
+    enabled: !showWelcome,
+    onReview: openArchiveSettings,
   });
   const isLanesRouteRef = useRef(isLanesRoute);
 
@@ -296,6 +367,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // selectable affordance for the surface being shown.
     if (isPersonalChatsRoute) setPersonalChatsTabOpen(true);
   }, [isPersonalChatsRoute, setPersonalChatsTabOpen]);
+
+  useEffect(() => {
+    // Same rule as Chats: being on /browser is what puts the Browser tab in the strip.
+    if (isBrowserRoute) setBrowserTabOpen(true);
+  }, [isBrowserRoute, setBrowserTabOpen]);
+
+  const setMusicTabOpen = useAppStore((s) => s.setMusicTabOpen);
+  useEffect(() => {
+    if (isMusicRoute) setMusicTabOpen(true);
+  }, [isMusicRoute, setMusicTabOpen]);
 
   useEffect(() => {
     logRendererDebugEvent("renderer.route_change", {
@@ -687,7 +768,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const onAiStatusCacheInvalidated = (event: Event) => {
       const detail = (event as CustomEvent<AiStatusCacheInvalidatedEventDetail>).detail;
       if (detail && !detail.allProjects && detail.projectRoot !== aiStatusProjectRoot) return;
-      refreshAiStatus({ force: true });
+      refreshAiStatus({ force: detail?.force !== false });
     };
     window.addEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);
     return () => {
@@ -852,6 +933,35 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     { placement: "docked", priority: APP_BANNER_PRIORITY.project },
   );
 
+  // Windows: an ADE started as administrator cannot be reached by its own
+  // background service. A lasting state, so a docked banner says so.
+  const [elevatedDesktop, setElevatedDesktop] = useState(false);
+  useEffect(() => {
+    const appApi = window.ade?.app;
+    if (typeof appApi?.getElevatedDesktop !== "function") return;
+    let cancelled = false;
+    void appApi.getElevatedDesktop().then((elevated) => {
+      if (!cancelled && elevated) setElevatedDesktop(true);
+    }).catch(() => {});
+    const unsubscribe = appApi.onElevatedDesktopChanged?.((elevated) => setElevatedDesktop(elevated));
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, []);
+  useAppBanner(
+    elevatedDesktop
+      ? {
+          id: "elevated-desktop",
+          tone: "warning",
+          icon: <ShieldWarning size={13} weight="bold" />,
+          title: ELEVATED_DESKTOP_TITLE,
+          detail: ELEVATED_DESKTOP_MESSAGE,
+        }
+      : null,
+    { placement: "docked", priority: APP_BANNER_PRIORITY.app },
+  );
+
   const hasAnyAiProvider = useMemo(() => {
     return hasConfiguredAiProvider(aiStatus);
   }, [aiStatus]);
@@ -875,9 +985,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   // Mod+1..5 and Mod+B act on the project surface, so they are off while the
-  // welcome page, Chats, or the account page is in front.
+  // welcome page, Chats, Browser, or the account page is in front.
   useProjectSidebarShortcuts({
-    enabled: Boolean(project?.rootPath) && !showWelcome && !isPersonalChatsRoute && !isAccountRoute,
+    enabled: Boolean(project?.rootPath) && !showWelcome && !isPersonalChatsRoute && !isBrowserRoute && !isMusicRoute && !isAccountRoute,
     projectRoot: currentProjectRoot,
     keybindings,
     navigate,
@@ -893,6 +1003,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [commandPaletteBinding]);
 
+  // Mod+Shift+B opens the Browser tab from anywhere.
+  const isBrowserRouteRef = useRef(isBrowserRoute);
+  isBrowserRouteRef.current = isBrowserRoute;
+  const openBrowserTab = useCallback(() => {
+    setBrowserTabOpen(true);
+    if (!isBrowserRouteRef.current) navigate(BROWSER_TAB_ROUTE);
+  }, [navigate, setBrowserTabOpen]);
+  useOpenMachineTabShortcut(keybindings, BROWSER_TAB_KEYBINDING, browserTabAvailable(), openBrowserTab);
+
+  // Mod+Shift+M opens the Music tab from anywhere, the same way. The top-bar
+  // mini player and the home page's Now Playing widget open it through
+  // `musicActions.open()`, which lands here.
+  const isMusicRouteRef = useRef(isMusicRoute);
+  isMusicRouteRef.current = isMusicRoute;
+  const openMusicTab = useCallback(() => {
+    setMusicTabOpen(true);
+    if (!isMusicRouteRef.current) navigate(MUSIC_TAB_ROUTE);
+  }, [navigate, setMusicTabOpen]);
+  useEffect(() => {
+    setMusicTabOpener(openMusicTab);
+    return () => setMusicTabOpener(null);
+  }, [openMusicTab]);
+  useOpenMachineTabShortcut(keybindings, MUSIC_TAB_KEYBINDING, musicTabAvailable(), openMusicTab);
+
   const tintClass = useMemo(() => {
     const tintMap: Record<string, string> = {
       "/activity": "tab-tint-work",
@@ -906,6 +1040,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       "/cto": "tab-tint-cto",
       "/settings": "tab-tint-settings",
       "/chats": "tab-tint-work",
+      "/browser": "tab-tint-work",
+      "/music": "tab-tint-work",
     };
     return tintMap[primaryTabPath(location.pathname)] ?? "";
   }, [location.pathname]);
@@ -922,9 +1058,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       )}
     >
       <div className="shrink-0 relative z-20">
-        <TopBar
+        <ShellTopBar
           personalChatsRouteActive={isPersonalChatsRoute}
+          browserRouteActive={isBrowserRoute}
+          musicRouteActive={isMusicRoute}
           accountRouteActive={isAccountRoute}
+          settingsRouteActive={location.pathname === "/settings"}
           onNavigate={(path, opts) => navigate(path, opts)}
           onOpenActivityPane={() => setActivityPaneOpen(true)}
         />
@@ -938,10 +1077,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         and dismissal.
       */}
       <AppBannerHost />
+      <ProjectMoveHost />
       <ProjectTransitionErrorAlert />
       <AccountSignedOutBanner navigate={navigate} />
       <AutoUpdateBanner />
       <BrainRecoveryNotice />
+      <AppFallbackBanner />
       {!showWelcome && project?.rootPath ? (
         <IntegrationBanners
           currentProjectRoot={currentProjectRoot}
@@ -972,12 +1113,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <ActivityPane open={activityPaneOpen} onClose={() => setActivityPaneOpen(false)} />
 
       <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
-      {/* Shell level, beside the other overlays: a call must outlive tab and
-          project switches, because the whole point is talking while you work. */}
-      <CtoVoiceHudHost />
-      {/* Also shell level, and for a stronger version of the same reason: the
-          capture arrives from the main process while ADE is in the BACKGROUND,
-          so nothing mounted by a tab could be listening when it lands. */}
+      <IssueSheetHost />
+      <IssueCreateHost />
+      <IssueLaunchHost />
+      {/* Shell level: the capture arrives from the main process while ADE is
+          in the BACKGROUND, so nothing mounted by a tab could be listening
+          when it lands. */}
       <GlobalCaptureGestureHost />
       <WorktreeOpenDialog />
     </div>

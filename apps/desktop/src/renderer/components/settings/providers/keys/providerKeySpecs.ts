@@ -18,6 +18,7 @@
 import type { SettingsProviderId } from "../types";
 import type { ApiCredentialSummary } from "../../../../../shared/types/apiCredentials";
 import { HARNESS_CREDENTIAL_STORE_PROVIDER } from "../../../../../shared/harnessCredentialProviders";
+import { MUSE_LOGIN_COMMAND } from "../../../../../shared/providers";
 
 export type ProviderKeyProtocol = NonNullable<ApiCredentialSummary["protocol"]>;
 
@@ -147,6 +148,20 @@ const SPECS: Record<SettingsProviderId, ProviderKeySpec> = {
     legacyDefaultSlot: false,
     note: "Pi reads its own models.json for endpoints and model ids, so there is no endpoint to set here.",
   },
+  muse: {
+    provider: "muse",
+    // Filed under the vendor, like `anthropic` for Claude Code.
+    credentialProvider: "meta",
+    keyEnvVar: "META_API_KEY",
+    keyHelp: "A Meta Model API key. ADE passes it to Muse as META_API_KEY, never on the command line.",
+    endpoint: null,
+    protocol: false,
+    models: false,
+    providerId: false,
+    verifiable: false,
+    legacyDefaultSlot: false,
+    note: "A key takes priority over a `" + MUSE_LOGIN_COMMAND + "` sign-in, the same way META_API_KEY does in Muse.",
+  },
   opencode: {
     provider: "opencode",
     credentialProvider: HARNESS_CREDENTIAL_STORE_PROVIDER.opencode,
@@ -219,6 +234,21 @@ const SPECS: Record<SettingsProviderId, ProviderKeySpec> = {
     verifiable: false,
     legacyDefaultSlot: false,
     note: null,
+  },
+  devin: {
+    provider: "devin",
+    // The Windsurf API key the Devin CLI falls back to is stored under its own
+    // `devin-cli` credential id, not the provider's default `devin` slot.
+    credentialProvider: "devin-cli",
+    keyEnvVar: "WINDSURF_API_KEY",
+    keyHelp: "A Windsurf API key. The Devin CLI signs in with it when `devin auth login` has not run.",
+    endpoint: null,
+    protocol: false,
+    models: false,
+    providerId: false,
+    verifiable: false,
+    legacyDefaultSlot: false,
+    note: "Devin's browser sign-in (`devin auth login`) covers every account and needs no key. Only headless setups need WINDSURF_API_KEY.",
   },
 };
 

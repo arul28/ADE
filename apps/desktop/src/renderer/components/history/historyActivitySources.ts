@@ -1,8 +1,17 @@
 import type {
   AgentChatSessionSummary,
   CtoSnapshot,
+  OpenProjectBinding,
   OperationRecord,
 } from "../../../shared/types";
+
+/**
+ * Where the CTO's sessions are read from. The CTO lives on one home machine per
+ * project; `pin: null` is the tab's machine. `skip` when the home is known but
+ * unreachable: reading the tab's machine instead would show another machine's
+ * (stale) CTO as if it were the real one.
+ */
+export type HistoryCtoRoute = { skip: boolean; pin: OpenProjectBinding | null };
 
 type OperationStatus = OperationRecord["status"];
 
@@ -138,6 +147,7 @@ async function settle<T>(promise: Promise<T>): Promise<T | null> {
 
 export async function fetchSupplementalTimelineRecords(
   limit: number,
+  cto: HistoryCtoRoute = { skip: false, pin: null },
 ): Promise<OperationRecord[]> {
   const roundedLimit = Math.floor(limit);
   const safeLimit = Number.isFinite(roundedLimit)
@@ -147,8 +157,12 @@ export async function fetchSupplementalTimelineRecords(
     typeof window.ade?.agentChat?.list === "function"
       ? settle(window.ade.agentChat.list({ includeAutomation: true }))
       : Promise.resolve(null),
-    typeof window.ade?.cto?.getState === "function"
-      ? settle(window.ade.cto.getState({ recentLimit: Math.min(100, safeLimit) }))
+    typeof window.ade?.cto?.getState === "function" && !cto.skip
+      ? settle(
+          cto.pin
+            ? window.ade.cto.getState({ recentLimit: Math.min(100, safeLimit) }, cto.pin)
+            : window.ade.cto.getState({ recentLimit: Math.min(100, safeLimit) }),
+        )
       : Promise.resolve(null),
   ]);
 

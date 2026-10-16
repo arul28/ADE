@@ -2,8 +2,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
+import { securePrivatePath } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { PROJECT_SECRET_NAME_PATTERN, PROJECT_SECRET_NAME_RULE } from "../../../shared/projectSecretRequest";
 import {
   deviceCredentialProvenance,
   normalizeCredentialProvenance,
@@ -13,6 +15,7 @@ import type {
   ProjectSecretDeleteArgs,
   ProjectSecretEnvFile,
   ProjectSecretGetArgs,
+  ProjectSecretPullResult,
   ProjectSecretsExportResult,
   ProjectSecretsImportArgs,
   ProjectSecretsImportPreview,
@@ -53,22 +56,42 @@ const STORE_FILE = "project-secrets.v1.enc";
 const KEY_FILE = ".project-secrets-key";
 const INDEX_KEY = "__ade_project_secrets_index_v1";
 const VALUE_PREFIX = "secret:";
-const NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/;
+const NAME_PATTERN = PROJECT_SECRET_NAME_PATTERN;
 
 export type ProjectSecretServiceOptions = {
   downloadsDir?: string;
   getAccountVault?: () => AccountVaultBridge | null | undefined;
   getAccountUserId?: () => string | null;
   logger?: {
+    info?(message: string, meta?: Record<string, unknown>): void;
     warn?(message: string, meta?: Record<string, unknown>): void;
   } | null;
 };
+
+const UNAVAILABLE_PULL: ProjectSecretPullResult = { state: "unavailable" };
+
+/**
+ * How old the brain's last account pull may be before a read by name or a list
+ * asks the account again. Reads inside this window are answered from the
+ * cache, so an agent reading several secrets costs one request, not several.
+ */
+const FRESH_READ_MAX_AGE_MS = 10_000;
+
+/**
+ * How long a read waits for that account check before answering from this
+ * machine's copy. A slow relay must not turn opening the Secrets page or an
+ * agent's `ade secrets get` into a 15-second hang; the sync keeps running and
+ * the next read sees what it brought in.
+ */
+const FRESH_READ_WAIT_MS = 3_000;
+
+type AccountRefresh = "fresh" | "unreachable" | "not_linked";
 
 function normalizeSecretName(name: string | undefined | null): string {
   const normalized = typeof name === "string" ? name.trim() : "";
   if (!normalized) throw new Error("Secret name is required.");
   if (!NAME_PATTERN.test(normalized)) {
-    throw new Error("Secret names must start with a letter and contain only letters, numbers, '.', '_', or '-' (max 128 characters).");
+    throw new Error(PROJECT_SECRET_NAME_RULE);
   }
   return normalized;
 }
@@ -175,6 +198,40 @@ export function createProjectSecretService(projectRoot: string, options: Project
     }
   };
 
+  /** Is a vault bridge wired at all? Quiet, because a "no" here is routine. */
+  const hasAccountVault = (): boolean => {
+    try {
+      return Boolean(options.getAccountVault?.());
+    } catch (error) {
+      logVaultFailure("resolve", "*", error);
+      return false;
+    }
+  };
+
+  /**
+   * The storage a write can actually honour.
+   *
+   * "Account" is a promise that the value leaves this machine, so a NEW secret
+   * only claims it when this project has an account scope, the person is signed
+   * in, and a vault bridge is wired. Reporting "account" for a value that
+   * silently stayed on this disk is the defect this guards against: the row
+   * looked shared, the other machines never saw it, and nothing said so.
+   *
+   * The vault is the authority for an account-scoped name, so a row that cannot
+   * reach it must not claim account storage: the next pull would put the
+   * account's older value back over what the person just typed. It is saved for
+   * this device instead, and the save message says which of these happened.
+   */
+  const resolveWritableStorage = (
+    requested: ProjectSecretStorage,
+    accountScope = getAccountScope(),
+  ): ProjectSecretStorage => {
+    if (requested !== "account") return "device";
+    if (!accountScope) return "device";
+    if (!getAccountUserId()) return "device";
+    return hasAccountVault() ? "account" : "device";
+  };
+
   const syncSecretToVault = (
     name: string,
     value: string,
@@ -237,7 +294,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
     const imported: string[] = [];
     const replaced: string[] = [];
     const accountScope = getAccountScope();
-    const defaultStorage: ProjectSecretStorage = accountScope ? "account" : "device";
+    const defaultStorage: ProjectSecretStorage = resolveWritableStorage("account", accountScope);
     const saved: Array<{ name: string; value: string; storage: ProjectSecretStorage }> = [];
     const now = nowIso();
     store.updateSync((values) => {
@@ -265,34 +322,313 @@ export function createProjectSecretService(projectRoot: string, options: Project
     return { imported, replaced };
   };
 
+  /**
+   * Take everything the account vault holds for this repository.
+   *
+   * The vault used to be write-only from this side: `set` pushed a value and
+   * nothing ever read it back, because the only caller of this method was the
+   * one-shot account migration. A secret added on a second machine therefore
+   * reached the vault and never reached this one — the reported symptom.
+   *
+   * A row lands only when it is genuinely new or genuinely newer. A
+   * device-scoped secret is never replaced, however old it looks: device is a
+   * deliberate "this machine only", and the account copy is not the owner.
+   *
+   * Every way of not reading the vault at all — signed out, no repository
+   * scope, no vault wired, the list throwing, the list answering unavailable,
+   * the account changing mid-pull — answers `unavailable`, never a count of
+   * zero. "Nothing new" and "could not ask" are different sentences to show a
+   * person, and collapsing them told a signed-out user their secrets were
+   * already up to date.
+   */
+  /**
+   * Drop an account-scoped copy on this machine, without touching the vault.
+   *
+   * Only ever reached for a name the account already holds as deleted, so there
+   * is nothing left to remove on the other side.
+   */
+  const removeAccountCopy = (name: string): boolean => {
+    let removed = false;
+    try {
+      store.updateSync((values) => {
+        const index = parseIndex(values[INDEX_KEY] ?? null);
+        const entry = index.entries[name];
+        if (!entry || entry.storage !== "account") return false;
+        delete values[valueKey(name)];
+        delete index.entries[name];
+        values[INDEX_KEY] = serializeIndex(index);
+        removed = true;
+        return;
+      });
+    } catch (error) {
+      logVaultFailure("remove", name, error);
+      return false;
+    }
+    return removed;
+  };
+
+  const hydrateFromLocalVault = async (): Promise<ProjectSecretPullResult> => {
+    const accountScope = getAccountScope();
+    const accountUserId = getAccountUserId();
+    if (!accountUserId) return UNAVAILABLE_PULL;
+    if (!accountScope) return UNAVAILABLE_PULL;
+    const vault = resolveAccountVault("list", "*");
+    if (!vault) return UNAVAILABLE_PULL;
+
+    let listed: Awaited<ReturnType<AccountVaultBridge["list"]>>;
+    try {
+      listed = await vault.list(accountScope);
+    } catch (error) {
+      logVaultFailure("list", "*", error);
+      return UNAVAILABLE_PULL;
+    }
+    if (!listed.ok) {
+      logVaultFailure("list", "*", listed);
+      return UNAVAILABLE_PULL;
+    }
+
+    if (getAccountUserId() !== accountUserId) return UNAVAILABLE_PULL;
+
+    /** The vault's own value for a name, fetched when the list omitted it. */
+    const readVaultValue = async (
+      name: string,
+      listedValue: string | null,
+    ): Promise<string | null> => {
+      if (typeof listedValue === "string") return listedValue;
+      try {
+        const fetched = await vault.get(accountScope, "project_secret", name);
+        if (!fetched.ok) {
+          logVaultFailure("get", name, fetched);
+          return null;
+        }
+        return fetched.value;
+      } catch (error) {
+        logVaultFailure("get", name, error);
+        return null;
+      }
+    };
+
+    let added = 0;
+    let updated = 0;
+    let removed = 0;
+    for (const item of listed.value) {
+      if (item.scope !== accountScope || item.kind !== "project_secret") continue;
+      let name: string;
+      try {
+        name = normalizeSecretName(item.key);
+      } catch {
+        continue;
+      }
+      // A device-scoped copy is a deliberate "this machine only": the account
+      // copy is not its owner in either direction, so neither a tombstone nor a
+      // live vault row reaches it.
+      const known = readIndex().entries[name];
+      if (known && known.storage !== "account") continue;
+
+      if (item.deleted) {
+        // Deleted on another machine, and the account is the authority for a
+        // name this machine holds as account-scoped. The local copy goes too,
+        // or the secret keeps working here while the account says it is gone.
+        if (removeAccountCopy(name)) removed += 1;
+        continue;
+      }
+
+      // Already holding the vault's stamp: nothing to fetch. Checked before
+      // the value read, which is a brain round trip per name from desktop.
+      if (known?.updatedAt === item.updatedAt) continue;
+
+      const value = await readVaultValue(name, item.value);
+      if (!value?.length) continue;
+      // The account changed under this pull; stop rather than write one
+      // owner's secrets into another owner's store.
+      if (getAccountUserId() !== accountUserId) return UNAVAILABLE_PULL;
+
+      const vaultUpdatedAt = item.updatedAt;
+      // Re-read: the awaits above gave another writer a window. Nothing about
+      // this name changed since the last pull when the recorded stamp is
+      // already the vault's, which is also what keeps a converged vault from
+      // being rewritten on every tick.
+      const current = readIndex().entries[name];
+      if (current && current.storage !== "account") continue;
+      if (current?.updatedAt === vaultUpdatedAt) continue;
+      const wasAbsent = !current;
+
+      let wrote = false;
+      try {
+        store.updateSync((values) => {
+          const index = parseIndex(values[INDEX_KEY] ?? null);
+          const existing = index.entries[name];
+          if (existing && existing.storage !== "account") return false;
+          if (existing?.updatedAt === vaultUpdatedAt) return false;
+          values[valueKey(name)] = value!;
+          index.entries[name] = {
+            createdAt: existing?.createdAt ?? vaultUpdatedAt,
+            updatedAt: vaultUpdatedAt,
+            valueLength: value!.length,
+            storage: "account",
+            source: "account",
+            accountUserId,
+          };
+          values[INDEX_KEY] = serializeIndex(index);
+          wrote = true;
+          return;
+        });
+      } catch (error) {
+        logVaultFailure("hydrate", name, error);
+        continue;
+      }
+      if (!wrote) continue;
+      if (wasAbsent) added += 1;
+      else updated += 1;
+    }
+
+    if (added > 0 || updated > 0 || removed > 0) {
+      options.logger?.info?.("project_secret.account_vault_pull", { added, updated, removed });
+    }
+    return { state: "pulled", added, updated, removed };
+  };
+
+  /**
+   * Ask the account for what changed, then take this repository's secrets.
+   *
+   * The brain's vault cache is refreshed in the background, but "background"
+   * means a heartbeat away, and a person who just added a secret on their
+   * laptop and told an agent here to use it should not lose that race. So a
+   * read by name, a list and an explicit pull first ask the account — unless
+   * the brain already did within `maxAgeMs`, which keeps a burst of reads to
+   * one request.
+   */
+  const refreshFromAccount = async (
+    /** `null` forces a request; a person pressing Pull asked for exactly that. */
+    maxAgeMs: number | null,
+  ): Promise<{ refresh: AccountRefresh; pulled: ProjectSecretPullResult }> => {
+    if (!getAccountScope() || !getAccountUserId()) {
+      return { refresh: "not_linked", pulled: UNAVAILABLE_PULL };
+    }
+    const vault = resolveAccountVault("sync", "*");
+    if (!vault) return { refresh: "not_linked", pulled: UNAVAILABLE_PULL };
+    let refresh: AccountRefresh = "unreachable";
+    try {
+      const syncing = vault.sync(maxAgeMs === null ? undefined : { maxAgeMs });
+      let waitTimer: ReturnType<typeof setTimeout> | null = null;
+      const synced = maxAgeMs === null
+        ? await syncing
+        : await Promise.race([
+          syncing,
+          new Promise<null>((resolve) => {
+            waitTimer = setTimeout(() => resolve(null), FRESH_READ_WAIT_MS);
+            waitTimer.unref?.();
+          }),
+        ]).finally(() => {
+          if (waitTimer) clearTimeout(waitTimer);
+        });
+      if (synced === null) {
+        // Still running; it will land for the next read.
+        syncing.catch((error: unknown) => logVaultFailure("sync", "*", error));
+      } else if (synced.ok && synced.value === "ready") {
+        refresh = "fresh";
+      } else {
+        logVaultFailure("sync", "*", synced.ok ? `sync status ${synced.value ?? "unknown"}` : synced);
+      }
+    } catch (error) {
+      logVaultFailure("sync", "*", error);
+    }
+    // Hydrate even when the account could not be asked: the cache may still
+    // hold rows the last good pull brought in.
+    return { refresh, pulled: await hydrateFromLocalVault() };
+  };
+
+  /** What a person or agent gets from "pull": always asks the account. */
+  const pullFromAccount = async (): Promise<ProjectSecretPullResult> =>
+    (await refreshFromAccount(null)).pulled;
+
+  /**
+   * The background lifecycle's pull: runs right after the brain's own vault
+   * sync, so it takes what that sync brought in without asking again. It only
+   * needs completion, so an unavailable vault is simply a pull that moved
+   * nothing.
+   */
+  const hydrateFromVault = async (): Promise<void> => {
+    await hydrateFromLocalVault();
+  };
+
+  /** Mark account rows whose upload from this machine has not landed yet. */
+  const withUploadState = async (secrets: ProjectSecretSummary[]): Promise<ProjectSecretSummary[]> => {
+    const accountScope = getAccountScope();
+    if (!accountScope || !secrets.some((secret) => secret.storage === "account")) return secrets;
+    const vault = resolveAccountVault("pendingKeys", "*");
+    if (!vault || typeof vault.pendingKeys !== "function") return secrets;
+    let pending: Set<string>;
+    try {
+      const result = await vault.pendingKeys(accountScope, "project_secret");
+      if (!result.ok || result.value.length === 0) return secrets;
+      pending = new Set(result.value);
+    } catch {
+      return secrets;
+    }
+    return secrets.map((secret) =>
+      secret.storage === "account" && pending.has(secret.name) ? { ...secret, uploadPending: true } : secret);
+  };
+
+  const listLocal = (): ProjectSecretsListResult => {
+    const accountScope = getAccountScope();
+    return {
+      secrets: sortSummaries(readIndex().entries, (entry) => resolveStorage(entry, accountScope)),
+      storage: {
+        path: credentialsPath,
+        encrypted: true,
+        scope: "project",
+      },
+    };
+  };
+
+  const getLocal = (args: ProjectSecretGetArgs, refresh: AccountRefresh = "not_linked"): ProjectSecretValueResult => {
+    const name = normalizeSecretName(args?.name);
+    const notFound = (): Error => new Error(
+      refresh === "fresh"
+        ? `ADE secret '${name}' was not found on this machine or in your account for this repository.`
+        : refresh === "unreachable"
+          ? `ADE secret '${name}' was not found on this machine, and ADE could not reach your account just now to check for a copy saved on another machine.`
+          : `ADE secret '${name}' was not found.`,
+    );
+    const index = readIndex();
+    const entry = index.entries[name];
+    if (!entry) throw notFound();
+    const value = store.getSync(valueKey(name));
+    if (value == null) throw notFound();
+    return {
+      ...toSummary(name, entry, resolveStorage(entry)),
+      value,
+    };
+  };
+
   return {
     list(): ProjectSecretsListResult {
-      const accountScope = getAccountScope();
-      return {
-        secrets: sortSummaries(readIndex().entries, (entry) => resolveStorage(entry, accountScope)),
-        storage: {
-          path: credentialsPath,
-          encrypted: true,
-          scope: "project",
-        },
-      };
+      return listLocal();
     },
 
+    /** This machine's copy only, synchronously. Process env injection uses it. */
     get(args: ProjectSecretGetArgs): ProjectSecretValueResult {
-      const name = normalizeSecretName(args?.name);
-      const index = readIndex();
-      const entry = index.entries[name];
-      if (!entry) {
-        throw new Error(`ADE secret '${name}' was not found.`);
-      }
-      const value = store.getSync(valueKey(name));
-      if (value == null) {
-        throw new Error(`ADE secret '${name}' was not found.`);
-      }
-      return {
-        ...toSummary(name, entry, resolveStorage(entry)),
-        value,
-      };
+      return getLocal(args);
+    },
+
+    /**
+     * What `ade secrets get` and the app answer: the account is asked first
+     * (at most once per `FRESH_READ_MAX_AGE_MS`), so a secret saved on another
+     * machine a moment ago is found, and a value changed there is current.
+     */
+    async getFresh(args: ProjectSecretGetArgs): Promise<ProjectSecretValueResult> {
+      // Reject a malformed name before asking the account anything.
+      normalizeSecretName(args?.name);
+      const { refresh } = await refreshFromAccount(FRESH_READ_MAX_AGE_MS);
+      return getLocal(args, refresh);
+    },
+
+    /** The list after the same freshness check, with rows still uploading marked. */
+    async listFresh(): Promise<ProjectSecretsListResult> {
+      await refreshFromAccount(FRESH_READ_MAX_AGE_MS);
+      const listed = listLocal();
+      return { ...listed, secrets: await withUploadState(listed.secrets) };
     },
 
     set(args: ProjectSecretSetArgs): ProjectSecretSummary {
@@ -301,16 +637,17 @@ export function createProjectSecretService(projectRoot: string, options: Project
       if (!nextValue.length) throw new Error("Secret value is required.");
       const requestedStorage = normalizeStorage(args?.storage);
       const accountScope = getAccountScope();
-      const storage: ProjectSecretStorage = requestedStorage === "account" && accountScope
-        ? "account"
-        : "device";
+      const storage = resolveWritableStorage(requestedStorage, accountScope);
       const now = nowIso();
       let entry: ProjectSecretIndexEntry | null = null;
       let previousStorage: ProjectSecretStorage = "device";
       store.updateSync((values) => {
         const index = parseIndex(values[INDEX_KEY] ?? null);
         const previous = index.entries[name];
-        previousStorage = previous?.storage ?? "account";
+        // No local entry means no local account copy to forget. Defaulting to
+        // "account" here made a first device-only save delete a vault row this
+        // machine had never seen — another machine's only copy of the name.
+        previousStorage = previous?.storage ?? "device";
         entry = {
           createdAt: previous?.createdAt ?? now,
           updatedAt: now,
@@ -325,83 +662,16 @@ export function createProjectSecretService(projectRoot: string, options: Project
       });
       if (!entry) throw new Error("Failed to save ADE secret.");
       syncSecretToVault(name, nextValue, storage, accountScope);
-      if (storage === "device") removeSecretFromVault(name, previousStorage, accountScope);
+      // Only an explicit "this device only" forgets the account copy. A request
+      // for account storage that degraded because the vault was unreachable
+      // leaves the vault row alone: deleting it would destroy the copy the
+      // other machines already hold.
+      if (requestedStorage === "device") removeSecretFromVault(name, previousStorage, accountScope);
       return toSummary(name, entry, storage);
     },
 
-    async hydrateFromVault(): Promise<void> {
-      const accountScope = getAccountScope();
-      const accountUserId = getAccountUserId();
-      if (!accountUserId) return;
-      if (!accountScope) return;
-      const vault = resolveAccountVault("list", "*");
-      if (!vault) return;
-
-      let listed: Awaited<ReturnType<AccountVaultBridge["list"]>>;
-      try {
-        listed = await vault.list(accountScope);
-      } catch (error) {
-        logVaultFailure("list", "*", error);
-        return;
-      }
-      if (!listed.ok) {
-        logVaultFailure("list", "*", listed);
-        return;
-      }
-
-      if (getAccountUserId() !== accountUserId) return;
-
-      for (const item of listed.value) {
-        if (item.scope !== accountScope || item.kind !== "project_secret") continue;
-        let name: string;
-        try {
-          name = normalizeSecretName(item.key);
-        } catch {
-          continue;
-        }
-        if (readIndex().entries[name]) continue;
-
-        let value = typeof item.value === "string" ? item.value : null;
-        if (value === null) {
-          let fetched: Awaited<ReturnType<AccountVaultBridge["get"]>>;
-          try {
-            fetched = await vault.get(accountScope, "project_secret", name);
-          } catch (error) {
-            logVaultFailure("get", name, error);
-            continue;
-          }
-          if (!fetched.ok) {
-            logVaultFailure("get", name, fetched);
-            continue;
-          }
-          value = fetched.value;
-        }
-        if (!value?.length || readIndex().entries[name]) continue;
-        if (getAccountUserId() !== accountUserId) return;
-
-        try {
-          const now = nowIso();
-          store.updateSync((values) => {
-            const index = parseIndex(values[INDEX_KEY] ?? null);
-            if (index.entries[name]) return false;
-            values[valueKey(name)] = value!;
-            index.entries[name] = {
-              createdAt: now,
-              updatedAt: now,
-              valueLength: value!.length,
-              storage: "account",
-              source: "account",
-              accountUserId,
-            };
-            values[INDEX_KEY] = serializeIndex(index);
-            return;
-          });
-        } catch (error) {
-          logVaultFailure("hydrate", name, error);
-        }
-      }
-    },
-
+    hydrateFromVault,
+    pullFromAccount,
     previewEnvImport(args: ProjectSecretEnvFile): ProjectSecretsImportPreview {
       const fileName = path.basename(typeof args?.fileName === "string" ? args.fileName.trim() : "") || ".env";
       const content = typeof args?.content === "string" ? args.content : "";
@@ -439,7 +709,17 @@ export function createProjectSecretService(projectRoot: string, options: Project
         filePath = path.join(downloadsDir, `ade-secrets (${suffix}).env`);
       }
       if (fs.existsSync(filePath)) throw new Error("Could not find an unused filename in Downloads.");
-      fs.writeFileSync(filePath, formatProjectSecretEnv(secrets), { encoding: "utf8", mode: 0o600, flag: "wx" });
+      // Created empty, locked down, then filled: Windows ignores the mode, so
+      // the owner-only ACL has to be in place before any secret is in the
+      // file. A file that could not be secured is never left behind.
+      fs.writeFileSync(filePath, "", { encoding: "utf8", mode: 0o600, flag: "wx" });
+      try {
+        securePrivatePath(filePath);
+        fs.writeFileSync(filePath, formatProjectSecretEnv(secrets), { encoding: "utf8" });
+      } catch (error) {
+        fs.rmSync(filePath, { force: true });
+        throw error;
+      }
       return { filePath, secretCount: secrets.length };
     },
 

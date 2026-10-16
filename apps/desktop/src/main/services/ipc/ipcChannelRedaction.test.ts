@@ -25,15 +25,30 @@ describe("ipc channel redaction", () => {
     expect(redacted).toMatchObject({ providerId: "anthropic", requestId: "req-1" });
   });
 
-  // The machine-scoped OpenAI key travels as a bare `key` field. It was in
-  // neither gate: the channel was absent from the map, and the generic
-  // field-name guard matched `apikey` but not `key` — so a verbose IPC trace
-  // wrote the user's OpenAI key into the log file verbatim. These two map
-  // entries are now the only thing redacting it, so this test is the gate.
+  // A link handed to a browser is not a secret by name, so the generic
+  // field-name guard leaves `url` alone. A link a user opens is often the
+  // sensitive one though: a presigned URL, or an OAuth callback still carrying
+  // its `code`.
+  it("redacts the URL handed to a chosen browser", () => {
+    const url = "https://example.test/callback?code=not-a-real-code";
+
+    const [redacted] = redactIpcArgsForChannel(IPC.appOpenInBrowser, [
+      { url, browserId: "chrome" },
+    ]) as Array<Record<string, unknown>>;
+
+    expect(redacted.url).toBe("[redacted]");
+    expect(JSON.stringify(redacted)).not.toContain("not-a-real-code");
+    // The browser id is a catalog name, not user content, so the trace still
+    // says where the link went.
+    expect(redacted.browserId).toBe("chrome");
+  });
+
+  // A provider key travels as a bare `key` field, which the generic
+  // field-name guard does not treat as a secret. These map entries are the
+  // only thing redacting it, so this test is the gate.
   it("redacts the raw provider credential on every key-store channel", () => {
     for (const channel of [
       IPC.aiStoreApiKey,
-      IPC.aiStoreMachineApiKey,
       IPC.aiSetOpencodeProviderKey,
     ]) {
       const [redacted] = redactIpcArgsForChannel(channel, [

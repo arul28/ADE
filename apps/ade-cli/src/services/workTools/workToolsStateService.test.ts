@@ -54,6 +54,8 @@ function appControlStatus(session: Partial<NonNullable<AppControlStatus["activeS
   return {
     platform: process.platform,
     supported: true,
+    laneId: null,
+    sessions: [],
     providers: [],
     activeSession: session
       ? ({

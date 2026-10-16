@@ -4,7 +4,8 @@ import SwiftUI
 ///
 /// Collapsed state mirrors desktop's compact "Thought" pill: caret + label only,
 /// with the reasoning body hidden until the user expands. While the turn is
-/// live the header reads "Thinking"; once finished it reads "Thought".
+/// live the header reads "Thinking"; once finished it reads "Thought", with
+/// " for 12s" when the card has a measured duration (desktop `MinimalThought`).
 struct WorkReasoningCard: View {
   let card: WorkEventCardModel
   let isLive: Bool
@@ -25,6 +26,12 @@ struct WorkReasoningCard: View {
 
   private var headerTitle: String {
     isLive ? "Thinking" : "Thought"
+  }
+
+  /// `for 12s` after a finished thought with a measured duration.
+  private var durationSuffix: String? {
+    guard !isLive, let seconds = card.thoughtSeconds else { return nil }
+    return "for \(workFormatThinkingElapsed(seconds))"
   }
 
   var body: some View {
@@ -91,37 +98,53 @@ struct WorkReasoningCard: View {
         Text(headerTitle)
           .font(.caption.weight(.medium))
           .foregroundStyle(isLive ? ADEColor.textSecondary : ADEColor.textMuted)
+        if let durationSuffix {
+          Text(durationSuffix)
+            .font(.caption)
+            .monospacedDigit()
+            .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+        }
       }
       .padding(.vertical, 2)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .accessibilityLabel("\(isLive ? "Reasoning in progress." : "Reasoning.") Tap to \(isExpanded ? "collapse" : "expand").")
+    .accessibilityLabel("\(isLive ? "Reasoning in progress." : durationSuffix.map { "Thought \($0)." } ?? "Reasoning.") Tap to \(isExpanded ? "collapse" : "expand").")
   }
 }
 
 /// Floating pill that appears when new messages arrive while the user has
 /// scrolled up. Tap to jump back to the latest message and clear the unread
 /// count. Hides itself when the count is zero.
+/// Round glass "jump to latest" button: a down arrow and nothing else. It sits
+/// at the right end of the badge-chip line, just above the composer. New
+/// messages below the reader add a small accent dot, and the count goes to
+/// VoiceOver.
 struct WorkJumpToLatestPill: View {
   let count: Int
   let action: () -> Void
 
+  static let diameter: CGFloat = workChatComposerChipRowHeight
+
   var body: some View {
     Button(action: action) {
-      HStack(spacing: 6) {
-        Image(systemName: "arrow.down")
-          .font(.caption.weight(.bold))
-        Text(count > 0 ? "\(count) new" : "Latest")
-          .font(.caption.weight(.semibold))
+      WorkChatGlassCircleLabel(
+        systemName: "arrow.down",
+        size: Self.diameter,
+        glyphSize: 13,
+        tint: ADEColor.textPrimary
+      )
+      .overlay(alignment: .topTrailing) {
+        if count > 0 {
+          Circle()
+            .fill(ADEColor.accent)
+            .frame(width: 8, height: 8)
+            .offset(x: -1, y: 1)
+        }
       }
-      .foregroundStyle(Color.white)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 8)
-      .background(ADEColor.accent, in: Capsule())
-      .shadow(color: ADEColor.purpleGlow, radius: 10, y: 2)
     }
     .buttonStyle(.plain)
+    .accessibilityIdentifier("Work.Chat.JumpToLatest")
     .accessibilityLabel(count > 0
       ? "\(count) new message\(count == 1 ? "" : "s"). Tap to scroll to latest."
       : "Jump to latest message.")

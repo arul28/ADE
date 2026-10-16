@@ -40,6 +40,24 @@ function pinTargetsThisMachine(pin: { targetId: string }, client: AdeSyncClient)
   return Boolean(envId) && pin.targetId === envId;
 }
 
+/**
+ * The pin names a machine or project this adapter cannot reach. Callers that
+ * have another way to deliver (the composer copying a message for a chat that
+ * continues on another machine) test for it with
+ * `isWebRuntimePinUnroutableError` instead of matching the message.
+ */
+export class WebRuntimePinUnroutableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WebRuntimePinUnroutableError";
+  }
+}
+
+export function isWebRuntimePinUnroutableError(error: unknown): boolean {
+  return error instanceof WebRuntimePinUnroutableError
+    || (error instanceof Error && error.name === "WebRuntimePinUnroutableError");
+}
+
 export type RuntimePinScope = {
   client: AdeSyncClient;
   state: AdapterProjectState;
@@ -65,7 +83,7 @@ export function assertWebRuntimePinRoutable(
   // targetId, so the remote comparison below could only report it as an
   // unroutable binding. Say what actually happened instead.
   if (pin.kind === "local") {
-    throw new Error("This chat runs on a machine ADE Web can't reach directly.");
+    throw new WebRuntimePinUnroutableError("This chat runs on a machine ADE Web can't reach directly.");
   }
   if (pinTargetsThisMachine(pin, scope.client) && pin.projectId === scope.state.getProjectId()) {
     return;
@@ -74,7 +92,7 @@ export function assertWebRuntimePinRoutable(
   // is used only to name the binding here — the routing decision above reads
   // the fields directly rather than splitting the key, which would break on any
   // id containing a colon.
-  throw new Error(
+  throw new WebRuntimePinUnroutableError(
     `ADE Web cannot route ${operation} to pinned runtime ${pin.key || "unknown binding"};`
     + " cross-machine web routing is not implemented.",
   );

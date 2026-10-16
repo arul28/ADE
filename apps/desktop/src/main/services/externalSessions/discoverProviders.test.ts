@@ -13,7 +13,6 @@ import { discoverCursorSessions } from "./discoverCursor";
 import { discoverDroidSessions, droidProjectSlugForCwd } from "./discoverDroid";
 import { discoverOpenCodeSessions } from "./discoverOpenCode";
 import { claudeProjectSlugForCwd } from "./discoveryUtils";
-import { createExternalSessionsService } from "./externalSessionsService";
 
 type DatabaseSyncConstructor = new (dbPath: string) => DatabaseSyncType;
 const require = createRequire(import.meta.url);
@@ -1321,127 +1320,62 @@ describe("external session provider discovery", () => {
     expect(sessions.map((session) => session.id)).toEqual([id]);
   });
 
-  it("uses the OpenCode CLI list command and reports an uninstalled CLI", async () => {
-
+  it("discovers OpenCode sessions from the user's v2 SQLite store", async () => {
     const homeDir = path.join(root, "home");
     const cwd = path.join(root, "opencode-repo");
+    const storePath = path.join(homeDir, ".local", "share", "opencode", "opencode.db");
     fs.mkdirSync(cwd, { recursive: true });
-    process.env.ADE_DISABLE_BUNDLED_OPENCODE = "1";
-    process.env.HOME = homeDir;
-    process.env.PATH = path.join(root, "missing-bin");
-    clearOpenCodeBinaryCache();
-    // An empty list is what "no sessions yet" looks like, so a missing CLI has
-    // to be distinguishable from it.
-    await expect(discoverOpenCodeSessions({ homeDir, cwd, limit: 10 }))
-      .rejects.toThrow(/OpenCode CLI not found/u);
-
-    const binDir = path.join(root, "bin");
-    fs.mkdirSync(binDir, { recursive: true });
-    // JSON.stringify rather than interpolation: a Windows cwd carries
-    // backslashes, which are escape sequences inside a JSON string literal.
-    const listPayload = JSON.stringify([
-      { id: "open-1", directory: cwd, title: "OpenCode task", created: 1783332000000, updated: 1783332060000 },
-      { id: "open-2", directory: cwd, title: "New session - 2026-05-01T17:02:11.923Z", created: 1783331000000, updated: 1783331060000 },
-      { id: "open-3", title: "Missing cwd", created: 1783330000000, updated: 1783330060000 },
-    ]);
-    // Route the payload through node so one file serves both platforms and only
-    // the shim differs. An extension-less #!/bin/sh file is never executable on
-    // Windows -- PATHEXT decides that, and chmod is a no-op there -- so a real
-    // `npm i -g` install always leaves a .cmd shim instead.
-    const payloadPath = path.join(binDir, "opencode-payload.cjs");
-    fs.writeFileSync(payloadPath, `process.stdout.write(${JSON.stringify(listPayload)} + "\\n");\n`, "utf8");
-    const scriptPath = process.platform === "win32"
-      ? path.join(binDir, "opencode.cmd")
-      : path.join(binDir, "opencode");
-    if (process.platform === "win32") {
-      fs.writeFileSync(scriptPath, `@echo off\r\nnode "%~dp0opencode-payload.cjs"\r\n`, "utf8");
-    } else {
-      fs.writeFileSync(scriptPath, `#!/bin/sh\nexec node "$(dirname "$0")/opencode-payload.cjs"\n`, "utf8");
-      fs.chmodSync(scriptPath, 0o755);
+    fs.mkdirSync(path.dirname(storePath), { recursive: true });
+    const db = new DatabaseSync(storePath);
+    try {
+      db.exec(`
+        CREATE TABLE session_v2 (
+          id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT,
+          time_created INTEGER, time_updated INTEGER, time_archived INTEGER
+        );
+        CREATE TABLE session_message (
+          id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+          time_created INTEGER, data TEXT
+        );
+      `);
+      const insert = db.prepare(`
+        INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_archived)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      insert.run("open-old", null, cwd, "OpenCode task", 100, 200, null);
+      insert.run("open-new", null, cwd, "New session - 2026-05-01T17:02:11.923Z", 110, 300, null);
+      insert.run("open-no-cwd", null, null, "Missing cwd", 120, 250, null);
+      insert.run("open-child", "open-old", cwd, "Subagent", 125, 400, null);
+      insert.run("open-archived", null, cwd, "Archived", 130, 500, 600);
+      db.prepare("INSERT INTO session_message (id, session_id, type, seq, time_created, data) VALUES (?, ?, ?, ?, ?, ?)")
+        .run("msg-1", "open-old", "user", 1, 150, "{}");
+    } finally {
+      db.close();
     }
-    process.env.PATH = `${binDir}${path.delimiter}${previousPath ?? ""}`;
-    clearOpenCodeBinaryCache();
-
-    const sessions = await discoverOpenCodeSessions({ homeDir, cwd, limit: 10 });
-
-    expect(sessions).toHaveLength(3);
-    expect(sessions[0]).toMatchObject({
-      provider: "opencode",
-      id: "open-1",
+    const sessions = await discoverOpenCodeSessions({
+      homeDir,
+      env: { HOME: homeDir, PATH: "" },
+      cwd,
+      limit: 10,
+    });
+    expect(sessions.map((session) => session.id)).toEqual(["open-new", "open-no-cwd", "open-old"]);
+    expect(sessions.find((session) => session.id === "open-old")).toMatchObject({
       cwd,
       title: "OpenCode task",
-      preview: null,
-      messageCount: null,
+      messageCount: 1,
     });
-    expect(sessions[1]).toMatchObject({
-      provider: "opencode",
-      id: "open-2",
-      cwd,
-      title: null,
-      preview: null,
-      messageCount: null,
-    });
-    expect(sessions[2]).toMatchObject({
-      provider: "opencode",
-      id: "open-3",
+    expect(sessions.find((session) => session.id === "open-new")?.title).toBeNull();
+    expect(sessions.find((session) => session.id === "open-no-cwd")).toMatchObject({
       cwd: null,
       title: "Missing cwd",
     });
-    await expect(discoverOpenCodeSessions({ homeDir, cwd, sessionId: "open-3", limit: 1 })).resolves.toEqual([
-      expect.objectContaining({ id: "open-3", cwd: null, title: "Missing cwd" }),
-    ]);
-    await expect(discoverOpenCodeSessions({
+    const scoped = await discoverOpenCodeSessions({
       homeDir,
-      cwd,
+      env: { HOME: homeDir, PATH: "" },
       scopeRoots: [cwd],
-      sessionId: "open-3",
-      limit: 1,
-    })).resolves.toEqual([
-      expect.objectContaining({ id: "open-3", cwd: path.resolve(cwd), title: "Missing cwd" }),
-    ]);
-
-    const service = createExternalSessionsService({
-      droidForkSupported: true,
-      projectRoot: cwd,
-      homeDir,
-      laneService: { getLaneWorktreePath: () => cwd },
-      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
-      ptyService: { create: vi.fn() },
-      logger: { warn: vi.fn(), info: vi.fn() },
-    });
-    const scopedSessions = await service.list({
-      providers: ["opencode"],
-      cwd,
-      scope: "project",
       limit: 10,
     });
-    expect(scopedSessions.find((session) => session.id === "open-3")).toMatchObject({
-      cwd: fs.realpathSync(cwd),
-      cwdMatchesRequestedLane: true,
-      capabilities: {
-        resumeInPlace: true,
-        resumeInDifferentCwd: false,
-        fork: true,
-        forkIntoDifferentCwd: false,
-        importToChat: true,
-      },
-    });
-
-    const allSessions = await service.list({ providers: ["opencode"], scope: "all", limit: 10 });
-    expect(allSessions.find((session) => session.id === "open-3")).toMatchObject({
-      cwd: null,
-      capabilities: {
-        resumeInPlace: false,
-        resumeInDifferentCwd: false,
-        fork: false,
-        forkIntoDifferentCwd: false,
-        importToChat: false,
-      },
-    });
-
-    fs.writeFileSync(scriptPath, "#!/bin/sh\nprintf '%s\\n' 'not-json'\n", "utf8");
-    await expect(discoverOpenCodeSessions({ homeDir, cwd, limit: 10 }))
-      .rejects.toThrow(/no JSON session list/i);
+    expect(scoped.map((session) => session.id)).toEqual(["open-new", "open-old"]);
   });
 });
 

@@ -594,7 +594,9 @@ describe("WorkSidebar context targets", () => {
     expect(received[0]).not.toHaveProperty("sessionId");
   });
 
-  it("warns when App Control is attached to another lane while keeping Work controls usable", async () => {
+  // App Control keeps one session per lane, so another lane's app is that
+  // lane's, never a claim on this lane's pane.
+  it("never claims App Control for another lane, and keeps Work controls usable", async () => {
     const { terminalWrite } = installAdeMock({ appControlSession: otherLaneAppControlSession });
 
     renderSidebar({
@@ -603,7 +605,8 @@ describe("WorkSidebar context targets", () => {
       lanes: [lane, laneTwo],
     });
 
-    expect(await screen.findByText(/This App Control view is claimed by Lane 2, not Lane 1/)).toBeTruthy();
+    expect(await screen.findByTestId("app-control-panel")).toBeTruthy();
+    expect(screen.queryByText(/App Control view is claimed by/)).toBeNull();
     expect(screen.getByTestId("app-control-panel").getAttribute("data-control-disabled")).toBe("");
     expect((screen.getByText("Add App Control context") as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(screen.getByText("Add App Control context"));
@@ -823,7 +826,7 @@ describe("WorkSidebar context targets", () => {
     expect(onTabChange).not.toHaveBeenCalledWith(null);
   });
 
-  it("disables the Apple card when the bound runtime is not a Mac", async () => {
+  it("closes the Apple tab when the bound runtime is not a Mac", async () => {
     window.ade.iosSimulator.getStatus = vi.fn().mockResolvedValue({
       supported: false,
       activeSession: null,
@@ -836,8 +839,7 @@ describe("WorkSidebar context targets", () => {
       onTabChange,
     });
 
-    await waitFor(() => expect(screen.getByText("The runtime for this project is not a Mac")).toBeTruthy());
-    expect(cardFor("Apple Development").disabled).toBe(true);
+    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith(null));
     expect(cardFor("App Control").disabled).toBe(false);
     expect(cardFor("Browser").disabled).toBe(false);
     await waitFor(() => expect(onTabChange).toHaveBeenCalledWith(null));

@@ -5,14 +5,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 
 import {
-  readCallStills,
   readSceneStill,
-  rememberCallStill,
   rememberSceneStill,
   resetSceneStillsForTest,
   sceneStillSrc,
   useSessionStillsReady,
-  useCallStills,
   useSceneStillRecord,
 } from "./sceneStillStore";
 import { stubSceneCaptureBridge } from "./sceneStillTestHarness";
@@ -32,7 +29,6 @@ const stillArtifact = (args: {
   id: string;
   uri: string;
   sceneScopeKey?: string;
-  voiceCallId?: string;
   sceneTitle?: string;
 }) => ({
   id: args.id,
@@ -41,7 +37,6 @@ const stillArtifact = (args: {
   metadata: {
     kind: "scene_still",
     ...(args.sceneScopeKey ? { sceneScopeKey: args.sceneScopeKey } : {}),
-    ...(args.voiceCallId ? { voiceCallId: args.voiceCallId } : {}),
     ...(args.sceneTitle ? { sceneTitle: args.sceneTitle } : {}),
   },
 });
@@ -64,11 +59,6 @@ function ReadyProbe({ sessionId, scopeKey }: { sessionId: string | null; scopeKe
   return <div data-testid="probe">{useSessionStillsReady(sessionId) ? "ready" : "waiting"}</div>;
 }
 
-function CallProbe({ sessionId, callId }: { sessionId: string | null; callId: string }) {
-  const stills = useCallStills(sessionId, callId);
-  return <div data-testid="probe">{stills.map((entry) => entry.title).join(",") || "none"}</div>;
-}
-
 describe("scene stills", () => {
   it("keeps both halves of a still and prefers the pixels already in memory", () => {
     rememberSceneStill("row-1", { dataUrl: "data:image/png;base64,AAA" });
@@ -77,6 +67,19 @@ describe("scene stills", () => {
     expect(still?.dataUrl).toBe("data:image/png;base64,AAA");
     expect(still?.record?.uri).toBe(".ade/artifacts/computer-use/a.png");
     expect(sceneStillSrc(still?.record, still?.dataUrl)).toBe("data:image/png;base64,AAA");
+  });
+
+  /**
+   * The theme a still was drawn in is remembered across mounts, so a later
+   * mount knows whether its picture is still current. A record-only write (the
+   * durable half landing after the pixels) must not drop it.
+   */
+  it("remembers the theme a still was drawn in across writes", () => {
+    rememberSceneStill("row-theme", { dataUrl: "data:image/png;base64,T", theme: "dark|16" });
+    expect(readSceneStill("row-theme")?.theme).toBe("dark|16");
+    rememberSceneStill("row-theme", { record: record(".ade/artifacts/computer-use/t.png") });
+    expect(readSceneStill("row-theme")?.theme).toBe("dark|16");
+    expect(readSceneStill("row-theme")?.record?.uri).toBe(".ade/artifacts/computer-use/t.png");
   });
 
   it("has nothing to say about a scene it has never seen", () => {
@@ -91,7 +94,6 @@ describe("scene stills", () => {
    */
   it("keeps no durable state of its own", () => {
     rememberSceneStill("row-2", { record: record(".ade/artifacts/computer-use/b.png") });
-    rememberCallStill("call-2", record(".ade/artifacts/computer-use/c.png"));
     expect(localStorage.length).toBe(0);
   });
 
@@ -102,15 +104,6 @@ describe("scene stills", () => {
     expect(sceneStillSrc({ uri: "https://example.com/x.png", artifactId: null, title: "x" })).toBeNull();
     expect(sceneStillSrc({ uri: ".ade/artifacts/computer-use/b.png", artifactId: null, title: "x" }))
       .toBe("ade-artifact://project/.ade/artifacts/computer-use/b.png");
-  });
-
-  it("collects a call's stills in order, once each", () => {
-    rememberCallStill("call-1", record(".ade/artifacts/computer-use/1.png", "First"));
-    rememberCallStill("call-1", record(".ade/artifacts/computer-use/2.png", "Second"));
-    // The same view re-settling is the same picture, not a second one.
-    rememberCallStill("call-1", record(".ade/artifacts/computer-use/1.png", "First"));
-    expect(readCallStills("call-1").map((entry) => entry.title)).toEqual(["First", "Second"]);
-    expect(readCallStills("call-2")).toEqual([]);
   });
 
   describe("reading the index back", () => {
@@ -143,20 +136,6 @@ describe("scene stills", () => {
         </>,
       );
       await waitFor(() => expect(bridge.listArtifacts).toHaveBeenCalledTimes(1));
-    });
-
-    /** The call card's pictures come from the same query, filtered by call id. */
-    it("gives a call the stills filed under it, oldest first", async () => {
-      stubSceneCaptureBridge({
-        artifacts: [
-          // Newest first, the order the broker answers in.
-          stillArtifact({ id: "a2", uri: ".ade/2.png", voiceCallId: "call-7", sceneTitle: "Second" }),
-          stillArtifact({ id: "a1", uri: ".ade/1.png", voiceCallId: "call-7", sceneTitle: "First" }),
-          stillArtifact({ id: "a3", uri: ".ade/3.png", voiceCallId: "call-8", sceneTitle: "Other" }),
-        ],
-      });
-      render(<CallProbe sessionId="chat-3" callId="call-7" />);
-      await waitFor(() => expect(screen.getByTestId("probe").textContent).toBe("First,Second"));
     });
 
     /**

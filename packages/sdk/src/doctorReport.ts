@@ -10,7 +10,7 @@
 import { LEGACY_BINARY_SOURCE, type ResolvedBinarySource } from "./binary.js";
 import type { RuntimeSignature } from "./runtimeSignature.js";
 import { SDK_VERSION } from "./version.js";
-import type { DoctorReport, ProviderStatus } from "./types.js";
+import type { DoctorReport, ProviderStatus, RuntimeCompatibility } from "./types.js";
 
 export type DoctorInput = {
   binary: {
@@ -31,19 +31,22 @@ export type DoctorInput = {
   events: DoctorReport["events"];
   threads: { tracked: number; live: number };
   recentErrors: DoctorReport["recentErrors"];
+  compatibility: RuntimeCompatibility;
 };
 
 /**
  * The 0.1.x spelling of `doctor().binary.source`.
  *
  * Derived rather than stored beside `runtime.source`, which is the modern
- * five-value field. `"attached"` has no 0.1.x spelling — that mode postdates
- * the field — and reads back as the caller-pinned value it most resembles.
+ * five-value field. `"attached"` and `"packaged"` have no 0.1.x spelling —
+ * both postdate the field — and read back as the caller-pinned value they
+ * most resemble.
  */
 function legacyBinarySource(
   source: DoctorReport["runtime"]["source"],
 ): DoctorReport["binary"]["source"] {
-  return source === "attached" ? "option" : LEGACY_BINARY_SOURCE[source as ResolvedBinarySource];
+  if (source === "attached" || source === "packaged") return "option";
+  return LEGACY_BINARY_SOURCE[source as ResolvedBinarySource];
 }
 
 export function buildDoctorReport(input: DoctorInput): DoctorReport {
@@ -74,6 +77,7 @@ export function buildDoctorReport(input: DoctorInput): DoctorReport {
       signature: input.signature,
       downloadedThisSession: binary.source === "downloaded",
       checksumVerified: binary.checksumVerified,
+      compatibility: input.compatibility,
     },
     socket: {
       path: input.socketPath,

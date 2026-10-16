@@ -71,7 +71,8 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       if (result && typeof result === "object") emitLifecycle(lifecycleFromLane("lane-created", result));
       return result;
     },
-    createFromUnstaged: async (args: unknown) => {
+    createFromUnstaged: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("createFromUnstaged", pin);
       const result = await call("lanes.createFromUnstaged", args, null, false);
       if (result && typeof result === "object") emitLifecycle(lifecycleFromLane("lane-created", result));
       return result;
@@ -82,6 +83,12 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       return result;
     },
     previewBranchSwitch: (args: unknown) => call("lanes.previewBranchSwitch", args, null),
+    // No remote command switches a lane's branch. Without this the proxy's
+    // null fallback reads as success, and the "Switch back" chip would claim a
+    // switch that never happened.
+    switchBranch: async () => {
+      throw new Error("Switching a lane's branch is not available from the web client yet. Use the desktop app on that machine.");
+    },
     getBranchDrift: (args: unknown) => call("lanes.getBranchDrift", args, null),
     // The drift strip treats a resolved promise as "drift handled": it disarms
     // the warning and refreshes. A host that cannot run this must therefore
@@ -190,10 +197,32 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     getStackChain: (laneId: string) => call("lanes.getStackChain", { laneId }, []),
     getChildren: (laneId: string) => call("lanes.getChildren", { laneId }, []),
     attachGitHubIssueToSession: (args: unknown) => call("lanes.attachGitHubIssueToSession", args, [], false),
-    detachGitHubIssueFromSession: (args: unknown) => call("lanes.detachGitHubIssueFromSession", args, false, false),
+    detachGitHubIssueFromSession: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("detachGitHubIssueFromSession", pin);
+      return call("lanes.detachGitHubIssueFromSession", args, false, false);
+    },
     listGitHubIssuesForSession: (args: unknown) => call("lanes.listGitHubIssuesForSession", args, []),
     listGitHubIssuesForLaneSessions: (args: unknown) => call("lanes.listGitHubIssuesForLaneSessions", args, []),
-    rebaseStart: (args: unknown) => call("lanes.rebaseStart", args, { ok: false, error: "unsupported" }, false),
+    attachJiraIssueToSession: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("attachJiraIssueToSession", pin);
+      return call("lanes.attachJiraIssueToSession", args, [], false);
+    },
+    detachJiraIssueFromSession: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("detachJiraIssueFromSession", pin);
+      return call("lanes.detachJiraIssueFromSession", args, false, false);
+    },
+    listJiraIssuesForSession: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("listJiraIssuesForSession", pin);
+      return call("lanes.listJiraIssuesForSession", args, []);
+    },
+    listJiraIssuesForLaneSessions: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("listJiraIssuesForLaneSessions", pin);
+      return call("lanes.listJiraIssuesForLaneSessions", args, []);
+    },
+    rebaseStart: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("rebaseStart", pin);
+      return call("lanes.rebaseStart", args, { ok: false, error: "unsupported" }, false);
+    },
     rebasePush: (args: unknown) => call("lanes.rebasePush", args, null, false),
     rebaseRollback: (args: unknown) => call("lanes.rebaseRollback", args, null, false),
     rebaseAbort: (args: unknown) => call("lanes.rebaseAbort", args, null, false),
@@ -204,7 +233,10 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     deferRebaseSuggestion: async (args: unknown) => {
       await call("lanes.deferRebaseSuggestion", args, undefined, false);
     },
-    listAutoRebaseStatuses: () => call("lanes.listAutoRebaseStatuses", {}, []),
+    listAutoRebaseStatuses: async (pin?: RuntimePinArg) => {
+      guardPin("listAutoRebaseStatuses", pin);
+      return call("lanes.listAutoRebaseStatuses", {}, []);
+    },
     dismissAutoRebaseStatus: async (args: unknown) => {
       await call("lanes.dismissAutoRebaseStatus", args, undefined, false);
     },

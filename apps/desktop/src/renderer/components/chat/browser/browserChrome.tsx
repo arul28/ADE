@@ -113,7 +113,7 @@ export const CHROME_FIELD_NO_HALO = "focus:shadow-none! focus-visible:shadow-non
 /** Every strip under the chrome row — find, handoff, approval — is this tall. */
 export const CHROME_BAR_CLASS = "h-8";
 /** The hairline that separates one strip from the next. */
-export const CHROME_HAIRLINE = "border-white/[0.07]";
+export const CHROME_HAIRLINE = "border-fg/[0.07]";
 
 /*
   The menu vocabulary is app-wide, not the browser's.
@@ -146,7 +146,7 @@ export function MenuSwitch({ checked }: { checked: boolean }) {
         "transition-colors duration-[120ms] ease-out",
         checked
           ? "border-[color-mix(in_srgb,var(--color-accent)_45%,transparent)] bg-[color-mix(in_srgb,var(--color-accent)_55%,transparent)]"
-          : "border-white/[0.12] bg-white/[0.06]",
+          : "border-fg/[0.12] bg-fg/[0.06]",
       )}
     >
       <span

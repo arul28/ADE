@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { ArrowRight } from "@phosphor-icons/react";
-import { SignInCard } from "../account/AccountPage";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { GlassSignInCard } from "./GlassSignInCard";
+import { GateBackdrop } from "./GateBackdrop";
+import { WebSignInGate } from "./WebSignInGate";
 import { accountGateMode, accountSessionState, useAccountStatus } from "../../lib/account";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { WelcomeVideoGate } from "./WelcomeVideoGate";
+import "./launchGateGlass.css";
 
 type LaunchGateProps = { children: ReactNode };
 
@@ -21,94 +23,12 @@ export function LaunchGate({ children }: LaunchGateProps) {
  * the `recoverable` case the desktop gate handles.
  */
 function WebLaunchGate({ children }: LaunchGateProps) {
-  const { status, loading } = useAccountStatus();
+  const { status } = useAccountStatus();
 
   if (status.signedIn) return children;
 
-  return (
-    <div
-      data-testid="launch-gate"
-      data-mode="web"
-      style={{
-        position: "fixed",
-        inset: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        overflow: "auto",
-        padding: 24,
-        background: COLORS.pageBg,
-        color: COLORS.textPrimary,
-      }}
-    >
-      <style>{WEB_GATE_KEYFRAMES}</style>
-      <div
-        style={{
-          width: "min(440px, 100%)",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: 14,
-          animation: "ade-launch-gate-rise 420ms cubic-bezier(0.16, 1, 0.3, 1) both",
-        }}
-      >
-        {loading ? (
-          <div
-            role="status"
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 12,
-              fontFamily: SANS_FONT,
-              fontSize: 12.5,
-              color: COLORS.textSecondary,
-            }}
-          >
-            <img
-              src="./logo.png"
-              alt="ADE"
-              draggable={false}
-              style={{
-                height: 34,
-                opacity: 0.95,
-                animation: "ade-launch-gate-pulse 1.8s ease-in-out infinite",
-              }}
-            />
-            Checking your ADE account…
-          </div>
-        ) : (
-          <SignInCard
-            configured={status.configured !== false}
-            onSignedIn={() => undefined}
-            sessionState={accountSessionState(status)}
-          />
-        )}
-      </div>
-    </div>
-  );
+  return <WebSignInGate />;
 }
-
-/**
- * Motion is decoration here, so it yields entirely to a reduced-motion
- * preference rather than being merely slowed down.
- */
-const WEB_GATE_KEYFRAMES = `
-@keyframes ade-launch-gate-rise {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: none; }
-}
-@keyframes ade-launch-gate-pulse {
-  0%, 100% { opacity: 0.95; transform: scale(1); }
-  50% { opacity: 0.6; transform: scale(0.97); }
-}
-@media (prefers-reduced-motion: reduce) {
-  [data-testid="launch-gate"][data-mode="web"] *,
-  [data-testid="launch-gate"][data-mode="web"] {
-    animation: none !important;
-  }
-}
-`;
 
 function DesktopLaunchGate({ children }: LaunchGateProps) {
   const { status, loading: accountLoading } = useAccountStatus();
@@ -179,20 +99,8 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
   if (resolved) return children;
 
   return (
-    <div
-      data-testid="launch-gate"
-      style={{
-        position: "fixed",
-        inset: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        overflow: "auto",
-        padding: 24,
-        background: COLORS.pageBg,
-        color: COLORS.textPrimary,
-      }}
-    >
+    <div data-testid="launch-gate" className="ade-gate">
+      <GateBackdrop />
       <div
         data-testid="launch-gate-drag-region"
         data-app-region="drag"
@@ -211,16 +119,8 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
         }}
       />
       {showAccountChoice ? (
-        <div
-          style={{
-            width: "min(440px, 100%)",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            gap: 14,
-          }}
-        >
-          <SignInCard
+        <div className="ade-gate-stack">
+          <GlassSignInCard
             configured={status.configured !== false}
             onSignedIn={enterAde}
             sessionState={accountSessionState(status)}
@@ -235,23 +135,7 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
             permanent shell bar nags on every surface until they sign in.
           */}
           {gateMode === "recoverable" ? (
-            <button
-              type="button"
-              onClick={enterAde}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                border: 0,
-                padding: "7px 10px",
-                background: "transparent",
-                color: COLORS.textSecondary,
-                cursor: "pointer",
-                fontFamily: SANS_FONT,
-                fontSize: 12.5,
-                WebkitAppRegion: "no-drag",
-              } as CSSProperties}
-            >
+            <button type="button" className="ade-gate-continue" onClick={enterAde}>
               Continue to your work
               <ArrowRight size={13} weight="bold" />
             </button>

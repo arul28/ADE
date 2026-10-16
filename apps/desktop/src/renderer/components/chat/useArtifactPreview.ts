@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { ComputerUseArtifactView } from "../../../shared/types";
 import {
   localArtifactMediaUrl,
@@ -131,11 +131,12 @@ const EMPTY_PREVIEW: PreviewState = {
   failure: null,
 };
 
-export function useArtifactPreview(
+/** `E` is the element the caller attaches `containerRef` to; a tile uses a div, an inline citation a span. */
+export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   artifact: ComputerUseArtifactView,
   allowLocalArtifactProtocol: boolean,
 ): {
-  containerRef: React.RefObject<HTMLDivElement>;
+  containerRef: RefObject<E>;
   preview: string | null;
   loading: boolean;
   failed: boolean;
@@ -143,11 +144,11 @@ export function useArtifactPreview(
   onMediaError: () => void;
 } {
   const scope = useChatRuntimeScope();
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<E>(null);
   const [visible, setVisible] = useState(false);
   const [state, setState] = useState<PreviewState>(EMPTY_PREVIEW);
-  // Set once the remote stream failed, so the retry takes the data URL read.
-  const [remoteStreamRefused, setRemoteStreamRefused] = useState(false);
+  // Set once a stream failed, so the retry takes the data URL read.
+  const [streamRefused, setStreamRefused] = useState(false);
   const remote = scope.binding?.kind === "remote" ? scope.binding : null;
   const targetId = remote?.targetId ?? null;
   const projectId = remote?.projectId ?? null;
@@ -173,7 +174,7 @@ export function useArtifactPreview(
 
   useEffect(() => {
     setState(EMPTY_PREVIEW);
-    setRemoteStreamRefused(false);
+    setStreamRefused(false);
   }, [artifact.id, artifact.uri]);
 
   // The machine came back: load again instead of keeping "is offline".
@@ -193,7 +194,7 @@ export function useArtifactPreview(
     ) return;
     const video = isVideoArtifact(artifact);
     // Images only: `protocol.handle` cannot serve the tail read a long video needs.
-    const localStream = allowLocalArtifactProtocol && !video
+    const localStream = allowLocalArtifactProtocol && !video && !streamRefused
       ? localArtifactStreamUrl(artifact.uri, scope.rootPath)
       : null;
     if (localStream) {
@@ -214,7 +215,7 @@ export function useArtifactPreview(
             preview: playableMediaDataUrl(dataUrl),
             source: dataUrl ? "data-url" : null,
             // A machine that refused to stream and then sent nothing is the cause.
-            failure: !dataUrl && remoteStreamRefused ? "unsent" : s.failure,
+            failure: !dataUrl && streamRefused && scope.isRemote ? "unsent" : s.failure,
             loading: false,
             loaded: true,
           }));
@@ -233,7 +234,8 @@ export function useArtifactPreview(
     // Images on a paired machine stay on the data URL read; a video has no size cap this way.
     const mediaServer = video
       && !isWebClientMode()
-      && (allowLocalArtifactProtocol || (!remoteStreamRefused && Boolean(targetId && projectId)));
+      && !streamRefused
+      && (allowLocalArtifactProtocol || Boolean(targetId && projectId));
     if (!mediaServer) {
       readDataUrl();
       return () => {
@@ -276,7 +278,7 @@ export function useArtifactPreview(
     projectId,
     remoteOffline,
     remoteRoot,
-    remoteStreamRefused,
+    streamRefused,
     scope.isRemote,
     scope.pin,
     scope.rootPath,
@@ -285,10 +287,12 @@ export function useArtifactPreview(
   ]);
 
   const onMediaError = useCallback(() => {
-    if (source === "remote-stream") {
-      // A paired machine on an older ADE has no range read. Try the capped
-      // data URL once before calling the preview broken.
-      setRemoteStreamRefused(true);
+    if (source === "remote-stream" || source === "local-stream") {
+      // A paired machine on an older ADE has no range read, and an older main
+      // may refuse a stream it cannot place. Try the capped data URL once,
+      // which the host reads for this chat's project, before calling the
+      // preview broken.
+      setStreamRefused(true);
       setState((s) => ({ ...s, preview: null, source: null, loaded: false }));
       return;
     }

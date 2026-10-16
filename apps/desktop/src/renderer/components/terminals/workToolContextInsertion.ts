@@ -1,5 +1,6 @@
 import { useCallback, useRef } from "react";
 import type {
+  AgentChatContextAttachment,
   AgentChatFileRef,
   AppControlContextItem,
   IosElementContextItem,
@@ -8,11 +9,17 @@ import type {
 } from "../../../shared/types";
 import type { WorkDraftKind } from "../../state/appStore";
 import {
+  formatBrowserTabMentionForPrompt,
+  formatBrowserTabMentionToken,
+  type BrowserTabMentionTarget,
+} from "../../../shared/browserTabMention";
+import {
   formatAppControlContextForPrompt,
   formatBuiltInBrowserContextForPrompt,
   formatIosElementContextForPrompt,
   normalizeBuiltInBrowserContextItem,
 } from "../../lib/visualContextFormatting";
+import { buildChatContextAttachmentPrompt } from "../../../shared/chatContextAttachments";
 import {
   dispatchWorkPtyContextInserted,
   type WorkPtyContextInsertKind,
@@ -84,6 +91,8 @@ export type WorkToolContextInsertion = {
   addIosContext: (item: IosElementContextItem) => void;
   addAppControlContext: (item: AppControlContextItem) => void;
   addBuiltInBrowserContext: (item: unknown) => void;
+  addContextAttachment: (attachment: AgentChatContextAttachment) => void;
+  attachBrowserTab: (tab: BrowserTabMentionTarget) => void;
   insertDraft: (text: string) => void;
 };
 
@@ -200,6 +209,29 @@ export function useWorkToolContextInsertion(args: {
     );
   }, [insertContext]);
 
+  /** An issue (Linear or GitHub) attached as chat context, or pasted as text into a CLI. */
+  const addContextAttachment = useCallback((attachment: AgentChatContextAttachment) => {
+    insertContext(
+      "ade:agent-chat:add-context-attachment",
+      "attachment",
+      attachment,
+      "issue",
+      (value) => buildChatContextAttachmentPrompt([value]) || null,
+    );
+  }, [insertContext]);
+
+  // A chat gets the tab as a chip at its caret; a CLI agent gets the same
+  // facts as one pasted line.
+  const attachBrowserTab = useCallback((tab: BrowserTabMentionTarget) => {
+    insertContext(
+      "ade:agent-chat:insert-browser-tab",
+      "token",
+      formatBrowserTabMentionToken(tab),
+      "browser",
+      () => formatBrowserTabMentionForPrompt(tab),
+    );
+  }, [insertContext]);
+
   const insertDraft = useCallback((text: string) => {
     withContextTarget(
       "Open a chat, draft, or agent CLI session in this lane before inserting draft text.",
@@ -213,5 +245,13 @@ export function useWorkToolContextInsertion(args: {
     );
   }, [insertIntoPty, withContextTarget]);
 
-  return { addAttachment, addIosContext, addAppControlContext, addBuiltInBrowserContext, insertDraft };
+  return {
+    addAttachment,
+    addIosContext,
+    addAppControlContext,
+    addBuiltInBrowserContext,
+    addContextAttachment,
+    attachBrowserTab,
+    insertDraft,
+  };
 }

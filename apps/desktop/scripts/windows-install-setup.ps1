@@ -5,13 +5,84 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$AppExecutableName,
   [ValidateSet("stable", "beta", "alpha")]
-  [string]$PackageChannel = "stable"
+  [string]$PackageChannel = "stable",
+  # An in-place update (the NSIS installer runs with --updated). Only the
+  # terminal shim is refreshed here. The background service is the desktop
+  # app's job on its first launch after an update (`runUpdateTransaction`
+  # reinstalls, restarts and verifies it), so reading its status and starting it
+  # here as well cost 27s of every update (measured: service_status_read 9.1s,
+  # brain_start 18.2s) before ADE could reopen, only to be redone. A failure in
+  # an update is logged and rolled back but never fails the installer: see the
+  # end of the catch block below.
+  [switch]$Updating
 )
 
 $ErrorActionPreference = "Stop"
 
 function Restore-ProcessValue([string]$Name, [string]$Value, [bool]$WasPresent) {
   [Environment]::SetEnvironmentVariable($Name, $(if ($WasPresent) { $Value } else { $null }), "Process")
+}
+
+# Runs the CLI with its stderr dropped and returns its stdout as one string.
+# Windows PowerShell 5.1 turns a redirected native stderr line into a
+# terminating error under "Stop"; a warning the CLI prints must not fail the
+# install, so the preference is "Continue" in this scope only. The exit code
+# decides: $LASTEXITCODE is still the CLI's when this returns.
+function Invoke-CliQuiet([string[]]$Arguments) {
+  $ErrorActionPreference = "Continue"
+  & $cliWrapper @Arguments 2>$null | Out-String
+}
+
+# Appends one timing line per install step to <ADE_HOME>/runtime/install-steps.log.
+#
+# The installer is the one part of an ADE update that leaves no account of
+# itself: electron-builder's common.nsh sets `ShowInstDetails nevershow`, NSIS
+# writes no log, and the desktop app is not running, so the minutes between
+# `autoUpdate.quit_and_install` and the new version's first event could only be
+# attributed by reading file mtimes afterwards. These lines close that gap.
+#
+# Never fatal, and never a reason an install fails: a step that cannot write its
+# own timing still did its work.
+function Write-AdeInstallStep([string]$Step, [double]$Seconds, [string]$Detail = "") {
+  try {
+    if ([string]::IsNullOrWhiteSpace($env:ADE_HOME)) { return }
+    $logDir = Join-Path $env:ADE_HOME "runtime"
+    if (-not (Test-Path -LiteralPath $logDir -PathType Container)) {
+      New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    }
+    $line = "{0} install-setup {1} {2:N2}s{3}" -f `
+      ([DateTime]::UtcNow.ToString("o")), $Step, $Seconds, $(if ($Detail) { " $Detail" } else { "" })
+    Add-Content -LiteralPath (Join-Path $logDir "install-steps.log") -Value $line -Encoding UTF8
+  } catch {
+    # Best effort only.
+  }
+}
+
+# Runs one install step, timing it, and records how long it took either way.
+#
+# A native command that exits nonzero does NOT throw, not even under
+# `$ErrorActionPreference = "Stop"` -- every caller here checks $LASTEXITCODE
+# itself, right after this returns. So the exit code is read here too: a step
+# that failed must not be logged as "ok", or the log we added to attribute a slow
+# or broken install would be the one thing lying about it. Only cmdlets run
+# between the body and that read, so $LASTEXITCODE still belongs to the body when
+# the caller sees it.
+function Invoke-AdeTimedStep([string]$Step, [scriptblock]$Body) {
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  try {
+    & $Body
+    $sw.Stop()
+    $exit = $LASTEXITCODE
+    if (($exit -is [int]) -and ($exit -ne 0)) {
+      Write-AdeInstallStep $Step $sw.Elapsed.TotalSeconds "failed exit=$exit"
+    } else {
+      Write-AdeInstallStep $Step $sw.Elapsed.TotalSeconds "ok"
+    }
+  } catch {
+    $sw.Stop()
+    Write-AdeInstallStep $Step $sw.Elapsed.TotalSeconds "failed"
+    throw
+  }
 }
 
 function Get-ShortSha256([string]$Value) {
@@ -93,7 +164,18 @@ try {
   )
   $env:NODE_PATH = $nodePathEntries -join [IO.Path]::PathSeparator
 
-  $serviceStatusJson = (& $cliWrapper serve --service-status --json 2>$null | Out-String)
+  if ($Updating) {
+    Invoke-AdeTimedStep "path_shim_install" { & $pathInstaller $cliTarget }
+    if ($LASTEXITCODE -ne 0) {
+      throw "The ADE terminal command installer exited with code $LASTEXITCODE."
+    }
+    return
+  }
+
+  $serviceStatusJson = $null
+  Invoke-AdeTimedStep "service_status_read" {
+    $script:serviceStatusJson = Invoke-CliQuiet @("serve", "--service-status", "--json")
+  }
   if ($LASTEXITCODE -ne 0) {
     throw "The ADE per-user brain startup state could not be read before setup."
   }
@@ -112,11 +194,16 @@ try {
   $previousServiceRunning = $serviceStatus.running
   $serviceStateKnown = $true
 
-  & $pathInstaller $cliTarget
+  Invoke-AdeTimedStep "path_shim_install" { & $pathInstaller $cliTarget }
   if ($LASTEXITCODE -ne 0) {
     throw "The ADE terminal command installer exited with code $LASTEXITCODE."
   }
-  & $cliWrapper serve --install-service
+  # `brain start`, NOT `serve --install-service`: the latter registers the
+  # service at whatever ADE_DEFAULT_ROLE happens to be, which is unset here,
+  # so the brain came up as role `agent` and refused the desktop app and the
+  # phone (role `cto`) until the app re-registered it. `brain start` pins
+  # `cto`, the same as `install-runtime.ps1`.
+  Invoke-AdeTimedStep "brain_start" { & $cliWrapper brain start }
   if ($LASTEXITCODE -ne 0) {
     throw "The ADE per-user brain startup installer exited with code $LASTEXITCODE."
   }
@@ -124,8 +211,13 @@ try {
   $setupError = $_
   $rollbackErrors = [Collections.Generic.List[string]]::new()
   if ($serviceStateKnown) {
-    $rollbackServiceFlag = if ($previousServiceInstalled) { "--install-service" } else { "--uninstall-service" }
-    & $cliWrapper serve $rollbackServiceFlag 2>$null | Out-Null
+    # Restoring an installed service goes through `brain start` for the same
+    # `cto` reason as the install step above.
+    if ($previousServiceInstalled) {
+      Invoke-CliQuiet @("brain", "start") | Out-Null
+    } else {
+      Invoke-CliQuiet @("serve", "--uninstall-service") | Out-Null
+    }
     if ($LASTEXITCODE -ne 0) {
       $rollbackErrors.Add("could not restore the previous brain startup state (exit $LASTEXITCODE)")
     } elseif ($previousServiceInstalled -and -not $previousServiceRunning) {
@@ -155,8 +247,41 @@ try {
   } catch {
     $rollbackErrors.Add("could not restore the previous user PATH: $($_.Exception.Message)")
   }
+  $failureMessage = if ($rollbackErrors.Count -gt 0) {
+    "ADE setup failed ($($setupError.Exception.Message)) and compensation failed: $($rollbackErrors -join '; ')"
+  } else {
+    $setupError.Exception.Message
+  }
+  # An update must not abort here. The new files are already in place and the
+  # update flow has already stopped and removed the background service, so an
+  # abort leaves no brain and no ADE window: the installer does not relaunch
+  # the app after Abort. Exiting 0 lets it relaunch, and the relaunched app's
+  # update transaction reinstalls the service. The terminal command was rolled
+  # back above; the reason is logged for the next diagnostic report.
+  if ($Updating) {
+    # The previous shim could not be put back either, so the command may be
+    # half-written. The relaunched app rewrites it when this request exists
+    # (adeCliAutoInstall.ts), even on a machine whose one-time install already
+    # ran; it removes the request once the rewrite succeeds.
+    if ($rollbackErrors.Count -gt 0) {
+      try {
+        # The relaunched app inherits the updater's environment, so it looks
+        # under a custom ADE_HOME when one was set; this script replaced that
+        # value with the channel default above.
+        $repairHome = if (-not [string]::IsNullOrWhiteSpace($saved.ADE_HOME.Value)) { $saved.ADE_HOME.Value } else { $env:ADE_HOME }
+        $repairDir = Join-Path $repairHome "runtime"
+        New-Item -ItemType Directory -Path $repairDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $repairDir "cli-shim-repair-request") -Value $failureMessage -Encoding UTF8
+      } catch {
+        $failureMessage = "$failureMessage; could not request a repair: $($_.Exception.Message)"
+      }
+    }
+    Write-AdeInstallStep "update_continues" 0 "terminal command not refreshed: $failureMessage"
+    Write-Warning "ADE could not refresh its terminal command during the update; continuing so ADE can reopen. $failureMessage"
+    exit 0
+  }
   if ($rollbackErrors.Count -gt 0) {
-    throw "ADE setup failed ($($setupError.Exception.Message)) and compensation failed: $($rollbackErrors -join '; ')"
+    throw $failureMessage
   }
   throw $setupError
 } finally {

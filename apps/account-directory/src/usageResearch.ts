@@ -776,7 +776,10 @@ export async function cleanupUsageResearch(
         )
       ))
       where id = 1
-    `).bind(reportCutoff, USAGE_RESEARCH_SWEEP_BATCH_ROWS),
+        -- The sweep runs every minute; without this the total row is rewritten
+        -- (a billed write) on every run even when nothing expired.
+        and exists (select 1 from usage_research_daily where day < ?)
+    `).bind(reportCutoff, USAGE_RESEARCH_SWEEP_BATCH_ROWS, reportCutoff),
     db.prepare(`
       delete from usage_research_daily
       where (install_id, day) in (

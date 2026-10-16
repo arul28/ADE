@@ -577,9 +577,9 @@ describe("device authorization bridge", () => {
     let cleanup: Promise<unknown> | undefined;
 
     await worker.scheduled(
-      {} as ScheduledEvent,
+      { scheduledTime: Date.now(), cron: "* * * * *" } as ScheduledEvent,
       env,
-      { waitUntil: (promise) => { cleanup = promise; } } as ExecutionContext,
+      { waitUntil: (promise) => { cleanup = Promise.all([cleanup, promise]); } } as ExecutionContext,
     );
     await cleanup;
 
@@ -595,9 +595,9 @@ describe("device authorization bridge", () => {
     vi.mocked(Date.now).mockReturnValue(startedAt + 4_201_000);
     cleanup = undefined;
     await worker.scheduled(
-      {} as ScheduledEvent,
+      { scheduledTime: Date.now(), cron: "* * * * *" } as ScheduledEvent,
       env,
-      { waitUntil: (promise) => { cleanup = promise; } } as ExecutionContext,
+      { waitUntil: (promise) => { cleanup = Promise.all([cleanup, promise]); } } as ExecutionContext,
     );
     await cleanup;
     expect(env.DB.deviceRows).toHaveLength(0);
@@ -704,5 +704,206 @@ describe("device authorization bridge", () => {
       { now: () => now },
     );
     expect(blocked.status).toBe(429);
+  });
+});
+
+/**
+ * `/device/approve`: a phone that already has the account approves a sign-in
+ * for another computer. Clerk's Backend API is the process boundary, so it is
+ * the one thing faked; the route, the store and the browser page are real.
+ */
+describe("approval from a signed-in ADE app", () => {
+  const deviceSecret = "daemon-device-secret-with-at-least-32-bytes";
+  const startedAt = Date.parse("2026-10-12T12:00:00.000Z");
+  const secretKey = "sk_test_directory";
+
+  /** Clerk: mints tickets at the Backend API and exchanges codes at the issuer. */
+  function clerk(options: { refuseTickets?: boolean } = {}) {
+    const ticketRequests: Array<{ authorization: string | null; body: Record<string, unknown> }> = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://api.clerk.com/v1/sign_in_tokens") {
+        ticketRequests.push({
+          authorization: new Headers(init?.headers).get("authorization"),
+          body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+        });
+        return options.refuseTickets
+          ? new Response(JSON.stringify({ errors: [{ code: "resource_not_found" }] }), { status: 404 })
+          : new Response(JSON.stringify({ url: "https://accounts.clerk.test/sign-in?__clerk_ticket=one-time" }), { status: 200 });
+      }
+      if (url === `${ISSUER}/oauth/token`) {
+        return new Response(JSON.stringify({
+          access_token: "phone-approved-access-token",
+          refresh_token: "phone-approved-refresh-token",
+          token_type: "Bearer",
+          expires_in: 3600,
+        }), { status: 200 });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+    return { fetchImpl, ticketRequests };
+  }
+
+  async function startSignIn(env: ReturnType<typeof makeEnv>, machineName = "Build VM") {
+    const created = await handleRequest(
+      request("POST", "/device/code", undefined, { device_secret: deviceSecret, machine_name: machineName }),
+      env,
+      { now: () => startedAt },
+    );
+    return await created.json() as { device_code: string; user_code: string };
+  }
+
+  const read = (env: ReturnType<typeof makeEnv>, userCode: string, token: string, now = startedAt) =>
+    handleRequest(request("GET", `/device/approve?user_code=${userCode}`, token), env, { now: () => now });
+
+  it("signs the computer in as the person who approved, with one ticket and no password", async () => {
+    const env = makeEnv({ CLERK_SECRET_KEY: secretKey } as never);
+    const { fetchImpl, ticketRequests } = clerk();
+    const phone = await mintToken({ sub: "user_phone" });
+    const device = await startSignIn(env);
+
+    // The app asks first, and nothing changes: no ticket, the code still open.
+    const preview = await read(env, device.user_code, phone);
+    expect(preview.status).toBe(200);
+    expect(await preview.json()).toEqual({ status: "pending", machine_name: "Build VM" });
+    expect(ticketRequests).toHaveLength(0);
+
+    const approved = await handleRequest(
+      request("POST", "/device/approve", phone, { user_code: device.user_code }),
+      env,
+      { now: () => startedAt, fetchImpl },
+    );
+    expect(approved.status).toBe(200);
+    const approval = await approved.json() as { url: string };
+    // The ticket is for the verified caller, never for a user the request names.
+    expect(ticketRequests).toEqual([{
+      authorization: `Bearer ${secretKey}`,
+      body: { user_id: "user_phone", expires_in_seconds: expect.any(Number) },
+    }]);
+    // One link: Clerk's ticket page, which continues to this sign-in's own
+    // authorize URL, so the session lands on the computer that holds the code.
+    const signIn = new URL(approval.url);
+    expect(signIn.origin + signIn.pathname).toBe("https://accounts.clerk.test/sign-in");
+    expect(signIn.searchParams.get("__clerk_ticket")).toBe("one-time");
+    const authorize = new URL(signIn.searchParams.get("redirect_url")!);
+    expect(authorize.origin + authorize.pathname).toBe(`${ISSUER}/oauth/authorize`);
+    expect(authorize.searchParams.get("redirect_uri")).toBe("https://directory.test/device/callback");
+
+    // The code is claimed: a second approval and the browser page are refused,
+    // and no second ticket is made.
+    expect(await (await read(env, device.user_code, phone)).json()).toEqual({ status: "started", machine_name: null });
+    const again = await handleRequest(
+      request("POST", "/device/approve", phone, { user_code: device.user_code }),
+      env,
+      { now: () => startedAt, fetchImpl },
+    );
+    expect(again.status).toBe(409);
+    expect((await handleRequest(deviceConfirmationRequest(device.user_code), env, { now: () => startedAt })).status).toBe(409);
+    expect(ticketRequests).toHaveLength(1);
+
+    // Clerk returns to the callback, and the computer collects the session.
+    const callback = await handleRequest(
+      new Request(`https://directory.test/device/callback?code=clerk-code&state=${encodeURIComponent(authorize.searchParams.get("state")!)}`),
+      env,
+      { now: () => startedAt, fetchImpl },
+    );
+    expect(callback.status).toBe(200);
+    expect(await (await read(env, device.user_code, phone)).json()).toEqual({ status: "approved", machine_name: null });
+    const collected = await handleRequest(
+      request("POST", "/device/token", undefined, { device_code: device.device_code, device_secret: deviceSecret }),
+      env,
+      { now: () => startedAt + 6_000 },
+    );
+    expect(collected.status).toBe(200);
+    expect(await collected.json()).toMatchObject({
+      access_token: "phone-approved-access-token",
+      refresh_token: "phone-approved-refresh-token",
+    });
+  });
+
+  it.each([
+    ["no account token", { token: null }, 401, "unauthorized"],
+    ["a token that is not from this account system", { token: "not-a-jwt" }, 401, "unauthorized"],
+    ["a code nobody holds", { userCode: "ZZZZ-ZZZZ" }, 404, "not_found"],
+    ["a malformed code", { userCode: "nope" }, 400, "invalid_request"],
+    ["no Clerk key on this deployment", { secretKey: null }, 503, "unavailable"],
+    ["Clerk refusing the ticket", { refuseTickets: true }, 502, "unavailable"],
+  ] as Array<[string, { token?: string | null; userCode?: string; secretKey?: string | null; refuseTickets?: boolean }, number, string]>)(
+    "refuses an approval with %s, and leaves the code usable in the browser",
+    async (_label, variant, status, error) => {
+      const env = makeEnv(variant.secretKey === null ? {} : { CLERK_SECRET_KEY: secretKey } as never);
+      const { fetchImpl, ticketRequests } = clerk({ refuseTickets: variant.refuseTickets });
+      const phone = await mintToken({ sub: "user_phone" });
+      const device = await startSignIn(env);
+      const token = variant.token === undefined ? phone : variant.token ?? undefined;
+
+      const refused = await handleRequest(
+        request("POST", "/device/approve", token, { user_code: variant.userCode ?? device.user_code }),
+        env,
+        { now: () => startedAt, fetchImpl },
+      );
+      expect(refused.status).toBe(status);
+      expect(await refused.json()).toMatchObject({ error });
+      // Only a ticket request that Clerk itself refused reached Clerk at all.
+      expect(ticketRequests).toHaveLength(variant.refuseTickets ? 1 : 0);
+
+      // A refusal claims nothing: the code is still open, and the browser page
+      // still starts the sign-in for it.
+      expect(await (await read(env, device.user_code, phone)).json()).toEqual({ status: "pending", machine_name: "Build VM" });
+      const browser = await handleRequest(deviceConfirmationRequest(device.user_code), env, { now: () => startedAt });
+      expect(browser.status).toBe(200);
+      expect((await signInUrlFrom(browser)).pathname).toBe("/oauth/authorize");
+    },
+  );
+
+  it("reports an approved code as expired once the computer can no longer collect it, and as approved once it did", async () => {
+    const env = makeEnv({ CLERK_SECRET_KEY: secretKey } as never);
+    const { fetchImpl } = clerk();
+    const phone = await mintToken({ sub: "user_phone" });
+    const afterExpiry = startedAt + 11 * 60_000;
+
+    async function approveThrough(collect: boolean) {
+      const device = await startSignIn(env);
+      const approval = await (await handleRequest(
+        request("POST", "/device/approve", phone, { user_code: device.user_code }),
+        env,
+        { now: () => startedAt, fetchImpl },
+      )).json() as { url: string };
+      const state = new URL(new URL(approval.url).searchParams.get("redirect_url")!).searchParams.get("state")!;
+      await handleRequest(
+        new Request(`https://directory.test/device/callback?code=clerk-code&state=${encodeURIComponent(state)}`),
+        env,
+        { now: () => startedAt, fetchImpl },
+      );
+      if (collect) {
+        const collected = await handleRequest(
+          request("POST", "/device/token", undefined, { device_code: device.device_code, device_secret: deviceSecret }),
+          env,
+          { now: () => startedAt + 6_000 },
+        );
+        expect(collected.status, "setup: the computer collects its session").toBe(200);
+      }
+      return device;
+    }
+
+    // Approved in time, but the computer never came back for it. The token
+    // route refuses it now, so the app must not call it done.
+    const abandoned = await approveThrough(false);
+    expect((await read(env, abandoned.user_code, phone)).status).toBe(200);
+    const late = await read(env, abandoned.user_code, phone, afterExpiry);
+    expect(late.status).toBe(410);
+    expect(await late.json()).toEqual({ error: "expired" });
+    const tooLate = await handleRequest(
+      request("POST", "/device/token", undefined, { device_code: abandoned.device_code, device_secret: deviceSecret }),
+      env,
+      { now: () => afterExpiry },
+    );
+    expect(await tooLate.json()).toEqual({ error: "expired" });
+
+    // Collected in time: that stays true after the code's own time is up.
+    const done = await approveThrough(true);
+    const stillDone = await read(env, done.user_code, phone, afterExpiry);
+    expect(stillDone.status).toBe(200);
+    expect(await stillDone.json()).toEqual({ status: "approved", machine_name: null });
   });
 });

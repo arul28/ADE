@@ -9,8 +9,7 @@ extension WorkChatSessionView {
   /// markdown through the bounded streaming parser; every completed message
   /// keeps the whole-text block cache path.
   var streamingAssistantMessageId: String? {
-    guard shouldShowInterruptControl else { return nil }
-    return timelineSnapshot.latestMessageAssistantId
+    frame?.streamingAssistantMessageId
   }
 
   @ViewBuilder
@@ -31,6 +30,17 @@ extension WorkChatSessionView {
         model: model,
         onCopyMessage: { copyAssistantMarkdown(messageId: model.messageId) },
         onOpenFullOutput: { openAssistantMessageFullOutput(messageId: model.messageId) }
+      )
+      .equatable()
+    case .userSegment(let model):
+      WorkChatMessageBubble(
+        message: model.message,
+        maxUserBubbleWidth: maxUserBubbleWidth,
+        userSegment: model.segment,
+        onRunUnprocessed: onRunUnprocessedMessage,
+        onEditUnprocessed: onEditUnprocessedMessage,
+        onDismissUnprocessed: onDismissUnprocessedMessage,
+        onOpenFullOutput: {}
       )
       .equatable()
     case .assistantMonospaced(let model):
@@ -105,6 +115,10 @@ extension WorkChatSessionView {
       if card.isHiddenAfterDismiss
         || (card.variant == "claude_session_quota" && chatSummaryContext.usageLimitResume != nil) {
         EmptyView()
+      } else if card.variant == WorkMcpAppLimits.cardVariant {
+        // An MCP App: the page a server ships with a tool, run in a web view
+        // of its own. Where this phone cannot run it, its fallback text stands.
+        WorkMcpAppCardView(card: card)
       } else if card.variant == "lane_setup", let launchStore = SyncService.shared?.chatLaunchStore {
         // The instant-lane setup record. Rendered from the live launch snapshot
         // while this device holds one, from the card's own rows otherwise.
@@ -125,12 +139,6 @@ extension WorkChatSessionView {
         )
         .equatable()
       }
-    case .usageSummary(let summary):
-      WorkTurnUsageSummaryBanner(
-        summary: summary,
-        provider: chatSummaryContext.provider,
-        modelLabel: chatSummaryContext.modelLabel
-      )
     case .commandCard(let commandCard):
       WorkCommandCardView(
         card: commandCard,
@@ -169,50 +177,25 @@ extension WorkChatSessionView {
       timelineToolGroup(group, entryId: entry.id)
     case .changedFiles(let group):
       timelineChangedFiles(group, entryId: entry.id)
-    case .artifact(let artifact):
-      timelineArtifact(artifact, entryId: entry.id)
-    case .turnSeparator(let separator):
-      WorkTurnSeparatorView(separator: separator)
+    case .proof(let artifacts):
+      timelineProof(artifacts)
     case .turnEndMarker(let marker):
-      let activity = turnToolActivity.completedByTurnId[marker.turnId]
-      let files = turnToolActivity.completedFilesByTurnId[marker.turnId]
-      let isLatestTurnEnd = marker.turnId == timelineSnapshot.latestTurnEndTurnId
-      let usageViewModel: WorkContextUsageViewModel? = isLatestTurnEnd
-        ? contextUsageViewModelCache.value(
-            sessionId: session.id,
-            transcript: transcript,
-            transcriptRenderSignature: transcriptRenderSignature,
-            provider: chatSummaryContext.provider,
-            fallbackContextWindow: chatSummaryContext.contextWindowFallback
-          )
-        : nil
-      let compact = workResolveContextCompactControl(
-        provider: chatSummaryContext.provider,
-        usageState: usageViewModel?.state,
-        canSend: canSendMessages,
-        pendingInput: hasPendingInputGate,
-        turnBusy: sending || sendingSnapshot || actionInFlight || isStreamingTurn || sessionStatus == "active"
-      )
       WorkTurnEndMarkerView(
         marker: marker,
-        toolCount: activity?.count ?? 0,
-        fileCount: files?.files.count ?? 0,
-        onOpenActivity: (activity != nil || files != nil)
-          ? { toolActivitySheet = .completed(marker.turnId) }
-          : nil,
-        usageViewModel: usageViewModel,
-        modelLabel: chatSummaryContext.modelLabel,
-        compact: compact,
-        onCompact: compact == .hidden
-          ? nil
-          : {
-              Task { @MainActor in
-                _ = await onSend("/compact", [], .queue)
-              }
-        }
+        work: marker.workSummaryInFold ? .none : turnWorkDisclosure(turnKey: marker.turnId),
+        onToggleWork: { toggleTurnWork($0, turnKey: marker.turnId) },
+        onToggleWorkItem: { toggleTurnWorkItem($0, turnKey: marker.turnId) },
+        onOpenProof: { openProofDrawer(.turn(marker.proofArtifacts)) }
       )
     case .turnFold(let model):
-      WorkTurnFoldRow(model: model) {
+      let activityKey = model.turnEndTurnId ?? model.turnId
+      WorkTurnFoldRow(
+        model: model,
+        work: model.isExpanded ? turnWorkDisclosure(turnKey: activityKey) : .none,
+        onToggleWork: { toggleTurnWork($0, turnKey: activityKey) },
+        onToggleWorkItem: { toggleTurnWorkItem($0, turnKey: activityKey) },
+        onOpenProof: { openProofDrawer(.turn(ids: model.proofArtifactIds)) }
+      ) {
         toggleCard(model.id, entryId: entry.id)
       }
     case .backgroundJob(let job):
@@ -272,7 +255,7 @@ extension WorkChatSessionView {
         },
         fallbackProvider: chatSummaryContext.provider,
         maxCardHeight: workInlinePendingInputMaxHeight(
-          transcriptViewportHeight: scrollViewportHeight
+          transcriptViewportHeight: transcriptVisibleHeight
         )
       )
       .id("pending-question-\(question.id)")
@@ -312,6 +295,18 @@ extension WorkChatSessionView {
 
   @ViewBuilder
   func timelineToolGroup(_ group: WorkToolGroupModel, entryId: String) -> some View {
+    if !group.computerUseActions.isEmpty {
+      WorkComputerUseRunView(
+        actions: group.computerUseActions,
+        compactAll: group.computerUseCompact
+      )
+    } else {
+      toolCallsPanel(group, entryId: entryId)
+    }
+  }
+
+  @ViewBuilder
+  private func toolCallsPanel(_ group: WorkToolGroupModel, entryId: String) -> some View {
     WorkToolCallsPanelView(
       group: group,
       isExpanded: cardIsExpanded(group.id, entryId: entryId),
@@ -404,7 +399,14 @@ extension WorkChatSessionView {
       WorkEventCardView(
         card: card,
         onOpenFile: { path in Task { await onOpenFile(path) } },
-        onOpenPr: { number in Task { await onOpenPr(number) } }
+        onOpenPr: { number in Task { await onOpenPr(number) } },
+        onCompact: { Task {
+          if await onSend("/compact", [], .queue) {
+            errorMessage = nil
+          } else if errorMessage == nil {
+            errorMessage = "Couldn’t start compacting. Try again."
+          }
+        } }
       )
       .equatable()
     }
@@ -413,35 +415,56 @@ extension WorkChatSessionView {
   /// Reasoning is "live" when the session is streaming AND this is the most
   /// recent reasoning entry in the transcript. Everything older collapses.
   func isReasoningLive(_ card: WorkEventCardModel) -> Bool {
-    guard isStreamingTurn else { return false }
-    let latestReasoningId = eventCards.last(where: { $0.kind == "reasoning" })?.id
-    return card.id == latestReasoningId
+    guard frame?.isReasoningLive == true else { return false }
+    return card.id == frame?.latestReasoningCardId
   }
 
-  @ViewBuilder
-  func timelineArtifact(_ artifact: ComputerUseArtifactSummary, entryId: String) -> some View {
-    WorkArtifactView(
-      artifact: artifact,
-      content: artifactContent[artifact.id],
-      isExpanded: cardIsExpanded(artifact.id, entryId: entryId),
-      onToggle: { toggleCard(artifact.id, entryId: entryId) },
-      onAppear: { Task { await onLoadArtifact(artifact, .preview) } },
-      onPlay: { Task { await onLoadArtifact(artifact, .play) } },
-      onOpenImage: { image in
-        fullscreenImage = WorkFullscreenImage(title: artifact.title, image: image)
-      }
-    )
+  /// Proof filed mid-turn, as one quiet count line (desktop's inline
+  /// `ChatProofCount`). The pictures live on the rows that filed them and in
+  /// the drawer, which the line opens narrowed to these records.
+  func timelineProof(_ artifacts: [ComputerUseArtifactSummary]) -> some View {
+    HStack(spacing: 0) {
+      WorkProofCountLink(count: artifacts.count, onOpen: { openProofDrawer(.turn(artifacts)) })
+      Spacer(minLength: 0)
+    }
+  }
+
+  /// Opens the proof drawer, narrowed to `focus` when a thread link names the
+  /// records it counted. Dismissing the drawer clears the focus.
+  func openProofDrawer(_ focus: WorkProofDrawerFocus? = nil) {
+    proofDrawerFocus = focus
+    artifactDrawerPresented = true
   }
 }
 
-struct WorkTurnToolActivityIndex {
+/// `3 files changed +12 −4` for a turn's files row.
+func workTurnFileStat(_ files: WorkChangedFilesGroupModel?) -> (count: Int, additions: Int, deletions: Int)? {
+  guard let files, !files.files.isEmpty else { return nil }
+  return (
+    files.files.count,
+    files.files.reduce(0) { $0 + $1.additions },
+    files.files.reduce(0) { $0 + $1.deletions }
+  )
+}
+
+struct WorkTurnToolActivityIndex: Equatable {
   let completedByTurnId: [String: WorkToolGroupModel]
   let completedFilesByTurnId: [String: WorkChangedFilesGroupModel]
   /// Timeline row ids (`.toolGroup` / `.changedFiles`) flushed into a
   /// turn-end sheet. Presentation hides those exact rows, never a global
   /// member-id or path set that would also swallow an orphan cluster.
   let claimedInlineGroupIds: Set<String>
+  /// Row ids of the tool rows after the last turn end: the running turn's,
+  /// hidden while the chat streams (the working indicator lists them).
+  var activeInlineGroupIds: Set<String> = []
   let active: WorkToolGroupModel?
+
+  static let empty = WorkTurnToolActivityIndex(
+    completedByTurnId: [:],
+    completedFilesByTurnId: [:],
+    claimedInlineGroupIds: [],
+    active: nil
+  )
 }
 
 enum WorkToolActivitySheetSelection: Identifiable, Equatable {
@@ -535,9 +558,6 @@ func workTurnToolActivityIndex(from entries: [WorkTimelineEntry]) -> WorkTurnToo
       claimedInlineGroupIds.formUnion(pendingGroupIds)
       clearPending()
       currentUserTurnId = nil
-    case .turnSeparator:
-      clearPending()
-      currentUserTurnId = nil
     default:
       continue
     }
@@ -547,6 +567,7 @@ func workTurnToolActivityIndex(from entries: [WorkTimelineEntry]) -> WorkTurnToo
     completedByTurnId: completed,
     completedFilesByTurnId: completedFiles,
     claimedInlineGroupIds: claimedInlineGroupIds,
+    activeInlineGroupIds: Set(pendingGroupIds),
     active: mergedGroup(id: "turn-activity:active", members: pendingMembers)
   )
 }
@@ -567,6 +588,7 @@ struct WorkAssistantMarkdownBlockRow: View, Equatable {
       block: model.block,
       isStreamingTail: model.isStreamingTail
     )
+      .environment(\.workSceneMessageId, model.messageId)
       .frame(maxWidth: .infinity, alignment: .leading)
       .workAssistantMessageContextMenu(
         onCopy: onCopyMessage,
@@ -738,6 +760,7 @@ extension WorkChatSessionView {
       .padding(.vertical, 9)
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(ADEColor.surfaceBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+      .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: 14, style: .continuous)
           .stroke(accent.opacity(0.35), lineWidth: 1)

@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
 import { PaneTooltip } from "../ui/PaneTooltip";
 import {
-  WORK_TOOL_DEFINITIONS,
+  visibleWorkToolDefinitions,
   workToolAvailability,
   type WorkToolContext,
 } from "./workTools";
@@ -85,7 +85,8 @@ export function WorkToolPicker({
 }) {
   const theme = useAppStore((s) => s.theme);
   const reasonIdPrefix = useId();
-  const cardCount = WORK_TOOL_DEFINITIONS.length;
+  const definitions = useMemo(() => visibleWorkToolDefinitions(context), [context]);
+  const cardCount = definitions.length;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
   // Starts at nothing highlighted, exactly like t3's launcher: this is a page
@@ -169,7 +170,7 @@ export function WorkToolPicker({
             // it is centred in and the cards clip on the right.
             style={{ gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${CARD_MIN_TRACK_PX}px), 1fr))` }}
           >
-            {WORK_TOOL_DEFINITIONS.map((definition, index) => {
+            {definitions.map((definition, index) => {
               const availability = workToolAvailability(definition.id, context);
               const status = statuses[definition.id];
               const reasonId = `${reasonIdPrefix}-${definition.id}`;
@@ -250,7 +251,11 @@ export function WorkToolPicker({
                       ) : detail ? (
                         <span
                           id={availability.available ? undefined : reasonId}
-                          className="mt-1.5 w-full truncate text-[12px] leading-4 text-muted-fg"
+                          className={cn(
+                            "mt-1.5 w-full truncate text-[12px] leading-4 text-muted-fg transition-opacity duration-150",
+                            status?.stale && detail === status.line && "opacity-50",
+                          )}
+                          data-stale={(status?.stale && detail === status.line) || undefined}
                         >
                           {detail}
                         </span>

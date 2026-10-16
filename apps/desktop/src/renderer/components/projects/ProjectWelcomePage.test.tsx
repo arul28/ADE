@@ -6,6 +6,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
@@ -378,7 +379,7 @@ describe("ProjectWelcomePage web Add project gating", () => {
   it("disables Add project when the account has no machine to add it on", async () => {
     renderWebWelcome(accountSnapshot({ state: "signed_in" }));
 
-    const button = (await screen.findByText("ADD PROJECT")).closest("button");
+    const button = (await screen.findByText("Add project")).closest("button");
     expect((button as HTMLButtonElement).disabled).toBe(true);
     expect((button as HTMLButtonElement).title).toContain("Connect a machine first");
   });
@@ -388,7 +389,7 @@ describe("ProjectWelcomePage web Add project gating", () => {
       accountSnapshot({ state: "signed_in", machines: [accountMachine()] as any }),
     );
 
-    const button = (await screen.findByText("ADD PROJECT")).closest("button");
+    const button = (await screen.findByText("Add project")).closest("button");
     expect((button as HTMLButtonElement).disabled).toBe(false);
 
     fireEvent.click(button as HTMLButtonElement);
@@ -409,7 +410,7 @@ describe("ProjectWelcomePage web Add project gating", () => {
   it("leaves the desktop Add project flow alone", async () => {
     renderWelcome();
 
-    const button = (await screen.findByText("ADD PROJECT")).closest("button");
+    const button = (await screen.findByText("Add project")).closest("button");
     expect((button as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(button as HTMLButtonElement);
 
@@ -449,7 +450,11 @@ describe("ProjectWelcomePage multi-machine recents", () => {
 
     renderWelcome();
 
-    await screen.findByText("Mac Studio", { exact: true });
+    // One card, carrying both machines behind its "2 machines" chip.
+    fireEvent.click(await screen.findByRole("button", { name: /On 2 machines/ }));
+    const menu = screen.getByRole("menu", { name: "Open on machine" });
+    expect(within(menu).getAllByRole("menuitem")).toHaveLength(2);
+    expect(within(menu).getByText("Mac Studio", { exact: true })).toBeTruthy();
     expect(
       document.querySelectorAll('[data-tour="project.recentProject"]'),
     ).toHaveLength(1);
@@ -487,7 +492,10 @@ describe("ProjectWelcomePage multi-machine recents", () => {
 
     renderWelcome();
 
-    await screen.findByText("This machine", { exact: true });
+    // The two locations of one repository settle into its single recents row.
+    await waitFor(() =>
+      expect(document.querySelectorAll('[data-tour="project.recentProject"]')).toHaveLength(1),
+    );
     expect(document.querySelector(`img[src="${projectIcon}"]`)).toBeTruthy();
     expect(screen.queryByText("Last active")).toBeNull();
     expect(screen.queryByText(/on Mac Studio/)).toBeNull();

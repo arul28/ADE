@@ -99,6 +99,7 @@ function paneFrame(args: {
   activeSessionId?: string | null;
   selectedKey?: string | null;
   expandedShelves?: Set<WorkListShelfKind>;
+  expandedDrawers?: Set<string>;
   draftSessionIds?: Set<string>;
   unavailableLaneIds?: Set<string>;
   foreign?: ReturnType<typeof foreignRowsFromAttention>;
@@ -113,6 +114,7 @@ function paneFrame(args: {
     activeSessionId: args.activeSessionId ?? null,
     draftSessionIds: args.draftSessionIds,
     expandedShelves: args.expandedShelves,
+    expandedDrawers: args.expandedDrawers,
     unavailableLaneIds: args.unavailableLaneIds,
     hideNewChat: args.pickerMode,
   });
@@ -399,6 +401,7 @@ describe("WorkSessionsPane cards", () => {
           currentTurnStartedAt: "2026-05-12T11:52:00.000Z",
         }),
       ],
+      expandedDrawers: new Set(["parent"]),
       width: 64,
     });
 
@@ -432,6 +435,7 @@ describe("WorkSessionsPane cards", () => {
           currentTurnStartedAt: "2026-05-12T11:52:00.000Z",
         }),
       ],
+      expandedDrawers: new Set(["parent"]),
       width: 64,
     });
 
@@ -456,6 +460,7 @@ describe("WorkSessionsPane cards", () => {
           attentionMessage: "Which account?",
         }),
       ],
+      expandedDrawers: new Set(["parent"]),
       width: 64,
     });
 
@@ -479,6 +484,7 @@ describe("WorkSessionsPane cards", () => {
           orchestrationParentSessionId: "parent",
         }),
       ],
+      expandedDrawers: new Set(["parent"]),
       width: 64,
     });
 

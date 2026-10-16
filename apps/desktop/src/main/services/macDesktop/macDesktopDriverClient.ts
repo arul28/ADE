@@ -7,8 +7,8 @@
  *   reply   `{"id":"7","ok":true,"result":{…}}` / `{"id":"7","ok":false,"error":{…}}`
  *   event   `{"event":"windows-changed", …}`
  *
- * Restart-with-backoff and the health shape are modelled on
- * `AttentionNotchHelper`, deliberately: the two helpers fail the same ways
+ * Restart-with-backoff and the health shape match `CaptureHelper`,
+ * deliberately: native helpers fail the same ways
  * (missing binary, permission refusal, a build that does not speak this
  * protocol), and the settings surfaces already know how to render that health.
  *
@@ -22,6 +22,9 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 
 import type { Logger } from "../logging/logger";
+
+/** Helper lines that mean ScreenCaptureKit stopped answering this process. */
+const CAPTURE_STALL_PATTERN = /ScreenCaptureKit did not answer|SCStreamErrorDomain Code=-3805/;
 import {
   MAC_DESKTOP_MACOS_ONLY_MESSAGE,
   type MacDesktopDriverHealth,
@@ -49,6 +52,7 @@ export const MAC_DESKTOP_DRIVER_OPS = {
   parkWindow: "window.park",
   unparkWindow: "window.unpark",
   launch: "app.launch",
+  quitApp: "app.quit",
   present: "present",
   observe: "observe",
   input: "input",
@@ -61,6 +65,21 @@ export const MAC_DESKTOP_DRIVER_OPS = {
   stopStream: "stream.stop",
   startRecording: "record.start",
   stopRecording: "record.stop",
+  /**
+   * Windows only: the host's setup/held/locked/edition facts, and the wizard's
+   * one admin step. The Mac helper answers neither; the Windows provider is the
+   * only caller, and only when the host is Windows.
+   */
+  windowsStatus: "windows.status",
+  setupWindows: "windows.setup",
+  /**
+   * Windows only: one lane window raised (restored first when minimized),
+   * minimized, or closed gracefully. Params `{laneId, windowId}`; the result is
+   * `{windowId}`, and `{windowId, closed}` for close. The Mac helper has none.
+   */
+  windowFocus: "window.focus",
+  windowMinimize: "window.minimize",
+  windowClose: "window.close",
 } as const;
 
 /**
@@ -119,6 +138,29 @@ export type MacDesktopDriverClientDeps = {
   resolveExecutablePath: () => string | null;
   logger: Logger;
   platform?: NodeJS.Platform;
+  /**
+   * The platforms this helper runs on. Defaults to `["darwin"]`, so every
+   * existing caller is unchanged; the Windows client passes `["win32"]`.
+   * More than one entry would let one binary serve both, which no build does
+   * today, but the shape stays general rather than a second boolean.
+   */
+  supportedPlatforms?: readonly NodeJS.Platform[];
+  /** The sentence a wrong-platform rejection carries. */
+  unsupportedMessage?: string;
+  /** The health card's title for a wrong-platform host. */
+  unsupportedTitle?: string;
+  /** The health card's name for this driver: "Mac Desktop" or "Windows Desktop". */
+  driverLabel?: string;
+  /** Arguments the helper is spawned with. Windows: `host --ade-home <dir>`. */
+  driverArgs?: readonly string[];
+  /**
+   * Ask the helper to shut down over stdin (`{"type":"quit"}`) and wait a grace
+   * before killing it. Windows only: `SIGTERM`/`kill` is `TerminateProcess`
+   * there, which would skip the native child sign-out the driver must do.
+   */
+  gracefulQuit?: boolean;
+  /** How long a graceful quit waits for the helper to exit before killing it. */
+  quitGraceMs?: number;
   requestTimeoutMs?: number;
   /** Test seam. Defaults to `child_process.spawn`. */
   spawnProcess?: typeof spawn;
@@ -136,10 +178,30 @@ type PendingRequest = {
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout> | null;
   op: string;
+  /** The request as written, so a retired driver's queue can be replayed. */
+  line: string;
 };
+
+/**
+ * The exit code of a Windows driver that retires itself on purpose, after its
+ * reply (`kRetireExitCode` in the native host's common.h): a wedged UI thread,
+ * or an operation past its hard deadline. Not a crash — a fresh driver starts
+ * at once, and the requests it had queued but not begun go to the new one.
+ */
+export const MAC_DESKTOP_DRIVER_RETIRE_EXIT_CODE = 75;
+
+/** The `onDriverLost` reason for a driver that retired itself. */
+export const MAC_DESKTOP_DRIVER_RETIRED_REASON = "retired";
 
 export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   const platform = deps.platform ?? process.platform;
+  const supportedPlatforms = deps.supportedPlatforms ?? (["darwin"] as const);
+  const unsupportedMessage = deps.unsupportedMessage ?? MAC_DESKTOP_MACOS_ONLY_MESSAGE;
+  const unsupportedTitle = deps.unsupportedTitle ?? "Mac Desktop needs macOS";
+  const driverLabel = deps.driverLabel ?? "Mac Desktop";
+  const driverArgs = deps.driverArgs ?? [];
+  const gracefulQuit = deps.gracefulQuit === true;
+  const quitGraceMs = deps.quitGraceMs ?? 5_000;
   const spawnProcess = deps.spawnProcess ?? spawn;
   const requestTimeoutMs = deps.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 
@@ -169,11 +231,11 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   };
 
   const buildHealth = (): MacDesktopDriverHealth => {
-    if (platform !== "darwin") {
+    if (!supportedPlatforms.includes(platform)) {
       return {
         state: "unsupported",
-        title: "Mac Desktop needs macOS",
-        message: MAC_DESKTOP_MACOS_ONLY_MESSAGE,
+        title: unsupportedTitle,
+        message: unsupportedMessage,
         recovery: null,
         version: null,
       };
@@ -182,7 +244,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     if (!binary || !fs.existsSync(binary)) {
       return {
         state: "missing",
-        title: "Mac Desktop needs reinstalling",
+        title: `${driverLabel} needs reinstalling`,
         message: "The native desktop driver is missing from this ADE installation. Reinstall or update ADE, then restart it.",
         recovery: "reinstall_or_update",
         version: null,
@@ -191,7 +253,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     if (lastProtocolError) {
       return {
         state: "protocol_error",
-        title: "Mac Desktop needs an update",
+        title: `${driverLabel} needs an update`,
         message: "The native desktop driver is incompatible with this ADE build. Update ADE, then restart it.",
         recovery: "reinstall_or_update",
         version,
@@ -200,7 +262,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     if (child && childReady) {
       return {
         state: "running",
-        title: "Mac Desktop is ready",
+        title: `${driverLabel} is ready`,
         message: "The native desktop driver is running.",
         recovery: null,
         version,
@@ -209,7 +271,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     if (!child && restartAttempts >= MAX_RESTART_ATTEMPTS && !restartTimer) {
       return {
         state: "crash_loop",
-        title: "Mac Desktop stopped",
+        title: `${driverLabel} stopped`,
         message: "The native desktop driver repeatedly exited. Restart ADE; if it happens again, reinstall or update the app.",
         recovery: "reinstall_or_update",
         version,
@@ -217,7 +279,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     }
     return {
       state: "starting",
-      title: "Mac Desktop is starting",
+      title: `${driverLabel} is starting`,
       message: "ADE is preparing the native desktop driver.",
       recovery: "retry",
       version,
@@ -240,6 +302,20 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       pending.delete(id);
       if (entry.timer) clearTimeout(entry.timer);
       entry.reject(error);
+    }
+  };
+
+  /**
+   * The graceful shutdown ask. Windows only: writing `{"type":"quit"}` lets the
+   * host run its own child sign-out before it exits; `kill` there is
+   * `TerminateProcess` and skips it entirely.
+   */
+  const sendQuit = (target: ChildProcessWithoutNullStreams | null): void => {
+    if (!gracefulQuit || !target) return;
+    try {
+      target.stdin.write('{"type":"quit"}\n');
+    } catch {
+      // Already gone; the handle was the only thing left of it.
     }
   };
 
@@ -326,6 +402,38 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
    * window server ended. Everything it writes there is a lane id, an app name,
    * a window id or a framework error; nothing a user typed.
    */
+  /**
+   * One stack sample of a driver whose screen capture stopped answering.
+   *
+   * A live run lost ScreenCaptureKit for good once (error -3805, then every
+   * capture timed out for minutes) and the cause could not be reproduced
+   * afterwards. A two-second `sample` taken the first time it happens shows
+   * where the helper was stuck. Read-only, macOS only, once per process.
+   * A live stream that never sends a frame is the same kind of stall: once
+   * the driver's screenshots still worked while every stream stayed empty
+   * (2026-09-28).
+   */
+  let sampledPid: number | null = null;
+  const sampleStalledDriver = (reason = "capture_error"): void => {
+    const pid = child?.pid ?? null;
+    if (!pid || pid === sampledPid || process.platform !== "darwin") return;
+    sampledPid = pid;
+    const sampler = spawn("/usr/bin/sample", [String(pid), "2", "-mayDie"], { stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    sampler.stdout.setEncoding("utf8");
+    sampler.stdout.on("data", (chunk: string) => {
+      if (out.length < 200_000) out += chunk;
+    });
+    sampler.once("error", () => {});
+    sampler.once("close", () => {
+      // The header and the first thread (the main thread): that stack says
+      // what the helper waits on.
+      const parts = out.split(/\n(?=\s*\d+ Thread_)/);
+      const mainThread = parts.slice(0, 2).join("\n").slice(0, 8_000);
+      deps.logger.warn("mac_desktop.driver_capture_stall_sample", { pid, reason, sample: mainThread });
+    });
+  };
+
   const consumeStderr = (chunk: string): void => {
     stderrBuffer += chunk;
     let newlineIndex = stderrBuffer.indexOf("\n");
@@ -334,6 +442,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       stderrBuffer = stderrBuffer.slice(newlineIndex + 1);
       if (line.length) {
         deps.logger.info("mac_desktop.driver_stderr", { message: line.slice(0, MAX_STDERR_LINE_CHARS) });
+        if (CAPTURE_STALL_PATTERN.test(line)) sampleStalledDriver();
       }
       newlineIndex = stderrBuffer.indexOf("\n");
     }
@@ -365,6 +474,49 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     publishHealth();
   };
 
+  /**
+   * A driver that retired itself (exit {@link MAC_DESKTOP_DRIVER_RETIRE_EXIT_CODE})
+   * answered everything it started. What it had queued never ran, so it is
+   * written again to a fresh driver started now, with each request's own
+   * timeout still running. No backoff, no crash-loop count, and no "driver
+   * lost" unless a lane's display really went with it (the service decides).
+   */
+  const handleRetirement = (pid: number | null, wasReady: boolean): void => {
+    const queued = [...pending];
+    pending.clear();
+    deps.logger.info("mac_desktop.driver_retired", { pid, queuedRequests: queued.length });
+    if (wasReady) deps.onDriverLost?.(MAC_DESKTOP_DRIVER_RETIRED_REASON);
+    publishHealth();
+    const failQueued = (error: Error): void => {
+      for (const [, entry] of queued) {
+        if (entry.timer) clearTimeout(entry.timer);
+        entry.reject(error);
+      }
+    };
+    void start().then(() => {
+      const fresh = child;
+      if (!fresh || !childReady) {
+        failQueued(new MacDesktopDriverError("MAC_DESKTOP_DRIVER_UNAVAILABLE", "The desktop driver is not running."));
+        return;
+      }
+      for (const [id, entry] of queued) {
+        pending.set(id, entry);
+        try {
+          fresh.stdin.write(entry.line);
+        } catch (error) {
+          pending.delete(id);
+          if (entry.timer) clearTimeout(entry.timer);
+          entry.reject(new MacDesktopDriverError(
+            "MAC_DESKTOP_DRIVER_UNAVAILABLE",
+            error instanceof Error ? error.message : String(error),
+          ));
+        }
+      }
+    }, (error: unknown) => {
+      failQueued(error instanceof Error ? error : new Error(String(error)));
+    });
+  };
+
   const start = (): Promise<void> => {
     if (disposed) return Promise.reject(new MacDesktopDriverError("MAC_DESKTOP_DRIVER_UNAVAILABLE", "The desktop driver client is disposed."));
     if (child && childReady) return Promise.resolve();
@@ -386,8 +538,8 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     }
 
     const attempt = new Promise<void>((resolve, reject) => {
-      if (platform !== "darwin") {
-        reject(new MacDesktopDriverError("MAC_DESKTOP_UNSUPPORTED_PLATFORM", MAC_DESKTOP_MACOS_ONLY_MESSAGE));
+      if (!supportedPlatforms.includes(platform)) {
+        reject(new MacDesktopDriverError("MAC_DESKTOP_UNSUPPORTED_PLATFORM", unsupportedMessage));
         return;
       }
       const binary = executablePath();
@@ -401,7 +553,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       }
       let spawned: ChildProcessWithoutNullStreams;
       try {
-        spawned = spawnProcess(binary, [], {
+        spawned = spawnProcess(binary, [...driverArgs], {
           env: { ...process.env, LC_ALL: "en_US.UTF-8" },
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
@@ -472,6 +624,11 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
           stableTimer = null;
         }
         const detail = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
+        if (!disposed && code === MAC_DESKTOP_DRIVER_RETIRE_EXIT_CODE && platform === "win32") {
+          handleRetirement(spawned.pid ?? null, wasReady);
+          reject(new MacDesktopDriverError("MAC_DESKTOP_DRIVER_UNAVAILABLE", "The desktop driver retired itself."));
+          return;
+        }
         // Unasked-for, this took every lane's display with it: a warning.
         deps.logger[disposed ? "info" : "warn"]("mac_desktop.driver_exited", {
           code,
@@ -551,6 +708,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
         reject,
         timer,
         op,
+        line,
       });
       try {
         active.stdin.write(line);
@@ -566,6 +724,11 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   };
 
   return {
+    /** Takes the one stack sample of this driver process (see `sampleStalledDriver`). */
+    sampleCaptureStall(reason: string): void {
+      sampleStalledDriver(reason);
+    },
+
     /** Starts the helper if it is not already up. Idempotent. */
     async ensureStarted(): Promise<void> {
       await start();
@@ -614,7 +777,10 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
           };
           running.once("close", done);
           try {
-            running.kill("SIGTERM");
+            // Windows: a graceful stdin quit lets the host sign its child
+            // session out; SIGTERM there is TerminateProcess and skips it.
+            if (gracefulQuit) sendQuit(running);
+            else running.kill("SIGTERM");
           } catch {
             // Already gone; the handle was the only thing left of it.
             done();
@@ -633,7 +799,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
             }
             const fallback = setTimeout(done, RESTART_KILL_GRACE_MS);
             fallback.unref?.();
-          }, RESTART_TERM_GRACE_MS);
+          }, gracefulQuit ? quitGraceMs : RESTART_TERM_GRACE_MS);
           escalate.unref?.();
         });
       }
@@ -646,6 +812,50 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     },
 
     request,
+
+    /**
+     * App Control: the user windows one process owns, on any display.
+     * Minimized windows are included and say so.
+     */
+    async listWindowsForPid(pid: number): Promise<Array<Record<string, unknown>>> {
+      const reply = await request<{ windows?: unknown }>(MAC_DESKTOP_DRIVER_OPS.listWindows, { pid });
+      return Array.isArray(reply?.windows)
+        ? reply.windows.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+        : [];
+    },
+
+    /**
+     * App Control: records one window instead of a lane display. `key` names
+     * the recording to the helper (it takes the `laneId` slot) and must not
+     * collide with a Mac Desktop lane id.
+     */
+    async startWindowRecording(args: {
+      key: string;
+      windowId: number;
+      fps: number;
+      filePath: string;
+      keepIdle: boolean;
+    }): Promise<Record<string, unknown>> {
+      return await request<Record<string, unknown>>(MAC_DESKTOP_DRIVER_OPS.startRecording, {
+        laneId: args.key,
+        windowId: args.windowId,
+        fps: args.fps,
+        filePath: args.filePath,
+        keepIdle: args.keepIdle,
+      });
+    },
+
+    /** Stops the recording `key` names and returns the finished file's lengths. */
+    async stopRecordingByKey(key: string, options: { timeoutMs?: number } = {}): Promise<Record<string, unknown>> {
+      return await request<Record<string, unknown>>(MAC_DESKTOP_DRIVER_OPS.stopRecording, { laneId: key }, options);
+    },
+
+    /** The helper's Screen Recording and Accessibility grants, from `ping`. */
+    async readPermissions(): Promise<Record<string, unknown> | null> {
+      const reply = await request<{ permissions?: unknown }>(MAC_DESKTOP_DRIVER_OPS.health, {});
+      const permissions = reply?.permissions;
+      return permissions && typeof permissions === "object" ? permissions as Record<string, unknown> : null;
+    },
 
     onEvent(listener: (event: MacDesktopDriverEvent) => void): () => void {
       listeners.add(listener);
@@ -682,7 +892,25 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       const running = child;
       child = null;
       childReady = false;
-      running?.kill();
+      if (running) {
+        if (gracefulQuit) {
+          // Ask the host to sign its child session out, then kill only if it
+          // has not exited by the grace. `kill` on Windows is
+          // `TerminateProcess`, which would skip that sign-out.
+          sendQuit(running);
+          const killTimer = setTimeout(() => {
+            try {
+              running.kill();
+            } catch {
+              // Already gone.
+            }
+          }, quitGraceMs);
+          killTimer.unref?.();
+          running.once("close", () => clearTimeout(killTimer));
+        } else {
+          running.kill();
+        }
+      }
     },
   };
 }

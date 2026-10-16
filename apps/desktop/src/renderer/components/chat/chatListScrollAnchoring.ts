@@ -1,4 +1,4 @@
-import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
+import { readSpawnCompletedNotice, type AgentChatEventEnvelope } from "../../../shared/types/chat";
 import { buildDrawnRowKeyIndex } from "./chatDrawnRowIndex";
 import {
   collapseChatTranscriptEvents,
@@ -8,6 +8,7 @@ import {
   type ChatTranscriptGroupedEnvelope,
 } from "./chatTranscriptRows";
 import { CHAT_TIMELINE_ROW_GAP_PX } from "./chatUserMinimap.logic";
+import { findSpawnCompletionLine } from "./spawnCompletionLines";
 
 /** Number of extra rows to render above/below the visible viewport. */
 export const CHAT_TRANSCRIPT_OVERSCAN = 10;
@@ -24,16 +25,33 @@ export function shouldAbsorbProgrammaticScrollEvent({
   return programmaticTarget != null && Math.abs(scrollTop - programmaticTarget) < 1;
 }
 
+/** How long a reader's scroll-up keeps the list from re-pinning to the bottom. */
+export const USER_SCROLL_UP_REPIN_HOLD_MS = 300;
+
+/**
+ * Whether the list follows the bottom after a scroll event it did not author.
+ *
+ * A pinned list stays pinned inside the wide threshold. A detached list re-pins
+ * only when the reader moved the view DOWN into the narrow resume zone, and
+ * never while `repinHeld` (a scroll-up gesture just happened): Windows
+ * animated wheel notches, a clamp from a virtual-window switch, or a late
+ * bottom snap all land near the bottom without the reader heading there.
+ */
 export function shouldStickToBottomAfterScroll({
   distanceFromBottom,
   wasStuckToBottom,
+  scrolledDown,
+  repinHeld,
 }: {
   distanceFromBottom: number;
   wasStuckToBottom: boolean;
+  /** scrollTop grew since the previous scroll event. */
+  scrolledDown: boolean;
+  /** Within `USER_SCROLL_UP_REPIN_HOLD_MS` of a reader scroll-up gesture. */
+  repinHeld: boolean;
 }): boolean {
-  return wasStuckToBottom
-    ? distanceFromBottom < STICK_THRESHOLD_PX
-    : distanceFromBottom <= STICK_RESUME_THRESHOLD_PX;
+  if (wasStuckToBottom) return distanceFromBottom < STICK_THRESHOLD_PX;
+  return scrolledDown && !repinHeld && distanceFromBottom <= STICK_RESUME_THRESHOLD_PX;
 }
 
 export function shouldKeepPinnedThroughViewportShrink({
@@ -49,37 +67,36 @@ export function shouldKeepPinnedThroughViewportShrink({
   return nextClientHeight < previousClientHeight - 0.5;
 }
 
-export function calculateVirtualWindow({
-  rowCount,
+/**
+ * The mounted window for `scrollTop`, over row start offsets the caller already
+ * holds (`offsets[i]` = sum of `rowHeight(j) + rowGap` for j < i, as
+ * `computeRowStartOffsets` builds them). O(log n) to find the first visible
+ * row, so a scroll handler can ask "would the mounted rows change?" every frame
+ * without rebuilding the offsets.
+ */
+export function calculateVirtualWindowFromOffsets({
+  offsets,
   scrollTop,
   containerHeight,
   rowHeight,
   overscan = CHAT_TRANSCRIPT_OVERSCAN,
-  rowGap = CHAT_TIMELINE_ROW_GAP_PX,
 }: {
-  rowCount: number;
+  offsets: readonly number[];
   scrollTop: number;
   containerHeight: number;
   rowHeight: (index: number) => number;
   overscan?: number;
-  rowGap?: number;
 }): {
   startIndex: number;
   endIndex: number;
   totalHeight: number;
   offsetTop: number;
 } {
+  const rowCount = offsets.length;
   if (rowCount <= 0) {
     return { startIndex: 0, endIndex: 0, totalHeight: 0, offsetTop: 0 };
   }
-
-  let cumulative = 0;
-  const offsets: number[] = new Array(rowCount);
-  for (let i = 0; i < rowCount; i += 1) {
-    offsets[i] = cumulative;
-    cumulative += rowHeight(i) + rowGap;
-  }
-  const totalHeight = cumulative - rowGap;
+  const totalHeight = offsets[rowCount - 1]! + rowHeight(rowCount - 1);
   const viewTop = scrollTop;
   const viewBottom = scrollTop + containerHeight;
 
@@ -242,6 +259,12 @@ export function resolveAnchoredChatRowIndex({
   const subagentCardKey = subagentCardKeyForLifecycleEvent(collapsedRows, events[eventIndex]!.event);
   const subagentCardIndex = subagentCardKey ? visibleKeys.get(subagentCardKey) : undefined;
   if (subagentCardIndex !== undefined) return subagentCardIndex;
+  // A child's older "finished its turn" notice folds into its newest one,
+  // which may sit further down; the anchor lands on that child's line.
+  const completedChildId = readSpawnCompletedNotice(events[eventIndex]!.event)?.childSessionId;
+  const completionLine = completedChildId ? findSpawnCompletionLine(groupedRows, completedChildId) : undefined;
+  const completionIndex = completionLine ? visibleKeys.get(completionLine.key) : undefined;
+  if (completionIndex !== undefined) return completionIndex;
   const directIndex = visibleKeys.get(targetRow.key);
   if (directIndex !== undefined) return directIndex;
 

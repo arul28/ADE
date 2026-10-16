@@ -46,6 +46,7 @@ packages/chat-ui/
       ApprovalCard.tsx           inline approval card
       transcriptRows.ts          ported row collapsing/grouping
       markdown.tsx               dependency-free markdown renderer
+      links.tsx                  AdeLink + onLinkClick context (every link chat-ui draws)
     models/
       ModelPicker.tsx            rail + search + grouped list
       ProviderCard.tsx           ProviderCard, ProviderCards
@@ -83,6 +84,18 @@ Transcript above, composer with the model rail below. No header bar.
 | `theme` | `Partial<AdeChatTheme>` | — | usually `createTheme(...)` |
 | `disableStyles` | `boolean` | `false` | skip the injected stylesheet |
 | `placeholder`, `sendOnEnter`, `onRequestAttachment` | | | forwarded to `<Composer>` |
+| `value` / `onValueChange` | | — | controlled draft, forwarded to `<Composer>` (0.4) |
+| `onSend` | `(input, thread) => AdeChatSendResult \| Promise<…>` | — | runs before a new message is sent; `false` cancels and keeps the draft, `"handled"` means you sent it yourself (0.4) |
+| `children` | `(thread: ThreadState) => ReactNode` | — | drawn between transcript and composer (0.4) |
+| `threadRef` | `{ current: ThreadState \| null }` | — | the live thread state for code outside the tree (0.4) |
+| `onLinkClick` | `(href, { source, text }) => void` | — | handle links yourself; pass it in Electron (0.4) |
+| `modelRail` | `ReactNode` | built-in picker | replaces the default picker; `null` = empty rail |
+| `actions` | `ReactNode` | — | extra composer controls (right rail) |
+| `attachments` / `onAttachmentsChange` | | — | controlled staging; see the merge rule under `<Composer>` |
+| `reasoningEffort` / `onReasoningEffortChange` | | — | the picker's effort control; the host applies it |
+| `renderToolResult`, `toolChipActions` | | | forwarded to `<Transcript>` |
+| `historyPageSize` | `number` | `200` | events per history page, when the thread has `historyPage` |
+| `styleNonce` | `string` | — | CSP nonce for the injected `<style>` |
 | `hideToolCalls`, `hideReasoning`, `renderMarkdown`, `emptyState` | | | forwarded to `<Transcript>` |
 | `approvals` | `{ render?, labels? }` | — | approval card wording, or a replacement card |
 | `hideModelPicker` | `boolean` | `false` | when the host pins a model |
@@ -114,8 +127,16 @@ conversation that had silently stopped. `approvals` changes only how it looks.
 | `error` | `string \| null` | — | |
 | `className` | `string` | — | |
 
-Submitting during a running turn dispatches `onSteer`, never a second `onSend`.
-Enter sends, Shift+Enter is a newline, IME composition never submits, Escape
+Controlled attachments: `onAttachmentsChange` always receives the FULL new
+list, so replace your state with it and never append. A picker result is merged
+into the latest list (not the list from when the picker opened), duplicates are
+removed by `id`, and a remove click removes one `id`. Every attachment is sent
+with `type`: `"image"` for an `image/*` MIME type or an image extension (bmp,
+gif, heic, heif, ico, jpeg, jpg, png, svg, tif, tiff, webp), else `"file"`. This
+is the runtime's own rule.
+
+Submitting during a running turn dispatches `onSteer`, never a second `onSend`,
+and staged attachments go with the steer. Enter sends, Shift+Enter is a newline, IME composition never submits, Escape
 interrupts a running turn. A failed send restores the draft rather than losing
 it.
 
@@ -130,14 +151,23 @@ it.
 | `hideReasoning` | `boolean` | `false` | |
 | `expandReasoning` | `boolean` | `false` | reasoning starts collapsed |
 | `renderMarkdown` | `(text: string) => ReactNode` | built-in | |
+| `onLinkClick` | `(href, { source, text }) => void` | — | chat-ui calls `preventDefault()` and hands you the link. Without it, links open with `target="_blank"` — in Electron, a chrome-less app window (0.4) |
 | `onApprove` | `(itemId, decision) => void \| Promise<void>` | — | omit to render approval cards read-only |
 | `approvals` | `{ render?, labels? }` | — | custom approval card and button wording |
 | `emptyState` | `ReactNode` | `"No messages yet."` | |
+| `renderToolResult` | `(row: ToolChipRow) => ReactNode` | — | custom result view under a chip |
+| `toolChipActions` | `(row: ToolChipRow) => { label, onSelect }[]` | — | buttons on a chip. Prefer `row.resourceLinks`; when a tool returns only ids, parse `row.result` yourself |
+| `hasOlder` / `loadingOlder` / `onLoadOlder` | | — | "Load older messages" paging |
+| `windowThreshold` | `number` | `150` | row count above which rows are windowed |
+| `overscan` | `number` | `8` | rows mounted on each side of the view |
 | `className` | `string` | — | |
 
 Card set: user text, assistant markdown, collapsed reasoning, tool chips,
-approvals, error. Plain overflow scroll (no virtualization in v1), pinned to
-the bottom and released as soon as the reader scrolls up.
+approvals, error. Pinned to the bottom and released as soon as the reader
+scrolls up. Above `windowThreshold` rows only the rows in view plus `overscan`
+are mounted (no dependency; every row renders where `ResizeObserver` is
+missing). Tool chip rows carry `identity: { server, tool }` and, when the
+provider passes them, `resourceLinks`.
 
 ### Approval cards
 
@@ -232,6 +262,32 @@ indicator, tool chips, and error text. An elapsed suffix appears after 3s of
 running and is formatted `45s` / `1m 35s` / `1h 5m`. `prefers-reduced-motion`
 is respected in both CSS and the indicator's animated ellipsis.
 
+An MCP tool may be keyed in any spelling — `mcp:versic:search`,
+`mcp__versic__search`, `versic:search`, or the bare `search` — and one key
+matches the tool under every provider. A **server-qualified** key matches a
+tool the provider reported by its bare name only when the event names that
+server (`ToolChipRow.identity`). A bare name with no server on the event
+matches only a bare key, and the matcher never guesses a server from the name.
+
+A bare key is compared with the tool's **own name**, so the bare key to write is
+the name your providers report. One wildcard covers a whole family when your
+injected tools carry a prefix:
+
+```ts
+labels={{
+  map: {
+    "mcp:versic:*": "Checking your projects…", // wins when the event names the server
+    "versic_*": "Checking your projects…",     // the tool's own name, e.g. versic_projects
+    "*": "Working…",
+  },
+}}
+```
+
+`versic_*` matches `versic_projects`, whether it arrives bare or as
+`mcp__versic__versic_projects`. It does **not** match a bare `search` that
+belongs to the `versic` server — that name starts with `search` — so only `*` or
+an exact `search` key reaches that one.
+
 ## Theming
 
 `createTheme({ accent, background, foreground, muted, danger, success, radius, fontFamily, monoFontFamily, fontSize, space, scheme })`
@@ -247,6 +303,11 @@ it to `theme`, or set the tokens yourself on any ancestor.
 --adechat-danger        --adechat-hover            --adechat-space
 --adechat-danger-subtle --adechat-success
 ```
+
+`--adechat-root-bg` is the chat root's background: `transparent` for
+`createTheme({ background: "transparent" })`, else `var(--adechat-bg)`. Pass
+`scheme` with a transparent background. `injectAdeChatStyles(target?, { nonce })`
+and `<AdeChatStyles nonce>` set a CSP nonce on the injected `<style>`.
 
 Light/dark is inferred from the background's luminance (override with
 `scheme`). Non-hex colors (`var(--brand)`, `color-mix(...)`) pass straight

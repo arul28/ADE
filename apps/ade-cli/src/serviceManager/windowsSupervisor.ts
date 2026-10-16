@@ -12,9 +12,11 @@ import {
 import {
   type AdeServiceCommand,
   cmdQuote,
+  powerShellSingleQuotedLiteral,
   serviceManagerResultText,
   type ServiceManagerSpawnSync,
 } from "./common";
+import { renderWindowsSupervisorGuardLines } from "./windowsSupervisorGuards";
 
 /**
  * Trusted `powershell.exe`, resolved on first use and then memoized.
@@ -133,11 +135,6 @@ export type WindowsSupervisorState =
       diagnostic: null;
     };
 
-function powerShellSingleQuotedLiteral(value: string): string {
-  if (value.includes("\0")) throw new Error("PowerShell values cannot contain NUL bytes.");
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
 export function renderWindowsServiceLauncher(
   command: AdeServiceCommand,
   options: {
@@ -150,6 +147,17 @@ export function renderWindowsServiceLauncher(
      * was completely invisible. Optional so existing callers keep working.
      */
     logPath?: string;
+    /**
+     * Where the brain's own stdout and stderr go: launchd's
+     * `launchd.out.log`/`launchd.err.log`, merged into one file with a stream
+     * tag per line. Without it the brain inherited the hidden supervisor's
+     * console, so everything it wrote there -- the sync-host startup loop's
+     * narration, a crash's last words -- reached no file at all.
+     * Rotated by the supervisor itself at {@link brainOutputMaxBytes} (one
+     * `.1` generation), so it never grows without bound.
+     */
+    brainOutputLogPath?: string;
+    brainOutputMaxBytes?: number;
     initialRestartDelayMs?: number;
     maxRestartDelayMs?: number;
     healthyRuntimeMs?: number;
@@ -164,6 +172,28 @@ export function renderWindowsServiceLauncher(
     wedgeBreadcrumbPath?: string;
     heartbeatStaleMs?: number;
     heartbeatPollMs?: number;
+    /**
+     * Resolved ADE home the launcher lives under. Baked in so the child-session
+     * branch can read `<adeDir>\windows-desktop\child-launch.json` without
+     * deriving it at run time. Omitted only by callers that predate the
+     * Windows Desktop feature.
+     */
+    adeDir?: string;
+    /**
+     * The cross-session single-instance mutex name. When set, the launcher runs
+     * its session check, holds this mutex for its whole lifetime, and refuses
+     * to start a second supervisor. Omitted by tests that render a bare
+     * supervisor.
+     */
+    mutexName?: string;
+    /** This channel's runtime pipe, used only to word the socket-owned log line. */
+    socketPath?: string;
+    /**
+     * The brain's machine `last-failure.json`. When a brain exits having failed
+     * with `socket_owned_by_other`, the supervisor stops looping and exits so
+     * the process that owns the pipe keeps it.
+     */
+    lastFailurePath?: string;
   },
 ): string {
   const environment = Object.entries(command.env ?? {}).sort(([left], [right]) =>
@@ -188,9 +218,125 @@ export function renderWindowsServiceLauncher(
       "}",
     ]
     : ["function Write-SupervisorLog([string]$message) { }"];
+  const guardLines = options.mutexName
+    ? renderWindowsSupervisorGuardLines({ mutexName: options.mutexName, adeDir: options.adeDir })
+    : [];
+  // The brain's stdout/stderr are drained by background threads compiled in
+  // here, NOT by PowerShell event handlers: the supervisor thread spends its
+  // life blocked in `WaitForExit`, and a PowerShell `Register-ObjectEvent`
+  // action only runs when that thread is free. A redirected pipe nobody drains
+  // fills up and blocks the brain on its next write, which is a wedge this
+  // supervisor would then kill and restart forever. So redirection is switched
+  // on only once the drain type has compiled; if it cannot compile, the brain
+  // keeps its old inherited console and the supervisor log says why.
+  //
+  // C# 5 only (no `?.`, no interpolation): Windows PowerShell 5.1 compiles
+  // Add-Type sources with the .NET Framework compiler.
+  const brainOutputLines = options.brainOutputLogPath
+    ? [
+      `$brainOutputLogPath = ${powerShellSingleQuotedLiteral(options.brainOutputLogPath)}`,
+      `$brainOutputMaxBytes = ${Math.max(64 * 1024, Math.floor(options.brainOutputMaxBytes ?? 10 * 1024 * 1024))}`,
+      "$brainOutputPump = $false",
+      "try {",
+      "  Add-Type -TypeDefinition @'",
+      "using System;",
+      "using System.IO;",
+      "using System.Text;",
+      "using System.Threading;",
+      "namespace AdeSupervisor {",
+      "  public static class BrainOutputLog {",
+      "    private static readonly object Gate = new object();",
+      "    public static void Pump(StreamReader reader, string path, string stream, long maxBytes) {",
+      "      Thread worker = new Thread(delegate() { Drain(reader, path, stream, maxBytes); });",
+      "      worker.IsBackground = true;",
+      "      worker.Start();",
+      "    }",
+      // Bounded chunk reads, never ReadLine: a line with no newline must not
+      // grow without limit, and only EOF (or a disposed stream, which is the
+      // same thing) ends the drain. A read error backs off and retries; a
+      // write or rotate error is swallowed in Append. Either way the pipe keeps
+      // draining, so the brain can never block on a full pipe.
+      "    private const int ChunkChars = 8192;",
+      "    private static void Drain(StreamReader reader, string path, string stream, long maxBytes) {",
+      "      char[] buffer = new char[ChunkChars];",
+      "      StringBuilder pending = new StringBuilder();",
+      "      while (true) {",
+      "        int read;",
+      "        try { read = reader.Read(buffer, 0, buffer.Length); }",
+      "        catch (ObjectDisposedException) { break; }",
+      "        catch (Exception) { Thread.Sleep(100); continue; }",
+      "        if (read <= 0) { break; }",
+      "        int start = 0;",
+      "        for (int i = 0; i < read; i++) {",
+      "          if (buffer[i] != '\\n') { continue; }",
+      "          pending.Append(buffer, start, i - start);",
+      "          Emit(path, stream, pending, maxBytes);",
+      "          start = i + 1;",
+      "        }",
+      "        pending.Append(buffer, start, read - start);",
+      "        if (pending.Length >= ChunkChars) { Emit(path, stream, pending, maxBytes); }",
+      "      }",
+      "      if (pending.Length > 0) { Emit(path, stream, pending, maxBytes); }",
+      "    }",
+      "    private static void Emit(string path, string stream, StringBuilder pending, long maxBytes) {",
+      "      int length = pending.Length;",
+      "      if (length > 0 && pending[length - 1] == '\\r') { length -= 1; }",
+      "      string line = pending.ToString(0, length);",
+      "      pending.Length = 0;",
+      "      Append(path, stream, line, maxBytes);",
+      "    }",
+      "    public static void Append(string path, string stream, string line, long maxBytes) {",
+      "      lock (Gate) {",
+      "        try {",
+      "          FileInfo info = new FileInfo(path);",
+      "          if (info.Exists && info.Length > maxBytes) {",
+      "            string rotated = path + \".1\";",
+      "            if (File.Exists(rotated)) { File.Delete(rotated); }",
+      "            File.Move(path, rotated);",
+      "          }",
+      "        } catch (Exception) { }",
+      "        try {",
+      "          File.AppendAllText(path, DateTimeOffset.UtcNow.ToString(\"o\") + \" \" + stream + \" \" + line + \"\\r\\n\", new UTF8Encoding(false));",
+      "        } catch (Exception) { }",
+      "      }",
+      "    }",
+      "  }",
+      "}",
+      "'@",
+      "  $startInfo.RedirectStandardOutput = $true",
+      "  $startInfo.RedirectStandardError = $true",
+      "  $startInfo.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)",
+      "  $startInfo.StandardErrorEncoding = New-Object System.Text.UTF8Encoding($false)",
+      "  $brainOutputPump = $true",
+      "} catch {",
+      "  Write-SupervisorLog \"brain output capture unavailable; the brain keeps the supervisor console: $($_.Exception.Message)\"",
+      "}",
+      // Called right after a successful start. Never throws into the launch
+      // catch: that catch restarts the brain, and a throw here would start a
+      // second brain beside the running one. A pump that cannot start still
+      // gets its pipe drained to nowhere so the brain can never block on it.
+      "function Start-BrainOutputPump($brainProcess) {",
+      "  if (-not $brainOutputPump) { return }",
+      "  try {",
+      "    [AdeSupervisor.BrainOutputLog]::Pump($brainProcess.StandardOutput, $brainOutputLogPath, 'out', $brainOutputMaxBytes)",
+      "  } catch {",
+      "    Write-SupervisorLog \"brain stdout capture failed: $($_.Exception.Message)\"",
+      "    try { [void]$brainProcess.StandardOutput.BaseStream.CopyToAsync([IO.Stream]::Null) } catch { }",
+      "  }",
+      "  try {",
+      "    [AdeSupervisor.BrainOutputLog]::Pump($brainProcess.StandardError, $brainOutputLogPath, 'err', $brainOutputMaxBytes)",
+      "  } catch {",
+      "    Write-SupervisorLog \"brain stderr capture failed: $($_.Exception.Message)\"",
+      "    try { [void]$brainProcess.StandardError.BaseStream.CopyToAsync([IO.Stream]::Null) } catch { }",
+      "  }",
+      "}",
+    ]
+    : ["function Start-BrainOutputPump($brainProcess) { }"];
   const processLines = [
     `$pidPath = ${powerShellSingleQuotedLiteral(options.pidPath)}`,
     ...logLines,
+    ...guardLines,
+    ...brainOutputLines,
     `$initialRestartDelayMs = ${Math.max(100, Math.floor(options.initialRestartDelayMs ?? 1_000))}`,
     `$maxRestartDelayMs = ${Math.max(100, Math.floor(options.maxRestartDelayMs ?? 30_000))}`,
     `$healthyRuntimeMs = ${Math.max(1_000, Math.floor(options.healthyRuntimeMs ?? 60_000))}`,
@@ -203,6 +349,14 @@ export function renderWindowsServiceLauncher(
       options.wedgeBreadcrumbPath
         ? powerShellSingleQuotedLiteral(options.wedgeBreadcrumbPath)
         : "$null"
+    }`,
+    `$lastFailurePath = ${
+      options.lastFailurePath
+        ? powerShellSingleQuotedLiteral(options.lastFailurePath)
+        : "$null"
+    }`,
+    `$runtimePipePath = ${
+      options.socketPath ? powerShellSingleQuotedLiteral(options.socketPath) : "$null"
     }`,
     `$taskkillPath = ${
       taskkillCommand ? powerShellSingleQuotedLiteral(taskkillCommand) : "$null"
@@ -270,6 +424,22 @@ export function renderWindowsServiceLauncher(
     "    }",
     "    [IO.File]::WriteAllText($wedgeBreadcrumbPath, ($record | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))",
     "  } catch { }",
+    "}",
+    // ADE-160. Two supervisors used to loop forever here: the loser's brain
+    // exited with `socket_owned_by_other` and the supervisor restarted it on a
+    // backoff, fighting the process that already owned the pipe. The brain
+    // records that failure itself; a failure written during THIS run (its `at`
+    // is not older than the child start) means the pipe is already served by
+    // another brain, so the right move is to release the mutex and leave.
+    "function Test-SocketOwnedByOther([DateTimeOffset]$since) {",
+    "  if ([string]::IsNullOrEmpty($lastFailurePath)) { return $false }",
+    "  try {",
+    "    if (-not (Test-Path -LiteralPath $lastFailurePath)) { return $false }",
+    "    $report = (Get-Content -LiteralPath $lastFailurePath -Raw -ErrorAction Stop) | ConvertFrom-Json",
+    "    if ($null -eq $report -or [string]$report.code -ne 'socket_owned_by_other') { return $false }",
+    "    if ([string]::IsNullOrEmpty([string]$report.at)) { return $false }",
+    "    return ([DateTimeOffset]::Parse([string]$report.at) -ge $since)",
+    "  } catch { return $false }",
     "}",
     "$restartCount = 0",
     "$lastExitCode = $null",
@@ -341,6 +511,7 @@ export function renderWindowsServiceLauncher(
     "    try {",
     "      $process = [System.Diagnostics.Process]::Start($startInfo)",
     "      if ($null -eq $process) { throw 'Windows failed to start the ADE brain process.' }",
+    "      Start-BrainOutputPump $process",
     "      $lastLaunchError = $null",
     "      $nextRestartAt = $null",
     "      Write-PidRecord -runtimePid $process.Id -runtimeStartedAtMs $runtimeStartedAt.ToUnixTimeMilliseconds()",
@@ -437,6 +608,13 @@ export function renderWindowsServiceLauncher(
     "      $lastExitAt = [DateTimeOffset]::UtcNow.ToString('o')",
     "      $runtimeLifetimeMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $runtimeStartedAt.ToUnixTimeMilliseconds()",
     "      Write-SupervisorLog \"brain exited pid=$($process.Id) exitCode=$lastExitCode lifetimeMs=$runtimeLifetimeMs\"",
+    // The pipe is owned by a process that is NOT our child. Restarting cannot
+    // win it; the owner keeps it, and the mutex rule means only one supervisor
+    // should exist per account and channel. Log and exit so the loop ends.
+    "      if (Test-SocketOwnedByOther -since $runtimeStartedAt) {",
+    "        Write-SupervisorLog \"brain could not bind $runtimePipePath because another ADE brain owns it; exiting so the owner keeps the pipe\"",
+    "        break",
+    "      }",
     "      if ($runtimeLifetimeMs -ge $healthyRuntimeMs) { $restartCount = 0 } else { $restartCount += 1 }",
     "    } catch {",
     "      $lastExitCode = $null",

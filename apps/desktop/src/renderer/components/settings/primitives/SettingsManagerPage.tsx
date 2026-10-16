@@ -1,6 +1,7 @@
 import React from "react";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { SettingsPageShell } from "./SettingsPageShell";
+import { SettingsRowIcon, type SettingsTone } from "./SettingsRows";
 
 /**
  * The manager page: a toolbar and a table.
@@ -30,6 +31,8 @@ export function SettingsManagerPage({
   title,
   description,
   leading,
+  icon,
+  tone,
   titleAdornment,
   toolbar,
   children,
@@ -37,6 +40,9 @@ export function SettingsManagerPage({
   anchor: string;
   title: string;
   description?: React.ReactNode;
+  /** A glyph in a tinted tile before the title. */
+  icon?: React.ReactNode;
+  tone?: SettingsTone | string;
   /** Sits before the title — a back control, a section mark. */
   leading?: React.ReactNode;
   /** Sits after the title — a help hint, a count. */
@@ -51,6 +57,7 @@ export function SettingsManagerPage({
       title={title}
       description={description}
       leading={leading}
+      icon={icon ? <SettingsRowIcon icon={icon} tone={tone} /> : undefined}
       titleAdornment={titleAdornment}
       sectionAttrs={{ "data-settings-manager": anchor }}
       sectionStyle={{ fontFamily: SANS_FONT, display: "flex", flexDirection: "column", gap: 16 }}
@@ -92,38 +99,12 @@ export function SettingsManagerTable({
   children: React.ReactNode;
 }) {
   const template = columns.map((column) => column.width ?? "minmax(120px, 1fr)").join(" ");
+  // No frame and no header strip: the section already provides the card, and a
+  // bordered table inside a bordered card is a box in a box. The rows are just
+  // a list; the column tracks keep everything aligned without shouting.
   return (
-    <div
-      style={{
-        border: `1px solid ${COLORS.outlineBorder}`,
-        borderRadius: 8,
-        overflowX: "auto",
-        background: "var(--color-card)",
-      }}
-    >
+    <div style={{ overflowX: "auto" }}>
       <div style={{ [COLUMNS_VAR]: template, minWidth } as React.CSSProperties}>
-        <div
-          role="row"
-          style={{
-            display: "grid",
-            gridTemplateColumns: `var(${COLUMNS_VAR})`,
-            gap: 12,
-            alignItems: "center",
-            padding: "9px 12px",
-            borderBottom: `1px solid ${COLORS.outlineBorder}`,
-            color: COLORS.textMuted,
-            fontFamily: SANS_FONT,
-            fontSize: 10,
-            fontWeight: 700,
-            textTransform: "uppercase",
-          }}
-        >
-          {columns.map((column) => (
-            <span key={column.label} style={{ textAlign: column.align ?? "left" }}>
-              {column.label}
-            </span>
-          ))}
-        </div>
         {children}
       </div>
     </div>
@@ -151,8 +132,8 @@ export function SettingsManagerRow({
         gap: 12,
         alignItems: "center",
         padding: "10px 12px",
-        borderTop: `1px solid ${COLORS.outlineBorder}`,
-        minHeight: 54,
+        borderTop: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+        minHeight: 52,
         fontFamily: SANS_FONT,
         fontSize: 12,
         color: COLORS.textPrimary,

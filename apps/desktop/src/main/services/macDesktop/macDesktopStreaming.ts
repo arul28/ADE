@@ -58,6 +58,8 @@ export type MacDesktopStreamingDeps = {
   requireDisplay: (laneId: string) => void;
   assertPermission: (which: "screenRecording" | "accessibility") => void;
   touchDisplay: (laneId: string) => void;
+  /** A stream ended stale without sending one byte: the driver may be stuck. */
+  onStreamNeverSent?: (laneId: string) => void;
   /** Raised by `startStream` when the backend hands back no port. */
   driverUnavailable: (message: string) => Error;
   /** The takeover fast path served on the stream server. See `macDesktopInput.postRealInput`. */
@@ -339,6 +341,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
         quietMs: deps.now() - Math.max(metrics.startedAtMs, metrics.lastBytesAtMs ?? 0),
         clients: metrics.clients,
       });
+      if (metrics.lastBytesAtMs == null) deps.onStreamNeverSent?.(laneId);
       // The whole restart is one registered unit: a release waits for it,
       // so it cannot see its viewer added back after it finished.
       const restart = (async () => {

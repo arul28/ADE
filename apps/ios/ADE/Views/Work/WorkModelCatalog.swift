@@ -199,7 +199,7 @@ func workPrioritizeGPT56ChatModels(
   func priority(_ model: AgentChatModelInfo) -> Int {
     let canonicalId = model.modelId.flatMap(workCanonicalCodexRegistryId(for:))
       ?? workCanonicalCodexRegistryId(for: model.id)
-    return workCodexFamilySortPriority(canonicalId) ?? 6
+    return workCodexFamilySortPriority(canonicalId) ?? workCodexUnrankedSortPriority
   }
 
   return models.enumerated().sorted { lhs, rhs in
@@ -216,6 +216,7 @@ func workResolveCliProvider(for modelId: String, provider: String) -> String {
   switch workModelCatalogGroupKey(for: modelId, currentProvider: provider) {
   case "claude": return "claude"
   case "codex": return "codex"
+  case "muse": return "muse"
   case "cursor": return "cursor"
   case "droid": return "droid"
   case "pi": return "pi"
@@ -324,6 +325,7 @@ struct WorkModelCatalogGroupLegacyView: Identifiable, Hashable {
 private let workModelGroupOrder = [
   "claude",
   "codex",
+  "muse",
   "cursor",
   "opencode",
   "pi",
@@ -372,6 +374,20 @@ private func workClaudeOpus5ReasoningEfforts() -> [AgentChatModelReasoningEffort
   ]
 }
 
+/// Muse's full effort ladder (`MUSE_REASONING_EFFORTS` in shared/modelRegistry.ts).
+private func workMuseReasoningEfforts() -> [AgentChatModelReasoningEffort] {
+  [
+    AgentChatModelReasoningEffort(effort: "none", description: "No extended reasoning"),
+    AgentChatModelReasoningEffort(effort: "minimal", description: "The lightest reasoning"),
+    AgentChatModelReasoningEffort(effort: "low", description: "Fast answers with light reasoning"),
+    AgentChatModelReasoningEffort(effort: "medium", description: "Balanced speed and reasoning"),
+    AgentChatModelReasoningEffort(effort: "high", description: "Deeper reasoning for complex work"),
+    AgentChatModelReasoningEffort(effort: "xhigh", description: "Extended reasoning for difficult work"),
+    AgentChatModelReasoningEffort(effort: "max", description: "Maximum reasoning depth"),
+    AgentChatModelReasoningEffort(effort: "ultra", description: "The deepest reasoning; can use limits faster"),
+  ]
+}
+
 private func workCodex56ReasoningEfforts(includeUltra: Bool) -> [AgentChatModelReasoningEffort] {
   var efforts = [
     AgentChatModelReasoningEffort(effort: "low", description: "Fast answers with light reasoning"),
@@ -405,7 +421,7 @@ private func workVisibleReasoningEfforts(
     return fallback
   }
   switch canonicalId {
-  case "openai/gpt-6-sol", "openai/gpt-5.6-sol", "openai/gpt-5.6-terra":
+  case "openai/gpt-6.1-sol", "openai/gpt-6-sol", "openai/gpt-5.6-sol", "openai/gpt-5.6-terra":
     return workCodex56ReasoningEfforts(includeUltra: true)
   case "openai/gpt-6-astra", "openai/gpt-6-luna", "openai/gpt-5.6-luna":
     return workCodex56ReasoningEfforts(includeUltra: false)
@@ -432,7 +448,7 @@ private func workVisibleDefaultReasoningEffort(
     return normalizedFallback
   }
   switch canonicalId {
-  case "openai/gpt-6-astra", "openai/gpt-5.6-sol": return "low"
+  case "openai/gpt-6.1-sol", "openai/gpt-6-astra", "openai/gpt-5.6-sol": return "low"
   case "openai/gpt-6-sol", "openai/gpt-6-luna", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna": return "medium"
   default: return nil
   }
@@ -460,8 +476,18 @@ func workModelCatalog(currentModelId: String, currentProvider: String) -> [WorkM
 
 func workDefaultCatalogModelId(provider: String) -> String? {
   let family = providerFamilyKey(provider)
-  return workCuratedModelCatalogGroups()
-    .first(where: { $0.key == family })?
+  guard let group = workCuratedModelCatalogGroups().first(where: { $0.key == family }) else {
+    return nil
+  }
+  // Keep the curated phone fallback aligned with the desktop model manifest,
+  // whose Codex default remains Astra even though GPT-6.1 Sol now sorts first.
+  if family == "codex",
+     let defaultModel = group.providers
+      .flatMap(\.models)
+      .first(where: { $0.id == "gpt-6-astra" }) {
+    return defaultModel.id
+  }
+  return group
     .providers
     .flatMap(\.models)
     .first?
@@ -505,8 +531,25 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             defaultReasoningEffort: "high",
             serviceTiers: ["fast"]
           ),
+          WorkModelOption(
+            id: "claude-sonnet-5-5",
+            displayName: "Claude Sonnet 5.5",
+            tier: .balanced,
+            tagline: "Balanced · 1M context",
+            provider: "claude",
+            reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
+            defaultReasoningEffort: "high"
+          ),
           WorkModelOption(id: "claude-sonnet-5", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced · 1M context", provider: "claude"),
-          WorkModelOption(id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest · cheapest", provider: "claude"),
+          WorkModelOption(
+            id: "claude-haiku-5-5",
+            displayName: "Claude Haiku 5.5",
+            tier: .fast,
+            tagline: "Fastest · 1M context",
+            provider: "claude",
+            reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
+            defaultReasoningEffort: "medium"
+          ),
           WorkModelOption(
             id: "claude-opus-5",
             displayName: "Claude Opus 5",
@@ -530,6 +573,16 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         key: "openai",
         displayName: "OpenAI",
         models: [
+          WorkModelOption(
+            id: "gpt-6.1-sol",
+            displayName: "GPT-6.1 Sol",
+            tier: .flagship,
+            tagline: "Near-Astra · 1.05M context",
+            provider: "codex",
+            reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: true),
+            defaultReasoningEffort: "low",
+            serviceTiers: ["fast"]
+          ),
           WorkModelOption(
             id: "gpt-6-astra",
             displayName: "GPT-6 Astra",
@@ -591,11 +644,39 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             serviceTiers: ["fast"]
           ),
           WorkModelOption(id: "gpt-5.5", displayName: "GPT-5.5", tier: .flagship, tagline: "Flagship · 1M context", provider: "codex", serviceTiers: ["fast"]),
-          WorkModelOption(id: "gpt-5.4", displayName: "GPT-5.4", tier: .flagship, tagline: "Affordable · 1M context", provider: "codex", serviceTiers: ["fast"]),
-          WorkModelOption(id: "gpt-5.4-mini", displayName: "GPT-5.4-Mini", tier: .fast, tagline: "Cheaper 1M-context variant", provider: "codex"),
-          WorkModelOption(id: "gpt-5.3-codex", displayName: "GPT-5.3-Codex", tier: .balanced, tagline: "Tuned for code edits", provider: "codex"),
-          WorkModelOption(id: "gpt-5.3-codex-spark", displayName: "GPT-5.3-Codex-Spark", tier: .fast, tagline: "Text-only Codex fast path", provider: "codex"),
-          WorkModelOption(id: "gpt-5.2", displayName: "GPT-5.2", tier: .balanced, tagline: "Prior-gen GPT-5", provider: "codex"),
+        ]
+      )
+    ]
+  ))
+
+  // Mirrors the curated Muse rows in shared/modelRegistry.ts. A live host
+  // replaces these with Muse's own `model/list`. Never a contributor variant.
+  groups.append(WorkModelCatalogGroup(
+    key: "muse",
+    displayName: "Muse",
+    providers: [
+      WorkModelProvider(
+        key: "muse",
+        displayName: "Meta",
+        models: [
+          WorkModelOption(
+            id: "muse/muse-spark-1.3",
+            displayName: "Muse Spark 1.3",
+            tier: .flagship,
+            tagline: "Muse default · 1M context",
+            provider: "muse",
+            reasoningEfforts: workMuseReasoningEfforts(),
+            defaultReasoningEffort: "high"
+          ),
+          WorkModelOption(
+            id: "muse/muse-spark-1.2",
+            displayName: "Muse Spark 1.2",
+            tier: .balanced,
+            tagline: "Previous Spark · 1M context",
+            provider: "muse",
+            reasoningEfforts: workMuseReasoningEfforts(),
+            defaultReasoningEffort: "high"
+          ),
         ]
       )
     ]
@@ -722,6 +803,15 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
             defaultReasoningEffort: "medium",
             serviceTiers: ["fast"]
+          ),
+          WorkModelOption(
+            id: "opencode/anthropic/claude-sonnet-5-5",
+            displayName: "Claude Sonnet 5.5",
+            tier: .balanced,
+            tagline: "Balanced coder · 1M context",
+            provider: "claude",
+            reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
+            defaultReasoningEffort: "high"
           ),
           WorkModelOption(id: "opencode/anthropic/claude-sonnet-5", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced coder · 1M context", provider: "claude"),
           WorkModelOption(id: "opencode/anthropic/claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest Anthropic", provider: "claude"),
@@ -1013,7 +1103,12 @@ private func workCatalogModelOption(
     displayName: displayName,
     tier: workDynamicModelTier(for: model.id),
     tagline: tagline,
-    provider: workModelBrandKey(topLevelProvider: topLevelProvider, providerKey: providerKey),
+    provider: workModelBrandKey(
+      topLevelProvider: topLevelProvider,
+      providerKey: providerKey,
+      family: model.family,
+      modelId: model.id
+    ),
     reasoningEfforts: workVisibleReasoningEfforts(modelId: reasoningModelId, advertised: model.reasoningEfforts),
     defaultReasoningEffort: workVisibleDefaultReasoningEffort(
       modelId: reasoningModelId,
@@ -1090,6 +1185,13 @@ private func workModelLookupKeys(_ raw: String?) -> [String] {
   if trimmed.lowercased().hasPrefix("anthropic/") {
     append(String(trimmed.dropFirst("anthropic/".count)))
   }
+  // Muse: the registry id is `muse/<id>`, while a CLI log or launch default
+  // can name the bare Muse id.
+  if trimmed.lowercased().hasPrefix("muse/") {
+    append(String(trimmed.dropFirst("muse/".count)))
+  } else if trimmed.lowercased().hasPrefix("muse-") {
+    append("muse/\(trimmed)")
+  }
 
   return keys
 }
@@ -1120,12 +1222,21 @@ private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
   case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m",
        "opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]", "anthropic/claude-opus-4-6-1m":
     return "anthropic/claude-opus-5"
-  case "sonnet", "claude-sonnet-5", "anthropic/claude-sonnet-5",
+  case "sonnet", "sonnet-5.5", "sonnet-5-5",
+       "claude-sonnet-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-5-5-api",
+       "opencode/anthropic/claude-sonnet-5-5":
+    return "anthropic/claude-sonnet-5-5"
+  case "claude-sonnet-5", "sonnet-5", "anthropic/claude-sonnet-5",
        "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6",
        "opencode/anthropic/claude-sonnet-5":
     return "anthropic/claude-sonnet-5"
-  case "haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4-5",
-       "opencode/anthropic/claude-haiku-4-5":
+  case "haiku", "haiku-5.5", "haiku-5-5",
+       "claude-haiku-5-5", "anthropic/claude-haiku-5-5", "anthropic/claude-haiku-5-5-api",
+       "opencode/anthropic/claude-haiku-5-5",
+       "haiku-4.5", "haiku-4-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001",
+       "anthropic/claude-haiku-4-5", "anthropic/claude-haiku-4-5-api":
+    return "anthropic/claude-haiku-5-5"
+  case "opencode/anthropic/claude-haiku-4-5":
     return "anthropic/claude-haiku-4-5"
   default:
     return nil
@@ -1158,26 +1269,39 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
   case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m",
        "opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]", "anthropic/claude-opus-4-6-1m":
     return "claude-opus-5"
-  case "sonnet", "claude-sonnet-5", "anthropic/claude-sonnet-5",
+  case "sonnet", "sonnet-5.5", "sonnet-5-5",
+       "claude-sonnet-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-5-5-api",
+       "opencode/anthropic/claude-sonnet-5-5":
+    return "claude-sonnet-5-5"
+  case "claude-sonnet-5", "sonnet-5", "anthropic/claude-sonnet-5",
        "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6",
        "opencode/anthropic/claude-sonnet-5":
     return "claude-sonnet-5"
-  case "haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4-5",
-       "opencode/anthropic/claude-haiku-4-5":
+  case "haiku", "haiku-5.5", "haiku-5-5",
+       "claude-haiku-5-5", "anthropic/claude-haiku-5-5", "anthropic/claude-haiku-5-5-api",
+       "opencode/anthropic/claude-haiku-5-5",
+       "haiku-4.5", "haiku-4-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001",
+       "anthropic/claude-haiku-4-5", "anthropic/claude-haiku-4-5-api":
+    return "claude-haiku-5-5"
+  case "opencode/anthropic/claude-haiku-4-5":
     return "claude-haiku-4-5"
   default:
     return nil
   }
 }
 
+/// Sorts after every named Codex model, so a new family member never ties with an older model.
+private let workCodexUnrankedSortPriority = Int.max
+
 private func workCodexFamilySortPriority(_ canonicalId: String?) -> Int? {
   switch canonicalId {
-  case "openai/gpt-6-astra": return 0
-  case "openai/gpt-6-sol": return 1
-  case "openai/gpt-6-luna": return 2
-  case "openai/gpt-5.6-sol": return 3
-  case "openai/gpt-5.6-terra": return 4
-  case "openai/gpt-5.6-luna": return 5
+  case "openai/gpt-6.1-sol": return 0
+  case "openai/gpt-6-astra": return 1
+  case "openai/gpt-6-sol": return 2
+  case "openai/gpt-6-luna": return 3
+  case "openai/gpt-5.6-sol": return 4
+  case "openai/gpt-5.6-terra": return 5
+  case "openai/gpt-5.6-luna": return 6
   default: return nil
   }
 }
@@ -1190,7 +1314,9 @@ private func workCanonicalCodexRegistryId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
   case "astra", "gpt-6-astra", "openai/gpt-6-astra":
     return "openai/gpt-6-astra"
-  case "sol", "gpt-6-sol", "openai/gpt-6-sol":
+  case "sol", "gpt-6.1-sol", "openai/gpt-6.1-sol":
+    return "openai/gpt-6.1-sol"
+  case "gpt-6-sol", "openai/gpt-6-sol":
     return "openai/gpt-6-sol"
   case "luna", "gpt-6-luna", "openai/gpt-6-luna":
     return "openai/gpt-6-luna"
@@ -1249,6 +1375,11 @@ private func workCodexRuntimeModelId(for raw: String) -> String? {
 }
 
 func workModelIdsEquivalent(_ lhs: String?, _ rhs: String?) -> Bool {
+  if let lhsCodexId = lhs.flatMap(workCanonicalCodexRegistryId(for:)),
+     let rhsCodexId = rhs.flatMap(workCanonicalCodexRegistryId(for:)),
+     lhsCodexId != rhsCodexId {
+    return false
+  }
   // Key lists hold at most a handful of entries, so a nested scan beats building
   // two Sets — this runs inside per-render catalog filters and sort comparators.
   let lhsKeys = workModelLookupKeys(lhs)
@@ -1277,6 +1408,10 @@ struct WorkModelIdMatcher {
 
 func workKnownModelDisplayName(_ raw: String?) -> String? {
   switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "" {
+  case "muse/muse-spark-1.3", "muse-spark-1.3", "muse-spark":
+    return "Muse Spark 1.3"
+  case "muse/muse-spark-1.2", "muse-spark-1.2":
+    return "Muse Spark 1.2"
   case "opus", "opus-5.5", "opus-5-5",
        "anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5-api", "claude-opus-5-5",
        "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5-5":
@@ -1301,16 +1436,27 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
   case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]",
        "opus-4-6-1m", "anthropic/claude-opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]":
     return "Claude Opus 5"
-  case "sonnet", "anthropic/claude-sonnet-5", "claude-sonnet-5", "cursor/claude-4.6-sonnet-medium",
+  case "sonnet", "sonnet-5.5", "sonnet-5-5",
+       "anthropic/claude-sonnet-5-5", "claude-sonnet-5-5",
+       "opencode/anthropic/claude-sonnet-5-5":
+    return "Claude Sonnet 5.5"
+  case "anthropic/claude-sonnet-5", "claude-sonnet-5", "sonnet-5", "cursor/claude-4.6-sonnet-medium",
        "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6",
        "opencode/anthropic/claude-sonnet-5":
     return "Claude Sonnet 5"
-  case "haiku", "anthropic/claude-haiku-4-5", "claude-haiku-4-5",
-       "opencode/anthropic/claude-haiku-4-5":
+  case "haiku", "haiku-5.5", "haiku-5-5",
+       "claude-haiku-5-5", "anthropic/claude-haiku-5-5", "anthropic/claude-haiku-5-5-api",
+       "opencode/anthropic/claude-haiku-5-5",
+       "haiku-4.5", "haiku-4-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001",
+       "anthropic/claude-haiku-4-5", "anthropic/claude-haiku-4-5-api":
+    return "Claude Haiku 5.5"
+  case "opencode/anthropic/claude-haiku-4-5":
     return "Claude Haiku 4.5"
   case "astra", "gpt-6-astra", "openai/gpt-6-astra":
     return "GPT-6 Astra"
-  case "sol", "gpt-6-sol", "openai/gpt-6-sol":
+  case "sol", "gpt-6.1-sol", "openai/gpt-6.1-sol":
+    return "GPT-6.1 Sol"
+  case "gpt-6-sol", "openai/gpt-6-sol":
     return "GPT-6 Sol"
   case "luna", "gpt-6-luna", "openai/gpt-6-luna":
     return "GPT-6 Luna"
@@ -1619,16 +1765,84 @@ private func workModelProviderKey(for model: AgentChatModelInfo, topLevelProvide
   }
 }
 
-private func workModelBrandKey(topLevelProvider: String, providerKey: String) -> String {
+/// Best-effort human name for a model id that has no catalog entry yet: the
+/// last path segment, hyphens to spaces, known maker tokens cased. Used where a
+/// raw route (`opencode/opencode-go/deepseek-v4.1-flash`) would otherwise leak
+/// into a label; never returns a full route.
+func workPrettyModelNameFromId(_ raw: String?) -> String? {
+  let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  guard !trimmed.isEmpty else { return nil }
+  let last = trimmed.split(separator: "/", omittingEmptySubsequences: true).last.map(String.init) ?? trimmed
+  var tokens = last.split(separator: "-").map(String.init).filter { !$0.isEmpty }
+  // A trailing 8-digit build date is noise, exactly as `shortModelLabel` says.
+  if let final = tokens.last, final.count == 8, final.allSatisfy(\.isNumber) {
+    tokens.removeLast()
+  }
+  guard !tokens.isEmpty else { return nil }
+  let known: [String: String] = [
+    "gpt": "GPT", "glm": "GLM", "deepseek": "DeepSeek", "opencode": "OpenCode",
+    "kimi": "Kimi", "qwen": "Qwen", "minimax": "MiniMax", "gemini": "Gemini",
+    "sonnet": "Sonnet", "opus": "Opus", "haiku": "Haiku", "fable": "Fable",
+    "llama": "Llama", "mistral": "Mistral", "grok": "Grok", "claude": "Claude",
+  ]
+  var words: [String] = []
+  for token in tokens {
+    let lower = token.lowercased()
+    if let mapped = known[lower] {
+      words.append(mapped)
+      continue
+    }
+    // Version tokens stay as written: "4.1", "v4.1", "6.1".
+    if lower.first?.isNumber == true {
+      words.append(lower)
+      continue
+    }
+    if lower.first == "v", lower.dropFirst().first?.isNumber == true {
+      words.append("V" + lower.dropFirst())
+      continue
+    }
+    words.append(lower.prefix(1).uppercased() + lower.dropFirst())
+  }
+  return words
+    .joined(separator: " ")
+    .replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
+}
+
+func workModelBrandKey(
+  topLevelProvider: String,
+  providerKey: String,
+  family: String? = nil,
+  modelId: String? = nil
+) -> String {
   if topLevelProvider == "claude" { return "claude" }
   if topLevelProvider == "codex" { return "codex" }
   if topLevelProvider == "pi" { return "pi" }
 
-  switch providerKey {
+  let provider = providerKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  switch provider {
   case "anthropic": return "claude"
   case "openai": return "codex"
-  default: return providerKey
+  default: break
   }
+
+  // Only a gateway group fronts models from many makers. A direct harness
+  // (Cursor, Droid, Qwen…) keeps its own mark no matter which family the model
+  // underneath belongs to.
+  guard topLevelProvider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "opencode" else {
+    return providerKey
+  }
+  // 1. The host's upstream family, when it names a maker.
+  if let family, workKnownUpstreamBrandKeys.contains(providerFamilyKey(family)) {
+    return providerFamilyKey(family)
+  }
+  // 2. The route key itself, when it names a maker.
+  if workKnownUpstreamBrandKeys.contains(providerFamilyKey(provider)) {
+    return providerFamilyKey(provider)
+  }
+  // 3. The maker named by the model id (OpenCode Go's `deepseek-v4.1-flash`).
+  if let modelId, let inferred = workUpstreamBrandInModelId(modelId) { return inferred }
+
+  return providerKey
 }
 
 private func workDynamicModelOption(
@@ -1682,7 +1896,12 @@ private func workDynamicModelOption(
     tagline: tagline,
     provider: topLevelProvider.lowercased() == "pi"
       ? "pi"
-      : (curated?.provider ?? workModelBrandKey(topLevelProvider: topLevelProvider, providerKey: providerKey)),
+      : (curated?.provider ?? workModelBrandKey(
+        topLevelProvider: topLevelProvider,
+        providerKey: providerKey,
+        family: model.family,
+        modelId: model.id
+      )),
     reasoningEfforts: workVisibleReasoningEfforts(
       modelId: reasoningModelId,
       advertised: model.reasoningEfforts,
@@ -1735,7 +1954,7 @@ private func workPrioritizeCodex56Models(
   }
 
   func priority(_ modelId: String) -> Int {
-    workCodexFamilySortPriority(workCanonicalCodexRegistryId(for: modelId)) ?? 6
+    workCodexFamilySortPriority(workCanonicalCodexRegistryId(for: modelId)) ?? workCodexUnrankedSortPriority
   }
 
   return models.enumerated().sorted { lhs, rhs in
@@ -1789,10 +2008,16 @@ private func injectCurrentWorkModelIfNeeded(
         : (providerLower.isEmpty ? "other" : providerLower)
       let injected = WorkModelOption(
         id: currentModelId,
-        displayName: currentModelId,
+        displayName: workKnownModelDisplayName(currentModelId)
+          ?? workPrettyModelNameFromId(currentModelId)
+          ?? currentModelId,
         tier: .balanced,
         tagline: "In use on the paired machine",
-        provider: workModelBrandKey(topLevelProvider: targetGroupKey, providerKey: providerKey),
+        provider: workModelBrandKey(
+          topLevelProvider: targetGroupKey,
+          providerKey: providerKey,
+          modelId: currentModelId
+        ),
         runtimeModelId: targetGroupKey == "pi" ? currentModelId : nil,
         piProfileId: piMetadata?.profileId,
         piProviderId: piMetadata?.providerId,
@@ -1860,6 +2085,9 @@ func workModelCatalogGroupKey(for currentModelId: String, currentProvider: Strin
   }
   if provider == "droid" || provider == "factory" || modelId.hasPrefix("droid/") {
     return "droid"
+  }
+  if provider == "muse" || modelId.hasPrefix("muse/") || modelId.hasPrefix("muse-") {
+    return "muse"
   }
   if provider == "cursor" || modelId.contains("cursor/") || modelId.contains("cursor-") || modelId.contains("composer") {
     return "cursor"

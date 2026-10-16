@@ -1,3 +1,6 @@
+import { assertLocalProjectDataAvailable, recordLocalProjectDatabaseIdentity } from "./services/projects/projectRegistry";
+import { setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
+import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +10,7 @@ import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
 import { classifySqliteOpenError, openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
 import { createRegisteredSyncPeerGate } from "../../desktop/src/main/services/state/syncPeerCompactionGate";
+import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
 import {
   clearLastFailure,
   recordLastFailure,
@@ -36,6 +40,7 @@ import type {
   SettleResidueItem,
   SettleTeardownContext,
   SettleTeardownOutcome,
+  SubagentLink,
 } from "../../desktop/src/main/services/sessions/sessionSettleTeardown";
 import { createProjectConfigService } from "../../desktop/src/main/services/config/projectConfigService";
 import { createConflictService } from "../../desktop/src/main/services/conflicts/conflictService";
@@ -60,11 +65,12 @@ import { planNewLaneEnvironment, runLaneEnvironmentSetup } from "../../desktop/s
 import { createChatLaunchService, type ChatLaunchService } from "../../desktop/src/main/services/chat/chatLaunchService";
 import { resolveChatCreateModel } from "../../desktop/src/main/services/chat/chatCreateModelResolution";
 import { resolveLaneCreateRemoteBaseDetailed } from "./services/laneCreateRemoteBase";
-import { resolveGitCommit } from "../../desktop/src/main/services/git/git";
+import { resolveGitCommit, runGit } from "../../desktop/src/main/services/git/git";
 import { createLaneTemplateService } from "../../desktop/src/main/services/lanes/laneTemplateService";
 import { createPortAllocationService } from "../../desktop/src/main/services/lanes/portAllocationService";
 import { createLaneProxyService } from "../../desktop/src/main/services/lanes/laneProxyService";
 import { createProxyService, type ProxyService } from "./services/proxy/proxyService";
+import { registerHarnessProxyStarter } from "../../desktop/src/main/services/chat/harnessLaunchPrepare";
 import {
   releaseLaneRuntimeResources,
   teardownArchivedLaneEnvironment,
@@ -87,12 +93,12 @@ import {
   type PrCardDataSource,
 } from "../../desktop/src/main/services/prs/prChatCards";
 import { createPrPollingService } from "../../desktop/src/main/services/prs/prPollingService";
+import { createPrWatchService } from "../../desktop/src/main/services/prs/prWatchService";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
 import { projectContextAccountPort } from "../../desktop/src/main/services/cto/projectContextStore";
-import { createCtoVoiceRuntimeService } from "../../desktop/src/main/services/cto/ctoVoiceRuntimeService";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
 import { createLinearOAuthService } from "../../desktop/src/main/services/cto/linearOAuthService";
 import type { createLinearIssueTracker } from "../../desktop/src/main/services/cto/linearIssueTracker";
@@ -109,14 +115,23 @@ import type { createSyncHostService, SyncRuntimeKind } from "./services/sync/syn
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { createAutomationIngressService, createKvIngressCursorStore } from "../../desktop/src/main/services/automations/automationIngressService";
 import { createLinearAccessTokenGetter, createLinearIngressService } from "../../desktop/src/main/services/automations/linearIngressService";
+import { createLinearAgentRuntime, type LinearAgentRuntime } from "../../desktop/src/main/services/cto/linearAgentRuntime";
+import { createLinearInboxAttentionService } from "../../desktop/src/main/services/cto/linearInboxAttentionService";
+import { linearIssuePatchFromEvent } from "../../desktop/src/main/services/cto/linearLaneSync";
+import { createLinearProofPoster } from "../../desktop/src/main/services/cto/linearProofPoster";
 import { buildLinearAutomationDispatches } from "../../desktop/src/main/services/automations/linearAutomationDispatch";
 import { createCursorCloudIngressService } from "../../desktop/src/main/services/automations/cursorCloudIngressService";
 import { createCursorCloudFleetService } from "../../desktop/src/main/services/chat/cursorCloudFleetService";
+import { createCloudAgentsServiceFromHost, type CloudAgentsService } from "../../desktop/src/main/services/chat/cloudAgentsService";
+import { resolveDevinCloudBinary } from "../../desktop/src/main/services/chat/devinCloudBinary";
 import { buildCursorCloudAutomationDispatches } from "../../desktop/src/main/services/automations/cursorCloudAutomationDispatch";
 import { openCursorCloudCredentialStore } from "../../desktop/src/main/services/chat/cursorCloudCreateOptions";
 import { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import { createProjectSecretService } from "../../desktop/src/main/services/secrets/projectSecretService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
+import { createJiraCredentialService } from "../../desktop/src/main/services/jira/jiraCredentialService";
+import { createJiraService } from "../../desktop/src/main/services/jira/jiraService";
+import { createIssueTrackerService } from "../../desktop/src/main/services/issueTrackers/issueTrackerService";
 import { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
@@ -153,13 +168,18 @@ import {
 import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
+  captureChatCompactionAnalytics,
+  captureAppControlAnalytics,
   captureMacDesktopAnalytics,
+  captureUserBrowserAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
   captureClaudePluginsIgnoredAnalytics,
+  captureCrossMachineMoveAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import {
+  captureChatAccountSwitchedAnalytics,
   captureNewLaneLaunchAnalytics,
   capturePendingInputDismissedAnalytics,
   captureSessionImportAnalytics,
@@ -179,27 +199,53 @@ import {
   createAppControlService,
   type AppControlService,
 } from "../../desktop/src/main/services/appControl/appControlService";
+import { resolveSessionLaneId } from "../../desktop/src/main/services/lanes/resolveSessionLaneId";
 import {
   createMacDesktopService,
   type MacDesktopService,
 } from "../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "../../desktop/src/main/services/macDesktop/macDesktopLogger";
+import { createWindowsDesktopSeatAdapter } from "../../desktop/src/main/services/windowsDesktop/windowsDesktopSeatProvider";
+import { feedDemoTrackFromChatEvent } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import {
-  createBridgeBrowserActorCapabilityIssuer,
   createBuiltInBrowserDesktopBridgeClient,
-  verifyBuiltInBrowserDesktopBridgeAuth,
+  probeDesktopBridge,
+  type DesktopBridgeProbe,
 } from "./services/builtInBrowser/desktopBridgeClient";
+import { createAppControlRecorderBridgeClient } from "./services/builtInBrowser/appControlRecorderBridgeClient";
+import { createDemoEngineBridgeClient } from "./services/builtInBrowser/demoEngineBridgeClient";
+import { createScenePreviewBridgeClient, type ScenePreviewer } from "./services/builtInBrowser/scenePreviewBridgeClient";
+import { createDemoEngineSet } from "../../desktop/src/main/services/demoVideo/demoEngines";
 import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowser/desktopBridgeMethods";
 import {
   createRemoteBrowserForwarder,
   withRemoteBrowserForwarding,
 } from "./services/builtInBrowser/remoteBrowserForwarder";
 import {
+  withUserBrowserAttachment,
+} from "./services/builtInBrowser/userBrowserRouting";
+import {
+  createUserBrowserAttachService,
+  type UserBrowserAttachService,
+} from "../../desktop/src/main/services/userBrowser/userBrowserAttachService";
+import {
   createWorkToolsStateService,
   type WorkToolsStateService,
 } from "./services/workTools/workToolsStateService";
 import { createWorkToolShowRequests } from "./services/workTools/workToolShowRequests";
+import { devServerRegistry } from "../../desktop/src/main/services/devServers/devServerRegistry";
+import { createDevServerWatcher } from "../../desktop/src/main/services/devServers/devServerWatcher";
+import {
+  getSessionInputOrigin,
+  RECENT_INPUT_ORIGIN_MS,
+} from "../../desktop/src/main/services/chat/sessionInputOrigins";
+import { probeLocalhostPort } from "../../desktop/src/main/services/probeLocalhostPort";
+import {
+  DEV_SERVER_EVENT,
+  type DevServerEvent,
+  type DevServerRecord,
+} from "../../desktop/src/shared/types/builtInBrowser";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createBrainLogger } from "./services/runtime/brainLogger";
@@ -209,7 +255,7 @@ import { createAccountRuntimeLifecycle } from "./services/account/accountRuntime
 import type { AccountSettingsStore } from "./services/account/accountSettingsStore";
 import { createAppleStreamRelayForService } from "../../desktop/src/main/services/ios/appleStreamRelay";
 import { setActiveAppleStreamRouter } from "./services/sync/appleStreamListenerRoute";
-import { ACCOUNT_SCOPE_ALL } from "../../desktop/src/shared/accountSettingsScope";
+import { ACCOUNT_SCOPE_ALL, accountDeviceSettingKey } from "../../desktop/src/shared/accountSettingsScope";
 import {
   APPLE_DEVICE_SETTING_KEYS,
   DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
@@ -217,17 +263,25 @@ import {
 } from "../../desktop/src/shared/appleDeviceSettings";
 import { ADE_ACCENT_COLOR } from "../../desktop/src/shared/themeTokens";
 import type { AccountVaultStore } from "./services/account/accountVaultStore";
+import { MCP_SECRET_VAULT_KIND } from "../../desktop/src/shared/mcpRegistry";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
-import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot } from "../../desktop/src/shared/types";
+import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot, PrSummary } from "../../desktop/src/shared/types";
 import type { PrEventPayload } from "../../desktop/src/shared/types/prs";
 import { createAutomationService } from "../../desktop/src/main/services/automations/automationService";
 import { createAutomationPlannerService } from "../../desktop/src/main/services/automations/automationPlannerService";
 import {
   createAutomationAdeActionLookup,
   getAdeActionDomainServices,
+  requestSessionAttentionForRuntime,
 } from "../../desktop/src/main/services/adeActions/registry";
-import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
+import { createLaneWorktreeLockService, LaneWorktreeLockedError, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
+import {
+  createDefaultBranchAutoPullService,
+  detectInProgressGitOperation,
+  isDefaultBranchMerge,
+} from "../../desktop/src/main/services/lanes/defaultBranchAutoPull";
+import { parseWorktreeStatusPorcelainV2 } from "../../desktop/src/main/services/lanes/laneBranchDrift";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { watchCredentialsForRelayRepair } from "./services/credentials/credentialChangeRelayRepair";
@@ -241,16 +295,24 @@ import {
   getSharedAccountDirectoryBaseUrl,
   registerAccountConfigProjectRoot,
 } from "./services/account/sharedAccountAuthService";
+import { attachSharedModelRouter, createModelRouterService } from "../../desktop/src/main/services/router/modelRouterService";
+import { createModelRegistryStore, createWorkerRegistryFetcher } from "../../desktop/src/main/services/router/modelRegistryStore";
 import { createTeardownStack } from "./services/runtime/startupTeardown";
 import {
   adeCliShimDirName,
+  packagedCliNodeModulePaths,
   renderAdeCliShim,
   resolveAdeCliShimBrain,
   type AdeCliShimBrain,
 } from "./services/runtime/adeCliShim";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
+import { isHighVolumeRuntimeEvent } from "./runtimeEventVolume";
+import { appControlEventsFromRuntimeBuffer } from "./services/sync/appControlSyncStream";
 import { createPrEventFanout } from "./prEventFanout";
+import { createCtoCrossMachineBridge } from "./services/account/ctoCrossMachineBridge";
+import type { CtoActionCaller } from "./adeRpcServer";
 import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationAvailability";
+import { createWebhookRemoteSource } from "../../desktop/src/main/services/automations/webhookAutomationFactory";
 
 /** One warm-runtime budget for every project scope this brain opens. */
 const chatRuntimeBudget = createChatRuntimeBudget();
@@ -266,6 +328,7 @@ export async function emitRuntimePrCardsForChanges(args: {
   dataSource: PrCardDataSource;
   chat: Partial<PrCardChatSink> | null;
   logger: Pick<Logger, "warn">;
+  relatedPrs?: PrSummary[];
 }): Promise<void> {
   const { chat } = args;
   if (
@@ -281,6 +344,7 @@ export async function emitRuntimePrCardsForChanges(args: {
         change,
         dataSource: args.dataSource,
         chat: chat as PrCardChatSink,
+        relatedPrs: args.relatedPrs,
       });
     } catch (error) {
       args.logger.warn("prs.chat_card_emit_failed", {
@@ -325,6 +389,7 @@ export type AdeRuntimeSyncOptions = {
   foreignChatProvider?: Parameters<typeof createSyncService>[0]["foreignChatProvider"];
   personalChatScope?: Parameters<typeof createSyncService>[0]["personalChatScope"];
   remoteCommandExecutor?: Parameters<typeof createSyncService>[0]["remoteCommandExecutor"];
+  projectScopes?: Parameters<typeof createSyncService>[0]["projectScopes"];
   getAccountDirectoryHealth?: Parameters<typeof createSyncService>[0]["getAccountDirectoryHealth"];
   requestAccountMachinePublish?: () => void | Promise<void>;
   /**
@@ -381,39 +446,52 @@ export type AdeRuntime = {
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
+  cloudAgentsService?: CloudAgentsService | null;
   prService?: ReturnType<typeof createPrService>;
   prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   fileService?: ReturnType<typeof createFileService> | null;
   ctoStateService: ReturnType<typeof createCtoStateService>;
   ctoMemoryService?: ReturnType<typeof createCtoMemoryService> | null;
-  /**
-   * The CTO voice call, hosted here rather than in desktop main.
-   *
-   * The call brain needs the chat service, the CTO identity and durable memory,
-   * and in every real build those are THIS process's instances — the desktop
-   * AppContext holds nulls outside `NODE_ENV=test`. Desktop main routes to it
-   * through the `cto_voice` action domain and keeps only the window, the
-   * microphone and the HUD.
-   */
-  ctoVoiceCallService?: ReturnType<typeof createCtoVoiceRuntimeService> | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
+  linearAgentRuntime?: LinearAgentRuntime | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
   githubService?: ReturnType<typeof createGithubService> | null;
+  jiraService?: ReturnType<typeof createJiraService> | null;
+  issueTrackerService?: ReturnType<typeof createIssueTrackerService> | null;
   accountAuthService?: AccountAuthService | null;
   automationService?: ReturnType<typeof createAutomationService> | null;
   automationPlannerService?: ReturnType<typeof createAutomationPlannerService> | null;
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
   iosSimulatorService?: IosSimulatorService | null;
   appControlService?: AppControlService | null;
+  /**
+   * `ade scene preview`: the attached desktop's scene renderer, over the
+   * desktop bridge. Null while no desktop has attached to this brain.
+   */
+  getScenePreviewer?: () => ScenePreviewer | null;
   macDesktopService?: MacDesktopService | null;
   builtInBrowserService?: BuiltInBrowserService | BuiltInBrowserDesktopBridgeClient | null;
+  /**
+   * `ade browser attach`: chats driving a tab of the user's own browser on
+   * this machine. Null on a chat-only runtime, which has no browser surface.
+   */
+  userBrowserAttachService?: UserBrowserAttachService | null;
   /** Read-only Work tools-pane state for iOS and the hosted web client. */
   workToolsStateService?: WorkToolsStateService | null;
-  configureBuiltInBrowserDesktopBridgeAuth?: (authToken: string) => Promise<boolean>;
+  /**
+   * The local desktop app said hello: re-check that its bridge answers, so
+   * recording, demo videos and scene previews use it straight away.
+   */
+  noteDesktopAppConnected?: () => void;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
   syncService?: ReturnType<typeof createSyncService> | null;
   pushPublisherService?: PushPublisherService | null;
+  /**
+   * Sends an `ade notify` push where no push publisher runs in the process
+   * (desktop automations). The brain sends through `pushPublisherService`.
+   */
+  sendCustomNotification?: PushPublisherService["sendCustomNotification"] | null;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
   linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
   cursorCloudIngressService?: ReturnType<typeof createCursorCloudIngressService> | null;
@@ -497,7 +575,12 @@ function ensureAdeCliShim(entryPath: string, brain: AdeCliShimBrain): { dir: str
   const shimPath = path.join(shimDir, process.platform === "win32" ? "ade.cmd" : "ade");
   try {
     fs.mkdirSync(shimDir, { recursive: true });
-    const body = renderAdeCliShim({ entryPath, execPath: process.execPath, brain });
+    const body = renderAdeCliShim({
+      entryPath,
+      execPath: process.execPath,
+      brain,
+      nodeModulePaths: packagedCliNodeModulePaths(entryPath),
+    });
     if (!fs.existsSync(shimPath) || fs.readFileSync(shimPath, "utf8") !== body) {
       fs.writeFileSync(shimPath, body, "utf8");
     }
@@ -648,7 +731,7 @@ export function createHeadlessAdeCliAgentEnv(
   } = {},
 ): NodeJS.ProcessEnv {
   cleanupLegacyBundledAdeSkillsForCli();
-  const next: NodeJS.ProcessEnv = { ...baseEnv };
+  const next: NodeJS.ProcessEnv = stripHostRuntimeEnv({ ...baseEnv });
   const nextPath = augmentProcessPathWithShellAndKnownCliDirs({
     env: next,
     includeInteractiveShell: true,
@@ -766,6 +849,8 @@ export async function createAdeRuntime(args: {
   /** Disable project-oriented push/deep-link events for machine-scoped runtimes. */
   publishPushEvents?: boolean;
   syncRuntime?: AdeRuntimeSyncOptions;
+  /** The brain's way to another machine, for moving a chat there. */
+  crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
 } | string): Promise<AdeRuntime> {
   const resolvedArgs = typeof args === "string"
     ? { projectRoot: args, workspaceRoot: args }
@@ -789,6 +874,7 @@ export async function createAdeRuntime(args: {
     throw new Error(`Primary worktree path does not exist: ${primaryWorktreePath}`);
   }
 
+  assertLocalProjectDataAvailable(projectRoot);
   const hadAdeDb = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
   const baseRef = await detectDefaultBaseRef(projectRoot);
   const paths = ensureAdePaths(projectRoot);
@@ -825,6 +911,9 @@ export async function createAdeRuntime(args: {
     db = await openKvDb(paths.dbPath, logger, {
       hasSyncPeers,
     });
+    // The app and the brain's project scope record it too, so a project used
+    // only from the CLI is protected the same way as one opened in the app.
+    recordLocalProjectDatabaseIdentity(projectRoot, logger);
   } catch (error) {
     // The path corroborates a bare errno: SQLite failures often carry no
     // `syscall`, and without a path the classifier refuses to call them
@@ -901,6 +990,12 @@ export async function createAdeRuntime(args: {
     }
     return proxyService;
   };
+  // Routed launches (a model translated through the proxy) start it on
+  // demand; see `harnessLaunchPrepare.ts`.
+  // Every project runtime points at the same machine-level proxy. Keep only
+  // live runtimes registered so launches cannot recreate a disposed service.
+  const releaseHarnessProxyStarter = registerHarnessProxyStarter(() => getProxyService().ensureRunning());
+  teardown.push(() => releaseHarnessProxyStarter());
 
   // Guards every acquisition from the database open onward.
   try {
@@ -924,6 +1019,7 @@ export async function createAdeRuntime(args: {
         appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0",
         runtimeMode: syncRuntimeOptions?.runtimeKind ?? (chatOnlyRuntime ? "chat_runtime" : "project_runtime"),
       }));
+    setSentryUserResolver(() => productAnalyticsService.getDistinctId());
     productAnalyticsForProxy = productAnalyticsService;
     const usageProductAnalyticsExporter = createUsageProductAnalyticsExporter({
       db,
@@ -935,7 +1031,8 @@ export async function createAdeRuntime(args: {
 
     const operationService = createOperationService({ db, projectId });
     const keybindingsService = createKeybindingsService({ db });
-    const eventBuffer = createEventBuffer();
+    // Screencast frames reach live viewers but are never kept for replay.
+    const eventBuffer = createEventBuffer(undefined, { isTransient: isHighVolumeRuntimeEvent });
 
     function pushEvent(category: BufferedEvent["category"], payload: Record<string, unknown>): void {
       eventBuffer.push({ timestamp: new Date().toISOString(), category, payload });
@@ -947,6 +1044,7 @@ export async function createAdeRuntime(args: {
     const searchServiceHolder: { current: SearchService | null } = { current: null };
     let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
     let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
+    let jiraServiceRef: ReturnType<typeof createJiraService> | null = null;
     let laneServiceRef: ReturnType<typeof createLaneService> | null = null;
     let prServiceRef: ReturnType<typeof createPrService> | null = null;
     const publishLinearChatLink = createLinearChatLinkPublisher({
@@ -1039,13 +1137,19 @@ export async function createAdeRuntime(args: {
       run: ((sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>) | null;
       report: ((args: { columns: string[]; changesetSessionCount: number }) => void) | null;
       residue: ((args: { provider: string | null; items: SettleResidueItem[] }) => void) | null;
-    } = { run: null, report: null, residue: null };
+      subagentLinks: ((parentSessionIds: readonly string[]) => Promise<SubagentLink[]>) | null;
+    } = { run: null, report: null, residue: null, subagentLinks: null };
     const sessionService = createSessionService({
       db,
+      logger,
       runSettleTeardown: async (sessionId, ctx) =>
         settleTeardownRef.run ? await settleTeardownRef.run(sessionId, ctx) : { residue: [], confirmed: false },
       onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
       onSettleResidue: (args) => settleTeardownRef.residue?.(args),
+      // Read at call time: the automation service is built later.
+      onChatSettled: (chat) => automationServiceRef?.onSessionSettled(chat),
+      listSubagentLinks: async (parentSessionIds) =>
+        settleTeardownRef.subagentLinks ? await settleTeardownRef.subagentLinks(parentSessionIds) : [],
     });
     // Inbound settle-tuple writes get this host's lifecycle revision, so an
     // in-flight settle can see a peer's decision and abandon rather than
@@ -1127,6 +1231,13 @@ export async function createAdeRuntime(args: {
       syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
       "sync-device-id",
     );
+    const readSyncDeviceId = (): string | null => {
+      try {
+        return fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
+      } catch {
+        return null;
+      }
+    };
     const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
     let projectSecretServiceForAccount: ReturnType<typeof createProjectSecretService> | null = null;
     let linearCredentialServiceForAccount: ReturnType<typeof createLinearCredentialService> | null = null;
@@ -1344,15 +1455,23 @@ export async function createAdeRuntime(args: {
     teardown.push(() => syncStatusEventPublisher.dispose());
     // The late-bound push publisher feeds tracked CLI runtime states into the
     // phone's Live Activity.
-    // The capability registry that validates `ADE_BROWSER_ACTOR_TOKEN` lives in
-    // Electron main, not here — a token minted in this process could never be
-    // validated. So the daemon asks the desktop to mint and revoke them over
-    // the authenticated bridge. The bridge client is built further down (it
-    // needs the auth token), hence the late-bound holder.
-    let builtInBrowserBridgeForCapabilities: BuiltInBrowserDesktopBridgeClient | null = null;
-    const browserActorCapabilityIssuer = createBridgeBrowserActorCapabilityIssuer({
-      getBridge: () => builtInBrowserBridgeForCapabilities,
-    });
+    // A chat that ends or is deleted lets go of the user's browser (chats and
+    // agent terminals alike); this also cancels an attach still waiting on the
+    // browser's prompt, and detaching a chat that never attached is a no-op.
+    // The attach service is built further down; hence the holder.
+    let userBrowserAttachServiceForRelease: UserBrowserAttachService | null = null;
+    const releaseChatBrowser = (chatSessionId: string): void => {
+      const attachService = userBrowserAttachServiceForRelease;
+      if (!attachService) return;
+      void Promise.resolve()
+        .then(() => attachService.detach({ chatSessionId }))
+        .catch((error: unknown) => {
+          logger.warn("user_browser.detach_on_chat_end_failed", {
+            chatSessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    };
 
     const ptyService = createPtyService({
       projectRoot,
@@ -1397,7 +1516,7 @@ export async function createAdeRuntime(args: {
         });
       },
       getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
-      browserActorCapabilityIssuer,
+      releaseChatBrowser,
       loadPty: ptyBackend ?? (() => nodePty),
       disposePtyBackend: ptyBackend?.dispose
     });
@@ -1416,6 +1535,65 @@ export async function createAdeRuntime(args: {
     teardown.push(() => testService.disposeAll());
     const laneWorktreeLockService = createLaneWorktreeLockService({ db, logger });
 
+    // Keeps the primary checkout's default branch current: fast-forward only,
+    // on startup and a background timer, and only when every safety gate in
+    // `evaluateDefaultBranchAutoPull` passes. It lives in the brain because the
+    // brain owns the project's checkout whether or not a desktop is attached.
+    // The gate compares HEAD with the project's default branch (`baseRef`),
+    // not the primary lane's `branch_ref` — that one follows whatever branch
+    // the primary checkout has out, which would pull any branch.
+    const defaultBranchAutoPullService = createDefaultBranchAutoPullService({
+      logger,
+      getPrimaryLane: () => {
+        const primary = laneService.getPrimaryLane();
+        return primary ? { ...primary, branchRef: baseRef } : null;
+      },
+      readWorktreeStatus: async (worktreePath) => {
+        const res = await runGit(
+          ["status", "--porcelain=v2", "--branch", "--untracked-files=normal", "-z"],
+          { cwd: worktreePath, timeoutMs: 10_000 },
+        );
+        if (res.exitCode !== 0) return null;
+        const parsed = parseWorktreeStatusPorcelainV2(res.stdout);
+        return { staged: parsed.staged, unstaged: parsed.unstaged, headBranchRef: parsed.headBranchRef };
+      },
+      detectInProgressOperation: async (worktreePath) => {
+        const res = await runGit(["rev-parse", "--absolute-git-dir"], { cwd: worktreePath, timeoutMs: 5_000 });
+        if (res.exitCode !== 0) return null;
+        const gitDir = res.stdout.trim();
+        return gitDir ? detectInProgressGitOperation(gitDir) : null;
+      },
+      isWorktreeLocked: (laneId) => laneWorktreeLockService.getActiveForLane(laneId).length > 0,
+      acquireWorktreeLock: (lane) => {
+        try {
+          const acquired = laneWorktreeLockService.acquire({
+            laneId: lane.laneId,
+            worktreePath: lane.worktreePath,
+            ownerKind: "git_mutation",
+            ownerLabel: "Auto-pull default branch",
+          });
+          return { release: () => laneWorktreeLockService.release({ token: acquired.token }) };
+        } catch (error) {
+          if (error instanceof LaneWorktreeLockedError) return null;
+          throw error;
+        }
+      },
+      readSyncStatus: async (laneId) => {
+        const status = await gitService.getSyncStatus({ laneId });
+        return { hasUpstream: status.hasUpstream, ahead: status.ahead, behind: status.behind };
+      },
+      fetch: async (laneId) => {
+        await gitService.fetch({ laneId });
+      },
+      pullFastForward: async (laneId) => {
+        await gitService.pull({ laneId, mode: "ff-only" });
+      },
+    });
+    // Embedded runtimes are guests inside an external process and must not
+    // take machine-brain authority over the project's checkout.
+    if (!embeddedRuntime) defaultBranchAutoPullService.start();
+    teardown.push(() => defaultBranchAutoPullService.stop());
+
     laneTeardownDeps.ptyService = {
       countActiveForLane: (laneId) => ptyService.countActiveForLane(laneId),
       disposeForLane: (laneId) => ptyService.disposeForLane(laneId),
@@ -1427,6 +1605,8 @@ export async function createAdeRuntime(args: {
       dismiss: (args) => rebaseSuggestionService.dismiss(args),
     };
 
+    // Set once the runtime below is assembled; the CTO's home-machine actions read it.
+    let runtimeForCtoActions: AdeRuntime | null = null;
     const ctoMemoryService = createCtoMemoryService({
       adeDir: paths.adeDir,
       logger,
@@ -1434,11 +1614,42 @@ export async function createAdeRuntime(args: {
         ? projectContextAccountPort({ projectRoot, store: accountSettingsStore })
         : null,
     });
+    const ctoAppVersion = process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0";
+    // The CTO's generic actions on this machine run through the same RPC
+    // dispatcher, under the same CTO caller identity, as they would from
+    // another machine. Built once, when the runtime exists and a tool needs it.
+    let ctoLocalActionCaller: Promise<CtoActionCaller> | null = null;
+    const getCtoLocalActionCaller = (): Promise<CtoActionCaller> | null => {
+      const runtime = runtimeForCtoActions;
+      if (!runtime) return null;
+      ctoLocalActionCaller ??= import("./adeRpcServer")
+        .then(({ createCtoActionCaller }) => createCtoActionCaller({ runtime, serverVersion: ctoAppVersion }))
+        .catch((error) => {
+          ctoLocalActionCaller = null;
+          throw error;
+        });
+      return ctoLocalActionCaller;
+    };
+    // The CTO acting on the account's other machines, for this project's
+    // repository there. Built when the CTO's tools are, and reads nothing from
+    // the account until one of them reaches another machine.
+    let ctoCrossMachine: ReturnType<typeof createCtoCrossMachineBridge> | null = null;
+    const getCtoCrossMachine = () => {
+      ctoCrossMachine ??= createCtoCrossMachineBridge({
+        projectRoot,
+        appVersion: ctoAppVersion,
+        logger,
+        getLocalActionCaller: getCtoLocalActionCaller,
+        getAccess: () => ctoStateService.getCrossMachineAccess(),
+      });
+      return ctoCrossMachine;
+    };
     const ctoStateService = createCtoStateService({
       db,
       projectId,
       adeDir: paths.adeDir,
       ctoMemoryService,
+      capabilities: { crossMachine: true },
       // Resolved on every refresh, not captured here: the chat and automation
       // services are constructed further down, so the live block must read
       // them through a thunk rather than pin whatever was null at this point.
@@ -1450,6 +1661,9 @@ export async function createAdeRuntime(args: {
           prService: headlessLinearServices.prService,
           automationService: automationServiceRef,
           listChats: chat.listSessions,
+          // Only a bridge the CTO's tools already built: the live-state block
+          // must not be what starts reading the account directory.
+          crossMachine: ctoCrossMachine,
         };
       },
     });
@@ -1468,6 +1682,21 @@ export async function createAdeRuntime(args: {
       logger,
       onEvent: (event) => pushEvent("runtime", { type: "computer_use_event", event }),
     });
+    /**
+     * Apple device settings are per computer (Settings › This computer › Apple
+     * devices): this device's own value first, then the account-wide value
+     * older desktops wrote. Read lazily, so a value that syncs in later lands.
+     */
+    const readAppleDeviceSetting = (key: string): unknown => {
+      let deviceKey: string | null = null;
+      try {
+        deviceKey = accountDeviceSettingKey(syncService?.getLocalDeviceId() ?? null, key);
+      } catch {
+        deviceKey = null;
+      }
+      const own = deviceKey ? accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, deviceKey) : undefined;
+      return own ?? accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, key);
+    };
     const iosSimulatorService = chatOnlyRuntime
       ? null
       : createIosSimulatorService({
@@ -1511,7 +1740,7 @@ export async function createAdeRuntime(args: {
         recordingDeps: {
           artifactFiler: computerUseArtifactBrokerService,
           readOverlaySetting: (key) => {
-            const value = accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, key);
+            const value = readAppleDeviceSetting(key);
             return typeof value === "boolean" ? value : undefined;
           },
           // ADE's own accent, mirrored in `shared/themeTokens.ts` and guarded
@@ -1520,9 +1749,27 @@ export async function createAdeRuntime(args: {
           // video was a colour that appears nowhere in the product.
           accentColor: () => ADE_ACCENT_COLOR,
         },
-        onEvent: (event) => pushEvent("runtime", { type: "ios_simulator_event", event }),
+        onEvent: (event) => pushEvent("runtime", {
+          type: "ios_simulator_event",
+          // An agent revealing the device opens it where the user is talking from.
+          event: event.type === "drawer-open-requested" && event.chatSessionId
+            ? {
+              ...event,
+              targetClientId: getSessionInputOrigin(event.chatSessionId, { maxAgeMs: RECENT_INPUT_ORIGIN_MS })?.clientId ?? null,
+            }
+            : event,
+        }),
+        // Lane-device cleanup and idle power-off for this project.
+        backgroundMaintenance: true,
       });
     teardown.push(() => iosSimulatorService?.dispose());
+    if (iosSimulatorService) {
+      // An archived or deleted lane lets go of its Apple device session here;
+      // the device itself goes in `releaseLaneAppleDevice`.
+      laneTeardownDeps.iosSimulatorService = {
+        stopForLane: (laneId: string) => iosSimulatorService.stopForLane(laneId),
+      };
+    }
     /**
      * Brain-side video forwarder for remote viewers.
      *
@@ -1534,7 +1781,7 @@ export async function createAdeRuntime(args: {
      */
     const appleRemoteBitrateKbpsCap = (): number | null => {
       try {
-        const value = accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, APPLE_DEVICE_SETTING_KEYS.remoteBitrateKbpsCap);
+        const value = readAppleDeviceSetting(APPLE_DEVICE_SETTING_KEYS.remoteBitrateKbpsCap);
         return typeof value === "number" && Number.isFinite(value)
           ? clampAppleRemoteBitrateKbps(value)
           : DEFAULT_APPLE_REMOTE_BITRATE_KBPS;
@@ -1561,38 +1808,148 @@ export async function createAdeRuntime(args: {
     // closure reads at call time. The chat session store lives in agentChatService
     // (getSessionSummary), not in sessionService (which holds terminal sessions).
     const agentChatServiceHolder: { current: ReturnType<typeof createAgentChatService> | null } = { current: null };
+    // `built_in_browser` is hosted by the desktop's Electron main process (the
+    // browser pane owns a WebContentsView). The runtime daemon proxies calls
+    // through `<adeHome>/sock/desktop-bridge.sock`; if no desktop is running,
+    // individual calls fail clearly. Override the socket path with
+    // `ADE_DESKTOP_BRIDGE_SOCKET_PATH` for dev launches that use a non-default
+    // ADE home.
+    const builtInBrowserBridgeSocketPath =
+      process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
+      || resolveMachineAdeLayout().desktopBridgeSocketPath;
+    // Whether the desktop app answers on its bridge, as last probed. The brain
+    // asks for itself rather than waiting to be told: it probes at start, when
+    // a desktop connects, and in the background whenever the answer is older
+    // than DESKTOP_BRIDGE_PROBE_STALE_MS and someone reads it. Browser calls do
+    // not read it at all — each one just dials the socket.
+    // `result` is null until the first probe answers.
+    let desktopBridgeProbe: { result: DesktopBridgeProbe | null; at: number } = { result: null, at: 0 };
+    let desktopBridgeProbeInFlight: Promise<void> | null = null;
+    const DESKTOP_BRIDGE_PROBE_STALE_MS = 10_000;
+    const refreshDesktopBridgeProbe = (): Promise<void> => {
+      if (desktopBridgeProbeInFlight) return desktopBridgeProbeInFlight;
+      desktopBridgeProbeInFlight = probeDesktopBridge({ socketPath: builtInBrowserBridgeSocketPath })
+        .then((result) => {
+          const changed = desktopBridgeProbe.result?.attached !== result.attached;
+          desktopBridgeProbe = { result, at: Date.now() };
+          if (changed) {
+            logger[result.attached ? "info" : "warn"]("built_in_browser_bridge.desktop_probe", {
+              socketPath: builtInBrowserBridgeSocketPath,
+              projectRoot,
+              attached: result.attached,
+              ...(result.attached ? {} : { kind: result.kind, reason: result.reason }),
+            });
+          }
+        })
+        .finally(() => {
+          desktopBridgeProbeInFlight = null;
+        });
+      return desktopBridgeProbeInFlight;
+    };
+    const readDesktopBridgeProbe = (): DesktopBridgeProbe | null => {
+      if (Date.now() - desktopBridgeProbe.at > DESKTOP_BRIDGE_PROBE_STALE_MS) {
+        void refreshDesktopBridgeProbe();
+      }
+      return desktopBridgeProbe.result;
+    };
+    const desktopBridgeAttached = (): boolean => {
+      const probe = readDesktopBridgeProbe();
+      if (probe?.attached === true) return true;
+      // A stale negative result should not win a race with a desktop that has
+      // just connected. The bridge clients are already live, so let the next
+      // operation use them while the fresh probe settles; an actually absent
+      // desktop will still return its normal bridge-unavailable error.
+      return Boolean(probe && desktopBridgeProbeInFlight && desktopBridgeHolder.current);
+    };
+    /** Why the desktop app does not answer; null while it does or before the first probe. */
+    const desktopBridgeUnattachedReason = (): string | null => {
+      const probe = readDesktopBridgeProbe();
+      if (desktopBridgeProbeInFlight) return null;
+      return probe && !probe.attached ? probe.reason : null;
+    };
+    // Windows/Linux App Control recording runs in the desktop's encoder, over
+    // the desktop bridge. Set once the bridge client exists (below); null
+    // while no desktop has attached here, which refuses a screencast start.
+    const desktopBridgeHolder: {
+      current: ReturnType<typeof createAppControlRecorderBridgeClient> | null;
+      /** The desktop's Chromium demo engine, over the same bridge. */
+      demoEngine: ReturnType<typeof createDemoEngineBridgeClient> | null;
+      /** The desktop's scene previewer, over the same bridge. */
+      scenePreview: ScenePreviewer | null;
+    } = { current: null, demoEngine: null, scenePreview: null };
     const appControlService = chatOnlyRuntime
       ? null
       : createAppControlService({
         projectRoot,
         logger,
         ptyService,
-        onEvent: (event) => pushEvent("runtime", { type: "app_control_event", event }),
-        resolveLaneId: async ({ cwd, projectRoot: requestedProjectRoot, laneId, chatSessionId }) => {
-          const explicitLaneId = laneId?.trim();
-          if (explicitLaneId) return explicitLaneId;
-          const chatId = chatSessionId?.trim();
-          if (chatId && agentChatServiceHolder.current) {
-            const chatSession = await agentChatServiceHolder.current.getSessionSummary(chatId).catch(() => null);
-            if (chatSession?.laneId) return chatSession.laneId;
+        onEvent: (event) => {
+          if (event.type === "session-started") {
+            captureAppControlAnalytics({ analytics: productAnalyticsService, outcome: "started" });
           }
-          const targetRoot = path.resolve(cwd || requestedProjectRoot || projectRoot);
-          const lanes = await laneService.list({ includeArchived: false });
-          const matchingLane = lanes.find((lane) => {
-            const worktreePath = path.resolve(lane.worktreePath);
-            const attachedRootPath = lane.attachedRootPath ? path.resolve(lane.attachedRootPath) : null;
-            return (
-              targetRoot === worktreePath
-              || targetRoot.startsWith(`${worktreePath}${path.sep}`)
-              || (attachedRootPath !== null
-                && (targetRoot === attachedRootPath
-                  || targetRoot.startsWith(`${attachedRootPath}${path.sep}`)))
-            );
-          });
-          return matchingLane?.id ?? lanes[0]?.id ?? null;
+          pushEvent("runtime", { type: "app_control_event", event });
         },
+        resolveChatLaneId: async (chatId) => {
+          if (!agentChatServiceHolder.current) return null;
+          const chatSession = await agentChatServiceHolder.current.getSessionSummary(chatId).catch(() => null);
+          return chatSession?.laneId ?? null;
+        },
+        getScreencastRecorder: () =>
+          desktopBridgeAttached() ? desktopBridgeHolder.current : null,
+        getChromiumDemoEngine: () =>
+          desktopBridgeAttached() ? desktopBridgeHolder.demoEngine : null,
+        // A lane may not attach to an app another lane's Mac Desktop holds.
+        // Read at call time: the Mac Desktop service is built just below.
+        macDesktopLaneForProcess: (pid: number): string | null => macDesktopService?.laneForProcess(pid) ?? null,
+        ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+        resolvePrimaryPrUrl: (laneId: string): string | null =>
+          prServiceRef?.getForLane(laneId)?.githubUrl ?? null,
+        resolveLaneName: async (laneId: string): Promise<string | null> => {
+          const lane = await laneService.getSummary(laneId).catch(() => null);
+          return lane?.name ?? null;
+        },
+        resolveLaneWorktreePath: async (laneId: string): Promise<string | null> => {
+          const lane = await laneService.getSummary(laneId, { includeStatus: false }).catch(() => null);
+          return lane?.worktreePath ?? null;
+        },
+        // No fallback lane: a session whose lane cannot be resolved is refused.
+        resolveLaneId: ({ cwd, laneId, chatSessionId }) => resolveSessionLaneId({
+          laneId,
+          chatSessionId,
+          cwd,
+          getChatLaneId: async (chatId) => {
+            if (!agentChatServiceHolder.current) return null;
+            const chatSession = await agentChatServiceHolder.current.getSessionSummary(chatId).catch(() => null);
+            return chatSession?.laneId ?? null;
+          },
+          isLiveLane: (id) => laneService.findLaneIdentity(id) !== null,
+          laneIdForPath: (absolutePath) => laneService.getLaneIdForPath(absolutePath),
+          isPrimaryLane: async (id) => (await laneService.getSummary(id, { includeStatus: false }))?.laneType === "primary",
+        }),
       });
+    // Teardown runs last-in first-out. The recorder bridge client is created
+    // further down, but its release is registered here so it runs AFTER
+    // appControlService.dispose: the service cancels its running recordings
+    // through that client, and a client disposed first drops the cancels,
+    // orphaning the desktop's encoder window for the lane.
+    teardown.push(() => {
+      const bridge = desktopBridgeHolder.current;
+      desktopBridgeHolder.current = null;
+      bridge?.dispose();
+      const demoEngine = desktopBridgeHolder.demoEngine;
+      desktopBridgeHolder.demoEngine = null;
+      demoEngine?.dispose();
+      const scenePreview = desktopBridgeHolder.scenePreview;
+      desktopBridgeHolder.scenePreview = null;
+      scenePreview?.dispose();
+    });
     teardown.push(() => appControlService?.dispose());
+    if (appControlService) {
+      // An archived or deleted lane takes its App Control session with it.
+      laneTeardownDeps.appControlService = {
+        stopForLane: (laneId: string) => appControlService.stopForLane(laneId),
+      };
+    }
     /**
      * One private macOS screen per lane.
      *
@@ -1603,11 +1960,31 @@ export async function createAdeRuntime(args: {
      * false` off macOS, which is what lets a Windows desktop hide the tab by
      * reading rather than by catching a throw.
      */
+    const macDesktopLogger = createMacDesktopLogger(logger, getMacDesktopMachineLogger());
     const macDesktopService = chatOnlyRuntime
       ? null
       : createMacDesktopService({
         projectRoot,
-        logger: createMacDesktopLogger(logger, getMacDesktopMachineLogger()),
+        logger: macDesktopLogger,
+        // Windows hosts reuse the whole seat service; only the helper, the
+        // provider, and the permission story differ. `adeHome` is what the
+        // helper's host mode takes as `--ade-home`.
+        seat: process.platform === "win32"
+          ? createWindowsDesktopSeatAdapter({
+            logger: macDesktopLogger,
+            adeHome: resolveMachineAdeLayout().adeDir,
+          })
+          : null,
+        adeHome: resolveMachineAdeLayout().adeDir,
+        // `ade-media` on macOS; the attached desktop's Chromium engine (over
+        // the desktop bridge) everywhere, which is what turns a Windows lane's
+        // MP4 recording into its demo. Read per stop: a desktop may attach late.
+        demoEngines: createDemoEngineSet({
+          logger: macDesktopLogger,
+          getChromiumDemoEngine: () =>
+            desktopBridgeAttached() ? desktopBridgeHolder.demoEngine : null,
+          getChromiumUnavailableReason: desktopBridgeUnattachedReason,
+        }),
         onEvent: (event) => pushEvent("runtime", { type: "mac_desktop_event", event }),
         resolveLaneWorktreePath: (laneId: string): string | null => {
           try {
@@ -1626,6 +2003,9 @@ export async function createAdeRuntime(args: {
         resolvePrimaryPrUrl: (laneId: string): string | null =>
           prServiceRef?.getForLane(laneId)?.githubUrl ?? null,
         ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+        // A lane may not claim another lane's App Control app onto its screen.
+        appControlLaneForProcess: (pid: number): Promise<string | null> | null =>
+          appControlService?.laneForAppProcess(pid) ?? null,
         // The lease question rides the normal pending-input card.
         requestChatInput: async (input) => {
           const chat = agentChatServiceHolder.current;
@@ -1642,58 +2022,117 @@ export async function createAdeRuntime(args: {
         }),
       });
     teardown.push(() => macDesktopService?.dispose());
-    // `built_in_browser` is hosted by the desktop's Electron main process (the
-    // browser pane owns a WebContentsView). The runtime daemon proxies calls
-    // through `<adeHome>/sock/desktop-bridge.sock`; if no desktop is running,
-    // individual calls fail clearly. Override the socket path with
-    // `ADE_DESKTOP_BRIDGE_SOCKET_PATH` for dev launches that use a non-default
-    // ADE home.
-    let builtInBrowserBridgeAuthToken: string | null = null;
-    const builtInBrowserBridgeSocketPath =
-      process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
-      || resolveMachineAdeLayout().desktopBridgeSocketPath;
+    // A chat-only runtime has no browser surface: no forwarder, no user-browser
+    // attachments, no bridge. Everything else has all three. That includes the
+    // machine's personal-chat runtime: nothing reaches its action registry
+    // (only `personalChats.*` does), and a personal chat's `ade browser` runs
+    // against the runtime its working directory resolves to (see
+    // `scopeBuiltInBrowserAdeActionArgs` in adeRpcServer.ts), which has the bridge.
+    //
     // With no desktop attached HERE, `browser open` is still satisfiable: a
     // desktop that holds a remote pin on this machine can open the URL in its
     // own browser and reach this machine's localhost through a port-forward.
-    const remoteBrowserForwarder = chatOnlyRuntime
+    // The user's own browser is reached from THIS process (the chat's runtime
+    // host), so attaching needs no desktop and works on a remote runtime.
+    const browserSurface = chatOnlyRuntime
       ? null
-      : createRemoteBrowserForwarder({
-        emitEvent: (payload) => pushEvent("runtime", payload),
-        logger,
-      });
-    if (remoteBrowserForwarder) teardown.push(() => remoteBrowserForwarder.dispose());
-    const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = remoteBrowserForwarder
-      ? withRemoteBrowserForwarding(
-        createBuiltInBrowserDesktopBridgeClient({
-          socketPath: builtInBrowserBridgeSocketPath,
-          getAuthToken: () => builtInBrowserBridgeAuthToken,
+      : {
+        remoteBrowserForwarder: createRemoteBrowserForwarder({
+          emitEvent: (payload) => pushEvent("runtime", payload),
+          logger,
+          resolveOrigin: (chatSessionId) => getSessionInputOrigin(chatSessionId),
+          receivedFilesDir: path.join(paths.cacheDir, "browser-observations", "remote"),
+        }),
+        userBrowserAttachService: createUserBrowserAttachService({
           projectRoot,
           logger,
+          machineName: async () =>
+            (await import("./services/sync/deviceRegistryService")).resolveDeviceDisplayNameSettled(),
+          captureAttached: () => captureUserBrowserAnalytics({
+            analytics: productAnalyticsService,
+            properties: { action: "user_browser", outcome: "started" },
+          }),
         }),
-        remoteBrowserForwarder,
+      };
+    if (browserSurface) {
+      teardown.push(() => browserSurface.remoteBrowserForwarder.dispose());
+      teardown.push(() => browserSurface.userBrowserAttachService.dispose());
+    }
+    const userBrowserAttachService = browserSurface?.userBrowserAttachService ?? null;
+    userBrowserAttachServiceForRelease = userBrowserAttachService;
+    const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = browserSurface
+      ? withUserBrowserAttachment(
+        withRemoteBrowserForwarding(
+          createBuiltInBrowserDesktopBridgeClient({
+            socketPath: builtInBrowserBridgeSocketPath,
+            projectRoot,
+            logger,
+          }),
+          browserSurface.remoteBrowserForwarder,
+        ),
+        browserSurface.userBrowserAttachService,
       )
       : null;
-    builtInBrowserBridgeForCapabilities = builtInBrowserBridge;
+    if (appControlService) {
+      const appControlRecorderBridge = createAppControlRecorderBridgeClient({
+        socketPath: builtInBrowserBridgeSocketPath,
+        logger,
+      });
+      desktopBridgeHolder.current = appControlRecorderBridge;
+      desktopBridgeHolder.demoEngine = createDemoEngineBridgeClient({
+        socketPath: builtInBrowserBridgeSocketPath,
+        logger,
+      });
+      desktopBridgeHolder.scenePreview = createScenePreviewBridgeClient({
+        socketPath: builtInBrowserBridgeSocketPath,
+      });
+      void refreshDesktopBridgeProbe();
+      // Released by the teardown step registered before appControlService's.
+    }
     teardown.push(() => {
-      builtInBrowserBridgeForCapabilities = null;
       builtInBrowserBridge?.dispose();
     });
+
+    // Dev servers this project's lanes run: what terminals and agent shells
+    // printed, plus what the listener scan finds. Published on the runtime
+    // stream so a desktop on another machine lights up its Browser the same
+    // way one on this machine does.
+    const devServerWatcher = chatOnlyRuntime
+      ? null
+      : createDevServerWatcher({
+        registry: devServerRegistry,
+        projectRoot,
+        listLaneRoots: async () =>
+          (await laneService.list({ includeArchived: false, includeStatus: false }))
+            .map((lane) => ({ laneId: lane.id, root: lane.worktreePath })),
+        logger,
+      });
+    if (devServerWatcher) {
+      const publishDevServer = (kind: DevServerEvent["kind"]) => (record: DevServerRecord) => {
+        if (!devServerWatcher.ownsRecord(record)) return;
+        pushEvent("runtime", { type: DEV_SERVER_EVENT, event: { kind, server: record } satisfies DevServerEvent });
+      };
+      const stopDetected = devServerRegistry.onDetected(publishDevServer("detected"));
+      const stopRemoved = devServerRegistry.onRemoved(publishDevServer("removed"));
+      teardown.push(() => {
+        stopDetected();
+        stopRemoved();
+        devServerWatcher.dispose();
+      });
+    }
 
     // Read-only view of the Work tools pane for iOS and the hosted web client.
     // Built here because it is the first point where BOTH of its sources exist:
     // the in-process App Control service and the desktop browser bridge.
     const workToolsStateService = createWorkToolsStateService({
       projectRoot,
-      // Deliberately `getStatusForRuntime`, not `getStatus`: the aggregator is
-      // the daemon itself and holds no per-chat actor capability, which every
-      // `BuiltInBrowserService` bridge method requires. `getStatus` here always
-      // failed `policyDenied`, so the Tools pane reported "no desktop attached"
-      // even with ADE Desktop running.
+      // Deliberately `getStatusForRuntime`, not `getStatus`: the aggregator
+      // needs the project-scoped, read-only projection, not one chat's view.
       getBrowserStatus: builtInBrowserBridge
         ? () => builtInBrowserBridge.getStatusForRuntime()
         : null,
       getAppControlStatus: appControlService
-        ? () => appControlService.getStatus()
+        ? (laneId) => appControlService.getStatus({ laneId })
         : null,
       // The runtime's own Mac Desktop service, read-only: the mirror holds
       // `getStatus` + `subscribe` and nothing that can start a display or move
@@ -1706,7 +2145,22 @@ export async function createAdeRuntime(args: {
       showRequests: createWorkToolShowRequests({
         emitEvent: (payload) => pushEvent("runtime", payload),
         logger,
+        // Show it on the screen of whoever is talking to the chat.
+        resolveTargetClientId: (chatSessionId, kind) => getSessionInputOrigin(
+          chatSessionId,
+          kind === "auto" ? { maxAgeMs: RECENT_INPUT_ORIGIN_MS } : {},
+        )?.clientId ?? null,
       }),
+      devServers: devServerWatcher
+        ? {
+          list: async (args) => {
+            // Someone is looking at a Browser: make the answer current first.
+            await devServerWatcher.refresh();
+            return devServerRegistry.list(args).filter(devServerWatcher.ownsRecord);
+          },
+          probePort: (port) => probeLocalhostPort(port),
+        }
+        : null,
       logger,
     });
     teardown.push(() => workToolsStateService.dispose());
@@ -1722,25 +2176,43 @@ export async function createAdeRuntime(args: {
       laneService,
       operationService,
       conflictService,
+      laneWorktreeLockService,
+      autoRebaseService,
+      rebaseSuggestionService,
       openExternal: async () => {},
       onGitHubStatusChanged: (status) =>
         pushEvent("runtime", { type: "github_status_changed", event: status }),
       getAccountAccessToken,
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
       getAccountUserId: () => accountAuthService.getStatus().userId,
-      getDeviceId: () => {
-        try {
-          return fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
-        } catch {
-          return null;
-        }
-      },
+      getDeviceId: readSyncDeviceId,
+      refreshDefaultBranchAfterMerge: embeddedRuntime
+        ? undefined
+        : async (baseBranch) => {
+            // A merge into a stacked parent branch leaves the default branch alone.
+            if (!isDefaultBranchMerge(baseBranch, baseRef)) return;
+            await defaultBranchAutoPullService.runOnce();
+          },
     });
     linearCredentialServiceForAccount = headlessLinearServices.linearCredentialService;
     teardown.push(() => headlessLinearServices.dispose());
     linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
     githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
+    jiraServiceRef = createJiraService({
+      credentials: createJiraCredentialService({ credentialStore: new EncryptedFileCredentialStore() }),
+    });
+    const issueTrackerService = createIssueTrackerService({
+      linearIssueTracker: headlessLinearServices.linearIssueTracker,
+      githubService: headlessLinearServices.githubService,
+      jiraService: jiraServiceRef,
+      getProjectConfig: () => projectConfigService.getEffective(),
+    });
     prServiceRef = headlessLinearServices.prService;
+    // Follow-up PR branches an agent cuts inside its lane worktree: link their
+    // PRs to the lane (and to the chats that were open when they were made).
+    laneService.setOnBranchHistoryObserved((args) => {
+      void prServiceRef?.autoLinkLaneBranchHistory(args);
+    });
     if (macDesktopService) {
       // Runs on every platform: off macOS `destroyForLane` is a no-op, so the
       // teardown step never has to know what host it is on.
@@ -1770,6 +2242,9 @@ export async function createAdeRuntime(args: {
     });
 
     let automationServiceRef: ReturnType<typeof createAutomationService> | null = null;
+    // Built after the chat service; smart balance and the usage-limit account
+    // switch read it through this late binding.
+    let usageTrackingServiceRef: ReturnType<typeof attachSharedUsageTrackingScope> | null = null;
     // Machine-level, like the quota poller: every project scope in this brain
     // writes one ledger under `<adeHome>/usage/`.
     const turnUsageLedger = getSharedTurnUsageLedger(resolveMachineAdeLayout().adeDir, logger);
@@ -1786,19 +2261,71 @@ export async function createAdeRuntime(args: {
       }));
     teardown.push(() => detachUsageResearch());
 
+    // Machine-level as well: the model router in shadow mode. It reads the
+    // daily model registry from the account directory (signed-in accounts
+    // only), this brain's model catalog, and the ledger's quota windows, and
+    // logs the route it would have picked for each subagent. It changes no
+    // turn. `ADE_MODEL_ROUTER_SHADOW=0` turns the watching off.
+    const sharedModelRouter = attachSharedModelRouter({
+      adeDir: resolveMachineAdeLayout().adeDir,
+      modelSource: async (provider) => (await agentChatService?.getAvailableModels({ provider })) ?? [],
+      create: (getAvailableModels) => createModelRouterService({
+        usageDir: turnUsageLedger.store.dir,
+        registry: createModelRegistryStore({
+          dir: path.join(resolveMachineAdeLayout().adeDir, "router"),
+          overrideFile: process.env.ADE_MODEL_REGISTRY_FILE?.trim() || null,
+          logger,
+          fetchSnapshot: createWorkerRegistryFetcher({
+            baseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }),
+            getToken: async () => {
+              const token = await getAccountAccessToken();
+              if (!token) throw new Error("not signed in");
+              return token;
+            },
+          }),
+        }),
+        getAvailableModels,
+        readTurns: (sinceMs) => turnUsageLedger.store.readTurns({ sinceMs }),
+        readQuotaSamples: (sinceMs) => turnUsageLedger.store.readQuotaSamples({ sinceMs }),
+        logger,
+      }),
+    });
+    teardown.push(() => sharedModelRouter.detach());
+    const modelRouter = sharedModelRouter.service;
+
     let agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
+    // Built after automations; chat events reach it through this late binding.
+    let linearAgentRuntime: LinearAgentRuntime | null = null;
     if (resolvedArgs.chatRuntime === "agent") {
       agentChatService = createAgentChatService({
+        machineAdeHome: resolveMachineAdeLayout().adeDir,
+        // The MCP registry's secret values: the generic vault kind, account-wide.
+        readAccountSecret: (vaultKey) => accountVaultStore?.get("all", MCP_SECRET_VAULT_KIND, vaultKey) ?? null,
         runtimeBudget: chatRuntimeBudget,
-        browserActorCapabilityIssuer,
+        releaseChatBrowser,
         projectRoot,
         runtimeSocketPath,
         sessionActivityReportingEnabled,
         adeDir: paths.adeDir,
         transcriptsDir: paths.transcriptsDir,
+        // Both are declared later in this scope — the launch service is built
+        // *from* this service, and the machine identity comes from the sync
+        // relay store. Reading them through closures keeps the cycle from
+        // existing; before each is initialized the getter throws and the
+        // caller treats the dependency as absent, which is exactly right.
+        getChatLaunchService: () => chatLaunchService,
+        getLocalMachineKey: () => {
+          try {
+            return cloudRelayStore.getMachineIdentity().machineKey;
+          } catch {
+            return null;
+          }
+        },
         fileService: headlessLinearServices.fileService,
         linearIssueTracker: headlessLinearServices.linearIssueTracker,
         githubService: headlessLinearServices.githubService,
+        jiraService: jiraServiceRef,
+        issueTrackerService,
         prService: headlessLinearServices.prService,
         diskPressureMonitor,
         // Sleep is a machine fact, so every chat in this brain reads the one
@@ -1809,18 +2336,17 @@ export async function createAdeRuntime(args: {
         ptyService,
         getAutomationService: () => automationServiceRef,
         getGitService: () => gitService,
+        getAccountUsage: () => usageTrackingServiceRef,
+        getUsageService: () => usageTrackingServiceRef,
         conflictService,
         computerUseArtifactBrokerService,
-        // One line of system prompt and the per-turn time-lapse clip, both
-        // behind the same synchronous gate: the send path must not await a
-        // service to decide to say nothing, so it reads the in-memory display
-        // registry, and an idle lane pays nothing.
-        macDesktopTurnRecorder: macDesktopService
+        // One line of system prompt, behind a synchronous gate: the send path
+        // must not await a service to decide to say nothing, so it reads the
+        // in-memory display registry, and an idle lane pays nothing.
+        macDesktopRuntime: macDesktopService
           ? {
             hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
             supportsLaneDisplaySync: () => macDesktopService.supportsLaneDisplaySync(),
-            beginTurn: (args) => macDesktopService.beginTurn(args),
-            noteTurnEnded: (args) => macDesktopService.noteTurnEnded(args),
           }
           : null,
         laneService,
@@ -1831,12 +2357,39 @@ export async function createAdeRuntime(args: {
         aiIntegrationService,
         ctoStateService,
         ctoMemoryService,
+        // The CTO acting on the account's other machines, for this project's
+        // repository there. Built on first use: most CTO turns never leave the
+        // home machine, and a project with no CTO turns never pays for it.
+        getCtoCrossMachine,
+        ...(typeof args !== "string" && args.crossMachineHandoffTransport
+          ? { crossMachineHandoffTransport: args.crossMachineHandoffTransport }
+          : {}),
+        // An agent asked to move a chat, or an agent-started or queued move
+        // ended while the person may be away.
+        notifyCrossMachineHandoff: ({ sessionId, record, title }) => {
+          const subject = title?.trim() || "Your chat";
+          const machine = record.targetMachineName;
+          // Fixed copy only: a failure reason can carry paths, branch names
+          // or remote output, and a push leaves the machine through Apple.
+          const copy = record.state === "awaiting_approval"
+            ? { title: `${subject}: the agent wants to continue on ${machine}`, body: "Approve or deny it in the chat." }
+            : record.state === "continued"
+              ? { title: `${subject} continues on ${machine}`, body: "Open it there to keep going." }
+              : { title: `${subject} couldn't move to ${machine}`, body: "Open the chat for details." };
+          pushPublisherForPtySignals?.handleSessionNotice({
+            sessionId,
+            dedupeKey: `cross-machine-move:${record.handoffId}:${record.state}`,
+            ...copy,
+          });
+        },
         logger,
         appVersion: "ade-cli",
         getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
         getLocalGitHubToken: () => headlessLinearServices.githubService.getGitTransportTokenOrThrowAsync(),
         onLinearIssueChatLinked: publishLinearChatLink,
         onEvent: (event) => {
+          feedDemoTrackFromChatEvent(event);
+          linearAgentRuntime?.onChatEvent(event);
           pushEvent("runtime", event as unknown as Record<string, unknown>);
         },
         onTurnSettled: (event) => captureAgentTurnSettledAnalytics({
@@ -1844,7 +2397,13 @@ export async function createAdeRuntime(args: {
           projectId,
           event,
         }),
+        // The `ade chat ask` path, once the runtime exists; before that the
+        // chat service writes the same marker without the phone push.
+        requestSessionAttention: (request) => runtimeForCtoActions
+          ? requestSessionAttentionForRuntime(runtimeForCtoActions, request)
+          : sessionService.requestAttention(request.sessionId, request.message, request.source),
         turnUsageLedger,
+        modelRouter,
         onClaudeHooksIgnored: (event) => captureClaudeHooksIgnoredAnalytics({
           analytics: productAnalyticsService,
           projectId,
@@ -1877,11 +2436,28 @@ export async function createAdeRuntime(args: {
           projectId,
           event,
         }),
+        // This brain runs the moves (it owns the transport), so it records
+        // how each one ended.
+        onCrossMachineMoveOutcome: ({ handoffId, outcome }) => captureCrossMachineMoveAnalytics({
+          analytics: productAnalyticsService,
+          projectId,
+          event: { handoffId, outcome },
+        }),
+        onCompactionOutcome: (event) => captureChatCompactionAnalytics({
+          analytics: productAnalyticsService,
+          projectId,
+          event,
+        }),
         onAutoResumeOutcome: (properties) => captureChatAutoResumeAnalytics({
           analytics: productAnalyticsService,
           properties,
         }),
         onPendingInputDismissed: ({ provider }) => capturePendingInputDismissedAnalytics({
+          analytics: productAnalyticsService,
+          surface: "api",
+          provider,
+        }),
+        onAccountSwitched: ({ provider }) => captureChatAccountSwitchedAnalytics({
           analytics: productAnalyticsService,
           surface: "api",
           provider,
@@ -1901,6 +2477,9 @@ export async function createAdeRuntime(args: {
     computerUseArtifactBrokerService.setChatTurnStartResolver(
       (sessionId) => agentChatService?.getTurnStartedAt?.(sessionId) ?? null,
     );
+    computerUseArtifactBrokerService.setChatTurnIdResolver(
+      (sessionId) => agentChatService?.getTurnId?.(sessionId) ?? null,
+    );
     bindIosSimulatorReleaseOnChatEnd({
       agentChatService,
       iosSimulatorService,
@@ -1914,6 +2493,16 @@ export async function createAdeRuntime(args: {
         ? { releaseIfOwnedBy: (sessionId: string) => macDesktopService.releaseIfOwnedBy(sessionId) }
         : null,
       logEvent: "mac_desktop.release_on_chat_end_failed",
+      logger,
+    });
+    // A chat that ends releases the App Control session it owns: ADE quits
+    // the app it launched and detaches one it only attached to.
+    bindDeviceReleaseOnChatEnd({
+      agentChatService,
+      device: appControlService
+        ? { releaseIfOwnedBy: (sessionId: string) => appControlService.stopForChat(sessionId) }
+        : null,
+      logEvent: "app_control.release_on_chat_end_failed",
       logger,
     });
     if (agentChatService) {
@@ -1931,6 +2520,7 @@ export async function createAdeRuntime(args: {
       settleTeardownRef.run = settleWiring.runSettleTeardown;
       settleTeardownRef.report = settleWiring.onRemoteSettleWrite;
       settleTeardownRef.residue = settleWiring.onSettleResidue;
+      settleTeardownRef.subagentLinks = settleWiring.listSubagentLinks;
     }
     autoRebaseActivityReady = true;
     void autoRebaseService
@@ -1956,13 +2546,29 @@ export async function createAdeRuntime(args: {
             return false;
           }
         },
-        resolveBase: async () => {
-          const { baseRef, fetchSucceeded } = await resolveLaneCreateRemoteBaseDetailed({
+        resolveBase: async (progress) => {
+          const resolution = await resolveLaneCreateRemoteBaseDetailed({
             laneService,
             gitService,
             projectConfigService,
+            ...(progress?.signal ? { signal: progress.signal } : {}),
+            ...(progress?.onWaitingForStaleFetch ? { onWaitingForStaleFetch: progress.onWaitingForStaleFetch } : {}),
           });
-          return { baseRef, fetch: baseRef ? (fetchSucceeded === false ? "failed" : "ok") : "skipped" };
+          const { baseRef, fetchSucceeded, fetchOutcome, fetchError, freshness, stale } = resolution;
+          const fetch = !baseRef
+            ? "skipped"
+            : fetchSucceeded === false
+              ? (fetchOutcome === "timeout" ? "timeout" : "failed")
+              : "ok";
+          return {
+            baseRef,
+            fetch,
+            fetchError: fetchError ?? null,
+            lastFetchedAtMs: freshness?.lastFetchedAtMs ?? null,
+            baseCommittedAtMs: freshness?.committedAtMs ?? null,
+            behindLocal: freshness?.behindLocal ?? null,
+            stale: stale === true,
+          };
         },
         resolveCommit: (ref) => resolveGitCommit(ref, projectRoot),
         resolveChatCreate: (create) => resolveChatCreateModel(agentChatService, create),
@@ -2025,6 +2631,7 @@ export async function createAdeRuntime(args: {
         conflictService,
         testService,
         agentChatService: agentChatService ?? undefined,
+        prService: headlessLinearServices.prService,
         onEvent: (event) => pushEvent("runtime", { ...event, source: "automations" }),
       })
       : null;
@@ -2046,16 +2653,94 @@ export async function createAdeRuntime(args: {
       automationService,
       prService: headlessLinearServices.prService,
       onPrStateIngested: (prIds) => prPollingServiceForIngress?.reconcilePrs(prIds),
+      // The brain runs no GitHub poller, so the relay is what starts `github.*` rules.
+      relayDispatchesTypedGithubEvents: true,
       secretService: automationSecretService,
       githubService: headlessLinearServices.githubService,
       getAccountAccessToken,
       listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
       ingressCursorStore: createKvIngressCursorStore(db),
+      webhooks: {
+        db,
+        projectId,
+        readSecret: (name) => {
+          try {
+            return projectSecretService.get({ name }).value;
+          } catch {
+            return null;
+          }
+        },
+      },
       // 30s halves worst-case webhook latency. Each poll is one request to our
       // own relay worker (no GitHub data cost); the service floors at 30s.
       pollIntervalMs: 30_000,
     });
     teardown.push(() => automationIngressService?.dispose());
+    const headlessLinearAccessToken = createLinearAccessTokenGetter(headlessLinearServices.linearCredentialService);
+    const agentChat = agentChatService;
+    linearAgentRuntime = automationService && agentChat
+      ? createLinearAgentRuntime({
+        db,
+        logger,
+        automationService,
+        getLinearAccessToken: headlessLinearAccessToken,
+        getAccountAccessToken,
+        getAccountId: () => accountAuthService.getStatus().userId ?? null,
+        getMachineId: readSyncDeviceId,
+        projectId,
+        chat: {
+          sendMessage: (args) => agentChat.sendMessage(args, { routeActiveToSteer: true }),
+          interrupt: (args) => agentChat.interrupt(args),
+          respondToInput: (args) => agentChat.respondToInput(args),
+          getAvailableModels: (args) => agentChat.getAvailableModels(args),
+        },
+        laneService,
+        fetchIssue: (issueId) => headlessLinearServices.linearClient.fetchIssueById(issueId),
+      })
+      : null;
+    teardown.push(() => linearAgentRuntime?.dispose());
+    // Linear inbox items about a lane's issue raise "needs you" on that lane.
+    // Skipped in an embedded runtime: the real brain owns attention.
+    const linearInboxAttention = embeddedRuntime
+      ? null
+      : createLinearInboxAttentionService({
+        logger,
+        kv: db,
+        isLinearConnected: () => headlessLinearServices.linearCredentialService.getStatus().tokenStored === true,
+        listNotifications: () => headlessLinearServices.linearClient.listNotifications({ first: 50 }),
+        listLanes: () => laneService.list({ includeArchived: false }),
+        latestSessionInLane: (laneId) => sessionService.list({ laneId, limit: 1 })[0]?.id ?? null,
+        requestAttention: (sessionId, message) => {
+          sessionService.requestAttention(sessionId, message, "linear");
+        },
+      });
+    linearInboxAttention?.start();
+    // A PR for a Linear issue carries the lane's proof onto the issue.
+    const postLinearProof = createLinearProofPoster({
+      logger,
+      kv: db,
+      listLaneProof: (laneId) => computerUseArtifactBrokerService.listArtifacts({ owner: { kind: "lane", id: laneId } }),
+      resolveFilePath: (artifact) => computerUseArtifactBrokerService.resolveArtifactFilePath(artifact),
+      uploadAttachment: (args) => headlessLinearServices.linearClient.uploadAttachment(args),
+      createComment: (issueId, body) => headlessLinearServices.linearClient.createComment(issueId, body),
+    });
+    headlessLinearServices.prService.setLinearPrPublishedHandler(async ({ lane, issueIds, prNumber, githubUrl }) => {
+      await postLinearProof({ laneId: lane.id, laneName: lane.name, issueIds, prNumber, githubUrl });
+    });
+    teardown.push(() => linearInboxAttention?.stop());
+    if (linearAgentRuntime) {
+      const agentRelay = linearAgentRuntime.relay;
+      linearOAuthService.setAgentTokenHandler(async (token) => {
+        await agentRelay.install(token);
+      });
+      // Joining the member map is what routes a person's own delegations to
+      // their own machines. Only a personal OAuth sign-in joins on its own (an
+      // API key may be shared), and it never takes over a mapping that routes
+      // to another ADE account; Settings asks before it does that.
+      if (headlessLinearServices.linearCredentialService.getStatus().authMode === "oauth") {
+        void agentRelay.registerMember().catch(() => {});
+      }
+    }
     const linearIngressService = automationService
       ? createLinearIngressService({
         db,
@@ -2064,17 +2749,35 @@ export async function createAdeRuntime(args: {
           secretsDir: path.join(paths.adeDir, "secrets"),
         }),
         getLinearClient: () => headlessLinearServices.linearClient,
-        getLinearAccessToken: createLinearAccessTokenGetter(headlessLinearServices.linearCredentialService),
+        getLinearAccessToken: headlessLinearAccessToken,
         getAccountAccessToken,
         cursorStore: createKvIngressCursorStore(db),
         hasEnabledLinearRules: () => automationService?.hasEnabledLinearRules() ?? false,
+        getAgentSubscribeTarget: () => linearAgentRuntime?.relay.subscribeTarget() ?? Promise.resolve(null),
+        // Linear-linked lanes stay in step with Linear even with no rules.
+        wantsLinearEvents: () => {
+          try {
+            return laneService.hasLinearLinkedLanes();
+          } catch {
+            return false;
+          }
+        },
         isAdeAppConnection: () => {
           const credentials = headlessLinearServices.linearCredentialService;
           return credentials.getStatus().authMode === "oauth"
             && credentials.getOAuthClientSource() === "ade-app";
         },
         dispatch: async (record) => {
+          const issuePatch = linearIssuePatchFromEvent(record);
+          if (issuePatch) {
+            try {
+              laneService.refreshLinearIssueSnapshots(issuePatch);
+            } catch (error) {
+              logger.warn("linear.lane_snapshot_refresh_failed", { eventId: record.eventId, error: error instanceof Error ? error.message : String(error) });
+            }
+          }
           if (!automationService) return;
+          linearAgentRuntime?.dispatch(record);
           // Rule dispatch is awaited so the relay cursor only advances once
           // every trigger for the delivery has been handed to the engine; a
           // failing rule logs and never wedges polling.
@@ -2108,6 +2811,8 @@ export async function createAdeRuntime(args: {
       db,
       projectId,
       credentialStore: openCursorCloudCredentialStore(projectRoot),
+      // Only a project with an enabled cursor.* rule polls the relay.
+      wantsEvents: () => automationService?.hasEnabledCursorCloudRules() ?? false,
       getAccountAccessToken,
       cursorStore: createKvIngressCursorStore(db),
       dispatch: async (record) => {
@@ -2131,8 +2836,11 @@ export async function createAdeRuntime(args: {
       logger,
     });
     automationService?.setCursorCloudIngressAvailable(() => {
+      // Unconfigured counts as available: enabling the first cursor.* rule is
+      // what starts the self-configuring poll, so gating on "ready" would make
+      // that first rule impossible to enable.
       const status = cursorCloudIngressService.getStatus();
-      return status.state === "ready" || Boolean(status.webhookId && !status.lastError);
+      return status.state !== "error" || Boolean(status.webhookId);
     });
     teardown.push(() => cursorCloudIngressService.stop());
     cursorCloudIngressService.start();
@@ -2175,6 +2883,17 @@ export async function createAdeRuntime(args: {
         const status = cursorCloudIngressService.getStatus();
         return { state: status.state, lastEventAt: status.lastEventAt };
       },
+    });
+    const cloudAgentsService = createCloudAgentsServiceFromHost({
+      projectRoot,
+      logger,
+      laneService,
+      getAgentChatService: () => agentChatService ?? null,
+      cursorFleet: cursorCloudFleetService,
+      archiveCursorAgent: (agentId) => aiIntegrationService.archiveCursorCloudAgent(agentId),
+      unarchiveCursorAgent: (agentId) => aiIntegrationService.unarchiveCursorCloudAgent(agentId),
+      cursorCreateRun: (args) => aiIntegrationService.createCursorCloudRun({ ...args, workOnCurrentBranch: true }),
+      resolveDevinBinary: resolveDevinCloudBinary,
     });
     const configReloadService = createConfigReloadService({
       paths: {
@@ -2251,11 +2970,27 @@ export async function createAdeRuntime(args: {
     });
     const prMergeAutoSettlementService = createPrMergeAutoSettlementService({
       db,
+      projectId,
       sessionService,
       emitEvent: emitPrEvent,
       logger,
       getChatLiveness: agentChatService ? chatLivenessReader(agentChatService) : undefined,
     });
+
+    // PR Watch / Ship: wakes a chat on this brain when its watched PR changes.
+    const chatForPrWatch = agentChatService;
+    const prWatchService = chatForPrWatch
+      ? createPrWatchService({
+        logger,
+        prService: headlessLinearServices.prService,
+        sessionService,
+        messageSession: (args) => chatForPrWatch.messageSession(args),
+        emitPrEvent,
+        getGithubBackgroundPauseUntilMs: () =>
+          headlessLinearServices.githubService.getBackgroundRequestPauseUntilMs(),
+      })
+      : null;
+    if (prWatchService) teardown.push(() => prWatchService.dispose());
 
     // GitHub polling fallback. Runtime-bound desktop windows route PR reads to
     // this daemon instead of the desktop main process, so the daemon must own
@@ -2272,7 +3007,7 @@ export async function createAdeRuntime(args: {
       onEvent: emitPrEvent,
       onPullRequestsSnapshot: (snapshot) =>
         prMergeAutoSettlementService.processSnapshot(snapshot),
-      onPullRequestsChanged: async ({ changedPrs, changes }) => {
+      onPullRequestsChanged: async ({ prs, changedPrs, changes }) => {
         if (changedPrs.length > 0) {
           // Poll results must not start another hot-refresh window; doing so
           // turns active CI into an unbounded high-frequency GitHub API loop.
@@ -2286,16 +3021,19 @@ export async function createAdeRuntime(args: {
             previousReviewStatus,
           });
         }
+        prWatchService?.onPullRequestsChanged(changes.map((change) => change.pr.id));
         await emitRuntimePrCardsForChanges({
           changes,
           dataSource: headlessLinearServices.prService,
           chat: agentChatService,
           logger,
+          relatedPrs: prs,
         });
       },
     });
     teardown.push(() => prPollingService.dispose());
     prPollingService.start();
+    prWatchService?.start();
     prPollingServiceForIngress = prPollingService;
     void automationIngressService.start().catch((error) => {
       logger.warn("automations.ingress_start_failed", {
@@ -2366,13 +3104,7 @@ export async function createAdeRuntime(args: {
         },
         getAccountMachineIdentity: () => {
           const { machineKey } = cloudRelayStore.getMachineIdentity();
-          let deviceId: string | null = null;
-          try {
-            deviceId = fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
-          } catch {
-            deviceId = null;
-          }
-          return { machineKey, deviceId };
+          return { machineKey, deviceId: readSyncDeviceId() };
         },
         activityRosterProvider: syncRuntimeOptions?.activityRosterProvider,
       };
@@ -2462,6 +3194,7 @@ export async function createAdeRuntime(args: {
         dependencies: {
           captureInternalAnalytics: (input) => productAnalyticsService.captureInternal(input),
           turnUsageLedger,
+          modelRouter,
         },
       }),
       {
@@ -2505,6 +3238,7 @@ export async function createAdeRuntime(args: {
         },
       },
     );
+    usageTrackingServiceRef = usageTrackingService;
     // Detaches this project. The shared poller keeps running for the scopes
     // that are still open and shuts down only with the last one.
     teardown.push(() => usageTrackingService.dispose());
@@ -2617,16 +3351,42 @@ export async function createAdeRuntime(args: {
         agentChatService,
         chatLaunchService,
         cursorCloudFleetService,
+        cloudAgentsService,
         pushPublisherService,
         ctoStateService,
         ctoMemoryService,
         linearCredentialService: headlessLinearServices.linearCredentialService,
         linearOAuthService,
         getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
+        getJiraService: () => jiraServiceRef,
         getExternalSessionsService: () => externalSessionsService,
         workToolsStateService,
         macDesktopService,
+        // App Control's `onEvent` feeds the runtime event buffer; the live
+        // view for phones and the web client reads the same events there.
+        appControl: appControlService
+          ? {
+              getStatus: appControlService.getStatus,
+              subscribeEvents: appControlEventsFromRuntimeBuffer(eventBuffer),
+              getLatestFrame: appControlService.getLatestFrame,
+              setFrameDemand: appControlService.setFrameDemand,
+            }
+          : null,
         appleDeviceService: iosSimulatorService,
+        getWebhookAutomations: () => createWebhookRemoteSource({
+          automationService,
+          webhooks: automationIngressService?.webhooks,
+          projectSecrets: projectSecretService,
+        }),
+        // Same service methods the desktop menu's Auto handoff reaches through
+        // the action bus; null (nothing advertised) when automations are off.
+        getAutomationRules: () => (automationService && automationPlannerService
+          ? {
+              list: () => automationService.list(),
+              saveDraft: (req) => automationPlannerService.saveDraft(req),
+              deleteRule: (input) => automationService.deleteRule(input),
+            }
+          : null),
         appleStreamRelay,
         getAppleRemoteBitrateKbpsCap: appleRemoteBitrateKbpsCap,
         sharedSyncListener: syncRuntimeOptions.sharedSyncListener ?? null,
@@ -2638,6 +3398,7 @@ export async function createAdeRuntime(args: {
         foreignChatProvider: syncRuntimeOptions.foreignChatProvider,
         personalChatScope: syncRuntimeOptions.personalChatScope,
         remoteCommandExecutor: syncRuntimeOptions.remoteCommandExecutor,
+        projectScopes: syncRuntimeOptions.projectScopes,
         getModelPickerStore: () => getSharedModelPickerStore(db),
         cloudRelayStore,
         syncTunnelClientService,
@@ -2698,6 +3459,7 @@ export async function createAdeRuntime(args: {
         if (event.type === "prs-updated") {
           for (const pr of event.prs) searchService.notifyPrChanged(pr.id);
         }
+        prWatchService?.onPrEvent(event);
       },
     ));
     externalSessionsService = createExternalSessionsService({
@@ -2718,26 +3480,6 @@ export async function createAdeRuntime(args: {
         provider,
       }),
     });
-
-    // Constructed below the chat service on purpose: a call reaches the CTO
-    // thread through it, so this must not run while that binding is still null.
-    const ctoVoiceCallService = createCtoVoiceRuntimeService({
-      projectRoot,
-      logger,
-      laneService,
-      ctoStateService,
-      agentChatService,
-      // The views a call drew: it reads its own stills back out of the store
-      // at hang-up, to name them in the durable record.
-      computerUseArtifactBrokerService,
-      ctoMemoryService,
-      // The CTO row's status line during a call is written straight to the
-      // session row: the generated one is always a turn behind on a call.
-      sessionService,
-      productAnalyticsService,
-      eventBuffer,
-    });
-    teardown.push(() => ctoVoiceCallService.dispose());
 
     const runtime: AdeRuntime = {
       projectRoot,
@@ -2785,14 +3527,17 @@ export async function createAdeRuntime(args: {
       agentChatService,
       chatLaunchService,
       cursorCloudFleetService,
+      cloudAgentsService,
       ctoStateService,
       ctoMemoryService,
-      ctoVoiceCallService,
       adeProjectService,
       githubService: headlessLinearServices.githubService,
+      jiraService: jiraServiceRef,
+      issueTrackerService,
       accountAuthService,
       linearCredentialService: headlessLinearServices.linearCredentialService,
       linearOAuthService,
+      linearAgentRuntime,
       prService: headlessLinearServices.prService,
       prSummaryService,
       fileService: headlessLinearServices.fileService,
@@ -2811,27 +3556,15 @@ export async function createAdeRuntime(args: {
       computerUseArtifactBrokerService,
       iosSimulatorService,
       appControlService,
+      getScenePreviewer: () => (desktopBridgeAttached() ? desktopBridgeHolder.scenePreview : null),
       macDesktopService,
       builtInBrowserService: builtInBrowserBridge,
+      userBrowserAttachService,
       workToolsStateService,
-      configureBuiltInBrowserDesktopBridgeAuth: async (authToken: string) => {
-        if (!builtInBrowserBridge) {
-          logger.warn("built_in_browser_bridge.runtime_auth_no_bridge", {
-            socketPath: builtInBrowserBridgeSocketPath,
-          });
-          return false;
-        }
-        const verified = await verifyBuiltInBrowserDesktopBridgeAuth({
-          socketPath: builtInBrowserBridgeSocketPath,
-          authToken,
-        });
-        if (verified) builtInBrowserBridgeAuthToken = authToken.trim();
-        logger.info("built_in_browser_bridge.runtime_auth_configured", {
-          socketPath: builtInBrowserBridgeSocketPath,
-          projectRoot,
-          verified,
-        });
-        return verified;
+      noteDesktopAppConnected: () => {
+        // A probe already in flight may have started before this desktop was
+        // listening, so ask again once it settles.
+        void (desktopBridgeProbeInFlight ?? Promise.resolve()).then(() => refreshDesktopBridgeProbe());
       },
       eventBuffer,
       isPackaged: !isSourceCheckoutRuntimeModule(currentModulePath),
@@ -2847,6 +3580,7 @@ export async function createAdeRuntime(args: {
     automationService?.bindAdeActionRegistry(
       createAutomationAdeActionLookup(() => getAdeActionDomainServices(runtime)),
     );
+    runtimeForCtoActions = runtime;
 
     usageTrackingService.start();
     runtimeCreated = true;

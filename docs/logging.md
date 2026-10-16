@@ -1,8 +1,8 @@
-# Logging and product analytics
+# Logging, error tracking and product analytics
 
-This is ADE's ground truth for operational logging and privacy-bounded product analytics. Read it before adding telemetry, changing an analytics event, or reviewing a feature with `/test`.
+This is ADE's ground truth for operational logging, error tracking (Sentry) and privacy-bounded product analytics (PostHog). Read it before adding telemetry, changing an analytics event, adding a failure path, or reviewing a feature with `/test`.
 
-ADE is local-first. Operational logs stay local and help diagnose software behavior. Product analytics is a separate, deliberately narrow PostHog data path that answers how installations use ADE. PostHog is not a remote log sink, crash dump service, session recorder, or copy of ADE's local state.
+ADE is local-first. Operational logs stay local and help diagnose software behavior. Error tracking sends crashes, errors and warnings to Sentry so failures are seen without anyone pressing a button (see [Error tracking](#error-tracking-sentry)). Product analytics is a separate, deliberately narrow PostHog data path that answers how installations use ADE. PostHog is not a remote log sink, crash dump service, session recorder, or copy of ADE's local state; crashes and errors go to Sentry instead.
 
 ## Non-negotiable boundaries
 
@@ -14,9 +14,50 @@ Never send any of the following to PostHog:
 - credentials, tokens, email addresses, raw account identifiers, device names, or other user-provided strings;
 - raw project IDs, session IDs, or other stable local database identifiers.
 
-No PostHog SDK is linked. ADE calls the Capture API directly so autocapture, automatic pageviews, session replay, surveys, feature flags, remote config, automatic crash capture, and SDK-managed offline queues remain absent. Ordinary events disable person profiles and GeoIP with `$process_person_profile: false` and `$geoip_disable: true`. The sole exception is a quota-counted `$identify` call after ADE knows a signed-in account; it links the current anonymous history to a one-way hash of the account ID and sets only plan, platform, and app version. ADE does not send the account ID, email, name, provider, or token.
+No PostHog SDK is linked. ADE calls the Capture API directly so autocapture, automatic pageviews, session replay, surveys, feature flags, remote config, automatic crash capture, and SDK-managed offline queues remain absent from PostHog. (Crash capture lives in Sentry. These boundaries are PostHog's; Sentry's are in its own section below.) Ordinary events disable person profiles and GeoIP with `$process_person_profile: false` and `$geoip_disable: true`. The sole exception is a quota-counted `$identify` call after ADE knows a signed-in account; it links the current anonymous history to a one-way hash of the account ID and sets only plan, platform, and app version. ADE does not send the account ID, email, name, provider, or token.
 
 Only closed event names, closed property keys, and coarse allowlisted values may cross the analytics boundary. Desktop/runtime raw project and session IDs are installation-salted and hashed before capture. Local deduplication keys are also hashed and are never transmitted.
+
+## Error tracking (Sentry)
+
+Sentry is part of ADE on every surface, with no setting and no notice. The organization is `ade-app` (US region), and each surface reports to its own project.
+
+| Project | Surface | Started in |
+|---|---|---|
+| `ade-desktop` | Electron main, renderer (over IPC to main), preload, native crashes of every Electron process | `apps/desktop/src/main/sentry/initMain.ts` (called right after `configureDesktopUserDataPath()` in `main.ts`); renderer `src/renderer/sentry/initRenderer.ts` |
+| `ade-brain` | the brain (`ade serve`: desktop-started, background service, remote machine) | `apps/ade-cli/src/sentry/initBrain.ts` (serve path in `cli.ts`) |
+| `ade-web` | hosted web client (Cloudflare Pages) | `apps/desktop/src/renderer/webclient/sentry.ts`, loaded after first paint |
+| `ade-workers` | push-relay, tunnel-relay, webhook-relay, account-directory (tag `worker`) | each Worker's `src/sentry.ts` |
+| `ade-ios` | the iOS app (not the widgets or App Clip) | `apps/ios/ADE/Services/CrashReporting.swift` |
+
+**When it runs.** Packaged builds only. Dev builds, source-checkout brains and tests are silent. `ADE_SENTRY_DEV=1` (web: `?ade_sentry_dev=1`) turns it on for testing the wiring and reports as `development`. `DO_NOT_TRACK` or `ADE_SENTRY_DISABLED` set to `1`, `true` or `yes` turns it off, and so does an analytics or automatic-diagnostics opt-out recorded by an earlier build (`main/sentry/priorOptOut.ts`; on the web client, the stored analytics opt-out). iOS ignores a stored opt-out: only `DO_NOT_TRACK=1` or `ADE_SENTRY_DISABLED=1` in an Xcode launch turns it off. The forked SDK workers (Cursor, Droid, Pi, pty host) carry no SDK, because loading one costs hundreds of milliseconds per spawn on Windows; their failures reach the parent process, which reports them (`main/sentry/workerFailures.ts`, and `pty.host_fatal` through the logger).
+
+**What is sent.** Error messages, stack traces, file paths, ids (lane, chat session, project, account hash), counts, durations, OS, architecture, CPU, memory, locale and timezone, the package channel, and breadcrumbs of what happened before (slow or failed IPC calls with their channel or brain action, provider health changes, warnings from ADE's logger). Native crash minidumps are uploaded. The user is the same pseudonymous id PostHog uses as `distinct_id` (`setSentryUserResolver` in `shared/sentry/eventFilter.ts`): the hashed account when signed in, else the install's random id, and none when product analytics is off.
+
+**What is never sent.** Prompt and transcript text, model output, file contents and diffs, terminal output, clipboard, and secrets. Call sites do not pass that text, and `shared/sentry/scrub.ts` is the backstop on every desktop, brain and web process: it redacts keys, tokens, JWTs, private keys, credentials in URLs and secret query parameters, replaces fields named like content (`prompt`, `text`, `body`, `diff`, `stdout`, and so on) with their length, and drops stack-frame local variables. No IP address is stored (client `dataCollection.userInfo: false`, and server-side IP scrubbing on every project). Trace headers are never added to third-party requests (`tracePropagationTargets: []`).
+
+**What becomes an issue.**
+
+- every uncaught exception and unhandled rejection (all processes), renderer and page error-boundary crashes, native crashes;
+- every failed `ipcMain.handle` call, once, grouped per channel or brain action and error code (`main/sentry/ipcCapture.ts`);
+- every failed brain action (`reportFailedAction` in `adeRpcServer.ts`) and internal JSON-RPC error;
+- every `logger.error` line, grouped by event name (`shared/sentry/logBridge.ts`), except `window.console` (renderer console output, kept as logs only: the renderer SDK reports the real errors itself). `logger.warn` lines become Sentry Logs and breadcrumbs, not issues. Info and debug never leave the machine;
+- every provider health transition into `runtime-failed` (`providerRuntimeHealth.ts`).
+- on iOS, a chat that is working but draws no messages (`chat.empty_thread.<kind>`, `runEmptyThreadProbe` in `WorkSessionDestinationView.swift`), at most once per time the chat is opened. It carries the chat stream trace from `ChatStreamTrace` (subscribes, history replies applied or dropped and why, live events, socket closes) and the `chat.stream` breadcrumbs, names and counts only.
+
+**What is a Sentry Log, not an issue.** Things the user is shown or can fix, which say nothing new about ADE's code:
+
+- every error toast (`showToast` with `tone: "error"`), as the log event `toast.<start of title>` (`toastGroupKey`, so a lane or file name in the title does not make one event name per name), with the title and message cut to 300 characters. The failure behind a toast already opened its own issue, with a stack;
+- a provider going `auth-failed` (signed out is the user's state);
+- expected outcomes of an IPC call or brain action (`EXPECTED_OUTCOME_PATTERNS` in `shared/sentry/expectedFailure.ts`): a lane, chat, worktree or screenshot that no longer exists, a project runtime still connecting, a paired machine that is asleep, slow or not sharing the project, a dirty worktree or nothing to commit, a provider or GitHub login that lost access, a GitHub 5xx, a Codex thread another process is writing, and the answers an agent gets when it drives a browser or desktop wrongly (a bad selector, no screen yet, a declined consent card). They are logged as `ipc.expected.<action>` or `runtime_action.expected.<action>`, and every process's `beforeSend` drops an event whose own error is one of them, whatever path it took (a crash that only quotes one as its cause is kept). Add a pattern there only once Sentry shows a message is a state the user can be in rather than a defect.
+
+**Quota.** The Developer plan allows 5,000 errors a month for the whole organization and has no server-side rate limits, so every process keeps its own budget (`shared/sentry/guardrails.ts`): at most 5 events per fingerprint and 60 in total per hour, and crashes (`fatal`) on a budget of their own, 10 per fingerprint and 30 per hour, so they never compete with ordinary errors; Sentry Logs are capped at 20 per log event name and 400 in total per hour, because some warnings repeat every second while a condition lasts. Expected outcomes (aborted navigations, user cancels, EPIPE, ResizeObserver, and the list above) are dropped. The Workers group Cloudflare's own D1 and Durable Object storage failures into one issue per kind (each carries a fresh `reference`), and drop Durable Object resets caused by a deploy. Traces are sampled at 5% on desktop and brain (Workers 1%, push-relay 0.1%, tunnel frames never); the web client reports errors only, because browser tracing would add about a third to the chunk its cold-load budget counts. No profiling. iOS keeps session replay for errors only, fully masked.
+
+**Readable stack traces.** Release builds set `ADE_BUILD_SOURCEMAPS=1`, inject Sentry debug ids into the shipped bundles, upload the maps and delete them before packaging or deploy, so no map reaches a user. Releases are named `ade@<version>` from the `v*` tag (deploys from `main` between releases use `git describe`, for example `1.2.102-4-g3137fc9b9`), with a `dist` per artifact (`win-x64`, `mac-arm64`, `web`, `worker-<name>`). iOS keeps `<bundle id>@<version>+<build>`. Uploads need the `SENTRY_AUTH_TOKEN` repository secret and are skipped, never failed, without it. A release's commits are read from the checkout's git history (`set-commits --local`), because the `arul28` GitHub account is linked to another Sentry organization and sharing it needs a Business plan.
+
+**Instrumenting new code.** Use `captureError(error, context)` and `captureProblem(message, context)` from `apps/desktop/src/shared/sentry/capture.ts` (Swift: `CrashReporting.capture`). They are no-ops where Sentry is not running, so never guard them. Set a `fingerprint` that names the failure (`["provider", provider, kind]`) so repeats are one issue and one budget. Tags are low-cardinality labels (provider, channel, action); detail goes in `extra`. A caught error the app recovers from silently is still a failure: report it, or log it with `logger.warn` or `logger.error` so the bridge does. Never pass user content, and never raise the budget to fit a noisy call site; fix the noise.
+
+**Triage.** `sentry issue list ade-app/<project> --query "is:unresolved" --period 24h`, `sentry issue view <ID>`, `sentry issue events <ID>`, `sentry log list ade-app/<project> -q "severity:error"`. Test events from a dev opt-in run carry `environment:development`; resolve or delete them afterwards.
 
 ## Operational logs versus analytics
 
@@ -33,6 +74,17 @@ Writes are batched onto an async stream, so a caller that is about to end the pr
 Not every operational log belongs to the active project. The rule is the **subject** of the event: if it is the computer, it goes to `desktop-main.jsonl`; if it is a repository, it goes to that project's `main.jsonl`. Machine-subject events include the launch marker `desktop.main_started`, the deeplink scheme claim and single-instance outcome (`deeplink.*`, including `deeplink.single_instance.lock_lost`), `app_navigation.queued_before_dispatcher_ready`, `app.hardware_acceleration`, `machine_trust_reset.failed`, and the `ade` CLI auto-install outcome (`ade_cli.auto_install`, `ade_cli.auto_install_failed`, `ade_cli.auto_install_skipped`) — whether this computer ever got the `ade` command is a fact about the computer, and filed per project it landed wherever the startup latch happened to win. Project-subject events (`project.init`, `ipc.*`, per-service telemetry) stay in the project log, unchanged. Auto-update events were already machine-scoped in `<Electron userData>/ade-update.jsonl` and stay there.
 
 `createFileLogger` backs other machine-scoped sinks for the same reason: `accountBridge` writes `account.local_machines_removed` to `<machine ade dir>/runtime/account-trust.jsonl`, because dropping a paired machine credential is a machine-level mutation and the project logger follows the active project — on a remote-bound project it would ship the record to the other machine and leave nothing on the machine that actually lost its trust. Account-directory publish outcomes record only bounded per-leg durations, the failing leg, and coarse failure codes such as `token_timeout` or `http_timeout`; they never include bearer tokens or response bodies. These high-frequency health events remain local operational logs and are not product analytics.
+
+Account sync against this machine writes local lines only:
+`ai.api_key_removed_by_account` (with the provider name, content-free) when a
+provider key the account reports deleted is dropped here, and
+`project_secret.account_vault_pull` (added, updated and removed counts) when a
+pull changes something. Neither is a PostHog event. A pull
+is a sync tick, not a person, so it captures nothing — the same reason the
+runtime-workload exemption below does not: an event here would report
+engagement nobody generated. A credential removal the ACCOUNT performed must
+not be counted as one this user performed, which is why the sync path calls the
+internal removal rather than `removeApiCredential`.
 
 The brain's sync host and memory watchdog write their own local structured
 lines. `sync.host_start_failed` (signature, attempt, classified code, errno,
@@ -70,7 +122,11 @@ restarting and handing the answer to the client's reconnect) and the `mobile` /
 whether the repair worked, so one repair is one event no matter which client
 asked for it.
 `brain.suspend_gap` records a sleep the watchdogs would previously have
-mis-reported as an event-loop stall. `brain.memory_sample` (rss, heap,
+mis-reported as an event-loop stall. Sleeps of 2 to 59 seconds are logged as
+`brain.suspend_gap` too, and the watchdog's lines name the `pid` and
+`socketPath` of the brain that wrote them (`brain.recovered_from_wedge` is the
+exception, since it describes the previous process).
+`brain.memory_sample` (rss, heap,
 external, uptime; every five minutes) and `brain.memory_restart` /
 `brain.memory_restart_deferred` record the RSS slope and the planned
 idle restart that mitigates a known native leak. All of these are local
@@ -78,6 +134,12 @@ operational logs and none is a PostHog event; the only analytics adjacent to
 them is the existing `ade_feature_used` `auto_sent` outcome when a sustained
 storage fault triggers an automatic diagnostic send through the unchanged
 consent, deduplication, and budget path.
+
+The brain's local RPC transport writes one raw stderr line when it drops a
+client that has stopped reading — `ade jsonrpc client dropped: <n> bytes
+unread` — before closing the socket, so the client reconnects from its event
+cursor instead of growing the brain's heap until V8 aborts. It is a local
+operational line, not a PostHog event, and it carries only a byte count.
 
 The desktop's runtime connection pool writes its own local lines around the
 update window and repair throttle: `local_runtime.update_window_started` /
@@ -140,6 +202,14 @@ refuses a recycled pid, and `agent_chat.claude_subprocess_taskkill_failed` on
 Windows. They carry pids and session ids and no command lines, and none is a
 PostHog event.
 
+An image attachment that does not fit a provider's inline limits writes one of
+two local lines, and neither is a PostHog event. `agent_chat.inline_image_resized`
+(info) records an image that was re-encoded to fit, with `provider`, the `from`
+and `to` byte sizes and pixel dimensions. `agent_chat.inline_image_omitted`
+(warn) records one that could not be sent inline, with `provider`, `bytes`, and
+the `reason`; the turn still runs and the model gets a path hint. Neither line
+carries the file's path or name.
+
 Four more local operational lines exist, and none is a PostHog event.
 `sync_paired.rpc_channel_over_budget` records the host closing one paired RPC
 channel because a reply would pass its send budget: the channel id, the method
@@ -157,25 +227,53 @@ cleanup and a per-paste failure, so they stay local: the connection flaps and
 the sweeps have no user action behind them, and a paste failure's reason is
 free text that cannot cross the analytics boundary.
 
-A CTO voice call and the capture gesture each write their own local structured
-line families, and neither is a PostHog event. `cto_voice.*` covers the call's
-whole life at the runtime that owns it: lifecycle (`start`, `call_end`,
-`end_call_scheduled`, `router_state`, `owner_went_quiet`), the delegation loop
-(`function_call`, `turn_failed`, `turn_interrupted`, `turn_timing`,
-`function_output_dropped`), the transcript gate (`transcript_accepted`,
-`transcript_rejected`, `transcript_valve_tripped` / `_cleared`), the bounded
-audio queues (`preopen_audio_dropped`, `output_audio_dropped`), and the ways a
-socket or a permission hold fails (`socket_error`, `socket_rejected`,
-`session_error`, `read_only_failed`, `confirm_mode_failed`). They carry call
-ids, coarse reasons, counts and durations. They never carry the transcript, the
-spoken words, the model's audio, or any part of the user's OpenAI key — the
-provider's own error text is classified into a house sentence before it is
-logged or read aloud. `capture.*` is the helper supervisor's equivalent
+Claude mod UI (what Claude Code plugins draw in a chat) writes three local
+debug lines and no PostHog event: `agent_chat.claude_plugin_ui_render_failed`
+(session id, render site, error message), `agent_chat.claude_plugin_ui_action_failed`
+(session id, action kind, error message) and
+`agent_chat.claude_plugin_ui_ingest_failed` (session id, message subtype, error
+message). They exist because the channel is private to Claude Code and a
+failure in it never reaches a turn; without them a blank dock has nothing to
+read. (A press that got no answer also shows a toast in the window.)
+
+**No product-analytics event accompanies the feature, deliberately.** What a
+mod draws is a third party's text and controls, so a press, a typed value, a
+status line or a toast is plugin content that cannot cross the boundary, and a
+redraw is a high-frequency mechanic. The one user decision is the setting
+(`ai.chat.claudePluginUiEnabled`), and it is saved through the generic
+`ai.updateConfig` write, which has no per-key owner: the same reason the
+compaction-point setting is not instrumented. The one-time offer banner is a
+prompt, not an outcome. If a dashboard later needs to know how many
+installations turn mod UI on, add one `ade_feature_used` fact at a per-key
+owner then.
+
+The capture gesture writes its own local structured line family, and it is not
+a PostHog event. `capture.*` is the helper supervisor's family
 (`helper_started`, `helper_spawn_failed`, `helper_exited`, `helper_error`,
 `helper_stderr`, `helper_invalid_output`, `helper_output_overflow`,
 `helper_path_outside_output_dir`, `chord_ignored`, `late_answer_dropped`); it
 records why a chord was refused or a shot never arrived and carries no window
 title, app name, or image.
+
+When an agent switches its lane to a new branch during a turn, ADE adopts
+the branch or leaves the choice to the user, and writes the local structured
+line `lane.agent_branch_adopted` (lane id, session id, previous and new branch)
+or `lane.agent_branch_not_adopted` (lane id, session id, coarse reason such as
+`old_branch_has_unpushed_commits`); a failure is `lane.agent_branch_adopt_failed`.
+Neither is a PostHog event. The adoption is an automatic outcome of an agent's
+command, not a user decision, so an event here would report engagement nobody
+generated; the user's own `Switch back` / `Keep` choice uses the existing
+drift-resolution path, which this change does not instrument.
+
+A browser command that an agent on another machine sends to the desktop the
+user sits at writes local lines on the agent's brain:
+`built_in_browser.remote_call` (request id, method, whether a desktop took it,
+whether it succeeded, duration), `built_in_browser.remote_call_emit_failed`,
+and `built_in_browser.remote_call_file_write_failed`. The event-loop watchdog
+also writes a native `sample` of a wedged brain (macOS only) next to its wedge
+report. None of these is a PostHog event: agent browser commands are
+high-frequency agent activity, not a person's decision, and a wedge already has
+`ade_brain_recovered`.
 
 Product analytics records a small number of meaningful product facts such as "an anonymous installation opened the Work screen" or "a chat session started." It must never inherit arbitrary fields from a log record, exception, IPC payload, database row, or UI component props. Log calls and product-analytics calls should remain separate at the call site.
 
@@ -188,8 +286,8 @@ Shared desktop/runtime boundary:
 - `apps/desktop/src/main/services/analytics/productAnalyticsService.ts` owns machine consent, installation identity, salted identifier hashing, persisted deduplication/quota state, and the bounded direct Capture API transport.
 - `apps/desktop/src/main/services/analytics/usageProductAnalyticsExporter.ts`, `dailyUsageAnalytics.ts`, and `agentTurnProductAnalytics.ts` are the durable-ledger, daily-aggregate, and work-session producers. `agentTurnProductAnalytics.ts` also owns `captureChatHandoffReplayAnalytics`, the handoff-replay outcome described below. Their focused coverage is consolidated in `productAnalyticsService.test.ts`.
 - `apps/desktop/src/main/services/analytics/featureProductAnalytics.ts` owns the closed, content-free `ade_feature_used` producers for provider accounts, API credentials, custom presets, proxy, reset-credit outcomes, and pending-question dismissal. It maps provider-shaped input to the existing coarse provider-family allowlist before capture.
-- `apps/desktop/src/main/services/analytics/captureGestureProductAnalytics.ts` is the capture-gesture producer (`reportCaptureGesture`). It takes a `Pick<ProductAnalyticsService, "captureInternal">` rather than the service, so the one call site cannot reach anything else through it. The CTO voice call's single end-of-call event is emitted inline from `services/cto/ctoVoiceRuntimeService.ts`, the durable owner of a call and the only place that sees every way one can finish.
-- `apps/desktop/src/main/services/ipc/registerIpc.ts`, `apps/desktop/src/preload/preload.ts`, and `apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx` expose the safe renderer boundary and lifecycle producers. `ProductAnalyticsSection.tsx` is the desktop opt-out UI.
+- `apps/desktop/src/main/services/analytics/captureGestureProductAnalytics.ts` is the capture-gesture producer (`reportCaptureGesture`). It takes a `Pick<ProductAnalyticsService, "captureInternal">` rather than the service, so the one call site cannot reach anything else through it.
+- `apps/desktop/src/main/services/ipc/registerIpc.ts`, `apps/desktop/src/preload/preload.ts`, and `apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx` expose the safe renderer boundary and lifecycle producers. The desktop has no analytics settings UI; the service itself honors the persisted opt-out and `DO_NOT_TRACK=1`.
 
 Attached clients and native surfaces:
 
@@ -247,16 +345,31 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 
 | feature | action | outcome | provider property |
 | --- | --- | --- | --- |
-| `provider_accounts` | `account_created`, `account_removed`, `default_selected` | `completed` | Claude/Codex family |
+| `provider_accounts` | `account_created`, `account_removed`, `account_signed_out`, `default_selected` | `completed` | Claude/Codex family |
+| `provider_accounts` | `account_created` (a cloud login), `account_signed_out`, `default_selected` (the login in use) | `completed` | `opencode` only, never the upstream provider; at most one per action per hour by the shared dedupe |
 | `provider_accounts` | `balance_changed`, `auto_start_changed` | `enabled`, `disabled` | Claude/Codex family |
+| `provider_accounts` | `subagent_cache_changed` | `enabled` (1 hour), `disabled` (the Claude default) | Claude only |
+| `provider_accounts` | `main_cache_changed` | `enabled` (5 minutes or 1 hour chosen), `disabled` (Automatic) | Claude only |
+| `provider_accounts` | `extra_usage_stop_changed` | `enabled` (stop the turn), `disabled` (continue, the Claude default) | Claude only |
 | `api_credentials` | `credential_stored`, `credential_removed` | `completed` | coarse provider family |
 | `presets` | `preset_created`, `preset_deleted` | `completed` | coarse harness/provider family |
 | `proxy` | `sign_in` | `success` | Claude/Codex family |
 | `proxy` | `start`, `stop` | `completed` | omitted; no provider is involved |
-| `usage` | `reset_credit_consumed` | `completed`, `nothing_to_reset`, `no_credit`, `already_redeemed`, `failed` | `codex` |
+| `usage` | `reset_credit_consumed` | `completed`, `nothing_to_reset`, `no_credit`, `already_redeemed`, `failed` | Claude/Codex family; omitted when no account was named |
+| `usage` | `model_price_changed`, `model_mapping_changed` | `enabled` (set), `disabled` (cleared) | omitted; never the model id or the rates |
 | `chat` | `pending_input_dismissed` | `completed` | coarse session provider family |
 | `chat` | `new_lane_launch` | `completed`, `cancelled`, `failed` | coarse chat provider family |
+| `chat` | `voice_conversation_started` | `completed` | coarse chat provider family |
 | `work` | `session_continue_chat`, `session_copy_chat`, `session_continue_cli`, `session_copy_cli` | `completed`, `failed` | coarse provider family (Qwen, Kimi, Grok and Copilot report `other`) |
+| `automations` | `webhook_url_created` | `completed` | omitted; never the URL, hook id, preset, or rule |
+| `automations` | `safe_test_started`, `live_test_started` | `completed`, `failed` | omitted; never the rule, its steps, the event, or the lanes it made |
+| `updates` | `provider_cli_updated` | `completed`, `failed` | coarse provider family (the ACP CLIs report `other`); never the version, install path, or output |
+| `chat` | `secret_requested` | `completed` (saved), `kept`, `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the secret's name, value, reason, or chat |
+| `home` | `tab_opened` | `tab_browser`, `tab_music` | omitted; never a URL, tab, song, or page |
+| `home` | `widget_added` | `widget_<type>` (one per home widget type) | omitted; never the layout, a preset name, or a widget's settings |
+| `home` | `music_connected` | `completed`, `cancelled`, `failed` | omitted; never the Apple account, storefront, or token |
+| `home` | `spotify_connected` | `completed`, `cancelled`, `failed` | omitted; never the Spotify account, client ID, device, track or token |
+| `find` | `find_opened` | `chat_shortcut`, `chat_palette`, `chat_palette_hit`, `diff_shortcut` | omitted; never the query, the chat, the diff, a file, or a match count |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
 `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
@@ -264,6 +377,52 @@ keeps only the event's property keys and closed values; its `safeStringProperty`
 path drops arbitrary strings. Provider mapping is also performed by
 `featureProductAnalytics.ts` before capture, and local dedupe keys are hashed
 by the analytics service rather than transmitted.
+
+ADE's one-click update of a user-installed provider CLI (from the provider's
+Settings page or the chat warning for a CLI older than ADE supports) records
+`updates/provider_cli_updated` where the update runs: the desktop IPC handler
+(`surface: "desktop"`) and the `ai.acpProviderUpdate` action (`surface: "api"`).
+It is a rare, deliberate click, deduplicated per outcome and provider family
+for an hour, so the worst case is a few events a day inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute ceilings.
+
+Making a private webhook URL records `automations/webhook_url_created` where
+the URL is made: the desktop's IPC handler (`desktop`) or the
+`automations.webhookCreateEndpoint` / `webhookCreateAutomation` actions
+(`api`, the CLI and agents). An agent's private secret card records
+`chat/secret_requested` once, when `project_secret.request` returns or fails,
+at the brain action that owns it. Neither carries a name, URL, value, or id;
+both are rare user decisions inside the existing `ade_feature_used` 140-per-day
+and 30-per-minute ceilings, and the per-action-and-outcome dedupe holds a burst
+(an agent creating several URLs, or re-asking) to one event per outcome per
+interval. Delivery outcomes are high-frequency and stay local, in the
+per-hook delivery log.
+
+Starting a test of an automation from the builder's Test dialog or
+`ade automations test` records `automations/safe_test_started` or
+`automations/live_test_started` where the test starts: the desktop IPC handler
+(`desktop`) or the `automations.runTest` action (`api`). `failed` means the test
+did not start (a problem in its plan, or the throwaway lane could not be made).
+A preview records nothing. A test is a deliberate click, and the per-action
+and per-outcome dedupe holds a burst of tests to one event per outcome per
+interval, inside the existing `ade_feature_used` 140-per-day and 30-per-minute
+ceilings. What the test did stays in the local run history.
+
+Saving a model price or "Map to" on the Usage page (desktop, web, phone or
+`ade usage prices set`) records `model_price_changed` or
+`model_mapping_changed` at the brain's `usage.setModelPriceOverride`, with
+`enabled` for a set and `disabled` for a clear. The model id and rates never
+leave the machine. The one-hour dedupe per action and outcome caps it at four
+events an hour, within the existing `ade_feature_used` ceilings.
+
+A Codex voice conversation records one `voice_conversation_started` fact after
+the realtime offer receives an answer. The event is scoped to the chat session
+in local deduplication, with a one-hour minimum interval, and includes only the
+coarse provider family. It never carries audio, a transcript, voice settings,
+SDP, thread IDs, or a raw session ID; the analytics service salts and hashes
+the local session ID before capture. Its volume stays within the existing
+`ade_feature_used` ceilings of 140 events per UTC day and 30 per minute, with
+at most one accepted event per chat session per hour.
 
 The update and reliability events are low-frequency by construction: the five `ade_update_*` events fire at most once per install attempt or idle-apply cycle (daily caps 10–20, minute caps 3–6). `ade_update_install_did_not_land` is emitted once at startup when a requested install relaunched on the old version, so it is bounded by app launches that follow a failed handoff, and carries only a bounded `attempt` counter; `ade_brain_recovered` fires once per wedge recovery at brain startup; `ade_renderer_recovered` fires once per lost renderer and is bounded by the recovery budget itself (three reload attempts per rolling 60 seconds, after which the window stays down rather than looping), carrying only `crash_reason` — Electron's closed enum, normalized to `unknown` for any future value — and whether the reload was still allowed, never the window URL or title; `ade_publish_failing` is edge-triggered once per sustained failure episode (first crossing of two minutes), never per attempt.
 
@@ -386,15 +545,85 @@ operational lines (`agent_chat.claude_replay_overflow_retry`,
 `agent_chat.claude_replay_overflow_gave_up`), which carry session and turn ids
 and turn counts, are not PostHog events.
 
+How a context compaction ended records one coarse fact on the same
+`ade_feature_used` event with `feature: "chat"` and `action: "compaction"`, at
+the durable owner: the chat service's event commit, once per compaction that
+ends (`completed` or `failed`), for every provider. `mode` is `manual` when the
+user asked (`/compact`, **Compact now**, or Retry) and `automatic` otherwise,
+including ADE's own 97% fallback and the compaction "Always compact first" runs
+by itself while the prompt cache is still warm (`warmIdleCompactionScheduler.ts`,
+at most one per idle hour per chat). A send made with the **Compact first** pill
+records `action: "compact_first"` with the same two outcomes and
+`mode: "manual"`. `provider` is the existing coarse slug and `source` is
+`runtime`. The product questions are whether compaction works and how often
+people ask for it, so nothing finer crosses the boundary: no token counts, no
+summary, no failure text, no account, and no model. The compaction-point
+setting itself is not instrumented, and neither is "Subagents compact at": both
+are rare choices saved through the generic `ai.updateConfig` or account-settings
+write, which has no per-key owner, and no dashboard needs them yet. Moving a
+chat onto or off a saved preset (`chat.updateSession` with `presetId`) is a
+model choice, which ADE does not record as a product fact: the only content-free
+property would be "changed", and a preset or model id cannot cross the boundary.
+
+Volume is bounded by a `chat_<action>:<session>:<outcome>:<mode>` deduplication
+key (hashed locally, never sent) with a ten-minute minimum interval, so a chat
+reports each combination at most six times an hour; realistic volume is a few
+compactions per installation per day, inside the existing `ade_feature_used`
+140-per-day / 30-per-minute limits and the shared 200-event ceiling. No ceiling
+was raised and no PostHog definition changed. The local operational lines
+(`agent_chat.claude_context_compaction_observed`,
+`agent_chat.claude_context_compaction_fallback_gate`) keep their session ids and
+token counts locally and are not PostHog events.
+
+How a move of a chat to another machine ended records one coarse fact on the
+same `ade_feature_used` event with `feature: "chat"` and
+`action: "cross_machine_move"`, at the durable owner: the source brain's move
+orchestrator (`crossMachineHandoffOrchestrator.ts`), once per terminal state,
+through `onCrossMachineMoveOutcome` on the chat service and
+`captureCrossMachineMoveAnalytics`, wired in the brain's bootstrap (the only
+runtime with a transport, so the only one that runs moves). `outcome` is a
+closed set of four values — `continued` (the destination chat started),
+`failed` (a step failed or the destination refused), `cancelled` (kept here,
+denied, dismissed, or a new message won), and `unknown` (the answer was lost
+after acceptance started) — and `source` is the existing `runtime`. The product
+question is only whether moving a chat works, so nothing finer crosses the
+boundary: no session or handoff id, no machine name, no failure reason, no
+branch or commit, no model, and no capsule content. Who asked (`user` or
+`agent`) is left out because no existing key holds it, and no key was invented.
+A move whose chat was deleted records nothing.
+
+Volume is bounded by a `cross_machine_move:<handoffId>:<outcome>` deduplication
+key (hashed locally, never sent) with a one-hour minimum interval, so a retried
+move that ends `unknown` again inside the hour counts once. Moves are deliberate
+actions, and one move reaches at most four terminal outcomes (`unknown`, then a
+retry to `failed` or `continued`, or a dismissal to `cancelled`), so realistic
+volume is a handful per installation per day — inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute limits and the shared 200-event
+ceiling. No ceiling was raised, no PostHog definition changed (the provisioning
+scripts enumerate event names, not `action` or `outcome` values), and the
+dashboard spec is untouched until a product question needs it. The
+orchestrator's local operational lines (`agent_chat.cross_machine_handoff_*`),
+which carry session and handoff ids, are not PostHog events.
+
 ### Provider accounts, credentials, presets, proxy, and chat decisions
 
 Provider-account mutations are captured at the `provider_instances` action
 domain in `apps/desktop/src/main/services/adeActions/registry.ts`, after the
-machine-local registry write succeeds. `create`, `remove`, and `setDefault`
-use `provider_accounts` with `account_created`, `account_removed`, or
-`default_selected` and `outcome: "completed"`. The two settings carried by
+machine-local registry write succeeds. `create`, `remove`, `signOut`, and
+`setDefault` use `provider_accounts` with `account_created`, `account_removed`,
+`account_signed_out`, or `default_selected` and `outcome: "completed"` (a
+sign-out is captured after the provider CLI's logout succeeds; a Remove of a
+signed-in account records both, at most a handful per cleanup). The two settings carried by
 `setSettings` are split into `balance_changed` and `auto_start_changed`, with
-`outcome: "enabled"` or `"disabled"`. The only other property is the Claude or
+`outcome: "enabled"` or `"disabled"`. A Claude account's subagent prompt cache
+choice, also carried by `setSettings`, is `subagent_cache_changed`: `enabled`
+for 1 hour, `disabled` for the Claude default. The main-conversation choice is
+`main_cache_changed`: `enabled` for a stated lifetime, `disabled` for
+Automatic. A Claude account's extra usage
+choice, on the same call, is `extra_usage_stop_changed`: `enabled` for "Stop
+the turn", `disabled` for "Continue". Each of the three adds two one-hour-key
+slots (48 a day at most) under the same ceilings. Both boundaries that accept
+`setSettings` report through `captureProviderAccountSettingsChange`. The only other property is the Claude or
 Codex family. A per-action/per-outcome/per-family key with a one-hour minimum
 interval admits at most 336 events in a theoretical two-provider day before
 the event budget applies; the event-level `ade_feature_used` ceiling accepts
@@ -402,6 +631,10 @@ at most 140 per UTC day and 30 per minute (and the shared ceiling remains
 200).
 No account id, label, config-home path, email, plan, or refresh/list activity is
 captured.
+The phone and the hosted web client reach the same domain through the
+`providerAccounts.*` sync commands, so their mutations are captured by the same
+code with the same keys and limits. The command layer cannot tell a phone from
+a browser, so those events carry `surface: "api"`, like the CLI action.
 
 API-credential store and remove mutations are captured in
 `apps/desktop/src/main/services/ai/apiKeyStore.ts`, after the multi-credential
@@ -430,6 +663,18 @@ data, model ids, credential ids, labels, paths, URLs, and account-setting
 contents never enter the event. Account-settings list/sync reads and launch
 resolution are not analytics.
 
+Muse Code joins the same closed provider taxonomy. Its chats and daily-usage
+summaries report the coarse `provider` and `model_family` value `muse`, added to
+both allowlists so the provider- and model-family-adoption breakdowns separate
+Muse from `other` with no new event name and no raised ceiling. Muse's own
+account connection is untracked, like the credential reads and readiness probes
+above, because Muse keeps its credential in its own config file rather than the
+multi-credential store. Its Settings mutations — plugin install, marketplace
+add/update/remove, skill activation and import, computer-use settings, and
+feedback — are device-local configuration: the plugin, marketplace and skill
+names and the free-text feedback note are user content that cannot cross the
+analytics boundary, so none of them sends an event.
+
 Proxy sign-in, start, and stop are captured by the durable service in
 `apps/ade-cli/src/services/proxy/proxyService.ts`. A transition to running
 emits `proxy/start` with `outcome: "completed"`; a successful stop emits
@@ -446,8 +691,9 @@ login polling, health probes, and subscription launch reads stay untracked.
 Reset-credit consume outcomes are captured in
 `apps/desktop/src/main/services/usage/usageTrackingService.ts` after the
 consume result is known, including invalid/missing-account failures. The event
-is `usage/reset_credit_consumed`, always carries provider `codex`, and maps
-the service statuses to `completed`, `nothing_to_reset`, `no_credit`,
+is `usage/reset_credit_consumed`, carries the Claude/Codex provider family of
+the account whose credit was spent (omitted when the caller named no account),
+and maps the service statuses to `completed`, `nothing_to_reset`, `no_credit`,
 `already_redeemed`, or `failed`. One key per outcome with a one-hour minimum
 interval admits at most 120 events per day before the existing event-level
 `ade_feature_used` 140-per-day / 30-per-minute ceilings; no polling, quota
@@ -464,6 +710,16 @@ before budgets. The event-level `ade_feature_used` 140-per-day /
 30-per-minute limits are the hard accepted bound, and the shared daily budget
 remains 200. Approval responses, pending input reads, and provider runtime
 polling do not emit this fact.
+
+When a user moves a chat to another Claude or Codex account
+(`chat.switchAccount`), the chat service emits `chat/account_switched` with
+`outcome: "completed"` after the thread copy and the account change succeed,
+through its `onAccountSwitched` hook. It carries only the Claude/Codex family:
+never the account ids, labels, emails, config-home paths, or the session. A
+refused switch (a turn running, a signed-out account) emits nothing. The
+one-hour action/outcome/family key admits at most 2 × 24 = 48 events per day
+before the existing `ade_feature_used` 140-per-day / 30-per-minute limits and
+the shared 200-event ceiling; no ceiling was raised.
 
 A chat started in a new lane (the brain-owned launch in
 `chatLaunchService`) records `chat/new_lane_launch` once per outcome per
@@ -502,10 +758,41 @@ raised. The local `agent_chat.claude_hooks_ignored` and
 `agent_chat.claude_plugins_ignored` warn lines are the operational half. The
 dashboard spec is deliberately untouched: no card asks this question yet.
 
+Settings → Background service → "Stop and quit ADE" records the same
+`ade_feature_used` event in the main process, where the stop is decided
+(`services/runtime/backgroundServiceControls.ts`), with `feature:
+"connections"`, `action: "background_service_stop"`, and a coarse `outcome`:
+`completed` (the login service was removed and ADE is quitting), `rejected` (a
+guard refused: ADE could not read what is running, an agent started after the
+confirmation, a lane delete or a repair is running, or ADE is already quitting),
+or `failed` (the service manager could not remove it). The product question is
+whether people turn the always-on service off at all, and whether the guards get
+in their way. It carries no chat titles, project names, counts, or error text.
+A per-outcome one-hour deduplication key bounds a retry loop to at most 24
+accepted events per outcome (72 total) per installation per UTC day, inside the
+existing `ade_feature_used` limits; no ceiling was raised. The quit prompt itself
+is not tracked: its answer is an app-lifecycle moment, not a product decision,
+and the Repair it offers is already counted as `brain_repair` through the shared
+`restartBrainForRepair` helper. The dashboard spec is untouched.
+
 These facts intentionally remain out of `scripts/posthog/dashboard-spec.mjs`:
 there is no concrete dashboard question or card for them yet. The existing
 surface/feature volume views continue to include the shared event without a
 dashboard contract change.
+
+An issue made in ADE's create composer records the existing `ade_feature_used`
+event with `feature: "issues"`, `action: "issue_created"`,
+`source: "renderer_route"`, and the tracker on a closed `outcome`:
+`tracker_linear`, `tracker_github` or `tracker_jira`. It is captured in
+`IssueCreateDialog.tsx` only after the tracker accepted the issue; an issue an
+agent makes through `ade linear create`, `ade github issue create` or
+`ade jira create` is not
+counted, because the question is whether people file issues from ADE's own
+form. Nothing about the issue crosses: no repository, team, title, labels,
+number or id. A per-tracker one-minute deduplication key folds a "Create more"
+burst into one event, so the worst case is three events a minute, inside the
+existing `ade_feature_used` 140-per-day / 30-per-minute limits; no ceiling was
+raised and no dashboard card asks this yet.
 
 Which tool an installation opens in the Work tools pane records the existing
 `ade_feature_used` event at the pane's single writer (`useWorkSidebarTool`'s
@@ -513,7 +800,8 @@ Which tool an installation opens in the Work tools pane records the existing
 palette, and the reveal channel a dev-server chip uses) with `feature: "work"`,
 `action: "tool_opened"`, `source: "renderer_route"`, and the tool id on a
 closed, prefixed `outcome`: `tool_terminal`, `tool_git`, `tool_files`,
-`tool_ios`, `tool_app_control`, `tool_browser`, or `tool_pr`. It is emitted from
+`tool_ios`, `tool_app_control`, `tool_browser`, `tool_pr`, `tool_mac_desktop`,
+`tool_windows_desktop`, or `tool_issues`. It is emitted from
 the renderer because tool selection has no durable backend mutation — the
 runtime publish that mirrors it to iOS and the hosted web client is a
 device-mirror push, not a record of the choice.
@@ -527,6 +815,59 @@ picker deliberately emits nothing: a null tool is not a tool, and counting it
 would double every open/close pair and report closing as engagement. A seventh
 tool id is dropped rather than widening the allowlist, so a new tool has to be
 registered in the policy deliberately.
+
+The dev home's adoption is three coarse facts on the same `ade_feature_used`
+event with `feature: "home"`. Which machine-level top tab an installation opens
+records `tab_opened` with `tab_browser` or `tab_music`, from the renderer's one
+writer of the tab strip (`setBrowserTabOpen` / `setMusicTabOpen` in
+`appStore.ts`) and only when a tab joins the strip, not on every visit. Which
+widget a person adds to the home page records `widget_added` with a prefixed,
+closed `widget_<type>` outcome, from the layout store's `add`. Both are emitted
+from the renderer (`renderer/components/home/homeAnalytics.ts`) for the same
+reason `tool_opened` is: neither choice has a durable backend mutation. How
+connecting Apple Music ended records `music_connected` (`completed`,
+`cancelled`, `failed`) at the main-process owner, the Music IPC `connect`
+handler (`registerMusicIpc.ts`), through `captureFeatureUsedAnalytics`. The
+product question is only whether the dev home is used and which of it, so
+nothing finer crosses: no URL, tab, song, layout, preset name, widget setting,
+Apple account, storefront, or token. A new widget type has to be added to the
+outcome allowlist deliberately; a test adds every catalog widget and runs its
+payload through the sanitizer. Per-value 24-hour deduplication keys
+(`home_tab_opened:<tab>`, `home_widget_added:<widget>`) bound the renderer facts
+to at most 15 accepted events per installation per UTC day, and the one-hour
+per-outcome key on `music_connected` bounds a retry loop to 24 per outcome — all
+inside the existing `ade_feature_used` 140-per-day / 30-per-minute limits and
+the shared 200-event ceiling. No ceiling was raised, and the dashboard spec is
+deliberately untouched: no card asks this yet. Widget use after it is added
+(renders, polling, clipboard reads, weather and machine reads, playback
+commands) stays untracked by the high-frequency rule.
+
+Opening find (⌘F) in a chat or a diff, and the ⌘K "Find … in this chat" hand-off,
+records the existing `ade_feature_used` event with `feature: "find"`,
+`action: "find_opened"`, `source: "renderer_route"`, and a closed `outcome` that
+says where the bar opened: `chat_shortcut` (⌘F opened a chat's bar),
+`chat_palette` (the ⌘K "Find … in this chat" row), `chat_palette_hit` (a chat
+opened from a ⌘K message hit, taking the words the palette handed off), or
+`diff_shortcut` (⌘F opened a diff's bar). It is emitted from the renderer
+(`renderer/lib/findAnalytics.ts`) for the same reason `tool_opened` is: opening a
+find bar has no durable backend mutation, because the bar, its query and its
+matches live in one window. The shortcut outcomes are captured where ⌘F claims
+the bar (`useFindSession`), and only when the claim opens it, not when ⌘F lands on
+a bar that is already open. The palette outcome is captured in the chat's
+palette target, and the hand-off outcome when the chat takes the words left for
+it, so a hand-off that expires unpicked emits nothing. The product question is
+whether installations use find at all, on which surface, and whether the palette
+hand-off gets used: `chat_palette_hit` set against `chat_palette` says whether
+the palette's words are carried on. Nothing finer crosses the boundary: no query
+or words, no chat or diff, no file, lane, or match count, no selected match, and
+no scroll position. Typing, stepping through matches, closing the bar, and
+Escape are high-frequency and stay untracked. A per-outcome `find_opened:<outcome>`
+deduplication key with a 24-hour minimum interval (hashed locally, never sent)
+means each outcome counts at most once per installation per UTC day, so the worst
+case is four accepted events per installation per day, inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute limits and the shared 200-event
+ceiling. No ceiling was raised. The dashboard spec is deliberately untouched: no
+card asks this yet.
 
 Which live view an installation watches an iOS simulator through records the
 same `ade_feature_used` event from the drawer's single start path, with
@@ -546,7 +887,7 @@ third backend id is dropped rather than widening the allowlist. A per-backend
 this to at most two accepted events per installation per UTC day, inside the
 same limits, and no ceiling was raised.
 
-Whether an installation uses its lane's Mac Desktop records the same
+Whether an installation uses its lane's Mac or Windows Desktop records the same
 `ade_feature_used` event at the brain-side service
 (`createMacDesktopService`, through an injected emitter — the service never
 reaches the analytics service or an id itself) with `feature: "work"`,
@@ -558,6 +899,11 @@ recording was filed as proof). A display that was already up, a refused
 action, a person's pointer, and a scratch recording that was not filed emit
 nothing.
 
+Windows shares this frozen `mac_desktop` taxonomy and the same service emitter.
+The closed Work-tool outcome list also includes `tool_windows_desktop`, so
+opening the Windows pane is retained through sanitization. Password entry,
+credential contents, and native-dialog interactions are never product events.
+
 The product question is only whether the lane screen is used at all, and
 whether agents drive it or file it. Nothing finer crosses the boundary: no
 lane, chat, app name, path, window title, or error text. A per-outcome
@@ -566,6 +912,41 @@ to at most three accepted events per installation per UTC day, inside the
 existing `ade_feature_used` 140-per-day / 30-per-minute limits and the shared
 200-event ceiling; no ceiling was raised. The dashboard spec is deliberately
 untouched: no card asks this yet.
+
+Whether agents use the user's own browser records the same `ade_feature_used`
+event once per successful `ade browser attach`, at the brain-side attach
+service (`createUserBrowserAttachService`, through an injected
+`captureAttached` callback — the service never reaches the analytics service
+or an id itself), with `feature: "work"`, `action: "user_browser"`, and
+`outcome: "started"`. A refused or cancelled attach, a detach, and every page
+action in the attached tab emit nothing: those are high-frequency or say
+nothing about adoption.
+
+The product question is only whether anyone lets agents into their own
+browser. Nothing finer crosses the boundary: no browser, machine name, tab,
+title, URL, or chat. A single `work_user_browser:started` key with a 24-hour
+minimum interval bounds this to at most one accepted event per installation
+per UTC day, inside the existing `ade_feature_used` 140-per-day / 30-per-minute
+limits and the shared 200-event ceiling; no ceiling was raised. The dashboard
+spec is deliberately untouched: no card asks this yet.
+
+The transcript's computer-use action rows are render-only and emit nothing:
+they describe tool calls an agent already made, and counting them would
+report agent activity as user engagement.
+
+The Work tab's Focus view (busy lanes folded) and its Focus grid (every
+waiting chat side by side) report adoption on the same event, emitted by the two
+setters every entry point goes through (`setWorkFoldBusyLanes`,
+`setWorkFocusGrid` in `useWorkSessions.ts`) and only when a mode turns on:
+`feature: "work"`, `action: "focus_mode"`, `outcome` `mode_focus` or
+`mode_focus_grid`, and `source: "renderer_route"`. Nothing finer crosses the
+boundary: no lane, chat, waiting count, page, or layout. Turning a mode off,
+paging, and roster clicks stay untracked by the high-frequency rule. A per-mode
+`work_focus_mode:<mode>` key with a 24-hour minimum interval bounds this to at
+most two accepted events per installation per UTC day, inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute limits and the shared 200-event
+ceiling; no ceiling was raised. The dashboard spec is deliberately untouched:
+no card asks this yet.
 
 A per-tool `work_tool_opened:<id>` deduplication key with a 24-hour minimum
 interval bounds this to at most six accepted events per installation per UTC
@@ -662,22 +1043,44 @@ day, inside the existing `ade_feature_used` 140-per-day / 30-per-minute limits
 and the shared 200-event ceiling; no ceiling was raised. The dashboard spec is
 deliberately untouched: no card asks this question yet.
 
+When a project's ADE data went missing or was swapped, the project recovery
+screen's choices record the existing `ade_feature_used` event at the IPC owner
+boundary (`registerIpc.ts`, where the outcome is known) with
+`feature: "storage_doctor"`, `action: "project_data_restore"` (Restore from
+Trash) or `action: "project_data_start_fresh"` (Start fresh and Use this copy,
+which are the same operation), and `outcome: "completed" | "failed"`. They
+answer how often project data goes missing and which way people recover. They
+carry no path, project identity, Trash location or error text. A per-action,
+per-outcome one-hour deduplication key bounds a retry loop to 24 accepted
+events per key, 96 across the four, per installation per UTC day, inside the
+existing `ade_feature_used` 140-per-day / 30-per-minute limits; no ceiling was
+raised. Moving a project (Settings → General → Project location) records the
+same event at the same boundary with `action: "project_move"` and
+`outcome: "completed" | "failed"` once a move ran; a move refused before it
+began is not counted. The same one-hour key bounds it to 48 accepted events
+per installation per day. The diagnosis itself is not reported: a folder the person moved or
+deleted is their action, not a fault in ADE. The dashboard spec is untouched.
+
 Pressing "Report issue" on any of ADE's error surfaces — the project recovery
 screen, the renderer error boundary, the project transition alert, the update
-banner — records the existing `ade_feature_used` event at the IPC owner boundary
-(the `diagnostics.openIssue` handler, where the outcome is known) with
-`feature: "connections"`, `action: "issue_report"`, and a coarse `outcome`:
-`opened` when the prefilled GitHub issue page was launched, `failed` when it
-could not be. That is the whole product question — whether the one control on a
-broken screen reaches GitHub — so nothing else crosses the boundary: not the
-surface it was pressed on, not the failure code or headline that put the screen
-there, not the report, the clipboard result, the report file path, or the
-install id the report carries. Those live in the local report file under
-`<userData>/diagnostic-reports/` and on the clipboard, which the person reads
-and pastes deliberately. A per-outcome one-hour deduplication key bounds a
-click-loop to at most 24 accepted events per outcome — 48 across both — per
-installation per UTC day, inside the existing `ade_feature_used` 140-per-day /
-30-per-minute limits and the shared 200-event ceiling; no ceiling was raised.
+banner — sends the redacted report to ADE first, and records the existing
+`ade_feature_used` event at the IPC owner boundary where the outcome is known
+(the `diagnostics.sendManual` handler, only when it carries a surface context)
+with `feature: "connections"`, `action: "issue_report"`, and a coarse `outcome`:
+`success` when ADE received the report, `failed` when it did not. Choosing the
+secondary **Open GitHub issue** link records the same action from the
+`diagnostics.openIssue` handler: `opened` when the prefilled GitHub issue page
+was launched, `failed` when it could not be. That is the whole product question
+— whether the one control on a broken screen gets the report to us — so nothing
+else crosses the boundary: not the surface it was pressed on, not the failure
+code or headline that put the screen there, not the report, its upload
+reference, the clipboard result, the report file path, or the install id the
+report carries. Settings' **Send a report to ADE** (no context) is not counted
+here. A per-outcome one-hour deduplication key bounds a click-loop to at most
+24 accepted events per outcome — 72 across `success`, `opened` and `failed` —
+per installation per UTC day, inside the existing `ade_feature_used`
+140-per-day / 30-per-minute limits and the shared 200-event ceiling; no ceiling
+was raised.
 The dashboard spec is deliberately untouched: no card asks this question yet.
 
 When ADE hits a failure it already classified, it sends that same redacted
@@ -721,9 +1124,10 @@ only that a send happened and how it ended. Its body is redacted before it is
 written (home directory, project paths, usernames, hostnames and tailnet names,
 emails, credentials and routable IP addresses) — the same bytes on both paths,
 because redaction happens once in the builder — and the GitHub issue title and
-stub body are redacted with the same context. Automatic sending is a separate
-consent from analytics: it has its own Settings toggle (default on) and its own
-persisted flag, so turning one off does not silently turn off the other.
+stub body are redacted with the same context. Automatic sending is on by default
+and has no Settings control. It stops under `DO_NOT_TRACK=1` or a persisted
+explicit off, and its flag is separate from analytics' own opt-out. The manual
+"Send a report to ADE" button is always available.
 
 Clicking "Reconnect this computer" on the Account pane's removed-machine banner
 records the existing `ade_feature_used` event at the IPC owner boundary (the
@@ -736,7 +1140,7 @@ banner copy and in local logs. A per-outcome one-hour deduplication key bounds a
 click-loop to at most 24 accepted events per outcome — 48 across both — per
 installation per UTC day, inside the existing `ade_feature_used` and shared
 ceilings. The Activity feed's polling, rendering, section collapse, filters, and
-acknowledgements, notch and iOS widget updates, pairing-grant mint and redeem,
+acknowledgements, iOS widget updates, pairing-grant mint and redeem,
 and relay control sweeps remain untracked: they are high-frequency reads and UI
 mechanics, or they run on the relay and account-directory surfaces that have no
 analytics path.
@@ -805,6 +1209,21 @@ lane-mapping gate widened what an installation can do without needing any new
 instrumentation. `prs.cleanupBranch` joined the set for the same reason: while
 deleting a merged PR's branch was reachable only from a mapped PR it was a
 corner of the product, and it is now an offer on every merged row.
+`prs.setChatWatch` (turning PR Watch / Ship on, switching it, or off for a
+chat) is in the set too: a deliberate choice, at most a few per PR — a person
+in the menu, or an agent arming its own watch through the same action. Which
+mode was picked is deliberately not a property — the product question is
+adoption, and the ledger row already answers it. The watch's own wakes, holds,
+and stops are background mechanics with no person behind them, so they stay in
+the local `prs.watch_*` lines and never reach analytics. `chat.restartSession`
+(a fresh provider process that keeps the conversation) joined for the same
+reason: one row per press.
+
+Chat goals, stop-mode choices, waits, and restart resume add no analytics.
+Setting a goal is an ordinary `chat.send` (`/goal …`); a goal ending, a waiter
+firing, and a chat continuing after a restart are things the app does with no
+person behind them; and a Stop press is high-frequency enough that which of
+six modes it used would be a typing signal, not a product decision.
 
 Whether a merge also deleted the head branch is deliberately **not** a property.
 It is a parameter of `prs.land`, the merge itself is already counted, and there
@@ -829,11 +1248,16 @@ The daily usage research report is a separate sink and is not PostHog. `usageRes
 
 The storage doctor emits one `ade_feature_used` per completed maintenance run at the daemon boundary (`storageInsightsService`), with `feature: "storage_doctor"`, `action: "maintenance_run"`, a coarse `outcome` (`completed`, `partial`, or `failed`), and the numeric aggregates `bytes_freed` and `files_compressed`. It carries no paths, table names, or per-item detail. A per-project local dedupe key (`storage_doctor_run:<project>`) with a 20 h minimum interval collapses the daily run and any manual "Clean up now" into a single accepted event, so worst-case volume is well under 2 accepted events per project per day — inside the shared 200-event ceiling and the `ade_feature_used` per-day cap. The run also writes the local `storage.maintenance_completed` jsonl line (with `storage.maintenance_step_failed` per failed step); those operational lines are never forwarded to PostHog.
 
-Desktop prompt-stash creation records the existing coarse
+Desktop draft creation records the existing coarse
 `ade_feature_used` mutation fact with `feature: "chat"` and
-`action: "chat.createPromptStash"` through the durable `usage_events` ledger.
-The event contains no prompt text, model/provider value, project path, or stash
-identifier. Reads, menu opens, restores, and deletes are not product events.
+`action: "chat.createDraft"` through the durable `usage_events` ledger.
+Arming a scheduled send is a draft creation with a schedule on it, so it is
+the same fact, not a second event. The event contains no prompt text,
+model/provider value, project path, or draft identifier, and never the
+scheduled time or target. Reads, menu opens, list filtering, attaching a
+draft into the composer (`chat.claimDraft`), edits (`chat.updateDraft`),
+deletes, and a scheduled send firing are not product events: the decision
+worth counting is the creation, and the delivery is its consequence.
 The existing `ade_feature_used` limits cap this at 30 accepted events per minute
 and 140 per UTC day without raising the shared 200-event ceiling.
 
@@ -881,32 +1305,27 @@ snapshot refresh, acknowledgements, delivery retries, APNs/ActivityKit frames,
 and native presentation changes remain untracked because they are either
 high-frequency mechanics or can expose work-specific interaction patterns.
 
-### CTO voice calls and the capture gesture
+Sending a custom notification — `ade notify`, an agent, or an automation's
+**Send notification to mobile app** step — records the same `ade_feature_used`
+event at the brain's `attention.sendNotification` / `notify.send` boundary
+(`buildSendNotificationAction` in `adeActions/registry.ts`, through
+`captureNotificationSentAnalytics`), with `feature: "attention"`,
+`action: "notification_sent"`, `surface: "api"`, and a coarse `outcome`:
+`completed` (the relay took it for at least one phone and no delivery failed),
+`skipped_budget` (the account's hourly cap refused it), or `failed` (no phone on
+the account, a delivery failed, or the call failed). Input the caller got wrong
+(no title, a link ADE cannot open) and a signed-out machine are refused before
+anything is sent and emit nothing. The title, body, link, phone count and the
+sending project never cross the boundary. The product question is only whether
+people and agents use custom pushes and whether the cap bites. A per-outcome
+one-hour deduplication key bounds a looping automation to at most 72 accepted
+events per installation per UTC day, inside the existing `ade_feature_used`
+140-per-day / 30-per-minute limits and the shared 200-event ceiling; no ceiling
+was raised. The dashboard spec is deliberately untouched: no card asks this yet.
 
-A CTO voice call records one `ade_feature_used` event when it ENDS, emitted from
-the runtime-hosted call service — the durable owner of the call, and the only
-place that sees every way one can finish. It carries `feature: "cto"`,
-`action: "voice_call"`, one closed `outcome`, and the existing coarse
-`duration_bucket`. The five outcomes are the whole product question: `completed`,
-`rejected_key` (OpenAI refused the key), `connection_failed` (the socket never
-came up), `microphone_unavailable` (the OS would not open a microphone), and
-`ended_early` (the call ended before it got going). They are mapped from the
-teardown reason and the HTTP status, never from the sentence the user read —
-those name a provider and a settings pane. Nothing about the call itself
-crosses: not the transcript, the captions, the spoken words, the project, the
-lane, the CTO's name, the voice, the cost, or any part of a key. The bucket
-reuses the existing `duration_bucket` vocabulary (`under_1m` … `over_2h`)
-rather than a voice-specific spelling, so call length stays comparable with
-every other duration in the taxonomy.
+### The capture gesture
 
-A deduplication key per call id makes the two terminal states one call publishes
-— `failed` then `ended` — a single accepted event. A call is a deliberate,
-attended act that bills by the minute, so the realistic worst case is a handful
-per installation per UTC day; the hard bound is the `ade_feature_used`
-140-per-day / 30-per-minute limits and the shared 200-event ceiling, neither of
-which was raised.
-
-The capture gesture records the same event from the main-process handler that
+The capture gesture records one `ade_feature_used` event from the main-process handler that
 delivers or refuses the shot, with `feature: "cto"`,
 `action: "capture_gesture"`, and one of three coarse outcomes: `delivered`,
 `failed`, and `too_large` (a display ADE could not fit into an attachment even
@@ -917,13 +1336,13 @@ per-outcome one-minute deduplication key bounds a chord-mashing loop to at most
 1,440 accepted events per outcome in theory, and the `ade_feature_used`
 30-per-minute and 140-per-day limits bound it in practice; the realistic number
 is single digits. No ceiling was raised, and the dashboard spec is deliberately
-untouched — no card asks either question yet.
+untouched — no card asks that question yet.
 
 ### Native iOS
 
 Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate installation identity and `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention. After sign-in, it sends the same one-way account hash used by desktop in a quota-counted `$identify` event; the raw account ID is never sent, and sign-out rotates the anonymous installation identity.
 
-iOS analytics is default-on when the public capture configuration is present; the former affirmative opt-in and Settings opt-out have been removed. Its restart-safe ceiling remains 20 events per UTC day, with the existing event-specific limits of 3 app opens, 10 screen views, 7 feature events, 2 coarse errors, and 1 budget summary. Sign-in, machine-adoption, pairing, and quick-connect events use separate `ade_mobile_*` names with closed coarse enum properties and a limit of 2 events each. Foreground duplicate screens and outcomes are suppressed. The transport has no retry loop, redirects, cookies, cache, credential storage, background session, or persistent event queue.
+iOS analytics is default-on when the public capture configuration is present; the former affirmative opt-in, its consent prompt, and its Settings opt-out have been removed. A stored `ade.analytics.enabled` false from an earlier build is ignored; only `DO_NOT_TRACK=1` in the launch environment turns it off. Its restart-safe ceiling remains 20 events per UTC day, with the existing event-specific limits of 3 app opens, 10 screen views, 7 feature events, 2 coarse errors, and 1 budget summary. Sign-in, machine-adoption, pairing, and quick-connect events use separate `ade_mobile_*` names with closed coarse enum properties and a limit of 2 events each. Foreground duplicate screens and outcomes are suppressed. The transport has no retry loop, redirects, cookies, cache, credential storage, background session, or persistent event queue.
 
 Host-recorded mobile mutations may still appear in the canonical `ade_*` namespace with `surface: mobile`; those events use the machine installation identity and the same shared 200-event budget. Native `ade_mobile_*` events describe only interaction with the phone app itself.
 
@@ -952,10 +1371,12 @@ The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does
 
 ## Consent and kill switches
 
-- Desktop/runtime builds are default-on when correctly configured and expose a durable opt-out in Settings. The machine-wide disable marker immediately stops all local clients and cancels queued delivery.
-- Native iOS is default-on and has no in-app opt-out. Hosted web and the public marketing site are default-on with a durable browser-local opt-out (explicit "false" preference); there is no first-run consent prompt.
+- Product analytics and automatic diagnostic reports are part of ADE and on by default on every surface. No Settings, web, or iOS control turns them on or off, and there is no consent prompt.
+- Two opt-outs are honored everywhere, silently: `DO_NOT_TRACK=1` in the environment (desktop and brain: PostHog and automatic diagnostic reports), and a persisted explicit opt-out from an earlier build (the desktop `secrets/product-analytics.json` `enabled: false` or its `.disabled` marker, the automatic-send ledger's `enabled: false`, and the hosted-web `ade:web-product-analytics-enabled` "false" preference). Nothing in the app can change either one. iOS honors only `DO_NOT_TRACK=1`.
+- The desktop machine-wide disable marker immediately stops all local clients and cancels queued delivery.
+- Native iOS honors only `DO_NOT_TRACK=1` and has no in-app control; a stored opt-out from an earlier build is ignored. The public marketing site keeps its own browser-local opt-out on `/privacy`, separate from ADE's product analytics.
 - `ADE_DISABLE_PRODUCT_ANALYTICS=1` disables the desktop/runtime service.
-- The daily usage research report follows the product analytics consent: the Settings opt-out, the disable marker, and `ADE_DISABLE_PRODUCT_ANALYTICS=1` all stop it. `ADE_USAGE_RESEARCH=0` stops only the report.
+- The daily usage research report follows the product analytics state: `DO_NOT_TRACK=1`, a persisted opt-out, the disable marker, and `ADE_DISABLE_PRODUCT_ANALYTICS=1` all stop it. `ADE_USAGE_RESEARCH=0` stops only the report.
 - Development builds are analytics-inert unless a developer explicitly sets `ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT=1`.
 - Tests disable analytics automatically.
 - Missing or invalid configuration disables capture without affecting ADE startup.

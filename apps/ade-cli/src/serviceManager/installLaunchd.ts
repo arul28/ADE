@@ -5,7 +5,12 @@ import path from "node:path";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
+  BACKGROUND_ITEM_BLOCKED_MESSAGE,
+  currentUid,
+  type BackgroundItemStatus,
   isCurrentProcessDescendantOfPid,
+  isLaunchAgentDisabled,
+  loadLaunchAgent,
   MATERIALIZE_DATALESS_FILES_KEY,
   listStaleChannelServePids,
   readPidElapsedMs,
@@ -13,6 +18,7 @@ import {
   resolveAdeServeCommand,
   RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS,
   serviceManagerResultText,
+  sleepSync,
   type ServiceManagerResult,
   type ServiceManagerSpawnSync,
   type ServiceManagerStatusResult,
@@ -108,6 +114,76 @@ export function launchAgentPath(
   serviceName: string = ADE_RUNTIME_SERVICE_NAME,
 ): string {
   return path.join(homeDir, "Library", "LaunchAgents", `${serviceName}.plist`);
+}
+
+/**
+ * Asks macOS Background Task Management about a launch agent plist.
+ *
+ * `osascript`'s Objective-C bridge reaches `+[SMAppService
+ * statusForLegacyURL:]` (Swift: `statusForLegacyPlist(at:)`, macOS 13+)
+ * without shipping a native helper, and needs no admin rights — unlike
+ * `sfltool dumpbtm`, which prompts for a password. The raw values are
+ * `SMAppService.Status`: 0 notRegistered, 1 enabled, 2 requiresApproval,
+ * 3 notFound. Anything else, including an older macOS without the class, is
+ * `unknown`; callers must treat that as "no evidence", never as blocked.
+ */
+const BACKGROUND_ITEM_STATUS_SCRIPT = [
+  "ObjC.import('ServiceManagement');",
+  "function run(argv) {",
+  "  var service = $.SMAppService;",
+  "  if (!service || typeof service.statusForLegacyURL !== 'function') return -1;",
+  "  return service.statusForLegacyURL($.NSURL.fileURLWithPath(argv[0]));",
+  "}",
+].join("\n");
+
+export function parseBackgroundItemStatus(output: string): BackgroundItemStatus {
+  switch (output.trim()) {
+    case "0": return "not_registered";
+    case "1": return "enabled";
+    case "2": return "requires_approval";
+    case "3": return "not_found";
+    default: return "unknown";
+  }
+}
+
+/** The one command that reads a launch agent's Background Items status. */
+export function backgroundItemStatusCommand(plistPath: string): { command: string; args: string[] } {
+  return {
+    command: "/usr/bin/osascript",
+    args: ["-l", "JavaScript", "-e", BACKGROUND_ITEM_STATUS_SCRIPT, plistPath],
+  };
+}
+
+export function readLaunchdBackgroundItemStatus(
+  plistPath: string,
+  run: ServiceManagerSpawnSync = spawnSync,
+): BackgroundItemStatus {
+  if (process.platform !== "darwin") return "unknown";
+  try {
+    const { command, args } = backgroundItemStatusCommand(plistPath);
+    const result = run(command, args, { encoding: "utf8", timeout: 5_000 });
+    if (result.status !== 0) return "unknown";
+    return parseBackgroundItemStatus(launchdPrintOutputText(result));
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * The desktop asks for service status every couple of seconds while the brain
+ * is down, on its main thread; an `osascript` per poll would stall the UI. The
+ * answer only changes when a person flips a switch in System Settings, so a
+ * few seconds of staleness costs nothing.
+ */
+const BACKGROUND_ITEM_CACHE_MS = 5_000;
+const backgroundItemCache = new Map<string, { status: BackgroundItemStatus; at: number }>();
+
+function cachedBackgroundItemStatus(plistPath: string): BackgroundItemStatus {
+  const cached = backgroundItemCache.get(plistPath);
+  if (cached && Date.now() - cached.at < BACKGROUND_ITEM_CACHE_MS) return cached.status;
+  const status = readLaunchdBackgroundItemStatus(plistPath);
+  backgroundItemCache.set(plistPath, { status, at: Date.now() });
+  return status;
 }
 
 export function isLaunchdPrintRunning(output: string): boolean {
@@ -258,7 +334,7 @@ ${plistArray([command.command, ...command.args]).split("\n").map((line) => `  ${
 function getLoadedLaunchdState(
   run: ServiceManagerSpawnSync,
 ): { running: boolean; pid: number | null } | null {
-  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  const uid = currentUid();
   let print = run("launchctl", ["print", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
   if (print.status !== 0) {
     const userPrint = run("launchctl", ["print", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
@@ -295,6 +371,8 @@ function launchdTerminateDeps(deps: TerminatePidDeps | undefined): TerminatePidD
   return { ...deps, platform: deps?.platform ?? "darwin" };
 }
 
+const LAUNCHD_REGISTER_RETRY_MS = 1_000;
+
 function handoverFailure(
   servicePath: string,
   failureStep: NonNullable<ServiceManagerResult["failureStep"]>,
@@ -308,6 +386,64 @@ function handoverFailure(
     failureStep,
     message,
   };
+}
+
+/**
+ * Asks launchd to start the service now. `kickstart` without `-k` is a no-op
+ * for a job that is already running, so this only ever starts a stopped one.
+ *
+ * Needed because a launchd domain can sit in "on-demand-only mode": launchd
+ * then ignores `RunAtLoad` and `KeepAlive`, logs `pending spawn, domain in
+ * on-demand-only mode: com.ade.runtime`, and `launchctl print` shows the job
+ * with `runs = 0` and `pended nondemand spawn = speculative`. Only an explicit
+ * request starts it. A real Mac sat in that mode for days: every Repair,
+ * reinstall and machine reset ended in a `replacement_pid` failure, and a
+ * manual `launchctl kickstart` fixed it each time.
+ *
+ * Returns launchctl's own error when the kickstart fails, so a failure names
+ * launchd's reason instead of only "no replacement pid".
+ */
+export function kickstartLaunchdService(run: ServiceManagerSpawnSync = spawnSync): string | null {
+  const uid = currentUid();
+  // The job lands in the gui domain from a desktop session and in the user
+  // domain from ssh; `getLoadedLaunchdState` reads the same pair. The gui
+  // error is the one worth reporting when both fail.
+  let firstError: string | null = null;
+  for (const domain of [`gui/${uid}`, `user/${uid}`]) {
+    const result = run("launchctl", ["kickstart", `${domain}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
+    if (result.status === 0) return null;
+    firstError ??= serviceManagerResultText(result) || `launchctl kickstart exited with status ${result.status ?? "unknown"}.`;
+  }
+  return firstError;
+}
+
+/**
+ * The watchdog's restart after it kills a wedged brain. Waits (briefly) for the
+ * killed pid to be gone first: a kickstart while launchd still counts the job
+ * as running is a no-op, and on a domain that ignores KeepAlive nothing else
+ * would start the replacement.
+ */
+export function kickstartLaunchdServiceAfterExit(
+  killedPid: number,
+  deps: { run?: ServiceManagerSpawnSync; pidAlive?: (pid: number) => boolean; waitMs?: number } = {},
+): string | null {
+  const alive = deps.pidAlive ?? pidAlive;
+  const deadline = Date.now() + (deps.waitMs ?? 3_000);
+  while (alive(killedPid) && Date.now() < deadline) sleepSync(50);
+  return kickstartLaunchdService(deps.run ?? spawnSync);
+}
+
+/**
+ * launchd's own words for a job it loaded and has not started:
+ * `pended nondemand spawn = speculative` with `runs = 0`. Null when the job has
+ * run, or when the print says nothing about a pending spawn.
+ */
+export function parseLaunchdPendingSpawn(output: string): string | null {
+  const pended = output.match(/\bpended nondemand spawn\s*=\s*([^\n]+)/i);
+  if (!pended) return null;
+  const runs = output.match(/\bruns\s*=\s*(\d+)\b/i);
+  if (runs && Number(runs[1]) > 0) return null;
+  return pended[1].trim();
 }
 
 export function getLaunchdServiceMainPid(
@@ -472,16 +608,21 @@ export async function installLaunchdService(
   for (const pid of staleScan.ok ? staleScan.pids : []) {
     await terminatePidGracefullyAsync(pid, launchdTerminateDeps(deps.terminateDeps));
   }
-  const load = run("launchctl", ["load", servicePath], { encoding: "utf8" });
-  if (load.status !== 0) {
-    return {
-      ok: false,
-      serviceName: ADE_RUNTIME_SERVICE_NAME,
-      action: "install",
-      path: servicePath,
-      message: serviceManagerResultText(load) || "launchctl load failed.",
-    };
+  let load = loadLaunchAgent(servicePath, ADE_RUNTIME_SERVICE_NAME, run);
+  if (!load.ok) {
+    // A bootout launchd has not finished tearing down refuses the same label
+    // for a moment; one retry covers it without hiding a job that never loads.
+    await sleep(LAUNCHD_REGISTER_RETRY_MS);
+    load = loadLaunchAgent(servicePath, ADE_RUNTIME_SERVICE_NAME, run);
   }
+  if (!load.ok) {
+    return handoverFailure(
+      servicePath,
+      "launchd_register",
+      `launchd did not register the ADE background service. ${load.detail}`,
+    );
+  }
+  const kickstartError = kickstartLaunchdService(run);
   const oldPid = loaded?.pid ?? null;
   // A fresh full budget: the young-brain wait above may have spent all of its
   // own, and the real handover is the one whose outcome decides whether this
@@ -500,10 +641,17 @@ export async function installLaunchdService(
     );
   }
   if (replacementPid == null || replacementPid === oldPid) {
+    // launchd loaded the job and never started it. The usual reason on a
+    // healthy Mac is the "Allow in the Background" switch, and it is worth
+    // naming: every restart after this one would fail the same way.
+    if (replacementPid == null && readLaunchdBackgroundItemStatus(servicePath, run) === "requires_approval") {
+      return handoverFailure(servicePath, "background_item_blocked", BACKGROUND_ITEM_BLOCKED_MESSAGE);
+    }
     return handoverFailure(
       servicePath,
       "replacement_pid",
-      `ADE service handover failed because launchd did not report a distinct replacement pid (old ${oldPid ?? "none"}, new ${replacementPid ?? "none"}).`,
+      `ADE service handover failed because launchd did not report a distinct replacement pid (old ${oldPid ?? "none"}, new ${replacementPid ?? "none"}).`
+        + (kickstartError ? ` launchctl kickstart failed: ${kickstartError}` : ""),
     );
   }
   if (!replacementResponsive) {
@@ -567,7 +715,7 @@ export function uninstallLaunchdService(deps: LaunchdServiceUninstallDeps = {}):
     parentPid: deps.parentPid,
   });
   if (selfBlock) return selfBlock;
-  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  const uid = currentUid();
   run("launchctl", ["bootout", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
   run("launchctl", ["bootout", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
   run("launchctl", ["unload", servicePath], { stdio: "ignore" });
@@ -599,7 +747,7 @@ export function getLaunchdServiceStatus(): ServiceManagerStatusResult {
     };
   }
 
-  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  const uid = currentUid();
   let print = spawnSync("launchctl", ["print", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
   if (print.status !== 0) {
     const userPrint = spawnSync("launchctl", ["print", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
@@ -615,11 +763,26 @@ export function getLaunchdServiceStatus(): ServiceManagerStatusResult {
       installed: true,
       running: false,
       path: servicePath,
-      message: serviceManagerResultText(print) || "ADE service launchd service is installed but not loaded.",
+      message: isLaunchAgentDisabled(ADE_RUNTIME_SERVICE_NAME)
+        ? "ADE service launchd service is installed but on launchd's disabled list, so macOS will not load it. Repair re-enables it."
+        : serviceManagerResultText(print) || "ADE service launchd service is installed but not loaded.",
     };
   }
 
   const running = isLaunchdPrintRunning(print.stdout);
+  if (running) {
+    return {
+      ok: true,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "status",
+      installed: true,
+      running,
+      path: servicePath,
+      message: "ADE service launchd service is running.",
+    };
+  }
+  const backgroundItem = cachedBackgroundItemStatus(servicePath);
+  const pendingSpawn = parseLaunchdPendingSpawn(print.stdout);
   return {
     ok: true,
     serviceName: ADE_RUNTIME_SERVICE_NAME,
@@ -627,8 +790,11 @@ export function getLaunchdServiceStatus(): ServiceManagerStatusResult {
     installed: true,
     running,
     path: servicePath,
-    message: running
-      ? "ADE service launchd service is running."
-      : "ADE service launchd service is loaded but not running.",
+    backgroundItem,
+    message: backgroundItem === "requires_approval"
+      ? BACKGROUND_ITEM_BLOCKED_MESSAGE
+      : pendingSpawn
+        ? `ADE service launchd service is loaded but launchd has never started it (pended nondemand spawn = ${pendingSpawn}); launchctl kickstart starts it.`
+        : "ADE service launchd service is loaded but not running.",
   };
 }

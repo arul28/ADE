@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   clearGitHubRepoAuthCacheForTests,
   deriveProjectRelayAccessToken,
@@ -55,11 +56,33 @@ class FakeD1Statement {
     return { results: this.db.all<T>(this.sql, this.values) };
   }
 
-  async run(): Promise<{ success: boolean }> {
-    this.db.run(this.sql, this.values);
-    return { success: true };
+  async run(): Promise<{ success: boolean; meta: { changes: number } }> {
+    const changes = this.db.run(this.sql, this.values);
+    return { success: true, meta: { changes } };
   }
 }
+
+type StoredCustomHook = {
+  hook_id: string;
+  account_id: string;
+  token_hash: string;
+  label: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type StoredCustomHookEvent = {
+  event_seq: number;
+  event_id: string;
+  hook_id: string;
+  account_id: string;
+  method: string;
+  query: string;
+  headers_json: string;
+  body: string;
+  body_encoding: string;
+  received_at: string;
+};
 
 type StoredRepoAuthVerdict = {
   cache_key: string;
@@ -77,13 +100,31 @@ class FakeD1Database {
   appRepositories: StoredAppRepository[] = [];
   repoAuthVerdicts = new Map<string, StoredRepoAuthVerdict>();
   tokenRateLimits = new Map<string, { reset_at: string; observed_at: string }>();
+  customHooks: StoredCustomHook[] = [];
+  customHookEvents: StoredCustomHookEvent[] = [];
   nextEventSeq = 1;
+  nextHookEventSeq = 1;
 
   prepare(sql: string): FakeD1Statement {
     return new FakeD1Statement(sql, this);
   }
 
   first<T>(sql: string, values: unknown[]): T | null {
+    if (sql.includes("count(*) as owned from custom_hooks")) {
+      const accountId = String(values[0]);
+      return { owned: this.customHooks.filter((entry) => entry.account_id === accountId).length } as T;
+    }
+    if (sql.includes("count(*) as held from custom_hook_events")) {
+      const hookId = String(values[0]);
+      return { held: this.customHookEvents.filter((entry) => entry.hook_id === hookId).length } as T;
+    }
+    if (sql.includes("from custom_hooks")) {
+      const hookId = String(values[0]);
+      const row = this.customHooks.find((entry) => entry.hook_id === hookId);
+      return (row
+        ? { hook_id: row.hook_id, account_id: row.account_id, token_hash: row.token_hash }
+        : null) as T | null;
+    }
     if (sql.includes("from github_repo_auth_cache")) {
       return (this.repoAuthVerdicts.get(String(values[0])) ?? null) as T | null;
     }
@@ -139,6 +180,26 @@ class FakeD1Database {
   }
 
   all<T>(sql: string, values: unknown[]): T[] {
+    if (sql.includes("from custom_hook_events")) {
+      const accountId = String(values[0]);
+      const hookIds = values.slice(1, -1).map(String);
+      const limit = Number(values.at(-1));
+      return [...this.customHookEvents]
+        .filter((entry) => entry.account_id === accountId && hookIds.includes(entry.hook_id))
+        .sort((left, right) => left.event_seq - right.event_seq)
+        .slice(0, limit)
+        .map((entry) => ({
+          event_seq: entry.event_seq,
+          event_id: entry.event_id,
+          hook_id: entry.hook_id,
+          method: entry.method,
+          query: entry.query,
+          headers_json: entry.headers_json,
+          body: entry.body,
+          body_encoding: entry.body_encoding,
+          received_at: entry.received_at,
+        } as T));
+    }
     if (!sql.includes("from github_events")) return [];
     const [scope] = values;
     const repoScoped = sql.includes("repository_full_name") && !sql.includes("project_id = ?");
@@ -167,7 +228,78 @@ class FakeD1Database {
       } as T));
   }
 
-  run(sql: string, values: unknown[]): void {
+  run(sql: string, values: unknown[]): number {
+    if (sql.includes("insert into custom_hooks")) {
+      const [hookId, accountId, tokenHash, label, createdAt, updatedAt] = values;
+      const existing = this.customHooks.find((entry) => entry.hook_id === hookId);
+      if (existing) {
+        existing.token_hash = String(tokenHash);
+        existing.label = label == null ? existing.label : String(label);
+        existing.updated_at = String(updatedAt);
+      } else {
+        this.customHooks.push({
+          hook_id: String(hookId),
+          account_id: String(accountId),
+          token_hash: String(tokenHash),
+          label: label == null ? null : String(label),
+          created_at: String(createdAt),
+          updated_at: String(updatedAt),
+        });
+      }
+      return 1;
+    }
+    if (sql.includes("insert into custom_hook_events")) {
+      const [eventId, hookId, accountId, method, query, headersJson, body, bodyEncoding, receivedAt] = values;
+      this.customHookEvents.push({
+        event_seq: this.nextHookEventSeq++,
+        event_id: String(eventId),
+        hook_id: String(hookId),
+        account_id: String(accountId),
+        method: String(method),
+        query: String(query),
+        headers_json: String(headersJson),
+        body: String(body),
+        body_encoding: String(bodyEncoding),
+        received_at: String(receivedAt),
+      });
+      return 1;
+    }
+    if (sql.includes("delete from custom_hook_events") && sql.includes("received_at <")) {
+      const cutoff = String(values[0]);
+      const before = this.customHookEvents.length;
+      this.customHookEvents = this.customHookEvents.filter((entry) => entry.received_at >= cutoff);
+      return before - this.customHookEvents.length;
+    }
+    if (sql.includes("delete from custom_hook_events") && sql.includes("hook_id = ? and account_id = ?")) {
+      const [hookId, accountId] = values;
+      const before = this.customHookEvents.length;
+      this.customHookEvents = this.customHookEvents.filter(
+        (entry) => !(entry.hook_id === String(hookId) && entry.account_id === String(accountId)),
+      );
+      return before - this.customHookEvents.length;
+    }
+    if (sql.includes("delete from custom_hook_events") && sql.includes("account_id = ? and event_id in")) {
+      const accountId = String(values[0]);
+      const eventIds = values.slice(1).map(String);
+      const before = this.customHookEvents.length;
+      this.customHookEvents = this.customHookEvents.filter(
+        (entry) => !(entry.account_id === accountId && eventIds.includes(entry.event_id)),
+      );
+      return before - this.customHookEvents.length;
+    }
+    if (sql.includes("delete from custom_hooks")) {
+      const before = this.customHooks.length;
+      if (sql.includes("account_id = ?") && !sql.includes("hook_id = ?")) {
+        const accountId = String(values[0]);
+        this.customHooks = this.customHooks.filter((entry) => entry.account_id !== accountId);
+      } else {
+        const [hookId, accountId] = values;
+        this.customHooks = this.customHooks.filter(
+          (entry) => !(entry.hook_id === String(hookId) && entry.account_id === String(accountId)),
+        );
+      }
+      return before - this.customHooks.length;
+    }
     if (sql.includes("insert into github_repo_auth_cache")) {
       this.repoAuthVerdicts.set(String(values[0]), {
         cache_key: String(values[0]),
@@ -258,6 +390,7 @@ class FakeD1Database {
           : entry
       );
     }
+    return 0;
   }
 }
 
@@ -2040,5 +2173,235 @@ describe("RepoEventsDurableObject", () => {
     expect(expired.sent).toEqual([]);
     expect(expired.closed).toEqual({ code: 4401, reason: "subscription expired" });
     expect(fixture.storage.alarm).toBe((live.attachment as { expiresAt: number }).expiresAt);
+  });
+});
+
+// Custom webhook "doorbells": account-authenticated registration, a public
+// token-guarded delivery URL, a held-delivery inbox, and per-account acks. The
+// account token setup mirrors test/account.test.ts.
+describe("custom webhook URLs", () => {
+  const ISSUER = "https://clerk.hooks.test";
+  const OAUTH_CLIENT_ID = "client_ade_hooks";
+  const HOOK_ID = "hook-deploys";
+  const HOOK_TOKEN = "t".repeat(40);
+  const HOOK_LABEL = "Deploys";
+  let jwksUrl = "";
+  let signingKey: Awaited<ReturnType<typeof generateKeyPair>>["privateKey"];
+
+  beforeAll(async () => {
+    const keyPair = await generateKeyPair("RS256", { extractable: true });
+    signingKey = keyPair.privateKey;
+    const publicJwk = await exportJWK(keyPair.publicKey);
+    const jwks = { keys: [{ ...publicJwk, alg: "RS256", kid: "hooks-test", use: "sig" }] };
+    jwksUrl = `data:application/json,${encodeURIComponent(JSON.stringify(jwks))}`;
+  });
+
+  async function mintAccountToken(sub: string): Promise<string> {
+    const now = Math.floor(Date.now() / 1000);
+    return new SignJWT({ azp: OAUTH_CLIENT_ID })
+      .setProtectedHeader({ alg: "RS256", kid: "hooks-test" })
+      .setIssuer(ISSUER)
+      .setSubject(sub)
+      .setAudience(OAUTH_CLIENT_ID)
+      .setIssuedAt(now)
+      .setExpirationTime(now + 600)
+      .sign(signingKey);
+  }
+
+  function makeHookEnv() {
+    return {
+      ...makeEnv(),
+      CLERK_JWKS_URL: jwksUrl,
+      CLERK_ISSUER: ISSUER,
+      CLERK_OAUTH_CLIENT_ID: OAUTH_CLIENT_ID,
+    };
+  }
+
+  type HookEnv = ReturnType<typeof makeHookEnv>;
+
+  function hookRequest(
+    pathname: string,
+    args: { method?: string; accountToken?: string; body?: unknown } = {},
+  ): Request {
+    return new Request(`https://relay.example.com${pathname}`, {
+      method: args.method ?? "GET",
+      headers: {
+        ...(args.accountToken ? { "x-ade-account-token": args.accountToken } : {}),
+        ...(args.body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(args.body === undefined ? {} : { body: JSON.stringify(args.body) }),
+    });
+  }
+
+  function hookDeliveryUrl(hookId = HOOK_ID, token = HOOK_TOKEN, query = ""): string {
+    return `https://relay.example.com/hooks/${hookId}/${token}${query ? `?${query}` : ""}`;
+  }
+
+  async function registerHook(env: HookEnv, accountToken: string, hookId = HOOK_ID, token = HOOK_TOKEN): Promise<Response> {
+    return await handleRequest(hookRequest("/hooks/register", {
+      method: "POST",
+      accountToken,
+      body: { hookId, token, label: HOOK_LABEL },
+    }), env);
+  }
+
+  async function listEvents(env: HookEnv, accountToken: string, hookId = HOOK_ID): Promise<Response> {
+    return await handleRequest(hookRequest(`/hooks/events?hooks=${hookId}`, { accountToken }), env);
+  }
+
+  it("registers a hook and queues a delivery on its token URL", async () => {
+    const env = makeHookEnv();
+    const accountToken = await mintAccountToken("user_1");
+
+    const registration = await registerHook(env, accountToken);
+    expect(registration.status).toBe(200);
+    expect(await registration.json()).toEqual(expect.objectContaining({ ok: true, hookId: HOOK_ID }));
+
+    const delivery = await handleRequest(new Request(hookDeliveryUrl(), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ hello: "world" }),
+    }), env);
+
+    expect(delivery.status).toBe(202);
+    expect(await delivery.json()).toEqual(expect.objectContaining({ ok: true, queued: true }));
+    expect(env.DB.customHookEvents).toHaveLength(1);
+    expect(env.DB.customHookEvents[0]).toEqual(expect.objectContaining({
+      hook_id: HOOK_ID,
+      account_id: "user_1",
+      method: "POST",
+    }));
+  });
+
+  it("answers 404 for a wrong token and an unknown hook without storing anything", async () => {
+    const env = makeHookEnv();
+    const accountToken = await mintAccountToken("user_1");
+    expect((await registerHook(env, accountToken)).status).toBe(200);
+
+    const wrongToken = await handleRequest(new Request(
+      hookDeliveryUrl(HOOK_ID, "x".repeat(40)),
+      { method: "POST", body: "{}" },
+    ), env);
+    const unknownHook = await handleRequest(new Request(
+      hookDeliveryUrl("hook-unknown", HOOK_TOKEN),
+      { method: "POST", body: "{}" },
+    ), env);
+
+    expect(wrongToken.status).toBe(404);
+    expect(await wrongToken.json()).toEqual({ ok: false, error: "not_found" });
+    expect(unknownHook.status).toBe(404);
+    expect(await unknownHook.json()).toEqual({ ok: false, error: "not_found" });
+    expect(env.DB.customHookEvents).toHaveLength(0);
+  });
+
+  it("lists held deliveries oldest first with method, query, headers, and base64 for a binary body", async () => {
+    const env = makeHookEnv();
+    const accountToken = await mintAccountToken("user_1");
+    await registerHook(env, accountToken);
+
+    const first = await handleRequest(new Request(
+      hookDeliveryUrl(HOOK_ID, HOOK_TOKEN, "source=deploy&n=1"),
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-custom": "abc" },
+        body: JSON.stringify({ step: "one" }),
+      },
+    ), env);
+    const binaryBytes = new Uint8Array([0xff, 0xfe, 0x00, 0x01]);
+    const second = await handleRequest(new Request(
+      hookDeliveryUrl(),
+      { method: "PUT", body: binaryBytes },
+    ), env);
+    expect(first.status).toBe(202);
+    expect(second.status).toBe(202);
+    const firstId = (await first.json() as { deliveryId: string }).deliveryId;
+    const secondId = (await second.json() as { deliveryId: string }).deliveryId;
+
+    const listed = await listEvents(env, accountToken);
+    expect(listed.status).toBe(200);
+    const payload = await listed.json() as {
+      events: Array<{
+        eventId: string;
+        method: string;
+        query: string;
+        headers: Record<string, string>;
+        body: string;
+        bodyEncoding: string;
+      }>;
+      hasMore: boolean;
+    };
+
+    expect(payload.events.map((event) => event.eventId)).toEqual([firstId, secondId]);
+    expect(payload.events[0]).toEqual(expect.objectContaining({
+      method: "POST",
+      query: "source=deploy&n=1",
+      headers: expect.objectContaining({ "x-custom": "abc", "content-type": "application/json" }),
+      body: JSON.stringify({ step: "one" }),
+      bodyEncoding: "utf8",
+    }));
+    expect(payload.events[1]!.method).toBe("PUT");
+    expect(payload.events[1]!.bodyEncoding).toBe("base64");
+    expect(new Uint8Array(Buffer.from(payload.events[1]!.body, "base64"))).toEqual(binaryBytes);
+  });
+
+  it("deletes exactly the acknowledged ids and keeps another account out of the inbox", async () => {
+    const env = makeHookEnv();
+    const accountToken = await mintAccountToken("user_1");
+    const otherAccountToken = await mintAccountToken("user_2");
+    await registerHook(env, accountToken);
+
+    const first = await handleRequest(new Request(hookDeliveryUrl(), { method: "POST", body: "one" }), env);
+    const second = await handleRequest(new Request(hookDeliveryUrl(), { method: "POST", body: "two" }), env);
+    const firstId = (await first.json() as { deliveryId: string }).deliveryId;
+    const secondId = (await second.json() as { deliveryId: string }).deliveryId;
+
+    const otherList = await listEvents(env, otherAccountToken);
+    expect(otherList.status).toBe(200);
+    expect(await otherList.json()).toEqual({ events: [], hasMore: false });
+    const otherAck = await handleRequest(hookRequest("/hooks/ack", {
+      method: "POST",
+      accountToken: otherAccountToken,
+      body: { eventIds: [firstId, secondId] },
+    }), env);
+    expect(await otherAck.json()).toEqual(expect.objectContaining({ ok: true, acknowledged: 0 }));
+    expect(env.DB.customHookEvents).toHaveLength(2);
+
+    const ack = await handleRequest(hookRequest("/hooks/ack", {
+      method: "POST",
+      accountToken,
+      body: { eventIds: [firstId] },
+    }), env);
+    expect(await ack.json()).toEqual(expect.objectContaining({ ok: true, acknowledged: 1 }));
+
+    const remaining = await listEvents(env, accountToken);
+    const remainingPayload = await remaining.json() as { events: Array<{ eventId: string }> };
+    expect(remainingPayload.events.map((event) => event.eventId)).toEqual([secondId]);
+    expect(env.DB.customHookEvents).toHaveLength(1);
+  });
+
+  it("rejects a chunked body over the limit with no content-length and stores nothing", async () => {
+    const env = makeHookEnv();
+    const accountToken = await mintAccountToken("user_1");
+    await registerHook(env, accountToken);
+
+    const chunk = new Uint8Array(600 * 1024);
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(chunk);
+        controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    const request = new Request(hookDeliveryUrl(), {
+      method: "POST",
+      body: stream,
+      duplex: "half",
+    } as unknown as RequestInit);
+    expect(request.headers.get("content-length")).toBeNull();
+
+    const response = await handleRequest(request, env);
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({ ok: false, error: "payload_too_large" });
+    expect(env.DB.customHookEvents).toHaveLength(0);
   });
 });

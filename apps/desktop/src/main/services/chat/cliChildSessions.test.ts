@@ -25,7 +25,7 @@ function cliRow(overrides: Partial<CliChildRow> = {}): CliChildRow {
       provider: "codex",
       targetKind: "thread",
       targetId: null,
-      launch: { model: "gpt-5.6-sol" },
+      launch: { model: "gpt-5.6-sol", reasoningEffort: "high" },
       orchestrationParentSessionId: "parent-1",
       spawnKind: "subagent",
     },
@@ -34,12 +34,13 @@ function cliRow(overrides: Partial<CliChildRow> = {}): CliChildRow {
 }
 
 describe("cliChildLineageFromRow", () => {
-  it("reads the parent, type, provider, and model a parented CLI was launched with", () => {
+  it("reads the parent, type, provider, model, and effort a parented CLI was launched with", () => {
     expect(cliChildLineageFromRow(cliRow())).toEqual({
       parentSessionId: "parent-1",
       spawnKind: "subagent",
       provider: "codex",
       model: "gpt-5.6-sol",
+      reasoningEffort: "high",
     });
   });
 

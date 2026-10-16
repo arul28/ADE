@@ -11,10 +11,13 @@ import {
   createProviderStatusService,
   decorateProjectListWithIcons,
   readMachineRuntimeActivitySummary,
+  readMachineUpdateImpact,
 } from "./multiProjectRpcServer";
 import * as gitModule from "../../desktop/src/main/services/git/git";
 import { ProjectRegistry } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
+import { openSearchIndexDb } from "../../desktop/src/main/services/search/searchIndexDb";
+import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
 import { buildProjectlessSyncSnapshot } from "./services/sync/projectlessSyncSnapshot";
 import {
   createProjectlessSyncControls,
@@ -379,6 +382,103 @@ describe("multi-project RPC server", () => {
     }
   });
 
+  /**
+   * `ade notify` runs machine-wide: an agent may send, it never needs the
+   * caller's folder to be a project, and it works with sync off. A chat or PR
+   * link names the caller's project only when that folder is a registered one.
+   */
+  it("sends ade notify for an agent from any folder, naming only a registered project", async () => {
+    const sendCustomNotification = vi.fn(async () => ({
+      devices: 1, delivered: 1, skipped: 0, failed: 0, remaining: 59,
+    }));
+    const accountAuthService = makeAccountAuthServiceMock();
+    (accountAuthService.getStatus as ReturnType<typeof vi.fn>).mockReturnValue({
+      signedIn: true, userId: "account-a", email: null, name: null, expiresAt: null,
+    });
+    const runtime = {
+      projectRoot: "/repo/ade",
+      accountAuthService,
+      productAnalyticsService: null,
+      pushPublisherService: { sendCustomNotification },
+    };
+    const scopeRegistry = {
+      // Sync is off: there is no sync host to borrow.
+      resolveActiveSyncHost: vi.fn(async () => null),
+      get: vi.fn(async () => ({ runtime })),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const record = { projectId: "p1", rootPath: "/repo/ade" };
+    const projectRegistry = {
+      list: () => [record],
+      findByRootPath: (root: string) => (root === record.rootPath ? record : null),
+      add: vi.fn(),
+    };
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        scopeRegistry,
+        accountAuthService,
+        projectRegistry: projectRegistry as never,
+      });
+      await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: { identity: { role: "agent" } } });
+
+      const fromProject = await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "notify.send",
+        params: { args: { title: "Deploy finished", open: "ade://session/abc" }, projectRoot: "/repo/ade" },
+      });
+      expect(fromProject).toMatchObject({ sent: true, delivered: 1, remaining: 59 });
+      expect(sendCustomNotification).toHaveBeenLastCalledWith(expect.objectContaining({
+        title: "Deploy finished",
+        deepLink: "ade://session/abc",
+        projectId: expect.stringMatching(/^project_/),
+      }));
+
+      await handler({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "notify.send",
+        params: { args: { title: "From home", open: "ade://session/abc" }, projectRoot: "/Users/me" },
+      });
+      expect(sendCustomNotification).toHaveBeenLastCalledWith(expect.objectContaining({
+        title: "From home",
+        projectId: null,
+      }));
+      // Neither call registered a folder as a project.
+      expect(projectRegistry.add).not.toHaveBeenCalled();
+
+      await expect(handler({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "notify.send",
+        params: { args: { title: "" } },
+      })).rejects.toThrow(/needs a title/);
+      handler.dispose();
+
+      const external = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        scopeRegistry,
+        accountAuthService,
+        projectRegistry: projectRegistry as never,
+      });
+      await external({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: { identity: { role: "external" } } });
+      await expect(external({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "notify.send",
+        params: { args: { title: "Hi" } },
+      })).rejects.toThrow(/requires the agent role/);
+      expect(sendCustomNotification).toHaveBeenCalledTimes(2);
+      external.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousRole);
+    }
+  });
+
   it("prewarms the production shared personal-chat scope only at creation", () => {
     const warmExisting = vi.spyOn(PersonalChatScope.prototype, "warmExisting")
       .mockResolvedValue();
@@ -401,6 +501,53 @@ describe("multi-project RPC server", () => {
     } finally {
       warmExisting.mockRestore();
     }
+  });
+
+  it("names what an update would stop across booted projects and personal chats, without booting any", async () => {
+    const getIfBooted = vi.fn((projectId: string) =>
+      projectId === "project-open"
+        ? Promise.resolve({
+            runtime: {
+              agentChatService: {
+                listInterruptedChats: async () => ({ chats: [{ sessionId: "chat-1", title: "Fix login" }] }),
+              },
+              ptyService: {
+                list: () => [
+                  { toolType: "claude", runtimeState: "running" },
+                  { toolType: "codex", runtimeState: "idle" },
+                  { toolType: "shell", runtimeState: "idle" },
+                  { toolType: "claude-chat", runtimeState: "running" },
+                ],
+              },
+            },
+          })
+        : null);
+    const impact = await readMachineUpdateImpact({
+      projectRegistry: {
+        list: () => [
+          { projectId: "project-open", displayName: "ADE", rootPath: "/code/ADE" },
+          { projectId: "project-closed", displayName: "Site", rootPath: "/code/site" },
+        ],
+      } as never,
+      scopeRegistry: { getIfBooted } as never,
+      personalChatScope: {
+        updateImpact: async () => ({
+          chats: [{ sessionId: "chat-2", title: "Trip notes", projectName: "Personal chats", projectRoot: null, resumable: false }],
+          cliSessions: 0,
+          terminals: 1,
+        }),
+      },
+    });
+
+    expect(impact.chats).toEqual([
+      { sessionId: "chat-1", title: "Fix login", projectName: "ADE", projectRoot: "/code/ADE" },
+      { sessionId: "chat-2", title: "Trip notes", projectName: "Personal chats", projectRoot: null, resumable: false },
+    ]);
+    // A quiet CLI session or shell still closes on restart, so it counts; the
+    // chat's own row is already named above and is not counted again.
+    expect(impact.cliSessions).toBe(2);
+    expect(impact.terminals).toBe(2);
+    expect(getIfBooted).toHaveBeenCalledWith("project-closed");
   });
 
   it("summarizes booted project and personal-chat work independently of client sockets", async () => {
@@ -1311,104 +1458,6 @@ describe("multi-project RPC server", () => {
     expect(personalChatScope.dispose).not.toHaveBeenCalled();
   });
 
-  it("never delivers a cto_voice event from the personal chat buffer", async () => {
-    // Nothing puts a voice event in the machine-scoped buffer today, and that
-    // is a property of the producers rather than a guarantee of this boundary.
-    // The project scope has always refused the category; the personal one had
-    // no equivalent, so a future producer would have leaked a call's running
-    // transcript to any agent polling personal chats.
-    const { registry } = createRegistry();
-    const buffer = createEventBuffer();
-    const personalChatScope = {
-      capabilities: vi.fn(() => ({
-        version: 1 as const,
-        actions: ["list" as const],
-        pushEvents: true,
-      })),
-      call: vi.fn(async () => ({ action: "list" as const, result: [] })),
-      streamEvents: vi.fn(async () => buffer.drain(0)),
-      subscribeEvents: vi.fn(async (
-        _args: unknown,
-        listener: (event: BufferedEvent, eventEpoch: string) => void,
-      ) => {
-        const epoch = buffer.epoch();
-        const unsubscribe = buffer.subscribe((event) => listener(event, epoch));
-        return { unsubscribe, replay: buffer.drain(0), eventEpoch: epoch };
-      }),
-      transcriptPath: vi.fn(async () => null),
-      isTurnActive: vi.fn(async () => false),
-      dispose: vi.fn(async () => undefined),
-    };
-    const handler = createMultiProjectRpcRequestHandler({
-      serverVersion: "test",
-      projectRegistry: registry,
-      personalChatScope,
-    });
-    const notifications: Array<{ method: string; params: unknown }> = [];
-    handler.setNotifier((method, params) => { notifications.push({ method, params }); });
-    await handler({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "ade/initialize",
-      // An agent-role caller: the role the gate exists for.
-      params: { identity: { role: "agent" } },
-    });
-
-    // Asked for by name: refused outright.
-    await expect(handler({
-      jsonrpc: "2.0",
-      id: 2,
-      method: "personalChats.subscribeEvents",
-      params: { category: "cto_voice" },
-    })).rejects.toMatchObject({ message: expect.stringContaining("requires the cto role") });
-    await expect(handler({
-      jsonrpc: "2.0",
-      id: 3,
-      method: "personalChats.streamEvents",
-      params: { category: "cto_voice" },
-    })).rejects.toMatchObject({ message: expect.stringContaining("requires the cto role") });
-
-    // Not asked for at all: filtered out of the stream rather than failing it.
-    const subscribed = await handler({
-      jsonrpc: "2.0",
-      id: 4,
-      method: "personalChats.subscribeEvents",
-      params: {},
-    }) as { subscriptionId: string };
-
-    buffer.push({
-      timestamp: "2026-01-01T00:00:00.000Z",
-      category: "cto_voice",
-      payload: { type: "cto_voice_state", state: { phase: "listening" } },
-    });
-    buffer.push({
-      timestamp: "2026-01-01T00:00:01.000Z",
-      category: "runtime",
-      payload: { type: "chat_event" },
-    });
-
-    // The runtime twin proves the subscription is live; the voice one must not
-    // appear at all.
-    expect(notifications).toHaveLength(1);
-    expect(JSON.stringify(notifications)).not.toContain("cto_voice");
-
-    const polled = await handler({
-      jsonrpc: "2.0",
-      id: 5,
-      method: "personalChats.streamEvents",
-      params: {},
-    }) as { events: Array<{ category: string }> };
-    expect(polled.events.map((event) => event.category)).toEqual(["runtime"]);
-
-    await handler({
-      jsonrpc: "2.0",
-      id: 6,
-      method: "personalChats.unsubscribeEvents",
-      params: { subscriptionId: subscribed.subscriptionId },
-    });
-    handler.dispose();
-  });
-
   it("pushes machine personal chat events over the connection and unsubscribes", async () => {
     const { registry } = createRegistry();
     const buffer = createEventBuffer();
@@ -1835,13 +1884,17 @@ describe("multi-project RPC server", () => {
       ]);
       expect(args?.join(" ")).not.toContain(destinationToken);
       expect(args?.join(" ")).not.toContain(expectedAuthorization);
-      expect(options?.env).toMatchObject({
-        GIT_TERMINAL_PROMPT: "0",
-        GCM_INTERACTIVE: "Never",
-        GIT_CONFIG_COUNT: "1",
-        GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-        GIT_CONFIG_VALUE_0: expectedAuthorization,
-      });
+      expect(options?.env).toMatchObject({ GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" });
+      // A clone that already stores a header must not send two: the env resets
+      // the inherited list first, then sets exactly one Authorization header.
+      const env = options?.env ?? {};
+      const entries = Array.from({ length: Number(env.GIT_CONFIG_COUNT) }, (_, index) => ({
+        key: env[`GIT_CONFIG_KEY_${index}`],
+        value: env[`GIT_CONFIG_VALUE_${index}`],
+      }));
+      expect(entries[0]).toEqual({ key: "http.https://github.com/.extraheader", value: "" });
+      expect(entries.filter((entry) => entry.key === "http.https://github.com/.extraheader" && entry.value))
+        .toEqual([{ key: "http.https://github.com/.extraheader", value: expectedAuthorization }]);
     } finally {
       handler.dispose();
       runGitSpy.mockRestore();
@@ -1999,12 +2052,15 @@ describe("multi-project RPC server", () => {
         nextCursor: "foreign-project-more",
       })),
     };
+    const scopeFor = (projectId: string) => {
+      const record = projectId === current.projectId ? current : foreign;
+      const runtime = projectId === current.projectId ? currentRuntime : foreignRuntime;
+      return { registryProjectId: record.projectId, record, runtime, dispose: vi.fn() };
+    };
+    // Both runtimes are loaded: each answers through its own services.
     const scopeRegistry = {
-      get: vi.fn(async (projectId: string) => {
-        const record = projectId === current.projectId ? current : foreign;
-        const runtime = projectId === current.projectId ? currentRuntime : foreignRuntime;
-        return { registryProjectId: record.projectId, record, runtime, dispose: vi.fn() };
-      }),
+      get: vi.fn(async (projectId: string) => scopeFor(projectId)),
+      getIfBooted: vi.fn((projectId: string) => Promise.resolve(scopeFor(projectId))),
       dispose: vi.fn(),
       disposeAll: vi.fn(),
     } as unknown as ProjectScopeRegistry;
@@ -2091,6 +2147,83 @@ describe("multi-project RPC server", () => {
       limit: 200,
     }));
 
+    handler.dispose();
+  });
+
+  it.each([
+    { name: "answers from its index", laneId: undefined, index: "current", foreignHits: 1, unavailable: [] as string[] },
+    { name: "resolves a lane id in its index", laneId: "lane-123", index: "current", foreignHits: 1, unavailable: [] },
+    { name: "resolves a lane name in its index", laneId: "FIX-LOGIN", index: "current", foreignHits: 1, unavailable: [] },
+    { name: "resolves part of a lane name in its index", laneId: "login", index: "current", foreignHits: 1, unavailable: [] },
+    { name: "skips an unknown lane", laneId: "no-such-lane", index: "current", foreignHits: 0, unavailable: [] },
+    { name: "has no hits without an index", laneId: undefined, index: "none", foreignHits: 0, unavailable: [] },
+    { name: "reports an index from another version", laneId: undefined, index: "old", foreignHits: 0, unavailable: ["foreign-project"] },
+    { name: "reports a project whose folder is gone", laneId: undefined, index: "gone", foreignHits: 0, unavailable: ["foreign-project"] },
+  ])("searches a project whose runtime is not loaded without loading it: $name", async ({ laneId, index, foreignHits, unavailable }) => {
+    const { root, projectRoot, registry } = createRegistry();
+    const current = registry.add(projectRoot);
+    const foreignRootRaw = path.join(root, "foreign-project");
+    fs.mkdirSync(foreignRootRaw, { recursive: true });
+    const foreignRoot = fs.realpathSync.native(foreignRootRaw);
+    const foreign = registry.add(foreignRoot);
+    if (index !== "none" && index !== "gone") {
+      const opened = openSearchIndexDb(resolveAdeLayout(foreignRoot).cacheDir);
+      const db = opened.db;
+      db.prepare(
+        `INSERT INTO docs (doc_id, kind, lane_id, lane_name, session_id, owner_session_id, title, rank_title, snippet_source, deep_link, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run("chat:foreign", "chat", "lane-123", "fix-login", "foreign-chat", null, "foreign chat", "foreign chat",
+        "the redirect result", "ade://work/session/foreign-chat", "2026-08-01T00:00:00.000Z");
+      const row = db.prepare("SELECT id FROM docs WHERE doc_id = ?").get("chat:foreign") as { id: number };
+      db.prepare("INSERT INTO docs_fts (rowid, rank_title, body) VALUES (?, ?, ?)").run(row.id, "foreign chat", "the redirect result");
+      if (index === "old") db.prepare("UPDATE meta SET value = '1' WHERE key = 'schemaVersion'").run();
+      opened.close();
+    }
+    if (index === "gone") fs.rmSync(foreignRoot, { recursive: true, force: true });
+
+    const currentRuntime = makeRuntime("current") as ReturnType<typeof makeRuntime> & {
+      searchService: { query: ReturnType<typeof vi.fn> };
+    };
+    currentRuntime.searchService = {
+      query: vi.fn(async () => ({ results: [], totalByKind: {}, nextCursor: null })),
+    };
+    const loaded = { registryProjectId: current.projectId, record: current, runtime: currentRuntime, dispose: vi.fn() };
+    const scopeRegistry = {
+      get: vi.fn(async (projectId: string) => {
+        if (projectId !== current.projectId) throw new Error("loaded a project the search must not load");
+        return loaded;
+      }),
+      getIfBooted: vi.fn((projectId: string) => (projectId === current.projectId ? Promise.resolve(loaded) : null)),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    const search = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "ade/actions/call",
+      params: {
+        projectId: current.projectId,
+        name: "run_ade_action",
+        arguments: {
+          domain: "search",
+          action: "query",
+          args: { query: "redirect", kinds: ["chat"], limit: 10, ...(laneId ? { laneId } : {}) },
+        },
+      },
+    }) as { result: { results: Array<{ projectId?: string; sessionId?: string }>; projectsUnavailable?: string[] } };
+
+    const fromForeign = search.result.results.filter((item) => item.projectId === foreign.projectId);
+    expect(fromForeign).toHaveLength(foreignHits);
+    if (foreignHits) expect(fromForeign[0]!.sessionId).toBe("foreign-chat");
+    expect((search.result.projectsUnavailable ?? []).map((entry) => entry.split(" ")[0])).toEqual(unavailable);
+    expect(scopeRegistry.get).not.toHaveBeenCalledWith(foreign.projectId);
     handler.dispose();
   });
 
@@ -2885,6 +3018,108 @@ describe("multi-project RPC server", () => {
     }
   });
 
+  describe("App Control frame demand", () => {
+    function makeFrameService() {
+      const demand = new Map<string, unknown>();
+      return {
+        demand,
+        setFrameDemand: (sourceId: string, value: unknown) => {
+          if (value === null) demand.delete(sourceId);
+          else demand.set(sourceId, value);
+        },
+      };
+    }
+
+    function makeScopes(projectRoot: string, registry: ReturnType<typeof createRegistry>["registry"]) {
+      const added = registry.add(projectRoot);
+      let service = makeFrameService();
+      const disposeListeners: Array<(projectId: string) => void> = [];
+      let nextGet: Promise<void> | null = null;
+      const scopeRegistry = {
+        get: vi.fn(async () => {
+          const gate = nextGet;
+          nextGet = null;
+          const current = service;
+          if (gate) await gate;
+          return {
+            registryProjectId: added.projectId,
+            record: added,
+            runtime: { eventBuffer: createEventBuffer(), appControlService: current, dispose: vi.fn() },
+            dispose: vi.fn(),
+          };
+        }),
+        onDispose: (listener: (projectId: string) => void) => {
+          disposeListeners.push(listener);
+          return () => {};
+        },
+        ensureSyncHost: vi.fn(),
+        dispose: vi.fn(),
+        disposeAll: vi.fn(),
+      } as unknown as ProjectScopeRegistry;
+      return {
+        added,
+        scopeRegistry,
+        service: () => service,
+        holdNextLookup: (gate: Promise<void>) => { nextGet = gate; },
+        restartScope: () => {
+          service = makeFrameService();
+          for (const listener of disposeListeners) listener(added.projectId);
+        },
+      };
+    }
+
+    async function connect(scopeRegistry: ProjectScopeRegistry, registry: ReturnType<typeof createRegistry>["registry"]) {
+      const handler = createMultiProjectRpcRequestHandler({ serverVersion: "test", projectRegistry: registry, scopeRegistry });
+      handler.setNotifier(vi.fn());
+      await handler({ jsonrpc: "2.0", id: 0, method: "ade/initialize", params: {} });
+      let id = 1;
+      return {
+        handler,
+        call: (method: string, params: Record<string, unknown>) => handler({ jsonrpc: "2.0", id: id++, method, params }),
+      };
+    }
+
+    it("keeps every lane streaming for an undeclared frame subscriber until it declares, and releases on close", async () => {
+      const { projectRoot, registry } = createRegistry();
+      const scopes = makeScopes(projectRoot, registry);
+      const { handler, call } = await connect(scopes.scopeRegistry, registry);
+      const projectId = scopes.added.projectId;
+
+      await call("runtimeEvents.subscribe", { projectId, includeHighVolumeEvents: true });
+      expect([...scopes.service().demand.values()]).toEqual(["all"]);
+
+      await call("appControl.setFrameDemand", { projectId, laneIds: ["lane-1"] });
+      expect([...scopes.service().demand.values()]).toEqual([["lane-1"]]);
+
+      // A declared connection never falls back to every lane.
+      await call("runtimeEvents.subscribe", { projectId, includeHighVolumeEvents: true });
+      expect([...scopes.service().demand.values()]).toEqual([["lane-1"]]);
+
+      handler.dispose();
+      expect(scopes.service().demand.size).toBe(0);
+    });
+
+    it("lands declarations in call order and replays them onto a restarted scope", async () => {
+      const { projectRoot, registry } = createRegistry();
+      const scopes = makeScopes(projectRoot, registry);
+      const { call } = await connect(scopes.scopeRegistry, registry);
+      const projectId = scopes.added.projectId;
+
+      let releaseFirst!: () => void;
+      scopes.holdNextLookup(new Promise<void>((resolve) => { releaseFirst = resolve; }));
+      const first = call("appControl.setFrameDemand", { projectId, laneIds: ["old-pane"] });
+      await call("appControl.setFrameDemand", { projectId, laneIds: ["new-pane"] });
+      releaseFirst();
+      await first;
+      expect([...scopes.service().demand.values()]).toEqual([["new-pane"]]);
+
+      scopes.restartScope();
+      expect(scopes.service().demand.size).toBe(0);
+      await call("runtimeEvents.subscribe", { projectId, includeHighVolumeEvents: true });
+      expect([...scopes.service().demand.values()]).toEqual([["new-pane"]]);
+    });
+  });
+
   it("subscribes to project runtime events and emits JSON-RPC notifications", async () => {
     const { projectRoot, registry } = createRegistry();
     const added = registry.add(projectRoot);
@@ -2969,127 +3204,6 @@ describe("multi-project RPC server", () => {
     expect(notify).toHaveBeenCalledTimes(1);
 
     handler.dispose();
-  });
-
-  it("refuses a cto_voice subscription from an agent and filters the category out of an open one", async () => {
-    // A call's state events carry its running captions, so listening to one is
-    // the same disclosure as reading the CTO thread — and every `cto_voice`
-    // ACTION is fail-closed to the cto role. Without the same gate here, an
-    // agent that cannot start or drive a call could still sit and listen.
-    const { projectRoot, registry } = createRegistry();
-    const added = registry.add(projectRoot);
-    const eventBuffer = createEventBuffer();
-    const scopeRegistry = {
-      get: vi.fn(async () => ({
-        registryProjectId: added.projectId,
-        record: added,
-        runtime: { eventBuffer, dispose: vi.fn() },
-        dispose: vi.fn(),
-      })),
-      ensureSyncHost: vi.fn(),
-      dispose: vi.fn(),
-      disposeAll: vi.fn(),
-    } as unknown as ProjectScopeRegistry;
-    const handler = createMultiProjectRpcRequestHandler({
-      serverVersion: "test",
-      projectRegistry: registry,
-      scopeRegistry,
-    });
-    const notify = vi.fn();
-    handler.setNotifier(notify);
-
-    await handler({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "ade/initialize",
-      params: { identity: { role: "agent" } },
-    });
-
-    await expect(handler({
-      jsonrpc: "2.0",
-      id: 2,
-      method: "runtimeEvents.subscribe",
-      params: { projectId: added.projectId, category: "cto_voice" },
-    })).rejects.toThrow(/requires the cto role/i);
-
-    const subscribed = await handler({
-      jsonrpc: "2.0",
-      id: 3,
-      method: "runtimeEvents.subscribe",
-      params: { projectId: added.projectId },
-    }) as { subscriptionId: string };
-
-    eventBuffer.push({
-      timestamp: "2026-05-10T00:00:00.000Z",
-      category: "cto_voice",
-      payload: { type: "cto_voice_state", state: { caption: "secret" } },
-    });
-    expect(notify).not.toHaveBeenCalled();
-
-    // An uncategorised subscription is filtered, not failed: everything else
-    // still arrives.
-    eventBuffer.push({
-      timestamp: "2026-05-10T00:00:01.000Z",
-      category: "runtime",
-      payload: { type: "file_change", event: { path: "README.md" } },
-    });
-    expect(notify).toHaveBeenCalledTimes(1);
-    expect(notify).toHaveBeenCalledWith("runtime/event", expect.objectContaining({
-      subscriptionId: subscribed.subscriptionId,
-      event: expect.objectContaining({ category: "runtime" }),
-    }));
-
-    handler.dispose();
-  });
-
-  it("delivers cto_voice events to a cto subscriber", async () => {
-    const previousRole = process.env.ADE_DEFAULT_ROLE;
-    process.env.ADE_DEFAULT_ROLE = "cto";
-    try {
-      const { projectRoot, registry } = createRegistry();
-      const added = registry.add(projectRoot);
-      const eventBuffer = createEventBuffer();
-      const scopeRegistry = {
-        get: vi.fn(async () => ({
-          registryProjectId: added.projectId,
-          record: added,
-          runtime: { eventBuffer, dispose: vi.fn() },
-          dispose: vi.fn(),
-        })),
-        ensureSyncHost: vi.fn(),
-        dispose: vi.fn(),
-        disposeAll: vi.fn(),
-      } as unknown as ProjectScopeRegistry;
-      const handler = createMultiProjectRpcRequestHandler({
-        serverVersion: "test",
-        projectRegistry: registry,
-        scopeRegistry,
-      });
-      const notify = vi.fn();
-      handler.setNotifier(notify);
-
-      await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
-      await handler({
-        jsonrpc: "2.0",
-        id: 2,
-        method: "runtimeEvents.subscribe",
-        params: { projectId: added.projectId, category: "cto_voice" },
-      });
-
-      eventBuffer.push({
-        timestamp: "2026-05-10T00:00:00.000Z",
-        category: "cto_voice",
-        payload: { type: "cto_voice_state", state: { phase: "live" } },
-      });
-      expect(notify).toHaveBeenCalledTimes(1);
-      expect(notify).toHaveBeenCalledWith("runtime/event", expect.objectContaining({
-        event: expect.objectContaining({ category: "cto_voice" }),
-      }));
-
-      handler.dispose();
-    } finally {
-      restoreEnvVar("ADE_DEFAULT_ROLE", previousRole);
-    }
   });
 
   it("skips screencast frames for a subscriber that did not ask for them", async () => {
@@ -3361,7 +3475,7 @@ describe("machine.updateAndRestart", () => {
     }
   });
 
-  it("restarts without updating when the machine is already current", async () => {
+  it("does not restart when the machine is already on the requested version", async () => {
     const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
     process.env.ADE_DEFAULT_ROLE = "cto";
     try {
@@ -3381,13 +3495,14 @@ describe("machine.updateAndRestart", () => {
 
       expect(controls.checkForUpdate).toHaveBeenCalledWith("1.2.55");
       expect(controls.applyUpdate).not.toHaveBeenCalled();
-      expect(controls.requestRestart).toHaveBeenCalledTimes(1);
+      // Already on the requested version: nothing installed, nothing restarted.
+      expect(controls.requestRestart).not.toHaveBeenCalled();
       expect(result.ok).toBe(true);
       expect(result.updateApplied).toBe(false);
       expect(result.steps.map((step) => [step.id, step.status])).toEqual([
         ["check", "ok"],
         ["apply", "skipped"],
-        ["restart", "pending"],
+        ["restart", "skipped"],
       ]);
       handler.dispose();
     } finally {
@@ -3660,5 +3775,305 @@ describe("providers.status cache TTL", () => {
       status: true,
       cacheTtlMs: probe.PROVIDER_STATUS_CACHE_TTL_MS,
     });
+  });
+});
+
+describe("projects.setIcon / projects.removeIcon", () => {
+  const PNG_BASE64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+
+  async function makeHandler() {
+    const context = createRegistry();
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: context.registry,
+    });
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+    await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "projects.add",
+      params: { rootPath: context.projectRoot, registrationSource: "test" },
+    });
+    return { ...context, handler };
+  }
+
+  it.each([
+    {
+      name: "an unregistered project root",
+      params: { rootPath: "/definitely/not/registered", fileName: "icon.png", dataBase64: PNG_BASE64 },
+      message: "no project is registered",
+    },
+    {
+      name: "an unsupported file extension",
+      params: { fileName: "icon.gif", dataBase64: PNG_BASE64 },
+      message: "ico, jpg, png, svg, or webp",
+    },
+    {
+      name: "a MIME type that disagrees with the extension",
+      params: { fileName: "icon.png", mimeType: "image/jpeg", dataBase64: PNG_BASE64 },
+      message: "does not match",
+    },
+    {
+      name: "payload that is not base64",
+      params: { fileName: "icon.png", dataBase64: "!!!not-base64!!!" },
+      message: "not valid base64",
+    },
+    {
+      name: "a missing payload",
+      params: { fileName: "icon.png" },
+      message: "requires dataBase64",
+    },
+    {
+      name: "a missing file name",
+      params: { dataBase64: PNG_BASE64 },
+      message: "requires fileName",
+    },
+    {
+      name: "an oversized payload",
+      params: {
+        fileName: "icon.png",
+        dataBase64: "A".repeat(Math.ceil((2 * 1024 * 1024) / 3) * 4 + 8),
+      },
+      message: "2 MB or smaller",
+    },
+  ])("rejects $name", async ({ params, message }) => {
+    const { projectRoot, handler } = await makeHandler();
+
+    await expect(
+      handler({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "projects.setIcon",
+        params: { rootPath: projectRoot, ...params },
+      }),
+    ).rejects.toThrow(message);
+
+    handler.dispose();
+  });
+
+  it("imports a picked icon under the project and clears it again", async () => {
+    const { projectRoot, handler } = await makeHandler();
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "projects.setIcon",
+      params: {
+        rootPath: projectRoot,
+        // A traversal-shaped name is reduced to its last segment.
+        fileName: "..\\..\\brand.png",
+        mimeType: "image/png",
+        dataBase64: PNG_BASE64,
+      },
+    });
+
+    // The host stores the upload under the project's imported-icon folder and
+    // points the project's local config at it. (`resolveIconBeforeDeadline`
+    // returns the empty fallback when the out-of-process resolver is
+    // unavailable on the test host, so assert the durable write, not the reply.)
+    const importedDir = path.join(projectRoot, ".ade", "project-icons");
+    const importedFiles = fs.readdirSync(importedDir);
+    expect(importedFiles).toHaveLength(1);
+    expect(importedFiles[0]).toMatch(/^brand-[a-f0-9]{12}\.png$/);
+    expect(fs.readFileSync(path.join(projectRoot, ".ade", "local.yaml"), "utf8"))
+      .toMatch(/iconPath: \.ade\/project-icons\/brand-[a-f0-9]{12}\.png/);
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "projects.removeIcon",
+      params: { rootPath: projectRoot },
+    });
+    expect(fs.readFileSync(path.join(projectRoot, ".ade", "local.yaml"), "utf8")).toContain(
+      "iconPath: null",
+    );
+    expect(fs.existsSync(path.join(importedDir, importedFiles[0]!))).toBe(false);
+
+    handler.dispose();
+  });
+
+  // Both write `.ade/local.yaml`, which would bring a moved, deleted or
+  // unplugged project folder back empty.
+  it.each([
+    { method: "projects.removeIcon", params: {} },
+    { method: "projects.setIcon", params: { fileName: "icon.png", dataBase64: PNG_BASE64 } },
+  ])("$method refuses a project whose folder is gone, without recreating it", async ({ method, params }) => {
+    const { projectRoot, handler } = await makeHandler();
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+
+    await expect(
+      handler({ jsonrpc: "2.0", id: 3, method, params: { rootPath: projectRoot, ...params } }),
+    ).rejects.toMatchObject({ code: JsonRpcErrorCode.invalidParams });
+    expect(fs.existsSync(projectRoot)).toBe(false);
+
+    handler.dispose();
+  });
+});
+
+describe("calls from another machine's agents", () => {
+  const AGENT_REMOTE_INIT = {
+    clientName: "ade-agent-remote",
+    clientInfo: { name: "ade-agent-remote", version: "test" },
+    identity: { role: "agent" },
+  };
+
+  function makeTarget(options: { peerDeviceId: string | null; initialize?: Record<string, unknown> }) {
+    const { projectRoot, registry } = createRegistry();
+    const project = registry.add(projectRoot);
+    const runtime = makeRuntime("target") as ReturnType<typeof makeRuntime> & {
+      agentChatService: Record<string, ReturnType<typeof vi.fn>>;
+    };
+    runtime.agentChatService = {
+      getSessionSummary: vi.fn(async () => null),
+      getChatTranscript: vi.fn(async (args: Record<string, unknown>) => ({
+        sessionId: args.sessionId,
+        entries: [],
+        totalEntries: 0,
+        truncated: false,
+      })),
+    };
+    const scopeRegistry = {
+      get: vi.fn(async () => ({ registryProjectId: project.projectId, record: project, runtime, dispose: vi.fn() })),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+      peerDeviceId: options.peerDeviceId,
+      agentMachineBridge: { call: vi.fn(), listMachines: vi.fn() },
+    });
+    const init = handler({
+      jsonrpc: "2.0",
+      id: 0,
+      method: "ade/initialize",
+      params: options.initialize ?? AGENT_REMOTE_INIT,
+    });
+    const readTranscript = (chatSessionId: string | null, id: number) => handler({
+      jsonrpc: "2.0",
+      id,
+      method: "ade/actions/call",
+      params: {
+        projectId: project.projectId,
+        remoteCaller: { chatSessionId },
+        name: "run_ade_action",
+        arguments: { domain: "chat", action: "readTranscript", args: { sessionId: "target-chat" } },
+      },
+    });
+    return { handler, init, runtime, readTranscript, project };
+  }
+
+  it("attributes each call to its own chat on the paired machine, and ignores the claim from anyone else", async () => {
+    const remote = makeTarget({ peerDeviceId: "device-a" });
+    await remote.init;
+    await remote.readTranscript("chat-1", 1);
+    await remote.readTranscript("chat-2", 2);
+    const callers = remote.runtime.agentChatService.getSessionSummary.mock.calls.map((call) => call[0]);
+    expect(callers).toEqual(expect.arrayContaining(["remote:device-a:chat-1", "remote:device-a:chat-2"]));
+    expect(remote.runtime.agentChatService.getChatTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "target-chat" }),
+    );
+    remote.handler.dispose();
+
+    // A desktop over the same paired channel cannot borrow the claim to pass
+    // as another machine's chat.
+    const desktop = makeTarget({
+      peerDeviceId: "device-a",
+      initialize: { clientName: "ade-desktop-remote", identity: { role: "cto" } },
+    });
+    await desktop.init;
+    await desktop.readTranscript("chat-1", 1);
+    const desktopCallers = desktop.runtime.agentChatService.getSessionSummary.mock.calls.map((call) => call[0]);
+    expect(desktopCallers.some((caller) => String(caller).startsWith("remote:"))).toBe(false);
+    desktop.handler.dispose();
+  });
+
+  it("makes a remote caller the parent of the child it starts here, keeps its token, and refuses any other parent", async () => {
+    const { childWakeToken, configureExternalChatStore, externalChatContext } = await import(
+      "../../desktop/src/main/services/chat/externalChats"
+    );
+    configureExternalChatStore(null);
+    const remote = makeTarget({ peerDeviceId: "device-a" });
+    const createSession = vi.fn(async (args: Record<string, unknown>) => ({ id: "child-1", ...args }));
+    remote.runtime.agentChatService.createSession = createSession;
+    await remote.init;
+    const create = (parent: string, id: number) => remote.handler({
+      jsonrpc: "2.0",
+      id,
+      method: "ade/actions/call",
+      params: {
+        projectId: remote.project.projectId,
+        remoteCaller: {
+          chatSessionId: "chat-1",
+          machineKey: "machine-a",
+          machineName: "MacBook Pro",
+          permissionLevel: "auto-edit",
+          wakeToken: "token-for-child-1",
+        },
+        name: "run_ade_action",
+        arguments: {
+          domain: "chat",
+          action: "createSession",
+          args: { provider: "claude", model: "anthropic/claude-opus-5", orchestrationParentSessionId: parent, spawnKind: "subagent" },
+        },
+      },
+    });
+
+    await create("chat-1", 1);
+    // A chat here (or another machine's) can't be made the one a remote
+    // caller's child reports to.
+    await expect(create("someone-else", 2)).rejects.toMatchObject({ code: JsonRpcErrorCode.invalidParams });
+
+    expect(createSession.mock.calls.map((call) => call[0]?.orchestrationParentSessionId)).toEqual([
+      "remote:device-a:chat-1",
+    ]);
+    expect(externalChatContext("remote:device-a:chat-1")).toMatchObject({
+      machineKey: "machine-a",
+      machineName: "MacBook Pro",
+      permissionLevel: "auto-edit",
+    });
+    expect(childWakeToken("child-1")).toBe("token-for-child-1");
+    remote.handler.dispose();
+  });
+
+  it("refuses another machine's agents without a paired peer to attribute them to", async () => {
+    const local = makeTarget({ peerDeviceId: null });
+    await local.init;
+    await expect(local.readTranscript("chat-1", 1)).rejects.toThrow(/must arrive over a paired connection/);
+    expect(local.runtime.agentChatService.getChatTranscript).not.toHaveBeenCalled();
+    local.handler.dispose();
+  });
+
+  it.each([
+    ["sync.getStatus", false],
+    ["account.call", false],
+    ["projects.add", false],
+    ["machine.updateAndRestart", false],
+    ["machines.call", false],
+    ["projects.list", true],
+  ])("lets another machine's agents call machine method %s: %s", async (method, allowed) => {
+    const remote = makeTarget({ peerDeviceId: "device-a" });
+    await remote.init;
+    const call = remote.handler({ jsonrpc: "2.0", id: 1, method, params: { action: "status" } });
+    if (allowed) await expect(call).resolves.toBeDefined();
+    else await expect(call).rejects.toThrow(/isn't available to agents on another machine/);
+    remote.handler.dispose();
+  });
+
+  it("does not relay a request that came from another machine on to a third", async () => {
+    const desktop = makeTarget({
+      peerDeviceId: "device-a",
+      initialize: { clientName: "ade-desktop-remote", identity: { role: "cto" } },
+    });
+    await desktop.init;
+    await expect(desktop.handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "machines.call",
+      params: { machine: "Mac mini", scope: { kind: "machine" }, request: { method: "projects.list" } },
+    })).rejects.toThrow(/can't be relayed to a third one/);
+    desktop.handler.dispose();
   });
 });

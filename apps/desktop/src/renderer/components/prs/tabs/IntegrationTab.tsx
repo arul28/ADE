@@ -1,6 +1,10 @@
 import React from "react";
+import type { WorkflowMachines } from "../state/workflowMachines";
+import { machineBlockedReason, pinArg } from "../../../state/laneMachineRouting";
+import { PrRuntimePinProvider } from "../state/prMachines";
+import { MachineChip } from "../../shared/MachineChip";
 import { useNavigate } from "react-router-dom";
-import { GitMerge, GitBranch, Lightning, Eye, Sparkle, Trash, ArrowRight, ArrowSquareOut, CheckCircle, Warning, XCircle, Clock, GithubLogo, CircleNotch, ArrowsClockwise, CaretDown, CaretRight, Robot, Gear } from "@phosphor-icons/react";
+import { GitMerge, Lightning, Eye, Sparkle, Trash, ArrowRight, CheckCircle, Warning, XCircle, Clock, GithubLogo, CircleNotch, ArrowsClockwise, CaretDown, CaretRight, Robot, Gear } from "@phosphor-icons/react";
 import type {
   IntegrationProposal,
   IntegrationResolutionState,
@@ -34,7 +38,7 @@ const OUTCOME_DOT_CONFIG = {
   clean:   { icon: CheckCircle, color: "#22C55E" },
   conflict:{ icon: Warning,     color: "#F59E0B" },
   blocked: { icon: XCircle,     color: "#EF4444" },
-  pending: { icon: Clock,       color: "#71717A" },
+  pending: { icon: Clock,       color: "var(--color-muted-fg)" },
 };
 
 function OutcomeDot({ outcome }: { outcome: "clean" | "conflict" | "blocked" | "pending" }) {
@@ -81,7 +85,7 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
   return (
     <div
       className="font-mono font-bold uppercase tracking-[1px]"
-      style={{ fontSize: 10, color: "#71717A", marginBottom: 12 }}
+      style={{ fontSize: 10, color: "var(--color-muted-fg)", marginBottom: 12 }}
     >
       {children}
     </div>
@@ -200,9 +204,9 @@ function LaneChip({ name, variant = "default" }: { name: string; variant?: "defa
       style={{
         fontSize: 10,
         padding: "4px 10px",
-        background: isAccent ? "#A78BFA18" : "#13101A",
-        color: isAccent ? "#A78BFA" : "#FAFAFA",
-        border: `1px solid ${isAccent ? "#A78BFA30" : "#1E1B26"}`,
+        background: isAccent ? "#A78BFA18" : "var(--color-surface)",
+        color: isAccent ? "#A78BFA" : "var(--color-fg)",
+        border: `1px solid ${isAccent ? "#A78BFA30" : "var(--color-border)"}`,
       }}
     >
       {name}
@@ -217,7 +221,7 @@ function LaneStatusBadge({ outcome }: { outcome: "clean" | "conflict" | "blocked
     clean:    { label: "READY",    fg: "#22C55E", bg: "#22C55E18" },
     conflict: { label: "CONFLICT", fg: "#F59E0B", bg: "#F59E0B18" },
     blocked:  { label: "BLOCKED",  fg: "#EF4444", bg: "#EF444418" },
-    pending:  { label: "PENDING",  fg: "#71717A", bg: "#71717A18" },
+    pending:  { label: "PENDING",  fg: "var(--color-muted-fg)", bg: "color-mix(in srgb, var(--color-muted-fg) 9%, transparent)" },
   };
   const s = map[outcome];
   return (
@@ -404,7 +408,7 @@ function getOutcomeColor(outcome: "clean" | "conflict" | "blocked" | "pending"):
   if (outcome === "clean") return "#22C55E";
   if (outcome === "conflict") return "#F59E0B";
   if (outcome === "blocked") return "#EF4444";
-  return "#71717A";
+  return "var(--color-muted-fg)";
 }
 
 function getSimulationSummaryMessage(args: {
@@ -437,7 +441,7 @@ function getConflictMatrixCellStyle(args: {
   pairOutcome: "conflict" | "blocked" | null;
 }): { background: string; border: string; iconColor: string } {
   if (args.isSelf) {
-    return { background: "#1E1B26", border: "#27272A", iconColor: "#52525B" };
+    return { background: "var(--color-border)", border: "var(--color-border)", iconColor: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" };
   }
   if (args.pairOutcome === "blocked") {
     return { background: "#EF444430", border: "#EF444450", iconColor: "#EF4444" };
@@ -465,7 +469,7 @@ function getResolutionStatusConfig(status: IntegrationResolutionState["stepResol
   if (status === "failed") {
     return { label: "FAILED", color: "#EF4444", bg: "#EF444418" };
   }
-  return { label: "PENDING", color: "#71717A", bg: "#71717A18" };
+  return { label: "PENDING", color: "var(--color-muted-fg)", bg: "color-mix(in srgb, var(--color-muted-fg) 9%, transparent)" };
 }
 
 function getDeleteProposalActionLabel(deleteProposalBusy: boolean, deleteProposalLaneToo: boolean): string {
@@ -495,19 +499,35 @@ type IntegrationTabProps = {
   onSelectPr: (id: string | null) => void;
   onRefresh: () => Promise<void>;
   refreshNonce?: number;
+  /** Every machine's proposals, each routed to the machine it was read from. */
+  workflowMachines?: WorkflowMachines;
 };
 
-export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, selectedPrId, onSelectPr, onRefresh, refreshNonce = 0 }: IntegrationTabProps) {
+export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, selectedPrId, onSelectPr, onRefresh, refreshNonce = 0, workflowMachines }: IntegrationTabProps) {
   // Inside the PRs page the list goes to the list column; on its own it keeps
   // the tiled list and detail panes.
   const listHost = usePrsListHost();
   const inListColumn = listHost !== undefined;
-  const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
-  const resolveTargetLaneId = React.useCallback((baseBranch: string): string | null => {
+  /**
+   * The real lanes of the machine a proposal lives on (null: the tab's
+   * machine). A proposal's lane ids are its own machine's, so they are named
+   * and resolved only against that machine's lanes: `lanes` spans every
+   * machine, and a same-id lane elsewhere would be the wrong lane.
+   */
+  const lanesForProposal = React.useCallback(
+    (proposalId: string | null | undefined): LaneSummary[] =>
+      workflowMachines ? workflowMachines.lanesForProposal(proposalId) : lanes,
+    [lanes, workflowMachines],
+  );
+  // The tab machine's own lanes, for its own (bound) PRs.
+  const boundLanes = React.useMemo(() => lanesForProposal(null), [lanesForProposal]);
+  const laneById = React.useMemo(() => new Map(boundLanes.map((l) => [l.id, l])), [boundLanes]);
+  /** The lane for a base branch, on the proposal's machine (default: the tab's machine). */
+  const resolveTargetLaneId = React.useCallback((baseBranch: string, proposalId?: string | null): string | null => {
     const normalizedBase = normalizeBranchName(baseBranch);
     if (!normalizedBase) return null;
-    return lanes.find((lane) => normalizeBranchName(lane.branchRef) === normalizedBase)?.id ?? null;
-  }, [lanes]);
+    return lanesForProposal(proposalId).find((lane) => normalizeBranchName(lane.branchRef) === normalizedBase)?.id ?? null;
+  }, [lanesForProposal]);
   const {
     detailStatus,
     detailChecks,
@@ -540,7 +560,38 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   const [deleteCloseGh, setDeleteCloseGh] = React.useState(false);
 
   // Proposals state
-  const [proposals, setProposals] = React.useState<IntegrationProposal[]>([]);
+  const [boundProposals, setProposals] = React.useState<IntegrationProposal[]>([]);
+  // The tab machine's proposals, then every other machine's.
+  const foreignProposals = workflowMachines?.foreignProposals;
+  const proposals = React.useMemo(
+    () => (foreignProposals?.length ? [...boundProposals, ...foreignProposals] : boundProposals),
+    [boundProposals, foreignProposals],
+  );
+  /** Where a proposal's calls go: nothing extra for the tab's machine, its pin otherwise. */
+  const machineForProposal = workflowMachines?.machineForProposal;
+  /** The id a proposal has on its own machine (list ids of other machines' proposals are view ids). */
+  const apiProposalId = React.useCallback(
+    (proposalId: string) => workflowMachines?.realProposalId(proposalId) ?? proposalId,
+    [workflowMachines],
+  );
+  /** The list id for a proposal a machine just returned. */
+  const listProposalId = React.useCallback(
+    (ownerProposalId: string, returnedId: string) =>
+      workflowMachines?.viewProposalId(machineForProposal?.(ownerProposalId)?.machineId, returnedId) ?? returnedId,
+    [machineForProposal, workflowMachines],
+  );
+  const proposalPin = React.useCallback(
+    (proposalId: string | null | undefined) => pinArg(machineForProposal?.(proposalId)?.pin),
+    [machineForProposal],
+  );
+  const proposalBlocked = React.useCallback(
+    (proposalId: string | null | undefined) => machineBlockedReason(machineForProposal?.(proposalId)),
+    [machineForProposal],
+  );
+  const refreshProposalMachine = React.useCallback((proposalId: string | null | undefined) => {
+    const machine = machineForProposal?.(proposalId);
+    if (machine?.pin) workflowMachines?.refreshMachine(machine.machineId);
+  }, [machineForProposal, workflowMachines]);
   const [proposalsLoaded, setProposalsLoaded] = React.useState(false);
   const [selectedProposalId, setSelectedProposalId] = React.useState<string | null>(null);
   const [urlProposalId, setUrlProposalId] = React.useState<string | null>(() => readQueryParam("proposalId"));
@@ -608,6 +659,10 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     () => (selectedPr ? deriveIntegrationPrLiveModel({ prLaneId: selectedPr.laneId, mergeContext: selectedMergeContext }) : null),
     [selectedMergeContext, selectedPr],
   );
+  const selectedProposalLaneById = React.useMemo(
+    () => new Map(lanesForProposal(selectedProposalId).map((lane) => [lane.id, lane] as const)),
+    [lanesForProposal, selectedProposalId],
+  );
   const rebaseNeedByLaneId = React.useMemo(
     () => new Map(
       getActiveRebaseNeeds(rebaseNeeds)
@@ -668,7 +723,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   const commitProposalWithOptionalDirtyWorktree = React.useCallback(
     async (proposal: IntegrationProposal): Promise<string> => {
       const commitArgs = {
-        proposalId: proposal.proposalId,
+        proposalId: apiProposalId(proposal.proposalId),
         integrationLaneName: proposal.integrationLaneName || `integration/${Date.now().toString(36)}`,
         title: proposal.title || "Integration PR",
         body: proposal.body || "",
@@ -676,7 +731,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       };
 
       try {
-        const result = await window.ade.prs.commitIntegration(commitArgs);
+        const result = await window.ade.prs.commitIntegration(commitArgs, ...proposalPin(proposal.proposalId));
         return result.pr.id;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -694,22 +749,33 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         const result = await window.ade.prs.commitIntegration({
           ...commitArgs,
           allowDirtyWorktree: true
-        });
+        }, ...proposalPin(proposal.proposalId));
         return result.pr.id;
       }
     },
-    []
+    [apiProposalId, proposalPin]
   );
 
   const handleCommitProposal = async (p: IntegrationProposal) => {
+    const blocked = proposalBlocked(p.proposalId);
+    if (blocked) {
+      setCommitError(blocked);
+      return;
+    }
+    // A PR created on another machine has that machine's id; the GitHub list
+    // shows it through the union, so it is not selected by id here.
+    const foreign = Boolean(machineForProposal?.(p.proposalId)?.pin);
     setCommitBusy(true);
     setCommitError(null);
     try {
       const committedPrId = await commitProposalWithOptionalDirtyWorktree(p);
       setSelectedProposalId(null);
+      refreshProposalMachine(p.proposalId);
       await loadProposals();
       await onRefresh();
-      if (committedPrId) {
+      if (foreign) {
+        setActiveTab("normal");
+      } else if (committedPrId) {
         setActiveTab("normal");
         onSelectPr(committedPrId);
       }
@@ -723,6 +789,12 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   };
 
   const handleResimulate = async (p: IntegrationProposal) => {
+    const blocked = proposalBlocked(p.proposalId);
+    if (blocked) {
+      setCommitError(blocked);
+      return;
+    }
+    const pinArgs = proposalPin(p.proposalId);
     const deleteIntegrationLane = p.integrationLaneId && isAdeOwnedIntegrationLane(p)
       ? await confirmDialog({
           title: "Re-simulating will replace this proposal.",
@@ -742,7 +814,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         sourceLaneIds: p.sourceLaneIds,
         baseBranch: p.baseBranch,
         mergeIntoLaneId: p.preferredIntegrationLaneId?.trim() || null,
-      });
+      }, ...pinArgs);
 
       if (p.title || p.body || p.draft || p.integrationLaneName || p.preferredIntegrationLaneId || result.mergeIntoHeadSha) {
         await window.ade.prs.updateProposal({
@@ -753,21 +825,22 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
           integrationLaneName: p.integrationLaneName,
           preferredIntegrationLaneId: p.preferredIntegrationLaneId?.trim() || null,
           mergeIntoHeadSha: result.mergeIntoHeadSha ?? null,
-        });
+        }, ...pinArgs);
       }
 
       let cleanupWarning: string | null = null;
       try {
         await window.ade.prs.deleteProposal({
-          proposalId: p.proposalId,
+          proposalId: apiProposalId(p.proposalId),
           deleteIntegrationLane,
-        });
+        }, ...pinArgs);
       } catch (cleanupError) {
         cleanupWarning = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
       }
 
+      refreshProposalMachine(p.proposalId);
       await loadProposals();
-      setSelectedProposalId(result.proposalId);
+      setSelectedProposalId(listProposalId(p.proposalId, result.proposalId));
       if (cleanupWarning) {
         setCommitError(`Re-simulated successfully, but the previous proposal could not be removed: ${cleanupWarning}`);
       }
@@ -779,13 +852,19 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   };
 
   const handleDeleteProposal = async (proposal: IntegrationProposal) => {
+    const blocked = proposalBlocked(proposal.proposalId);
+    if (blocked) {
+      setCommitError(blocked);
+      return;
+    }
     setDeleteProposalBusy(true);
     setCommitError(null);
     try {
       await window.ade.prs.deleteProposal({
-        proposalId: proposal.proposalId,
+        proposalId: apiProposalId(proposal.proposalId),
         deleteIntegrationLane: deleteProposalLaneToo && Boolean(proposal.integrationLaneId) && isAdeOwnedIntegrationLane(proposal),
-      });
+      }, ...proposalPin(proposal.proposalId));
+      refreshProposalMachine(proposal.proposalId);
       setProposals((prev) => prev.filter((entry) => entry.proposalId !== proposal.proposalId));
       setDeleteProposalConfirm(false);
       setDeleteProposalLaneToo(false);
@@ -801,35 +880,38 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   };
 
   // Load resolution state when a proposal is selected
+  const shownProposalId = selectedProposal?.proposalId ?? null;
+  const selectedProposalInlineResolution = selectedProposal?.resolutionState ?? null;
   React.useEffect(() => {
-    if (!selectedProposal) {
+    if (!shownProposalId) {
       setResolutionState(null);
       setExpandedPairKeys([]);
       setActiveWorkerStepId(null);
       return;
     }
     // If the proposal carries inline resolutionState, use it
-    if (selectedProposal.resolutionState) {
-      setResolutionState(selectedProposal.resolutionState);
+    if (selectedProposalInlineResolution) {
+      setResolutionState(selectedProposalInlineResolution);
       return;
     }
-    // Otherwise try to load from backend
+    // Otherwise load it from the proposal's own machine.
     let cancelled = false;
-    window.ade.prs.getIntegrationResolutionState(selectedProposal.proposalId)
+    if (proposalBlocked(shownProposalId)) return;
+    window.ade.prs.getIntegrationResolutionState(apiProposalId(shownProposalId), ...proposalPin(shownProposalId))
       .then((state) => { if (!cancelled) setResolutionState(state); })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [selectedProposal?.proposalId, selectedProposal?.resolutionState]);
+  }, [apiProposalId, proposalBlocked, proposalPin, shownProposalId, selectedProposalInlineResolution]);
 
   React.useEffect(() => {
     setDeleteProposalConfirm(false);
     setDeleteProposalLaneToo(false);
-  }, [selectedProposal?.proposalId]);
+  }, [shownProposalId]);
 
   React.useEffect(() => {
-    if (!selectedProposal) return;
+    if (!shownProposalId) return;
     setExpandedPairKeys([]);
-  }, [selectedProposal?.proposalId]);
+  }, [shownProposalId]);
 
   React.useEffect(() => {
     if (!resolutionState || Object.keys(resolutionState.stepResolutions).length === 0) return;
@@ -852,7 +934,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
             `lane-${index + 1}`;
           return {
             laneId,
-            laneName: asString(laneRecord?.laneName ?? laneRecord?.name) ?? laneById.get(laneId)?.name ?? laneId,
+            laneName: asString(laneRecord?.laneName ?? laneRecord?.name) ?? selectedProposalLaneById.get(laneId)?.name ?? laneId,
             outcome: toOutcome(laneRecord?.status ?? laneRecord?.outcome ?? laneRecord?.readiness),
             commitHash:
               asString(
@@ -889,7 +971,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       return selectedProposal.sourceLaneIds
         .map((laneId, index) => ({
           laneId,
-          laneName: nameByLaneId.get(laneId) ?? laneById.get(laneId)?.name ?? laneId,
+          laneName: nameByLaneId.get(laneId) ?? selectedProposalLaneById.get(laneId)?.name ?? laneId,
           outcome: outcomeByLaneId.get(laneId) ?? "clean",
           commitHash: null,
           commitCount: null,
@@ -910,7 +992,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         position: sourceOrder.get(step.laneId) ?? (Number.isFinite(step.position) ? step.position : index),
       }))
       .sort((a, b) => a.position - b.position);
-  }, [laneById, selectedProposal]);
+  }, [selectedProposalLaneById, selectedProposal]);
 
   const proposalPairwiseConflicts = React.useMemo<ProposalConflictPair[]>(() => {
     if (!selectedProposal) return [];
@@ -961,11 +1043,11 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
             `${selectedProposal.baseBranch}-${index + 1}`;
           const laneAName =
             asString(pairRecord.laneAName ?? laneARecord?.name ?? pairRecord.leftLaneName ?? pairRecord.sourceLaneName) ??
-            laneById.get(laneAId)?.name ??
+            selectedProposalLaneById.get(laneAId)?.name ??
             laneAId;
           const laneBName =
             asString(pairRecord.laneBName ?? laneBRecord?.name ?? pairRecord.rightLaneName ?? pairRecord.targetLaneName) ??
-            laneById.get(laneBId)?.name ??
+            selectedProposalLaneById.get(laneBId)?.name ??
             laneBId;
           const rawFiles = Array.isArray(pairRecord.files)
             ? pairRecord.files
@@ -1044,7 +1126,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
           diffHunk: file.diffHunk ?? null,
         })),
       }));
-  }, [laneById, selectedProposal]);
+  }, [selectedProposalLaneById, selectedProposal]);
 
   const proposalConflictSteps = React.useMemo(
     () => (selectedProposal ? selectedProposal.steps.filter((step) => step.outcome === "conflict" || step.outcome === "blocked" || step.conflictingFiles.length > 0) : []),
@@ -1082,7 +1164,10 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       return selectedProposal.resolutionState;
     }
     if (selectedProposal.integrationLaneId) {
-      const existingState = await window.ade.prs.getIntegrationResolutionState(selectedProposal.proposalId).catch(() => null);
+      const existingState = await window.ade.prs.getIntegrationResolutionState(
+        apiProposalId(selectedProposal.proposalId),
+        ...proposalPin(selectedProposal.proposalId),
+      ).catch(() => null);
       if (existingState?.integrationLaneId) {
         setResolutionState(existingState);
         return existingState;
@@ -1092,9 +1177,9 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     try {
       const runCreate = async (allowDirtyWorktree: boolean) =>
         window.ade.prs.createIntegrationLaneForProposal({
-          proposalId: selectedProposal.proposalId,
+          proposalId: apiProposalId(selectedProposal.proposalId),
           ...(allowDirtyWorktree ? { allowDirtyWorktree: true } : {}),
-        });
+        }, ...proposalPin(selectedProposal.proposalId));
       let result: Awaited<ReturnType<typeof window.ade.prs.createIntegrationLaneForProposal>>;
       try {
         result = await runCreate(false);
@@ -1136,7 +1221,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     } finally {
       setCreateLaneBusy(false);
     }
-  }, [onRefresh, resolutionState, selectedProposal]);
+  }, [apiProposalId, onRefresh, proposalPin, resolutionState, selectedProposal]);
 
   const launchProposalResolver = React.useCallback(async (laneIds: string[]) => {
     if (!selectedProposal) return;
@@ -1146,7 +1231,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       return;
     }
 
-    const targetLaneId = resolveTargetLaneId(selectedProposal.baseBranch);
+    const targetLaneId = resolveTargetLaneId(selectedProposal.baseBranch, selectedProposal.proposalId);
     if (!targetLaneId) {
       setCommitError(`Could not map base branch "${selectedProposal.baseBranch}" to a lane. Create/attach that lane first.`);
       return;
@@ -1208,9 +1293,9 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     try {
       setCommitError(null);
       const result = await window.ade.prs.recheckIntegrationStep({
-        proposalId: selectedProposal.proposalId,
+        proposalId: apiProposalId(selectedProposal.proposalId),
         laneId: stepLaneId,
-      });
+      }, ...proposalPin(selectedProposal.proposalId));
       // Update resolution state
       setResolutionState((prev) => prev ? {
         ...prev,
@@ -1309,20 +1394,21 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
 
   const selectedProposalTargetLaneId = React.useMemo(() => {
     if (!selectedProposal) return null;
-    return resolveTargetLaneId(selectedProposal.baseBranch);
+    return resolveTargetLaneId(selectedProposal.baseBranch, selectedProposal.proposalId);
   }, [resolveTargetLaneId, selectedProposal]);
 
   const mergeIntoLaneSelectOptions = React.useMemo(() => {
     const out: { id: string; name: string }[] = [];
     const sourceSet = new Set(selectedProposal?.sourceLaneIds ?? []);
-    for (const lane of lanes) {
+    // Merge-into lanes come from the proposal's own machine only.
+    for (const lane of lanesForProposal(selectedProposal?.proposalId)) {
       if (lane.laneType === "primary") continue;
       if (sourceSet.has(lane.id)) continue;
       out.push({ id: lane.id, name: lane.name });
     }
     out.sort((a, b) => a.name.localeCompare(b.name));
     return out;
-  }, [lanes, selectedProposal?.sourceLaneIds]);
+  }, [lanesForProposal, selectedProposal]);
 
   React.useEffect(() => {
     const fromProposal = selectedProposal?.preferredIntegrationLaneId?.trim() ?? "";
@@ -1355,11 +1441,14 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     setCommitError(null);
     try {
       const oldId = selectedProposal.proposalId;
+      const blocked = proposalBlocked(oldId);
+      if (blocked) throw new Error(blocked);
+      const pinArgs = proposalPin(oldId);
       const persisted = await window.ade.prs.simulateIntegration({
         sourceLaneIds: selectedProposal.sourceLaneIds,
         baseBranch: selectedProposal.baseBranch,
         mergeIntoLaneId: nextPreferredIntegrationLaneId,
-      });
+      }, ...pinArgs);
       await window.ade.prs.updateProposal({
         proposalId: persisted.proposalId,
         preferredIntegrationLaneId: nextPreferredIntegrationLaneId,
@@ -1368,16 +1457,17 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         ...(selectedProposal.body !== undefined ? { body: selectedProposal.body } : {}),
         ...(selectedProposal.draft !== undefined ? { draft: selectedProposal.draft } : {}),
         ...(selectedProposal.integrationLaneName ? { integrationLaneName: selectedProposal.integrationLaneName } : {}),
-      });
+      }, ...pinArgs);
       let cleanupWarning: string | null = null;
       try {
-        await window.ade.prs.deleteProposal({ proposalId: oldId, deleteIntegrationLane: false });
+        await window.ade.prs.deleteProposal({ proposalId: apiProposalId(oldId), deleteIntegrationLane: false }, ...pinArgs);
       } catch (cleanupError) {
         cleanupWarning = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
       }
       setResolutionState(null);
       await loadProposals();
-      setSelectedProposalId(persisted.proposalId);
+      refreshProposalMachine(oldId);
+      setSelectedProposalId(listProposalId(oldId, persisted.proposalId));
       if (cleanupWarning) {
         setCommitError(`Updated merge target, but the previous proposal row could not be removed: ${cleanupWarning}`);
       }
@@ -1387,11 +1477,14 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     } finally {
       setMergeIntoLaneBusy(false);
     }
-  }, [loadProposals, mergeIntoLaneDraft, selectedProposal]);
+  }, [apiProposalId, listProposalId, loadProposals, mergeIntoLaneDraft, proposalBlocked, proposalPin, refreshProposalMachine, selectedProposal]);
 
+  // Rebase needs here are the tab machine's; another machine's proposal is
+  // never matched against them by lane id.
+  const selectedProposalIsForeign = Boolean(selectedProposal && machineForProposal?.(selectedProposal.proposalId)?.pin);
   const selectedProposalRebaseLaneIds = React.useMemo(
-    () => (selectedProposal?.sourceLaneIds ?? []).filter((laneId) => rebaseNeedByLaneId.has(laneId)),
-    [rebaseNeedByLaneId, selectedProposal?.sourceLaneIds],
+    () => (selectedProposalIsForeign ? [] : (selectedProposal?.sourceLaneIds ?? []).filter((laneId) => rebaseNeedByLaneId.has(laneId))),
+    [rebaseNeedByLaneId, selectedProposal?.sourceLaneIds, selectedProposalIsForeign],
   );
   const liveIntegrationRebaseNeed = React.useMemo(
     () => (liveIntegrationLaneId ? rebaseNeedByLaneId.get(liveIntegrationLaneId) ?? null : null),
@@ -1406,7 +1499,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     }
     if (selectedProposal.preferredIntegrationLaneId) {
       advisories.push(
-        `Sequential preview merges into this lane's current HEAD: ${laneById.get(selectedProposal.preferredIntegrationLaneId)?.name ?? selectedProposal.preferredIntegrationLaneId}. Child-vs-child pairwise checks still use ${selectedProposal.baseBranch} as the merge base.`,
+        `Sequential preview merges into this lane's current HEAD: ${selectedProposalLaneById.get(selectedProposal.preferredIntegrationLaneId)?.name ?? selectedProposal.preferredIntegrationLaneId}. Child-vs-child pairwise checks still use ${selectedProposal.baseBranch} as the merge base.`,
       );
     }
     if (!selectedProposalTargetLaneId) {
@@ -1420,7 +1513,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     }
     advisories.push("The AI resolver edits the integration lane with bounded project/lane/conflict context. Validate the integration lane before merging the resulting PR.");
     return advisories;
-  }, [laneById, selectedProposal, selectedProposalRebaseLaneIds.length, selectedProposalTargetLaneId]);
+  }, [selectedProposalLaneById, selectedProposal, selectedProposalRebaseLaneIds.length, selectedProposalTargetLaneId]);
 
   const simulateAdvisories = React.useMemo(() => {
     if (!selectedPr || !simulateResult) return [];
@@ -1505,13 +1598,13 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         <div
           style={{
             padding: "14px 16px 10px",
-            borderBottom: "1px solid #1E1B26",
-            background: "#0C0A10",
+            borderBottom: "1px solid var(--color-border)",
+            background: "var(--color-bg)",
           }}
         >
           <span
             className="font-mono font-bold uppercase tracking-[1px]"
-            style={{ fontSize: 10, color: "#A1A1AA" }}
+            style={{ fontSize: 10, color: "var(--color-secondary-fg)" }}
           >
             INTEGRATION PRS
           </span>
@@ -1542,7 +1635,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                     background: isSelected ? "#F59E0B12" : "transparent",
                     borderLeft: isSelected ? "3px solid #F59E0B" : "3px solid transparent",
                   }}
-                  onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "#13101A"; }}
+                  onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--color-surface)"; }}
                   onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
                   onClick={() => handleSelectProposal(p.proposalId)}
                 >
@@ -1550,7 +1643,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                     <div className="flex items-center" style={{ gap: 6 }}>
                       <span
                         className="truncate font-mono font-semibold"
-                        style={{ fontSize: 12, color: "#FAFAFA" }}
+                        style={{ fontSize: 12, color: "var(--color-fg)" }}
                       >
                         {p.title || "Untitled Proposal"}
                       </span>
@@ -1568,13 +1661,18 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                       >
                         PROPOSED
                       </span>
-                      <span className="font-mono" style={{ fontSize: 10, color: "#A1A1AA" }}>
+                      <span className="font-mono" style={{ fontSize: 10, color: "var(--color-secondary-fg)" }}>
                         {p.sourceLaneIds.length} sources
                       </span>
-                      <ArrowRight size={9} weight="bold" style={{ color: "#52525B" }} />
-                      <span className="font-mono" style={{ fontSize: 10, color: "#A1A1AA" }}>
+                      <ArrowRight size={9} weight="bold" style={{ color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }} />
+                      <span className="min-w-0 truncate font-mono" style={{ fontSize: 10, color: "var(--color-secondary-fg)" }}>
                         {p.baseBranch}
                       </span>
+                      {/* On the secondary line, icon-only: the title keeps the width. */}
+                      {(() => {
+                        const chip = machineForProposal?.(p.proposalId)?.chip;
+                        return chip ? <MachineChip machine={chip} subject="This proposal" compact /> : null;
+                      })()}
                     </div>
                   </div>
                   <div className="flex items-center shrink-0" style={{ gap: 6 }}>
@@ -1609,19 +1707,19 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                     background: isSelected ? "#A78BFA12" : "transparent",
                     borderLeft: isSelected ? "3px solid #A78BFA" : "3px solid transparent",
                   }}
-                  onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "#13101A"; }}
+                  onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--color-surface)"; }}
                   onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
                   onClick={() => handleSelectPr(pr.id)}
                 >
                   <div className="min-w-0 flex-1">
                     {/* PR number + title */}
                     <div className="flex items-center" style={{ gap: 6 }}>
-                      <span className="font-mono" style={{ fontSize: 11, color: "#71717A" }}>
+                      <span className="font-mono" style={{ fontSize: 11, color: "var(--color-muted-fg)" }}>
                         #{pr.githubPrNumber}
                       </span>
                       <span
                         className="truncate font-mono font-semibold"
-                        style={{ fontSize: 12, color: "#FAFAFA" }}
+                        style={{ fontSize: 12, color: "var(--color-fg)" }}
                       >
                         {pr.title}
                       </span>
@@ -1641,11 +1739,11 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                       >
                         INTEGRATION
                       </span>
-                      <span className="font-mono" style={{ fontSize: 10, color: "#A1A1AA" }}>
+                      <span className="font-mono" style={{ fontSize: 10, color: "var(--color-secondary-fg)" }}>
                         {ctx?.sourceLaneIds.length ?? 0} sources
                       </span>
-                      <ArrowRight size={9} weight="bold" style={{ color: "#52525B" }} />
-                      <span className="font-mono" style={{ fontSize: 10, color: "#A1A1AA" }}>
+                      <ArrowRight size={9} weight="bold" style={{ color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }} />
+                      <span className="font-mono" style={{ fontSize: 10, color: "var(--color-secondary-fg)" }}>
                         {laneById.get(ctx?.targetLaneId ?? pr.laneId)?.name ?? "target"}
                       </span>
                     </div>
@@ -1707,7 +1805,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         {selectedPrLiveModel?.isCommittedIntegration ? (
           <IntegrationPrContextPanel
             pr={selectedPr}
-            lanes={lanes}
+            lanes={boundLanes}
             mergeContext={selectedMergeContext}
             messages={simulateAdvisories}
             statusNode={simulateResult
@@ -1780,8 +1878,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         {/* ---- Merge Simulation section ---- */}
         <div
           style={{
-            background: "#13101A",
-            border: "1px solid #1E1B26",
+            background: "var(--color-surface)",
+            border: "1px solid var(--color-border)",
             padding: 16,
             marginBottom: 20,
           }}
@@ -1790,15 +1888,15 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
 
           {simulateBusy ? (
             <div className="flex items-center" style={{ gap: 8, padding: "12px 0" }}>
-              <div className="animate-spin" style={{ width: 14, height: 14, border: "2px solid #27272A", borderTopColor: "#A78BFA", borderRadius: "50%" }} />
-              <span className="font-mono" style={{ fontSize: 11, color: "#A1A1AA" }}>Running merge simulation...</span>
+              <div className="animate-spin" style={{ width: 14, height: 14, border: "2px solid var(--color-border)", borderTopColor: "#A78BFA", borderRadius: "50%" }} />
+              <span className="font-mono" style={{ fontSize: 11, color: "var(--color-secondary-fg)" }}>Running merge simulation...</span>
             </div>
           ) : simulateResult ? (
             <div>
               {/* Overall outcome */}
               <div style={{ marginBottom: 16 }}>
                 <OutcomeBadge outcome={simulateResult.overallOutcome} />
-                <span className="font-mono" style={{ fontSize: 11, color: "#A1A1AA", marginLeft: 10 }}>
+                <span className="font-mono" style={{ fontSize: 11, color: "var(--color-secondary-fg)", marginLeft: 10 }}>
                   {getSimulationSummaryMessage({
                     isCommittedIntegration: selectedPrLiveModel?.isCommittedIntegration ?? false,
                     overallOutcome: simulateResult.overallOutcome,
@@ -1814,7 +1912,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                   const outcomeColor =
                     step.outcome === "clean" ? "#22C55E" :
                     step.outcome === "conflict" ? "#F59E0B" :
-                    step.outcome === "blocked" ? "#EF4444" : "#71717A";
+                    step.outcome === "blocked" ? "#EF4444" : "var(--color-muted-fg)";
                   return (
                     <div
                       key={step.laneId}
@@ -1827,7 +1925,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                       <div className="flex items-center justify-between" style={{ gap: 8 }}>
                         <div className="flex items-center" style={{ gap: 8 }}>
                           <OutcomeDot outcome={step.outcome} />
-                          <span className="font-mono font-semibold" style={{ fontSize: 12, color: "#FAFAFA" }}>
+                          <span className="font-mono font-semibold" style={{ fontSize: 12, color: "var(--color-fg)" }}>
                             {step.laneName}
                           </span>
                         </div>
@@ -1840,11 +1938,11 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                       </div>
 
                       {/* Diff stats */}
-                      <div className="font-mono" style={{ marginTop: 6, marginLeft: 28, fontSize: 11, color: "#71717A" }}>
+                      <div className="font-mono" style={{ marginTop: 6, marginLeft: 28, fontSize: 11, color: "var(--color-muted-fg)" }}>
                         <span style={{ color: "#22C55E" }}>+{step.diffStat.insertions}</span>
                         {" "}
                         <span style={{ color: "#EF4444" }}>-{step.diffStat.deletions}</span>
-                        <span style={{ color: "#52525B", marginLeft: 8 }}>
+                        <span style={{ color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))", marginLeft: 8 }}>
                           {step.diffStat.filesChanged} {step.diffStat.filesChanged === 1 ? "file" : "files"}
                         </span>
                       </div>
@@ -1871,7 +1969,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
               </div>
             </div>
           ) : (
-            <div className="font-mono" style={{ fontSize: 11, color: "#52525B", padding: "12px 0" }}>
+            <div className="font-mono" style={{ fontSize: 11, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))", padding: "12px 0" }}>
               Simulation now runs on demand. Use the merge check above whenever you want a fresh result for this PR.
             </div>
           )}
@@ -1939,7 +2037,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
               </div>
               <label
                 className="flex items-center font-mono cursor-pointer"
-                style={{ fontSize: 11, color: "#A1A1AA", gap: 6, marginBottom: 12 }}
+                style={{ fontSize: 11, color: "var(--color-secondary-fg)", gap: 6, marginBottom: 12 }}
               >
                 <input
                   type="checkbox"
@@ -1976,11 +2074,11 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                     height: 28,
                     padding: "0 10px",
                     background: "transparent",
-                    color: "#A1A1AA",
-                    border: "1px solid #27272A",
+                    color: "var(--color-secondary-fg)",
+                    border: "1px solid var(--color-border)",
                     cursor: "pointer",
                   }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = "#13101A"; }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-surface)"; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                   onClick={() => setDeleteConfirm(false)}
                 >
@@ -2041,7 +2139,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
               snapshotHydrationOwnedByContext
               liveDetailReady={detailLiveDataPrId === selectedPr.id}
               detailBusy={detailBusy}
-              lanes={lanes}
+              lanes={boundLanes}
               mergeMethod={mergeMethod}
               onRefresh={onRefresh}
               onNavigate={(path) => {
@@ -2070,8 +2168,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         {/* ---- Header card ---- */}
         <div
           style={{
-            background: "#13101A",
-            border: "1px solid #1E1B26",
+            background: "var(--color-surface)",
+            border: "1px solid var(--color-border)",
             padding: 20,
             marginBottom: 20,
           }}
@@ -2081,15 +2179,15 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
               <div className="flex items-center" style={{ gap: 8 }}>
                 <span
                   className="truncate font-bold"
-                  style={{ fontSize: 18, color: "#FAFAFA", fontFamily: "var(--font-sans)" }}
+                  style={{ fontSize: 18, color: "var(--color-fg)", fontFamily: "var(--font-sans)" }}
                 >
                   {selectedProposal.title || "Untitled Proposal"}
                 </span>
               </div>
-              <div className="font-mono" style={{ fontSize: 11, color: "#71717A", marginTop: 6 }}>
+              <div className="font-mono" style={{ fontSize: 11, color: "var(--color-muted-fg)", marginTop: 6 }}>
                 {selectedProposal.sourceLaneIds.length} source lane{selectedProposal.sourceLaneIds.length !== 1 ? "s" : ""} into {selectedProposal.baseBranch}
                 {selectedProposal.createdAt && (
-                  <span style={{ marginLeft: 12, color: "#52525B" }}>
+                  <span style={{ marginLeft: 12, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }}>
                     created {new Date(selectedProposal.createdAt).toLocaleDateString()}
                   </span>
                 )}
@@ -2113,23 +2211,23 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
           </div>
 
           {/* Meta row */}
-          <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #1E1B26" }}>
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--color-border)" }}>
             <div className="flex items-center flex-wrap" style={{ gap: 12 }}>
               <div className="flex items-center" style={{ gap: 4 }}>
-                <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#52525B" }}>SOURCES</span>
-                <span className="font-mono" style={{ fontSize: 11, color: "#A1A1AA" }}>{selectedProposal.sourceLaneIds.length}</span>
+                <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }}>SOURCES</span>
+                <span className="font-mono" style={{ fontSize: 11, color: "var(--color-secondary-fg)" }}>{selectedProposal.sourceLaneIds.length}</span>
               </div>
-              <ArrowRight size={10} weight="bold" style={{ color: "#52525B" }} />
+              <ArrowRight size={10} weight="bold" style={{ color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }} />
               <div className="flex items-center" style={{ gap: 4 }}>
-                <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#52525B" }}>BASE</span>
-                <span className="font-mono" style={{ fontSize: 11, color: "#A1A1AA" }}>{selectedProposal.baseBranch}</span>
+                <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }}>BASE</span>
+                <span className="font-mono" style={{ fontSize: 11, color: "var(--color-secondary-fg)" }}>{selectedProposal.baseBranch}</span>
               </div>
               {selectedProposal.integrationLaneName && (
                 <>
-                  <span style={{ color: "#27272A" }}>|</span>
+                  <span style={{ color: "var(--color-border)" }}>|</span>
                   <div className="flex items-center" style={{ gap: 4 }}>
-                    <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#52525B" }}>BRANCH</span>
-                    <span className="font-mono" style={{ fontSize: 11, color: "#A1A1AA" }}>{selectedProposal.integrationLaneName}</span>
+                    <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }}>BRANCH</span>
+                    <span className="font-mono" style={{ fontSize: 11, color: "var(--color-secondary-fg)" }}>{selectedProposal.integrationLaneName}</span>
                   </div>
                 </>
               )}
@@ -2154,19 +2252,19 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
 
         <div
           style={{
-            background: "#13101A",
-            border: "1px solid #1E1B26",
+            background: "var(--color-surface)",
+            border: "1px solid var(--color-border)",
             padding: 16,
             marginBottom: 20,
           }}
         >
           <SectionHeader>MERGE INTO LANE</SectionHeader>
-          <p className="font-mono" style={{ fontSize: 10, color: "#71717A", marginBottom: 12, lineHeight: "16px" }}>
+          <p className="font-mono" style={{ fontSize: 10, color: "var(--color-muted-fg)", marginBottom: 12, lineHeight: "16px" }}>
             Choose an existing lane as the integration lane (for example the parent prompt lane). Simulation then includes conflicts against that lane&apos;s current HEAD; source lanes still merge in list order.
           </p>
           <div className="flex flex-wrap items-end" style={{ gap: 10 }}>
             <div className="min-w-0 flex-1" style={{ minWidth: 200 }}>
-              <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#52525B", display: "block", marginBottom: 6 }}>
+              <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))", display: "block", marginBottom: 6 }}>
                 Target lane
               </span>
               <select
@@ -2177,9 +2275,9 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                 style={{
                   fontSize: 11,
                   padding: "10px 12px",
-                  background: "#0C0A10",
-                  border: "1px solid #1E1B26",
-                  color: "#FAFAFA",
+                  background: "var(--color-bg)",
+                  border: "1px solid var(--color-border)",
+                  color: "var(--color-fg)",
                   borderRadius: 0,
                 }}
               >
@@ -2199,8 +2297,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                 fontSize: 10,
                 height: 36,
                 padding: "0 14px",
-                background: proposalBusy || !mergeIntoTargetChanged ? "#27272A" : "#A78BFA",
-                color: proposalBusy || !mergeIntoTargetChanged ? "#71717A" : "#0F0D14",
+                background: proposalBusy || !mergeIntoTargetChanged ? "var(--color-border)" : "#A78BFA",
+                color: proposalBusy || !mergeIntoTargetChanged ? "var(--color-muted-fg)" : "var(--color-surface-recessed)",
                 border: "none",
                 cursor: proposalBusy || !mergeIntoTargetChanged ? "not-allowed" : "pointer",
               }}
@@ -2264,15 +2362,15 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         {/* ---- Source lanes ---- */}
         <div
           style={{
-            background: "#13101A",
-            border: "1px solid #1E1B26",
+            background: "var(--color-surface)",
+            border: "1px solid var(--color-border)",
             padding: 16,
             marginBottom: 20,
           }}
         >
           <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
             <SectionHeader>SOURCE LANES</SectionHeader>
-            <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#A1A1AA" }}>
+            <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "var(--color-secondary-fg)" }}>
               {proposalLaneCards.length} LANE{proposalLaneCards.length !== 1 ? "S" : ""}
             </span>
           </div>
@@ -2288,13 +2386,13 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
               const borderColor =
                 lane.outcome === "conflict" ? "#F59E0B" :
                 lane.outcome === "blocked" ? "#EF4444" :
-                lane.outcome === "clean" ? "#22C55E" : "#1E1B26";
-              const laneInfo = laneById.get(lane.laneId);
+                lane.outcome === "clean" ? "#22C55E" : "var(--color-border)";
+              const laneInfo = selectedProposalLaneById.get(lane.laneId);
               return (
                 <div
                   key={`source-lane-${lane.laneId}-${lane.position}`}
                   style={{
-                    background: "#0C0A10",
+                    background: "var(--color-bg)",
                     border: `1px solid color-mix(in srgb, ${borderColor} 25%, transparent)`,
                     borderTop: `2px solid ${borderColor}`,
                     padding: 12,
@@ -2302,33 +2400,33 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                   }}
                 >
                   <div className="flex items-center justify-between" style={{ gap: 8, marginBottom: 10 }}>
-                    <span className="truncate font-mono font-bold" style={{ fontSize: 12, color: "#FAFAFA" }}>
+                    <span className="truncate font-mono font-bold" style={{ fontSize: 12, color: "var(--color-fg)" }}>
                       {lane.laneName}
                     </span>
                     <LaneStatusBadge outcome={lane.outcome} />
                   </div>
                   <div className="flex items-center justify-between" style={{ gap: 8, marginBottom: 4 }}>
-                    <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#52525B" }}>
+                    <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }}>
                       COMMIT
                     </span>
-                    <span className="font-mono" style={{ fontSize: 11, color: "#A1A1AA" }}>
+                    <span className="font-mono" style={{ fontSize: 11, color: "var(--color-secondary-fg)" }}>
                       {lane.commitHash ? lane.commitHash.slice(0, 8) : "N/A"}
                     </span>
                   </div>
                   <div className="flex items-center justify-between" style={{ gap: 8, marginBottom: 4 }}>
-                    <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#52525B" }}>
+                    <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }}>
                       COMMITS
                     </span>
-                    <span className="font-mono" style={{ fontSize: 11, color: "#A1A1AA" }}>
+                    <span className="font-mono" style={{ fontSize: 11, color: "var(--color-secondary-fg)" }}>
                       {lane.commitCount ?? "N/A"}
                     </span>
                   </div>
                   {laneInfo?.branchRef && (
                     <div className="flex items-center justify-between" style={{ gap: 8, marginBottom: 4 }}>
-                      <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#52525B" }}>
+                      <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }}>
                         BRANCH
                       </span>
-                      <span className="font-mono truncate" style={{ fontSize: 10, color: "#71717A", maxWidth: 120 }}>
+                      <span className="font-mono truncate" style={{ fontSize: 10, color: "var(--color-muted-fg)", maxWidth: 120 }}>
                         {normalizeBranchName(laneInfo.branchRef)}
                       </span>
                     </div>
@@ -2336,7 +2434,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                   {pairCount > 0 && (
                     <div
                       className="flex items-center"
-                      style={{ gap: 4, marginTop: 6, paddingTop: 6, borderTop: "1px solid #1E1B2680" }}
+                      style={{ gap: 4, marginTop: 6, paddingTop: 6, borderTop: "1px solid color-mix(in srgb, var(--color-border) 50%, transparent)" }}
                     >
                       <Warning size={10} weight="fill" style={{ color: "#F59E0B" }} />
                       <span className="font-mono" style={{ fontSize: 9, color: "#F59E0B" }}>
@@ -2348,18 +2446,18 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
               );
             })}
           </div>
-          <div className="flex items-center" style={{ gap: 8, marginTop: 8, paddingTop: 8, borderTop: "1px solid #1E1B2680" }}>
-            <ArrowRight size={12} weight="bold" style={{ color: "#52525B" }} />
+          <div className="flex items-center" style={{ gap: 8, marginTop: 8, paddingTop: 8, borderTop: "1px solid color-mix(in srgb, var(--color-border) 50%, transparent)" }}>
+            <ArrowRight size={12} weight="bold" style={{ color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }} />
             <LaneChip name={selectedProposal.baseBranch} variant="accent" />
-            <span className="font-mono" style={{ fontSize: 10, color: "#52525B" }}>integration target</span>
+            <span className="font-mono" style={{ fontSize: 10, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }}>integration target</span>
           </div>
         </div>
 
         {/* ---- Conflict Analysis (consolidated view) ---- */}
         <div
           style={{
-            background: "#13101A",
-            border: "1px solid #1E1B26",
+            background: "var(--color-surface)",
+            border: "1px solid var(--color-border)",
             padding: 16,
             marginBottom: 20,
           }}
@@ -2374,7 +2472,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
             <div style={{ marginBottom: 16 }}>
               <div
                 className="font-mono font-bold uppercase tracking-[1px]"
-                style={{ fontSize: 9, color: "#52525B", marginBottom: 8 }}
+                style={{ fontSize: 9, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))", marginBottom: 8 }}
               >
                 CONFLICT MATRIX
               </div>
@@ -2389,7 +2487,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                           className="font-mono font-bold uppercase tracking-[1px]"
                           style={{
                             fontSize: 8,
-                            color: "#71717A",
+                            color: "var(--color-muted-fg)",
                             padding: "4px 6px",
                             textAlign: "center",
                             maxWidth: 80,
@@ -2411,7 +2509,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                           className="font-mono font-bold uppercase tracking-[1px]"
                           style={{
                             fontSize: 8,
-                            color: "#71717A",
+                            color: "var(--color-muted-fg)",
                             padding: "4px 6px",
                             textAlign: "right",
                             maxWidth: 80,
@@ -2459,7 +2557,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                               }}
                             >
                               {isSelf ? (
-                                <span style={{ color: "#52525B", fontSize: 10 }}>--</span>
+                                <span style={{ color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))", fontSize: 10 }}>--</span>
                               ) : hasConflictCell ? (
                                 <Warning size={12} weight="fill" style={{ color: cellStyle.iconColor }} />
                               ) : (
@@ -2495,10 +2593,10 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
           ) : (
             <div className="flex flex-col" style={{ gap: 6 }}>
               <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
-                <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#52525B" }}>
+                <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }}>
                   CONFLICTING PAIRS
                 </span>
-                <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#A1A1AA" }}>
+                <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "var(--color-secondary-fg)" }}>
                   {proposalConflictingPairs.length} PAIR{proposalConflictingPairs.length !== 1 ? "S" : ""}
                 </span>
               </div>
@@ -2514,7 +2612,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                   <div
                     key={`pair-${pair.key}`}
                     style={{
-                      background: "#0C0A10",
+                      background: "var(--color-bg)",
                       border: isResolved ? "1px solid #22C55E30" : "1px solid #F59E0B25",
                       borderLeft: isResolved ? "3px solid #22C55E" : "3px solid #F59E0B",
                     }}
@@ -2532,16 +2630,16 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                     >
                       <div className="flex items-center" style={{ gap: 8, minWidth: 0 }}>
                         {expanded ? (
-                          <CaretDown size={12} weight="bold" style={{ color: "#71717A" }} />
+                          <CaretDown size={12} weight="bold" style={{ color: "var(--color-muted-fg)" }} />
                         ) : (
-                          <CaretRight size={12} weight="bold" style={{ color: "#71717A" }} />
+                          <CaretRight size={12} weight="bold" style={{ color: "var(--color-muted-fg)" }} />
                         )}
                         <OutcomeDot outcome={isResolved ? "clean" : pair.outcome} />
-                        <span className="truncate font-mono font-semibold" style={{ fontSize: 11, color: "#FAFAFA" }}>
+                        <span className="truncate font-mono font-semibold" style={{ fontSize: 11, color: "var(--color-fg)" }}>
                           {pair.laneAName}
                         </span>
-                        <span className="font-mono" style={{ fontSize: 11, color: "#52525B" }}>x</span>
-                        <span className="truncate font-mono font-semibold" style={{ fontSize: 11, color: "#FAFAFA" }}>
+                        <span className="font-mono" style={{ fontSize: 11, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }}>x</span>
+                        <span className="truncate font-mono font-semibold" style={{ fontSize: 11, color: "var(--color-fg)" }}>
                           {pair.laneBName}
                         </span>
                       </div>
@@ -2590,7 +2688,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                             className="font-mono"
                             style={{
                               fontSize: 11,
-                              color: "#71717A",
+                              color: "var(--color-muted-fg)",
                               padding: "8px 10px",
                               background: "#F59E0B06",
                               borderLeft: "2px solid #F59E0B30",
@@ -2635,7 +2733,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         {selectedProposal.overallOutcome === "conflict" && (
           <div
             style={{
-              background: "#13101A",
+              background: "var(--color-surface)",
               border: "1px solid #A78BFA30",
               borderLeft: "3px solid #A78BFA",
               padding: 0,
@@ -2660,7 +2758,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                   RESOLVE WITH AI
                 </span>
               </div>
-              <div className="font-mono" style={{ fontSize: 10, color: "#71717A", marginTop: 6 }}>
+              <div className="font-mono" style={{ fontSize: 10, color: "var(--color-muted-fg)", marginTop: 6 }}>
                 {totalProposalConflictFiles} conflict file{totalProposalConflictFiles === 1 ? "" : "s"} across {proposalConflictingPairs.length} lane pair{proposalConflictingPairs.length !== 1 ? "s" : ""}.
                 Launches the inline AI resolver chat used across PR tabs, with shared model and reasoning controls.
               </div>
@@ -2698,7 +2796,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                     height: 32,
                     padding: "0 14px",
                     background: "#A78BFA",
-                    color: "#0F0D14",
+                    color: "var(--color-surface-recessed)",
                     border: "none",
                     cursor: (proposalConflictSteps.length === 0 && proposalConflictingPairs.length === 0) || createLaneBusy || Boolean(resolvingLaneId) ? "not-allowed" : "pointer",
                     opacity: (proposalConflictSteps.length === 0 && proposalConflictingPairs.length === 0) || createLaneBusy || Boolean(resolvingLaneId) ? 0.5 : 1,
@@ -2725,7 +2823,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                   <span className="font-mono" style={{ fontSize: 11, color: "#A78BFA" }}>
                     AI resolver session running
                   </span>
-                  <span className="font-mono" style={{ fontSize: 10, color: "#52525B", marginLeft: 4 }}>
+                  <span className="font-mono" style={{ fontSize: 10, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))", marginLeft: 4 }}>
                     Transcript stays inline below while the worker resolves.
                   </span>
                 </div>
@@ -2748,7 +2846,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                 sourceLaneIds: proposalResolverConfig.sourceLaneIds,
                 targetLaneId: proposalResolverConfig.targetLaneId,
                 laneId: proposalResolverConfig.cwdLaneId,
-                proposalId: selectedProposal.proposalId,
+                // The proposal's id on its own machine; the panel's calls carry that machine's pin.
+                proposalId: apiProposalId(selectedProposal.proposalId),
                 scenario: proposalResolverConfig.scenario,
               }}
               modelId={resolverModel}
@@ -2822,7 +2921,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         {resolutionState && Object.keys(resolutionState.stepResolutions).length > 0 && selectedProposal && (!resolutionPanelDismissed || proposalResolutionRunInFlight) && (
           <div
             style={{
-              background: "#13101A",
+              background: "var(--color-surface)",
               border: "1px solid #A78BFA30",
               marginBottom: 20,
               overflow: "hidden",
@@ -2832,7 +2931,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
             <div
               style={{
                 padding: "10px 16px",
-                borderBottom: "1px solid #1E1B26",
+                borderBottom: "1px solid var(--color-border)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
@@ -2880,17 +2979,17 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
             <div
               style={{
                 padding: "10px 16px",
-                background: "#0C0A10",
+                background: "var(--color-bg)",
               }}
             >
               <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
                 <span
                   className="font-mono font-bold uppercase tracking-[1px]"
-                  style={{ fontSize: 9, color: "#52525B" }}
+                  style={{ fontSize: 9, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }}
                 >
                   RESOLUTION PROGRESS
                 </span>
-                <span className="font-mono" style={{ fontSize: 10, color: "#71717A" }}>
+                <span className="font-mono" style={{ fontSize: 10, color: "var(--color-muted-fg)" }}>
                   {Object.values(resolutionState.stepResolutions).filter((s) => s === "resolved" || s === "merged-clean").length}
                   {" / "}
                   {Object.keys(resolutionState.stepResolutions).length} lanes processed
@@ -2910,11 +3009,11 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                         style={{
                           gap: 6,
                           padding: "4px 8px",
-                          background: isActive ? "#A78BFA12" : "#0F0D14",
-                          border: isActive ? "1px solid #A78BFA40" : "1px solid #1E1B26",
+                          background: isActive ? "#A78BFA12" : "var(--color-surface-recessed)",
+                          border: isActive ? "1px solid #A78BFA40" : "1px solid var(--color-border)",
                         }}
                       >
-                        <span className="font-mono font-semibold truncate" style={{ fontSize: 10, color: "#FAFAFA", maxWidth: 100 }}>
+                        <span className="font-mono font-semibold truncate" style={{ fontSize: 10, color: "var(--color-fg)", maxWidth: 100 }}>
                           {lane.laneName}
                         </span>
                         <span
@@ -2940,14 +3039,14 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                     gap: 6,
                     marginTop: 8,
                     paddingTop: 8,
-                    borderTop: "1px solid #1E1B2680",
+                    borderTop: "1px solid color-mix(in srgb, var(--color-border) 50%, transparent)",
                   }}
                 >
                   <Gear size={10} weight="fill" style={{ color: "#A78BFA" }} className="animate-spin" />
                   <span className="font-mono" style={{ fontSize: 10, color: "#A78BFA" }}>
                     AI resolver active on: {proposalLaneCards.find((l) => l.laneId === resolutionState.activeLaneId)?.laneName ?? resolutionState.activeLaneId}
                   </span>
-                  <span className="font-mono" style={{ fontSize: 10, color: "#52525B", marginLeft: 8 }}>
+                  <span className="font-mono" style={{ fontSize: 10, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))", marginLeft: 8 }}>
                     Reopen the resolver terminal to inspect logs.
                   </span>
                 </div>
@@ -2972,8 +3071,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                     fontSize: 10,
                     height: 32,
                     padding: "0 14px",
-                    background: isDisabled ? "#52525B" : "#22C55E",
-                    color: "#0F0D14",
+                    background: isDisabled ? "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" : "#22C55E",
+                    color: "var(--color-surface-recessed)",
                     border: "none",
                     cursor: isDisabled ? "not-allowed" : "pointer",
                     opacity: isDisabled ? 0.4 : 1,
@@ -3000,7 +3099,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                 height: 32,
                 padding: "0 14px",
                 background: "transparent",
-                color: resimBusy || mergeIntoLaneBusy ? "#52525B" : "#A78BFA",
+                color: resimBusy || mergeIntoLaneBusy ? "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" : "#A78BFA",
                 border: "1px solid #A78BFA30",
                 cursor: resimBusy || mergeIntoLaneBusy ? "not-allowed" : "pointer",
                 opacity: resimBusy || mergeIntoLaneBusy ? 0.4 : 1,
@@ -3025,7 +3124,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                 height: 32,
                 padding: "0 14px",
                 background: "transparent",
-                color: deleteProposalBusy || mergeIntoLaneBusy ? "#52525B" : "#EF4444",
+                color: deleteProposalBusy || mergeIntoLaneBusy ? "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" : "#EF4444",
                 border: "1px solid #EF444430",
                 cursor: deleteProposalBusy || mergeIntoLaneBusy ? "not-allowed" : "pointer",
                 opacity: deleteProposalBusy || mergeIntoLaneBusy ? 0.4 : 1,
@@ -3072,13 +3171,13 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
               <div className="font-mono font-semibold uppercase tracking-[1px]" style={{ fontSize: 10, color: "#EF4444", marginBottom: 8 }}>
                 DELETE THIS PROPOSAL?
               </div>
-              <div className="font-mono" style={{ fontSize: 11, color: "#D4D4D8", marginBottom: 10 }}>
+              <div className="font-mono" style={{ fontSize: 11, color: "color-mix(in srgb, var(--color-fg) 85%, var(--color-bg))", marginBottom: 10 }}>
                 {selectedProposalAllowsLaneDeletion
                   ? "ADE will remove the saved integration proposal. You can optionally delete the integration lane it created for this proposal too."
                   : "ADE will remove the saved integration proposal and keep the existing merge-target lane this proposal adopted."}
               </div>
               {selectedProposal.integrationLaneId && selectedProposalAllowsLaneDeletion && (
-                <label className="flex items-start font-mono cursor-pointer" style={{ fontSize: 11, color: "#D4D4D8", gap: 8, marginBottom: 10 }}>
+                <label className="flex items-start font-mono cursor-pointer" style={{ fontSize: 11, color: "color-mix(in srgb, var(--color-fg) 85%, var(--color-bg))", gap: 8, marginBottom: 10 }}>
                   <input
                     type="checkbox"
                     checked={deleteProposalLaneToo}
@@ -3086,7 +3185,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                     style={{ accentColor: "#EF4444", marginTop: 2 }}
                   />
                   <span>
-                    Also delete integration lane <span style={{ color: "#FAFAFA" }}>{selectedProposal.integrationLaneName || selectedProposal.integrationLaneId}</span>
+                    Also delete integration lane <span style={{ color: "var(--color-fg)" }}>{selectedProposal.integrationLaneName || selectedProposal.integrationLaneId}</span>
                   </span>
                 </label>
               )}
@@ -3118,7 +3217,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                     height: 30,
                     padding: "0 12px",
                     background: "transparent",
-                    color: deleteProposalBusy ? "#52525B" : "#EF4444",
+                    color: deleteProposalBusy ? "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" : "#EF4444",
                     border: "1px solid #EF444440",
                     cursor: deleteProposalBusy ? "not-allowed" : "pointer",
                     opacity: deleteProposalBusy ? 0.5 : 1,
@@ -3135,11 +3234,11 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                     height: 30,
                     padding: "0 12px",
                     background: "transparent",
-                    color: "#A1A1AA",
-                    border: "1px solid #27272A",
+                    color: "var(--color-secondary-fg)",
+                    border: "1px solid var(--color-border)",
                     cursor: "pointer",
                   }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = "#13101A"; }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-surface)"; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                   onClick={() => {
                     setDeleteProposalConfirm(false);
@@ -3170,14 +3269,14 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         {selectedProposal.body && (
           <div
             style={{
-              background: "#13101A",
-              border: "1px solid #1E1B26",
+              background: "var(--color-surface)",
+              border: "1px solid var(--color-border)",
               padding: 16,
               marginBottom: 20,
             }}
           >
             <SectionHeader>DESCRIPTION</SectionHeader>
-            <div className="font-mono" style={{ fontSize: 11, color: "#A1A1AA", whiteSpace: "pre-wrap" }}>
+            <div className="font-mono" style={{ fontSize: 11, color: "var(--color-secondary-fg)", whiteSpace: "pre-wrap" }}>
               {selectedProposal.body}
             </div>
           </div>
@@ -3213,18 +3312,24 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       children: detailPane,
     },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, liveIntegrationLaneId, liveIntegrationRebaseNeed, liveSimulationLaneIds, liveSimulationKey, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, proposalResolverConfig, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, rebaseNeedByLaneId, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, proposals, proposalsLoaded, selectedProposal, selectedProposalId, selectedProposalRebaseLaneIds, selectedPrLiveModel, commitBusy, commitError, resimBusy, mergeIntoLaneBusy, mergeIntoLaneDraft, deleteProposalBusy, expandedPairKeys, resolutionState, activeWorkerStepId, createLaneBusy, resolvingLaneId, resolutionPanelDismissed, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId]);
+  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, liveIntegrationLaneId, liveIntegrationRebaseNeed, liveSimulationLaneIds, liveSimulationKey, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, proposalResolverConfig, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, rebaseNeedByLaneId, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, proposals, proposalsLoaded, selectedProposal, selectedProposalId, selectedProposalRebaseLaneIds, selectedPrLiveModel, commitBusy, commitError, resimBusy, mergeIntoLaneBusy, mergeIntoLaneDraft, deleteProposalBusy, expandedPairKeys, resolutionState, activeWorkerStepId, createLaneBusy, resolvingLaneId, resolutionPanelDismissed, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId, machineForProposal, proposalPin, proposalBlocked, boundLanes, selectedProposalLaneById, apiProposalId]);
 
+  // A selected proposal's resolver and menus reach the proposal's machine.
+  const runtimePin = selectedProposal ? machineForProposal?.(selectedProposal.proposalId)?.pin ?? null : null;
   if (inListColumn) {
     return (
-      <>
+      <PrRuntimePinProvider value={runtimePin}>
         <PrsListPortal>
           <div className={PRS_LIST_ROOT_CLASS}>{listPane}</div>
         </PrsListPortal>
         <div className="flex min-h-0 flex-1 flex-col">{detailPane}</div>
-      </>
+      </PrRuntimePinProvider>
     );
   }
 
-  return <PaneTilingLayout layoutId="prs:integration:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
+  return (
+    <PrRuntimePinProvider value={runtimePin}>
+      <PaneTilingLayout layoutId="prs:integration:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />
+    </PrRuntimePinProvider>
+  );
 }

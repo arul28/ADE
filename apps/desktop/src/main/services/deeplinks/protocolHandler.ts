@@ -63,6 +63,12 @@ export function registerAdeProtocolHandler(options: {
    * channel.
    */
   claimAsDefault?: boolean;
+  /**
+   * Called when this process lost the single-instance lock and has no deeplink
+   * to forward. The dev app passes one that explains and exits: Electron never
+   * fires `ready` for such a process.
+   */
+  onLockLostWithoutForward?: () => void;
 }): void {
   const { dispatch } = options;
   const log = options.log ?? (() => {});
@@ -109,9 +115,9 @@ export function registerAdeProtocolHandler(options: {
   const coldStartDeeplinkArgs = process.argv.slice(1).filter(isAdeDeeplinkArg);
 
   // Single-instance lock: a second invocation routes through `second-instance`
-  // instead of starting a fresh Electron process. Non-claiming channels can
-  // still open as regular app instances when they were not launched to handle
-  // a deeplink.
+  // instead of starting a fresh Electron process. Without a deeplink to
+  // forward, `onLockLostWithoutForward` decides what happens; with none given,
+  // the process carries on.
   const acquired = app.requestSingleInstanceLock();
   if (!acquired) {
     const shouldForwardToLockHolder = claimAsDefault || coldStartDeeplinkArgs.length > 0;
@@ -125,6 +131,7 @@ export function registerAdeProtocolHandler(options: {
       app.quit();
       return;
     }
+    options.onLockLostWithoutForward?.();
   }
 
   // Buffer URLs received before whenReady so they aren't dropped.

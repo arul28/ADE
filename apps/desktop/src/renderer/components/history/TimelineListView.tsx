@@ -1,8 +1,9 @@
-import React, { useCallback, useMemo } from "react";
-import * as PhosphorIcons from "@phosphor-icons/react";
+import { useCallback, useMemo } from "react";
 import { cn } from "../ui/cn";
 import type { ColumnConfig, TimelineEvent, TimelineColumn } from "./timelineTypes";
 import { CATEGORY_META, getStatusClasses } from "./eventTaxonomy";
+import { eventIcon } from "./eventIcons";
+import { EventMachineChip, isEventMachineOffline } from "./EventMachineChip";
 import { relativeWhen, formatDurationMs } from "../../lib/format";
 
 /* ------------------------------------------------------------------ */
@@ -126,7 +127,7 @@ export function TimelineListView({
           {/* Sticky group header */}
           <div
             className={cn(
-              "sticky top-0 z-10 border-b border-white/[0.06] bg-white/[0.02] px-3 py-1.5 backdrop-blur-xl",
+              "sticky top-0 z-10 border-b border-fg/[0.06] bg-fg/[0.02] px-3 py-1.5 backdrop-blur-xl",
               "font-sans text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/50",
             )}
           >
@@ -137,9 +138,7 @@ export function TimelineListView({
           {group.events.map((ev) => {
             const selected = ev.id === selectedEventId;
             const catMeta = CATEGORY_META[ev.category];
-            const Icon = (PhosphorIcons as unknown as Record<string, React.ElementType>)[
-              ev.iconName
-            ];
+            const Icon = eventIcon(ev.iconName);
 
             return (
               <button
@@ -152,8 +151,9 @@ export function TimelineListView({
                   "flex w-full items-center gap-2 border-l-2 border-l-transparent px-2 py-1.5",
                   "transition-colors duration-75",
                   selected
-                    ? "border-l-accent bg-white/[0.05]"
-                    : "hover:bg-white/[0.03]",
+                    ? "border-l-accent bg-fg/[0.05]"
+                    : "hover:bg-fg/[0.03]",
+                  isEventMachineOffline(ev) && "opacity-50",
                 )}
               >
                 {show("graph") ? (
@@ -162,18 +162,11 @@ export function TimelineListView({
                       className="h-full w-[3px] shrink-0 self-stretch"
                       style={{ backgroundColor: catMeta?.color ?? ev.color }}
                     />
-                    {Icon ? (
-                      <Icon
-                        weight="bold"
-                        className="size-3.5 shrink-0"
-                        style={{ color: catMeta?.color ?? ev.color }}
-                      />
-                    ) : (
-                      <span
-                        className="size-[6px] shrink-0 rounded-full"
-                        style={{ backgroundColor: catMeta?.color ?? ev.color }}
-                      />
-                    )}
+                    <Icon
+                      weight="bold"
+                      className="size-3.5 shrink-0"
+                      style={{ color: catMeta?.color ?? ev.color }}
+                    />
                   </>
                 ) : null}
 
@@ -205,6 +198,7 @@ export function TimelineListView({
                     <span className="max-w-[72px] truncate">{ev.laneName}</span>
                   </span>
                 ) : null}
+                <EventMachineChip event={ev} compact />
 
                 {show("status") ? (
                   <span

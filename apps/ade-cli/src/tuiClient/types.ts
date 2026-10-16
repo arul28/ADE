@@ -7,6 +7,7 @@ import type {
   AgentChatCodexSandbox,
   AgentChatCursorConfigValue,
   AgentChatDroidPermissionMode,
+  AgentChatMusePermissionMode,
   AgentChatEventEnvelope,
   AgentChatEventHistorySnapshot,
   AgentChatContextUsage,
@@ -28,6 +29,7 @@ import type {
   ExternalSessionSummary,
 } from "../../../desktop/src/shared/types/externalSessions";
 import type { ModelWizardStep } from "./modelWizard";
+import type { ComposerModelSuggestion } from "../../../desktop/src/shared/modelMentions";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { PrChecksStatus } from "../../../desktop/src/shared/types/prs";
 import type { PrLaneNextStep } from "../../../desktop/src/shared/prNextStep";
@@ -105,8 +107,9 @@ export type AdeCodeConnection = {
 export type AdeCodeProvider =
   | Extract<
     AgentChatProvider,
-    "codex" | "claude" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot"
+    "codex" | "claude" | "muse" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot"
   >
+  | "devin"
   | "ollama"
   | "lmstudio";
 
@@ -135,6 +138,7 @@ export type AdeCodeModelState = Partial<LaunchIdentity> & {
   codexConfigSource: AgentChatCodexConfigSource;
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
   droidPermissionMode: AgentChatDroidPermissionMode;
+  musePermissionMode: AgentChatMusePermissionMode;
   cursorModeId: string | null;
   cursorAvailableModeIds: string[];
   cursorConfigValues: Record<string, AgentChatCursorConfigValue>;
@@ -193,6 +197,8 @@ export type ChatInfoPrSummary = {
   nextStep?: PrLaneNextStep | null;
   /** Agent reviewers on the PR, by product name. */
   agents?: string[];
+  /** Additional chat-linked PR numbers, shown as a compact switcher. */
+  linkedNumbers?: number[];
 };
 
 export type ChatInfoSnapshot = {
@@ -523,9 +529,11 @@ export type LocalNotice = {
 };
 
 export type MentionSuggestion = {
-  kind: "lane" | "chat" | "pr" | "file" | "commit";
+  kind: "lane" | "chat" | "pr" | "file" | "commit" | "model";
   label: string;
   insertText: string;
+  /** Model rows: the model the chip names, its thinking levels and default. */
+  model?: ComposerModelSuggestion;
   detail?: string;
   filePath?: string;
   attachment?: boolean;

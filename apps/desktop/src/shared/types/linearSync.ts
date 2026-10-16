@@ -7,6 +7,7 @@ export type LinearCatalogUser = {
   name: string;
   displayName: string | null;
   email: string | null;
+  avatarUrl?: string | null;
   active: boolean;
 };
 
@@ -41,6 +42,8 @@ export type LinearIngressEventRecord = {
   summary: string;
   payload?: Record<string, unknown> | null;
   createdAt: string;
+  /** Linear agent sessions only: the ADE account the relay routed the session to (null = nobody). */
+  routedAccountId?: string | null;
 };
 
 function normalizeLinearIngressString(value: unknown): string | null {
@@ -169,6 +172,16 @@ export type LinearSyncConfig = {
   artifacts?: LinearArtifactsConfig;
 };
 
+/** A compact reference to another Linear issue (sub-issue, parent, relation). */
+export type LinearIssueRef = {
+  id: string;
+  identifier: string;
+  title: string;
+  stateId: string;
+  stateName: string;
+  stateType: string;
+};
+
 export type NormalizedLinearIssue = {
   id: string;
   identifier: string;
@@ -190,26 +203,40 @@ export type NormalizedLinearIssue = {
   priority: number;
   priorityLabel: LinearPriorityLabel;
   labels: string[];
-  labelColors?: Array<{ name: string; color: string | null }>;
+  /** Label id is present for issues read from Linear since label editing shipped. */
+  labelColors?: Array<{ id?: string; name: string; color: string | null }>;
   cycleId?: string | null;
   cycleName?: string | null;
   cycleStartsAt?: string | null;
   cycleEndsAt?: string | null;
-  childIssues?: Array<{
-    id: string;
-    identifier: string;
-    title: string;
-    stateId: string;
-    stateName: string;
-    stateType: string;
-  }>;
+  /** Sub-issues (Linear `children`). Not blockers. */
+  childIssues?: LinearIssueRef[];
+  /** Linear `parent`: the issue this one is a sub-issue of. */
+  parentIssue?: LinearIssueRef | null;
+  /** Issues that block this one (inverse `blocks` relations). Open or closed. */
+  blockedByIssues?: LinearIssueRef[];
+  /**
+   * Issues this one blocks (outgoing `blocks` relations). Only present on a
+   * detail read (`fetchIssueById`); list reads leave it undefined.
+   */
+  blockingIssues?: LinearIssueRef[];
+  /**
+   * `related` and `duplicate` relations in either direction. Only present on a
+   * detail read (`fetchIssueById`); list reads leave it undefined.
+   */
+  relatedIssues?: LinearIssueRef[];
+  /** Linear's suggested git branch name (`issue.branchName`). */
+  branchName?: string | null;
   metadataTags?: string[];
   assigneeId: string | null;
   assigneeName: string | null;
+  assigneeAvatarUrl?: string | null;
   ownerId: string | null;
   creatorId?: string | null;
   creatorName?: string | null;
+  /** Ids of the issues that block this one ("blocked by" relations). */
   blockerIssueIds: string[];
+  /** True when at least one "blocked by" issue is not completed or canceled. */
   hasOpenBlockers: boolean;
   dueDate?: string | null;
   estimate?: number | null;

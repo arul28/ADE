@@ -85,7 +85,14 @@ ADE action domain + RPC scoping:
   most 200 hits to one aggregate query; `resultsTruncated` makes that ceiling
   explicit so callers can narrow the query instead of mistaking the bounded
   window for an exhaustive result set. Personal chats are outside the project
-  registry and are not queried.
+  registry and are not queried. Only the active project and projects whose
+  runtime is already loaded answer through their search service; every other
+  project is read from its index file (see "Machine search policy").
+- `apps/desktop/src/main/services/search/searchIndexQuery.ts` — the read side
+  of the index: the one FTS candidate query (`queryFtsCandidates`), shared by
+  the live service and by `querySearchIndexReadOnly`, which answers for a
+  project from its index file alone. `searchIndexDb.ts#openSearchIndexDbReadOnly`
+  opens that file read-only and never creates, migrates or deletes it.
 - `apps/ade-cli/src/bootstrap.ts` — constructs the runtime's search service
   via `createProjectSearchService`, wires `notifyTerminalData` into
   `broadcastData`, `notifyLaneActivity` into `onLifecycleEvent`, and
@@ -117,7 +124,14 @@ Desktop ⌘K command palette:
   relying on the deep-link navigate listener to focus the target). Thread entries
   always retain their owner machine name for matching; results show an amber
   name marker only when that owner is not This computer, including threads from the
-  remote-bound active tab.
+  remote-bound active tab. With a chat on screen and words typed, the
+  `chatFind` section (`commandPaletteSections.ts`) offers `Find "…" in this
+  chat` — first, or right after the commands when the words lead a command
+  title. Its logic is `chat/chatFindPalette.ts`; the words are the parsed
+  free-text terms. Opening a chat from a message hit leaves the words for that
+  chat's find bar (`setPendingChatFind`, dropped after 10 s). The palette keeps
+  focus from snapping back when it closes into a find bar. The keyboard index
+  resolves commands in their rendered (grouped) order.
 - `apps/desktop/src/renderer/components/app/commandPaletteMarks.tsx` — the
   palette's icons and captions: `commandPaletteMark` / `CommandPaletteGlyph`
   (a colored tile per command id, with Work tool marks from
@@ -193,7 +207,10 @@ and returns the set of session ids whose terms changed, which then drives a
 re-index of just those chat meta docs. Rebuilding rather than appending is what
 removes the ordering dependency: a chat indexed before the first PR sweep would
 otherwise never receive its PR terms, and unlinking a PR would leave stale
-`#123` terms on the chat document forever.
+`#123` terms on the chat document forever. A sweep enqueues every PR at once, so
+the PR list and its term sync are read once per pass rather than once per PR;
+the memo is dropped at the start of every drain pass, and a failed read is
+retried by the next PR.
 
 ### Deterministic ranking tiers
 
@@ -242,6 +259,31 @@ queries the active project normally and queries every other registered project
 for chat hits only. Results carry `projectId`, `projectName`, and `projectRoot`;
 personal/no-project chats are excluded. PR/commit/branch/lane/file/terminal and
 other non-chat kinds remain active-project results. `rebuildIndex` is CTO-only.
+
+**A search never loads a project's runtime just to answer.** The router asks the
+active project, and any project whose runtime is already loaded, through its
+search service. Every other registered project is answered by
+`querySearchIndexReadOnly`, a read-only query of that project's
+`.ade/cache/search-index.db`. The router hands the event loop a turn between
+projects, which keeps the brain responsive on a machine with many projects.
+
+- A project with no index file yet counts as searched with no hits.
+- A project whose index is another schema version, or cannot be opened or read,
+  is listed in `projectsUnavailable` with a note to open that project in ADE
+  once; opening it rebuilds the index. The read path never creates, migrates or
+  deletes an index file.
+- A project whose root folder no longer exists is listed in
+  `projectsUnavailable`.
+- A `lane` filter is resolved against that project's own index: a lane id, else
+  an exact lane name, else a lane name containing the value. A project with no
+  matching lane has no hits.
+- An index read from disk is as fresh as the last time that project's runtime
+  ran; a project that is not loaded has no chats being written.
+
+`chat.readTranscript` follows the same rule: `resolveProjectBackedChatOwner`
+asks unloaded projects from their database on disk
+(`rosterBuilder.ts#readSessionToolTypeFromDisk`) and loads only the owning
+project.
 
 ### Dual-host known limitation
 

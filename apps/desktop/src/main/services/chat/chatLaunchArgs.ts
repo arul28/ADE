@@ -59,7 +59,11 @@ export function parseAgentChatFileRefs(value: unknown): AgentChatFileRef[] | und
     if (entry.type === "image") type = "image";
     else if (entry.type === "file") type = "file";
     if (!path || !type) continue;
-    attachments.push({ path, type });
+    attachments.push({
+      path,
+      type,
+      ...(entry.intent === "user_prompt" ? { intent: "user_prompt" as const } : {}),
+    });
   }
   return attachments;
 }
@@ -90,6 +94,14 @@ export function parseAgentChatCreateFields(value: Record<string, unknown>): Omit
     ...(asTrimmedString(value.reasoningEffort) ? { reasoningEffort: asTrimmedString(value.reasoningEffort)! } : {}),
   };
 
+  // Stamped by the runtime's RPC layer on an agent's launch, so the launch
+  // record creates its chat with the same permission ceiling a direct create
+  // gets. Only a well-formed value is kept.
+  const actor = value.runtimeActor as AgentChatCreateArgs["runtimeActor"] | undefined;
+  if (actor?.kind === "cto") parsed.runtimeActor = { kind: "cto" };
+  else if (actor?.kind === "agent") {
+    parsed.runtimeActor = { kind: "agent", chatSessionId: asTrimmedString(actor.chatSessionId) ?? null };
+  }
   if ("sessionProfile" in value) parsed.sessionProfile = value.sessionProfile == null ? undefined : asTrimmedString(value.sessionProfile) as AgentChatCreateArgs["sessionProfile"];
   if ("permissionMode" in value) parsed.permissionMode = value.permissionMode == null ? undefined : asTrimmedString(value.permissionMode) as AgentChatCreateArgs["permissionMode"];
   if ("interactionMode" in value) parsed.interactionMode = value.interactionMode == null ? null : asTrimmedString(value.interactionMode) as AgentChatCreateArgs["interactionMode"];
@@ -101,6 +113,8 @@ export function parseAgentChatCreateFields(value: Record<string, unknown>): Omit
   if ("fastMode" in value || "codexFastMode" in value) {
     parsed.fastMode = asOptionalBoolean(value.fastMode) ?? asOptionalBoolean(value.codexFastMode);
   }
+  // Fast's tier: "ultrafast" or plain Fast. Anything else is not a tier.
+  if (value.fastTier === "ultrafast") parsed.fastTier = "ultrafast";
   if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatCreateArgs["opencodePermissionMode"];
   if ("piProfileId" in value) parsed.piProfileId = value.piProfileId == null ? null : asTrimmedString(value.piProfileId) ?? null;
   if ("piProviderId" in value) parsed.piProviderId = value.piProviderId == null ? null : asTrimmedString(value.piProviderId) ?? null;
@@ -111,6 +125,10 @@ export function parseAgentChatCreateFields(value: Record<string, unknown>): Omit
   if ("cursorModeId" in value) parsed.cursorModeId = value.cursorModeId == null ? null : asTrimmedString(value.cursorModeId) ?? null;
   if ("cursorConfigValues" in value) parsed.cursorConfigValues = parseCursorConfigValues(value.cursorConfigValues);
   if ("requestedCwd" in value) parsed.requestedCwd = value.requestedCwd == null ? undefined : requireString(value.requestedCwd, "chat.create requires a non-empty requestedCwd when provided.");
+  // A saved harness preset the caller picked (the phone's Custom section). The
+  // runtime resolves it against its own account-scoped list and machine stores;
+  // an id that no longer names a preset produces a notice, not a failed create.
+  if (asTrimmedString(value.presetId)) parsed.presetId = asTrimmedString(value.presetId)!;
 
   return parsed;
 }
@@ -128,10 +146,20 @@ function parseAgentChatMessageFields(value: Record<string, unknown>): Omit<Agent
 }
 
 export function parseAgentChatSendArgs(value: Record<string, unknown>): AgentChatSendArgs {
+  const messageFields = parseAgentChatMessageFields(value);
+  const text = typeof value.text === "string" ? asTrimmedString(value.text) ?? "" : null;
+  // A send that carries the chat's pending thread comments may have no text of
+  // its own: the host builds the message from the comments.
+  const includeThreadComments = value.includeThreadComments === true;
+  if (text === null || (!text && !messageFields.attachments?.length && !includeThreadComments)) {
+    throw new Error("chat.send requires text.");
+  }
   return {
     sessionId: requireString(value.sessionId, "chat.send requires sessionId."),
-    text: requireString(value.text, "chat.send requires text."),
-    ...parseAgentChatMessageFields(value),
+    text,
+    ...messageFields,
+    ...(typeof value.compactFirst === "boolean" ? { compactFirst: value.compactFirst } : {}),
+    ...(includeThreadComments ? { includeThreadComments: true } : {}),
   };
 }
 
@@ -139,8 +167,9 @@ export function parseAgentChatSendArgs(value: Record<string, unknown>): AgentCha
  * A launch's chat: the `chat.create` fields plus the harness selection the
  * desktop composer names by id (the brain resolves it against its own preset
  * and key stores), and the opening message. Unlike `chat.send`, the opening
- * message may have empty text when it carries only context (a visual-context
- * launch), and it keeps its context attachments and cursor runtime.
+ * message may have empty text when it carries only attachments or context (a
+ * file-only or visual-context launch), and it keeps its attachments and cursor
+ * runtime.
  */
 function parseChatLaunchChat(value: unknown): ChatLaunchChatArgs {
   const rawChat = isRecord(value) ? value : null;
@@ -154,7 +183,6 @@ function parseChatLaunchChat(value: unknown): ChatLaunchChatArgs {
   // An empty model is fine: the launch service auto-picks one (same as chat.create).
   const create: ChatLaunchChatArgs["create"] = {
     ...parseAgentChatCreateFields(rawCreate),
-    ...(asTrimmedString(rawCreate.presetId) ? { presetId: asTrimmedString(rawCreate.presetId)! } : {}),
     ...(asTrimmedString(rawCreate.credentialId) ? { credentialId: asTrimmedString(rawCreate.credentialId)! } : {}),
     ...(asTrimmedString(rawCreate.instanceId) ? { instanceId: asTrimmedString(rawCreate.instanceId)! } : {}),
   };

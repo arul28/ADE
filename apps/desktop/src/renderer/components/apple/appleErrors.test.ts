@@ -61,7 +61,6 @@ describe("describeAppleError", () => {
     [new Error("Lane x owns simulator iPhone (udid), which is no longer available."), "That simulator is no longer installed.", undefined],
     [new Error("Simulator device X is not available."), "That simulator is no longer installed.", undefined],
     [new Error("Simulator iPhone did not become ready within 90s. CoreSimulator may be stuck"), "The simulator is taking too long to start.", "start"],
-    [new Error("simctl clone did not report a udid for X."), "The simulator could not be cloned.", undefined],
     // launch / ownership
     [new Error("IOS_SIMULATOR_OWNED_BY_OTHER_SESSION: chat x owns it"), "Another chat is driving this device.", undefined],
     [new Error("IOS_SIMULATOR_LAUNCH_IN_PROGRESS: wait"), "A launch is already in progress.", undefined],

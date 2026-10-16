@@ -200,24 +200,6 @@ final class WorkToolsContractTests: XCTestCase {
       workToolsBrowserUnavailableMessage("desktop_not_attached"))
   }
 
-  func testToolNamesCoverEveryDesktopToolIdAndPassUnknownOnesThrough() {
-    // Mirrors WORK_TOOL_IDS in apps/desktop/src/shared/types/workTools.ts.
-    XCTAssertEqual(workToolsDisplayName("terminal"), "Terminal")
-    XCTAssertEqual(workToolsDisplayName("git"), "Git")
-    XCTAssertEqual(workToolsDisplayName("files"), "Files")
-    XCTAssertEqual(workToolsDisplayName("ios"), "Apple")
-    XCTAssertEqual(workToolsAccessibilityHint("ios"), "Apple simulators and previews")
-    XCTAssertNil(workToolsAccessibilityHint("git"))
-    XCTAssertEqual(workToolsDisplayName("app-control"), "App Control")
-    XCTAssertEqual(workToolsDisplayName("browser"), "Browser")
-    XCTAssertEqual(workToolsDisplayName("pr"), "PR")
-    // A tool this build has no name for still reads as *something*: dropping it
-    // would tell the user no tool is open when one is.
-    XCTAssertEqual(workToolsDisplayName("holodeck"), "holodeck")
-    XCTAssertNil(workToolsDisplayName(nil))
-    XCTAssertNil(workToolsDisplayName(""))
-  }
-
   func testMalformedFramePayloadsProduceNoImageRatherThanACrash() {
     XCTAssertNil(WorkToolsSheet.decodeDataUrl("https://example.com/shot.png"))
     XCTAssertNil(WorkToolsSheet.decodeDataUrl("data:image/png;base64"))
@@ -460,7 +442,7 @@ final class WorkToolsContractTests: XCTestCase {
     let chip = WorkToolChip(kind: .simulator(name: "iPhone 16 Pro", family: "iphone"))
     XCTAssertEqual(chip.displayLabel, "16 Pro")
     XCTAssertEqual(chip.label, "iPhone 16 Pro")
-    XCTAssertEqual(WorkToolChip(kind: .appControl(appName: "iPhone Mirroring")).displayLabel, "iPhone Mirroring")
+    XCTAssertEqual(WorkToolChip(kind: .appControl(appName: "iPhone Mirroring")).displayLabel, "App")
   }
 
   private static func macDesktop(
@@ -600,6 +582,27 @@ final class WorkToolsContractTests: XCTestCase {
       "The macOS desktop is off.")
   }
 
+  func testWindowsOffCardSaysWhatThePCIsDoing() {
+    let cases: [(starting: Bool, error: String?, canStart: Bool, pcOperation: String?, expected: String)] = [
+      (false, nil, true, nil, "The Windows desktop is off."),
+      (false, nil, false, nil, "Start this lane’s Windows desktop in ADE on the PC."),
+      (true, nil, true, "start_private", "Waiting for Windows sign-in…"),
+      // A start begun on the PC reads as under way, not as a second Start.
+      (false, nil, true, "start_private", "The private Windows screen is starting on the PC…"),
+      (false, "Old failure", true, "save_password", "Windows Desktop setup is in progress on the PC…"),
+      (false, "Windows sign-in is taking too long.", true, nil, "Windows sign-in is taking too long."),
+      (false, "  ", true, nil, "The Windows desktop is off."),
+      (false, nil, true, "a_newer_step", "The Windows desktop is off."),
+    ]
+    for c in cases {
+      XCTAssertEqual(
+        macDesktopOffCardMessage(
+          starting: c.starting, error: c.error, canStart: c.canStart, hostIsWindows: true, pcOperation: c.pcOperation),
+        c.expected,
+        "starting=\(c.starting) error=\(c.error ?? "nil") pcOperation=\(c.pcOperation ?? "nil")")
+    }
+  }
+
   func testMacDesktopErrorCodesBecomePlainPhoneText() {
     XCTAssertEqual(
       macDesktopVisibleMessage("MAC_DESKTOP_NO_WINDOW: The lane has no windows."),
@@ -683,6 +686,23 @@ final class WorkToolsContractTests: XCTestCase {
     // At 2x the picture can move half a frame each way and no more.
     let far = zoomed.panned(by: CGSize(width: 5_000, height: -5_000), in: Self.zoomFrame)
     XCTAssertEqual(far.offset, CGSize(width: 200, height: -125))
+  }
+
+  func testLandscapeViewportClampsPanAndSettlePullsARubberBandBack() {
+    let picture = CGSize(width: 400, height: 250)
+    let viewport = CGSize(width: 800, height: 200)
+    // Wider than the zoomed picture: that axis stays centered.
+    XCTAssertEqual(
+      MacDesktopZoom.clampOffset(CGSize(width: 40, height: 80), scale: 1, in: picture, viewport: viewport),
+      CGSize(width: 0, height: 25))
+    let pastWidth = MacDesktopZoom.rubberBand(80, limit: 0)
+    let pastHeight = MacDesktopZoom.rubberBand(80, limit: 25)
+    XCTAssertGreaterThan(pastWidth, 0)
+    XCTAssertLessThan(pastWidth, 80)
+    XCTAssertGreaterThan(pastHeight, 25)
+    XCTAssertLessThan(pastHeight, 80)
+    let stretched = MacDesktopZoom(scale: 1, offset: CGSize(width: pastWidth, height: pastHeight))
+    XCTAssertEqual(stretched.settled(in: picture, viewport: viewport).offset, CGSize(width: 0, height: 25))
   }
 
   func testDoubleTapTogglesBetweenOneAndTwoAndAHalfAtTheTap() {
@@ -961,7 +981,83 @@ final class WorkToolsContractTests: XCTestCase {
     XCTAssertEqual(macDesktop.lastObservation?.truncatedReason, "stalled")
     XCTAssertEqual(macDesktop.lastObservation?.stalledApps, ["Safari"])
     XCTAssertEqual(macDesktopLeaseLine(macDesktop.lease), "Agent driving · Fix the header")
-    XCTAssertEqual(workToolsDisplayName("mac-desktop"), "macOS")
+  }
+
+  func testWindowsHostSliceDecodesAndNamesTheSeat() throws {
+    // A current Windows host: the seat on the display and on the host facts, an
+    // operation in flight, and fields the phone ignores (`lastOperation`, `seat`).
+    let current = Data(#"""
+    {
+      "laneId": "lane-1",
+      "activeTool": "windows-desktop",
+      "browser": null,
+      "appControl": null,
+      "macDesktop": {
+        "supported": true,
+        "display": {
+          "name": "ADE · fix-header", "mode": "offscreen-region", "width": 1920, "height": 1080,
+          "origin": { "x": 0, "y": 0 }, "seatMode": "shared"
+        },
+        "lease": null,
+        "stream": null,
+        "windowsDesktop": {
+          "state": "ready", "locked": false, "seatMode": "shared", "phase": "verifying",
+          "operation": { "kind": "save_password", "laneId": null, "startedAt": "2026-10-05T10:00:00.000Z" },
+          "lastOperation": { "kind": "setup", "ok": true },
+          "passwordSaved": true, "heldByLaneId": null
+        },
+        "seat": { "product": "Windows Desktop", "seat": "shared" }
+      }
+    }
+    """#.utf8)
+    let macDesktop = try XCTUnwrap(try JSONDecoder().decode(WorkToolsLaneState.self, from: current).macDesktop)
+    XCTAssertEqual(macDesktop.display?.seatMode, "shared")
+    XCTAssertEqual(macDesktop.windowsDesktop?.phase, "verifying")
+    XCTAssertEqual(macDesktop.windowsDesktop?.operation?.kind, "save_password")
+    XCTAssertNil(macDesktop.windowsDesktop?.operation?.laneId)
+    XCTAssertEqual(
+      windowsDesktopSeatLabel(windowsDesktopSeat(macDesktop.windowsDesktop, display: macDesktop.display)),
+      "Using your main Windows desktop")
+
+    let chip = try XCTUnwrap(macDesktopToolChip(macDesktop))
+    XCTAssertEqual(chip.label, "Windows")
+    XCTAssertEqual(chip.symbolName, windowsDesktopSymbolName)
+    XCTAssertTrue(workToolChipAccessibilityText(chip).hasPrefix("This lane's Windows desktop"))
+    // A Mac host keeps its own mark and words.
+    let macChip = try XCTUnwrap(macDesktopToolChip(Self.macDesktop()))
+    XCTAssertEqual(macChip.symbolName, "desktopcomputer")
+    XCTAssertTrue(workToolChipAccessibilityText(macChip).hasPrefix("This lane's macOS desktop"))
+
+    // An older Windows host sends no seat and no operation: still decodes, and
+    // the seat comes from the display mode the host's own Stop check reads.
+    let older = Data(#"""
+    {
+      "supported": true,
+      "display": { "name": "ADE · fix-header", "mode": "virtual", "width": 1280, "height": 800 },
+      "windowsDesktop": { "state": "ready" }
+    }
+    """#.utf8)
+    let legacy = try JSONDecoder().decode(WorkToolsMacDesktopState.self, from: older)
+    XCTAssertNil(legacy.display?.seatMode)
+    XCTAssertNil(legacy.windowsDesktop?.operation)
+    XCTAssertNil(legacy.windowsDesktop?.phase)
+
+    let display = { (mode: String, seatMode: String?) in
+      WorkToolsMacDesktopDisplay(name: "d", width: 1, height: 1, mode: mode, origin: nil, seatMode: seatMode)
+    }
+    let windows = WindowsDesktopHostState(state: "ready", seatMode: nil, locked: nil)
+    let seatCases: [(host: WindowsDesktopHostState?, display: WorkToolsMacDesktopDisplay?, expected: String?)] = [
+      (windows, display("virtual", nil), "private"),
+      (windows, display("offscreen-region", nil), "shared"),
+      (windows, display("virtual", "shared"), "shared"),
+      (WindowsDesktopHostState(state: "ready", seatMode: "private", locked: nil), display("offscreen-region", nil), "private"),
+      (windows, display("virtual", "a-newer-seat"), "private"),
+      (windows, nil, nil),
+      (nil, display("virtual", nil), nil),
+    ]
+    for c in seatCases {
+      XCTAssertEqual(windowsDesktopSeat(c.host, display: c.display), c.expected)
+    }
   }
 
   func testLaneStateWithoutMacDesktopHidesTheToolRatherThanFailingToDecode() throws {

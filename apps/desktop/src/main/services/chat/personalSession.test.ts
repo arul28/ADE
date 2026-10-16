@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { PERSONAL_CHAT_SYSTEM_PROMPT, resolvePersonalSystemPrompt } from "./personalSession";
+import { PERSONAL_CHAT_SYSTEM_PROMPT, adeSkillCatalogFor, resolvePersonalSystemPrompt } from "./personalSession";
 
 describe("resolvePersonalSystemPrompt", () => {
   // `append` puts the trimmed host text after ADE's; `replace` uses it alone,
@@ -17,5 +17,19 @@ describe("resolvePersonalSystemPrompt", () => {
     ["whitespace replace", { instructions: { mode: "replace" as const, text: "  \n " } }, PERSONAL_CHAT_SYSTEM_PROMPT],
   ])("resolves %s", (_label, session, expected) => {
     expect(resolvePersonalSystemPrompt(session)).toBe(expected);
+  });
+});
+
+describe("adeSkillCatalogFor", () => {
+  // Only an explicit `assistant` personal chat gets the reduced catalog; an
+  // absent or unknown profile is an SDK host's chat and keeps getting none.
+  it.each([
+    [{ surface: "work" as const }, "full"],
+    [{ surface: "work" as const, personalProfile: "assistant" as const }, "full"],
+    [{ surface: "personal" as const, personalProfile: "assistant" as const }, "assistant"],
+    [{ surface: "personal" as const, personalProfile: "embedded" as const }, "none"],
+    [{ surface: "personal" as const }, "none"],
+  ])("gives %j the %s catalog", (session, expected) => {
+    expect(adeSkillCatalogFor(session)).toBe(expected);
   });
 });

@@ -8,66 +8,38 @@ struct LaneDetailRebaseBanner: View {
   let onViewRebase: () -> Void
   let onDismiss: () -> Void
 
+  /// A kit card with one warning glyph: what is behind, then the two actions.
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .center, spacing: 10) {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .center, spacing: 8) {
         Image(systemName: "arrow.triangle.2.circlepath")
-          .font(.system(size: 13, weight: .semibold))
+          .font(.system(size: 12, weight: .semibold))
           .foregroundStyle(ADEColor.warning)
-        Text("REBASE SUGGESTED")
-          .font(.caption.weight(.semibold))
-          .tracking(0.6)
-          .foregroundStyle(ADEColor.textMuted)
+        Text("Rebase suggested")
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
         Spacer(minLength: 4)
-        LaneTypeBadge(text: "1 LANE", tint: ADEColor.warning)
-      }
-
-      VStack(alignment: .leading, spacing: 6) {
-        HStack(spacing: 6) {
-          if hasPr {
-            LaneTypeBadge(text: "PR", tint: ADEColor.accent)
-          }
-          LaneTypeBadge(text: "\(behindCount) BEHIND", tint: ADEColor.warning)
+        if hasPr {
+          ADEKitTag(text: "PR")
         }
-
-        Text(bodyCopy)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-          .fixedSize(horizontal: false, vertical: true)
+        ADEKitTag(text: "\(behindCount) behind", tone: .warn)
       }
+
+      Text(bodyCopy)
+        .font(.system(size: 12.5))
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
 
       HStack(spacing: 8) {
-        Button(action: onViewRebase) {
-          Text("View in Rebase/Merge tab")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .padding(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
-            .background(ADEColor.warning.opacity(0.24), in: Capsule())
-            .overlay(Capsule().stroke(ADEColor.warning.opacity(0.5), lineWidth: 0.6))
-        }
-        .buttonStyle(.plain)
-        .disabled(!canRunLiveActions)
-        .opacity(canRunLiveActions ? 1.0 : 0.55)
-
-        Button(action: onDismiss) {
-          Text("Dismiss")
-            .font(.caption.weight(.medium))
-            .foregroundStyle(ADEColor.textSecondary)
-            .padding(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
-            .overlay(Capsule().stroke(ADEColor.border.opacity(0.4), lineWidth: 0.6))
-        }
-        .buttonStyle(.plain)
-
+        Button("Rebase", action: onViewRebase)
+          .buttonStyle(ADEKitButtonStyle(tone: .warn))
+          .disabled(!canRunLiveActions)
+        Button("Dismiss", action: onDismiss)
+          .buttonStyle(ADEKitButtonStyle())
         Spacer(minLength: 0)
       }
     }
-    .padding(14)
-    .background(ADEColor.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .glassEffect(in: .rect(cornerRadius: 14))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.warning.opacity(0.28), lineWidth: 0.8)
-    )
+    .adeKitCard(padding: 14)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(accessibilityLabel)
   }

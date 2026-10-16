@@ -29,6 +29,8 @@ export const PROVIDER_COLOR_TABLE = {
     openclaw: { light: "#B45309", dark: "#E0A82E" },
     xai: { light: "#3F3F46", dark: "#B4B4BD" },
     grok: { light: "#3F3F46", dark: "#B4B4BD" },
+    devin: { light: "#1F1F1F", dark: "#A1A1AA" },
+    muse: { light: "#0866FF", dark: "#4A9BFF" },
   },
   usageFallback: [
     { light: "#2563EB", dark: "#60A5FA" },
@@ -57,8 +59,10 @@ export const PROVIDER_COLOR_TABLE = {
     groq: "#06B6D4",
     together: "#22C55E",
     meta: "#3B82F6",
+    muse: "#0866FF",
     qwen: "#6D4AFF",
     moonshot: "#1F1F1F",
+    devin: "#1F1F1F",
   },
   group: {
     claude: "#D97757",
@@ -66,6 +70,7 @@ export const PROVIDER_COLOR_TABLE = {
     cursor: "#93A6C4",
     droid: "#E0A82E",
     pi: "#F97316",
+    muse: "#4A9BFF",
     qwen: "#6D4AFF",
     kimi: "#1F1F1F",
     grok: "#B4B4BD",
@@ -73,6 +78,7 @@ export const PROVIDER_COLOR_TABLE = {
     opencode: "#A78BFA",
     ollama: "#A1A1AA",
     lmstudio: "#9F7BEA",
+    devin: "#A1A1AA",
   },
   chat: {
     claude: "#D97706",
@@ -84,6 +90,7 @@ export const PROVIDER_COLOR_TABLE = {
     factory: "#D46C2E",
     opencode: "#739CEE",
     pi: "#181C25",
+    muse: "#0866FF",
     google: "#F59E0B",
     gemini: "#F59E0B",
     mistral: "#F97316",
@@ -91,6 +98,7 @@ export const PROVIDER_COLOR_TABLE = {
     xai: "#DC2626",
     grok: "#DC2626",
     groq: "#06B6D4",
+    devin: "#181C25",
   },
   localModel: {
     ollama: "#71717A",
@@ -114,9 +122,11 @@ export const PROVIDER_COLOR_TABLE = {
     kimi: "#1F1F1F",
     grok: "#DC2626",
     copilot: "#8B5CF6",
+    devin: "#1F1F1F",
   },
   dynamic: {
     pi: "#181C25",
+    muse: "#0866FF",
     openCodeFallback: "#2563EB",
     cursor: {
       auto: "#A78BFA",
@@ -138,6 +148,7 @@ export const PROVIDER_COLOR_TABLE = {
     claude: "#D97757",
     codex: "#2DD4BF",
     pi: "#F97316",
+    muse: "#4A9BFF",
     cursor: "#93A6C4",
     opencode: "#A78BFA",
     google: "#5B93F5",
@@ -149,6 +160,7 @@ export const PROVIDER_COLOR_TABLE = {
     qwen: "#6D4AFF",
     kimi: "#1F1F1F",
     copilot: "#3FB950",
+    devin: "#A1A1AA",
   },
   defaults: {
     badge: "#A78BFA",

@@ -1,11 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLatestCallback } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
 import { paneTransition } from "../../lib/motion";
 import type { PaneSplit } from "../ui/PaneTilingLayout";
 import { useWorkSessions } from "./useWorkSessions";
 import { useChatLaunchCliDriver } from "./useChatLaunchCliDriver";
 import { SessionListPane } from "./SessionListPane";
-import { WorkViewArea } from "./WorkViewArea";
+import type { PressUndo } from "../../lib/pressActivation";
+import { SessionSurface, WorkViewArea } from "./WorkViewArea";
+import { WorkGridView } from "./WorkGridView";
+import { WorkFocusGridEmpty, WorkFocusRoster } from "./WorkFocusGrid";
+import { useWorkFocusGrid } from "./useWorkFocusGrid";
 import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
 import { Banner } from "../ui/notice/Banner";
 import { WorkSidebar } from "./WorkSidebar";
@@ -25,13 +30,19 @@ import {
   takePendingWorkToolRequest,
 } from "./workToolRequests";
 import { holdRemoteBrowserOpen, remoteBrowserOpenMatchesOwner } from "../../lib/pendingRemoteBrowserOpens";
+import { useServeRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
+import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { subscribeFilesOpenInTools } from "../files/v2/filesOpenRequests";
+import { registerIssueInPlaceHost, subscribeIssueToolRequests } from "../../lib/issueNavigation";
 import {
   SessionContextMenu,
   type SessionContextMenuLaneActions,
   type SessionContextMenuOpenIn,
   type SessionContextMenuState,
 } from "./SessionContextMenu";
+import { SessionBulkContextMenu, type BulkLaneIntent } from "./SessionBulkContextMenu";
+import { showToast } from "../app/toast/toastStore";
+import type { ContextMenuState } from "../ui/ContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import type {
   AgentChatSession,
@@ -42,6 +53,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
 import { buildWebClientUrl } from "../../../shared/webClientUrl";
 import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
@@ -53,7 +65,14 @@ import {
   isChatToolType,
   isPtyContextInsertableToolType,
 } from "../../lib/sessions";
-import { addSessionBesideTarget, removeSessionFromGrids } from "../../lib/workGrid";
+import {
+  addSessionBesideTarget,
+  findGridSetForSession,
+  makeGridLayoutId,
+  makeGridSetId,
+  MAX_WORK_GRID_TILES,
+  removeSessionFromGrids,
+} from "../../lib/workGrid";
 import { openChatHandoff, type ChatHandoffIntent } from "../../lib/chatHandoffIntent";
 import { buildWorkSessionTilingTree } from "./workSessionTiling";
 import {
@@ -76,7 +95,7 @@ import {
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
-import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
+import { openLaneInLanesTabPath, openLaneOnMachinePath } from "../../lib/laneNavigation";
 import {
   buildHandoffLaunchJobsScopeKey,
   type HandoffLaunchJob,
@@ -179,6 +198,14 @@ async function allSettledWithConcurrency<T>(
   return results;
 }
 
+
+/** Copy from a menu that has already closed, so a refused write still says so. */
+function copyToClipboard(text: string, what: string): void {
+  void navigator.clipboard.writeText(text).catch(() => {
+    showToast({ title: `Could not copy ${what}`, tone: "error" });
+  });
+}
+
 export function TerminalsPage({ active = true }: { active?: boolean }) {
   const work = useWorkSessions({ active });
   // New-lane CLI launches this window started: open their PTY once the brain
@@ -190,9 +217,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const refreshWork = work.refresh;
-  const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
-  const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const refreshLanes = useAppStore((s) => s.refreshLanes);
   const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
   const handoffLaunchJobsScopeKey = useMemo(
     () => buildHandoffLaunchJobsScopeKey({ projectBinding, projectRoot }),
@@ -203,6 +229,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   ));
 
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState>(null);
+  const [bulkMenu, setBulkMenu] = useState<ContextMenuState>(null);
   const [infoPopover, setInfoPopover] = useState<InfoPopoverState>(null);
   const [sessionActionError, setSessionActionError] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
@@ -211,6 +238,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const workContentPaneRef = useRef<HTMLDivElement | null>(null);
   const hasProjectSidebar = useHasProjectSidebar();
   const projectSidebarHidden = useProjectSidebarHidden();
+  const focusGridMode = work.workViewMode !== "board" && work.workFoldBusyLanes && work.workFocusGrid;
+  const focus = useWorkFocusGrid({
+    enabled: focusGridMode,
+    // With the sessions sidebar on screen, the sidebar is the grid's roster.
+    sidebarIsRoster: hasProjectSidebar && !projectSidebarHidden,
+    projectStateKey,
+    rememberSessionPin: machineRouter.rememberSessionPin,
+  });
+  const { focusSession } = focus;
   const [boardHost, setBoardHost] = useState<HTMLDivElement | null>(null);
 
   const refreshWorkSessionsAfterLaneDelete = useCallback(
@@ -289,13 +325,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       event?: React.MouseEvent,
       visibleSessionIds?: string[],
       binding?: OpenProjectBinding | null,
-    ) => {
+    ): void | PressUndo => {
       const useRange = event?.shiftKey === true;
       const useToggle = event?.metaKey === true || event?.ctrlKey === true;
       const orderedIds = visibleSessionIds?.length ? visibleSessionIds : selectableSessions.map((session) => session.id);
 
       if (useRange) {
-        const anchorId = selectionAnchorId ?? id;
+        // The anchor can leave the screen (its lane folded into Working, its
+        // section collapsed). Fall back to the open row, then to the clicked
+        // row, so a shift-click always selects instead of opening.
+        const anchorId = [selectionAnchorId, work.selectedSessionId, id]
+          .find((candidate) => candidate != null && orderedIds.includes(candidate)) ?? id;
         const anchorIndex = orderedIds.indexOf(anchorId);
         const nextIndex = orderedIds.indexOf(id);
         if (anchorIndex >= 0 && nextIndex >= 0) {
@@ -308,7 +348,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         }
       }
 
-      if (useToggle) {
+      if (useToggle || useRange) {
         setSelectedSessionIds((prev) => {
           const next = new Set(prev);
           if (next.has(id)) next.delete(id);
@@ -320,6 +360,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         return;
       }
 
+      // A row opens on the press, before anyone knows whether the press is a
+      // click or the start of a drag of that row (onto the open chat, to make
+      // a grid or a mention). Keep what the press replaces, to give it back.
+      const before = event?.type === "pointerdown"
+        ? { selectedIds: selectedSessionIds, anchorId: selectionAnchorId, restoreWork: work.selectionRestorer(id) }
+        : null;
       setSelectedSessionIds(new Set());
       setSelectionAnchorId(id);
       work.setSelectedSessionId(id);
@@ -333,12 +379,33 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
          early, because multi-select is a thing you do while staying on the
          board. The toggle in the toolbar is the way back. */
       if (work.workViewMode === "board") work.setWorkViewMode("list");
+      // In the Focus grid a row click focuses that chat's tile. A chat with no
+      // tile (it is working, or the grid is full) opens in the normal view.
+      if (focusGridMode) {
+        if (!focusSession(id)) work.setWorkFocusGrid(false);
+      }
       // Opening the row IS the acknowledgement — the "woke" marker only exists
       // to explain an unexpected return, so it goes as soon as it is seen.
       const opened = selectableSessions.find((session) => session.id === id);
-      if (opened?.wokeAt || binding) clearSessionWokeMarker(id, binding);
+      const acknowledge = () => {
+        if (opened?.wokeAt || binding) clearSessionWokeMarker(id, binding);
+      };
+      if (!before) {
+        acknowledge();
+        return;
+      }
+      // The release of the press acknowledges. A press that becomes a drag has
+      // no release (the browser cancels the pointer), and its undo takes the
+      // listener away: a dragged row was not opened, so its marker stays.
+      window.addEventListener("pointerup", acknowledge, { capture: true, once: true });
+      return () => {
+        window.removeEventListener("pointerup", acknowledge, true);
+        setSelectedSessionIds(before.selectedIds);
+        setSelectionAnchorId(before.anchorId);
+        before.restoreWork();
+      };
     },
-    [selectableSessions, selectionAnchorId, work],
+    [focusGridMode, focusSession, selectableSessions, selectedSessionIds, selectionAnchorId, work],
   );
 
   const handleSelectForeignRuntimeSession = useCallback(
@@ -353,7 +420,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // dropdown released that checkout from the strip. Switching here used to
       // drag Lanes/PRs/Files onto a click that was only meant to focus the chat.
       machineRouter.rememberSessionPin(session, binding);
-      handleSelectSession(session.id, event, visibleSessionIds, binding);
+      return handleSelectSession(session.id, event, visibleSessionIds, binding);
     },
     [handleSelectSession, machineRouter],
   );
@@ -370,12 +437,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       session: TerminalSessionSummary,
       intent: ChatHandoffIntent,
       binding?: OpenProjectBinding | null,
+      options?: { machine?: string | null },
     ) => {
       // The menu carries the row's complete binding. Re-remember it before the
       // selection so a cross-machine slice reload between menu-open and select
       // cannot drop the entry and fall back to the tab's bound machine.
       if (binding) machineRouter.rememberSessionPin(session, binding);
-      openChatHandoff(session.id, intent);
+      openChatHandoff(session.id, intent, options);
       // Pass the row's binding through: selecting a foreign-machine chat must
       // clear its woke marker on that machine, exactly like a plain row click.
       handleSelectSession(session.id, undefined, undefined, binding);
@@ -383,18 +451,18 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [handleSelectSession, machineRouter],
   );
 
-  const handleInfoClick = useCallback(
+  const handleInfoClick = useLatestCallback(
     (session: TerminalSessionSummary, e: React.MouseEvent) => {
       const r = e.currentTarget.getBoundingClientRect();
       setInfoPopover({
         session,
         anchor: { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height },
+        runtimePin: resolveSessionRuntimePin(session),
       });
     },
-    [],
   );
 
-  const handleContextMenu = useCallback(
+  const handleContextMenu = useLatestCallback(
     (
       session: TerminalSessionSummary,
       e: React.MouseEvent,
@@ -406,6 +474,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       openIn?: SessionContextMenuOpenIn | null,
       laneType?: LaneSummary["laneType"] | null,
     ) => {
+      // Right-clicking a row inside a multi-selection acts on the selection, the
+      // way Finder does; a row outside it keeps its own single-row menu.
+      if (selectedSessionIds.size > 1 && selectedSessionIds.has(session.id)) {
+        setContextMenu(null);
+        setBulkMenu({ x: e.clientX, y: e.clientY });
+        return;
+      }
+      setBulkMenu(null);
       setContextMenu({
         session,
         x: e.clientX,
@@ -417,9 +493,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         ...(laneType ? { laneType } : {}),
       });
     },
-    [],
   );
-  const handleOpenChatSession = useCallback(
+  const handleOpenChatSession = useLatestCallback(
     (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => {
       // Invalidate all cache entries so other views (e.g. Lanes tab) pick up
       // the new session on their next refresh.
@@ -449,8 +524,33 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         });
       });
     },
-    [projectBinding?.key, work],
   );
+
+  // Focus a session, reading its lane and pin from the CURRENT session list.
+  // Callers (spawn cards, subagents pane) often don't know the target's lane;
+  // resolving it here lands cross-lane jumps on the right lane instead of
+  // focusing an off-lane session.
+  const applySessionFocus = useLatestCallback((sessionId: string, laneHint: string | null) => {
+    const session = work.sessionsById.get(sessionId) ?? null;
+    const laneId = laneHint ?? session?.laneId ?? null;
+    const runtimePin = resolveSessionRuntimePin(session ?? { id: sessionId, sessionId, laneId });
+    if (laneId && !runtimePin) work.selectLane(laneId);
+    work.focusSession(sessionId);
+    work.openSessionTab(sessionId);
+    work.setSelectedSessionId(sessionId);
+  });
+
+  // A jump to a chat the list had not loaded yet. The refresh resolves before
+  // React renders the new list, so focusing right after it still reads the
+  // old one; this waits for the next list instead, then focuses (and selects
+  // the lane) once — or drops the jump if that list still lacks the chat.
+  const pendingSessionFocusRef = useRef<{ sessionId: string; laneHint: string | null; refreshed: boolean } | null>(null);
+  useEffect(() => {
+    const pending = pendingSessionFocusRef.current;
+    if (!pending?.refreshed) return;
+    pendingSessionFocusRef.current = null;
+    if (work.sessionsById.has(pending.sessionId)) applySessionFocus(pending.sessionId, pending.laneHint);
+  }, [applySessionFocus, work.sessionsById]);
 
   // Jump-to-session bridge for spawned-chat deep links: `onOpenSession`
   // dispatches `ade:work:select-session`; this is the
@@ -482,66 +582,53 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           binding,
         );
       }
-      // Callers (spawn cards, subagents pane) often don't know the target's
-      // lane. Resolve it from the loaded session list so cross-lane jumps
-      // land on the right lane instead of focusing an off-lane session.
-      const session = work.sessionsById.get(sessionId) ?? null;
-      const laneId = detail.laneId ?? session?.laneId ?? null;
-      const runtimePin = resolveSessionRuntimePin(session ?? {
-        id: sessionId,
-        sessionId,
-        laneId,
-      });
-      if (laneId && !runtimePin) work.selectLane(laneId);
-      work.focusSession(sessionId);
-      work.openSessionTab(sessionId);
-      work.setSelectedSessionId(sessionId);
+      const laneHint = detail.laneId ?? null;
+      const loaded = work.sessionsById.has(sessionId);
+      applySessionFocus(sessionId, laneHint);
+      // A chat created a moment ago (a cloud agent opened from its panel, often
+      // in a lane that is also new) is not in the loaded list yet. Load it,
+      // then focus again so the pane binds to the real session; the effect
+      // above repeats the focus once the new list renders.
+      if (!loaded) {
+        const pending = { sessionId, laneHint, refreshed: false };
+        pendingSessionFocusRef.current = pending;
+        void Promise.all([
+          refreshLanes().catch(() => undefined),
+          work.refresh({ force: true }).catch(() => undefined),
+        ]).then(() => {
+          applySessionFocus(sessionId, laneHint);
+          pending.refreshed = true;
+        });
+      }
     };
     window.addEventListener("ade:work:select-session", handler as EventListener);
     return () => window.removeEventListener("ade:work:select-session", handler as EventListener);
-  }, [machineRouter, resolveSessionRuntimePin, work]);
+  }, [applySessionFocus, machineRouter, refreshLanes, work]);
 
   const handleGoToLane = useCallback(
     (
       session: TerminalSessionSummary,
       binding?: OpenProjectBinding | null,
     ) => {
-      const open = () => {
-        work.selectLane(session.laneId);
-        work.focusSession(session.id);
-        const params = new URLSearchParams({
-          laneId: session.laneId,
-          focus: "single",
-          sessionId: session.id,
-        });
-        work.navigate(`/lanes?${params.toString()}`);
-      };
-      if (!binding) {
-        open();
+      // A session on another machine opens its lane in this tab's Lanes list,
+      // which lists every machine's lanes. The project tab never changes
+      // machine to show one lane.
+      if (binding) {
+        work.navigate(openLaneOnMachinePath(session.laneId, machineIdForBinding(binding), session.id));
         return;
       }
-      const switching = binding.kind === "remote"
-        ? switchRemoteProject(binding.targetId, binding.projectId)
-        : switchProjectToPath(binding.rootPath);
-      void switching.then(open).catch((error: unknown) => {
-        setSessionActionError(
-          error instanceof Error ? error.message : String(error),
-        );
-      });
+      work.selectLane(session.laneId);
+      work.focusSession(session.id);
+      work.navigate(openLaneInLanesTabPath(session.laneId, session.id));
     },
-    [
-      switchProjectToPath,
-      switchRemoteProject,
-      work,
-    ],
+    [work],
   );
 
-  const handleGoToLaneById = useCallback(
+  const handleGoToLaneById = useLatestCallback(
     (laneId: string) => {
       work.selectLane(laneId);
       work.navigate(openLaneInLanesTabPath(laneId));
     },
-    [work],
   );
 
   const handleDeleteChat = useCallback(
@@ -712,6 +799,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       .filter((session): session is TerminalSessionSummary => session != null),
     [selectableSessionsById, selectedSessionIds],
   );
+  // The bulk menu lists and grids the selection in sidebar order, not click
+  // order: this tab's roster first, then each other machine's rows.
+  const selectedSessionsInSidebarOrder = useMemo(
+    () => [...selectableSessionsById.values()].filter((session) => selectedSessionIds.has(session.id)),
+    [selectableSessionsById, selectedSessionIds],
+  );
+  // A bulk menu whose selection fell below two rows (a refresh dropped one) is
+  // closed, not parked to reappear at stale coordinates.
+  useEffect(() => {
+    if (selectedSessionsInSidebarOrder.length < 2) setBulkMenu(null);
+  }, [selectedSessionsInSidebarOrder.length]);
 
   // One selected row's delete, routed to the machine that owns it. Bulk delete
   // used to call the unpinned RPC for every row, so a selection spanning
@@ -967,7 +1065,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [finalizeCliResumeResult, resolveSessionRuntimePin],
   );
 
-  const handleContinueCliSession = useCallback(
+  const handleContinueCliSession = useLatestCallback(
     async (session: TerminalSessionSummary, text: string, launch: TerminalResumeLaunchConfig | null) => {
       const args = {
         sessionId: session.id,
@@ -980,17 +1078,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         pin ? window.ade.pty.sendToSession(args, pin) : window.ade.pty.sendToSession(args)
       ));
     },
-    [runCliResumeRequest],
   );
 
-  const handleResumeCliSession = useCallback(
+  const handleResumeCliSession = useLatestCallback(
     async (session: TerminalSessionSummary) => {
       const args = { sessionId: session.id, cols: 100, rows: 30 };
       await runCliResumeRequest(session, "Resume", (pin) => (
         pin ? window.ade.pty.resumeSession(args, pin) : window.ade.pty.resumeSession(args)
       ));
     },
-    [runCliResumeRequest],
   );
 
   const activeWorkSession = useMemo(
@@ -1110,6 +1206,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     tool: workSidebarTool,
     openTools: workSidebarOpenTools,
     setTool: setWorkSidebarTool,
+    showTool: showWorkSidebarTool,
     closeTool: closeWorkSidebarTool,
   } = useWorkSidebarTool(
     activeLaneId,
@@ -1137,6 +1234,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     workSidebarVisible,
     workSidebarTool,
     setWorkSidebarTool,
+    showWorkSidebarTool,
   });
 
   useEffect(() => {
@@ -1158,6 +1256,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     // remote machine — a null pin on a remote tab is still that tab's runtime.
     const unsubscribeRemoteRequests = window.ade?.builtInBrowser?.onRemoteRequest?.((request) => {
       if (!request.openPanel) return;
+      // Addressed to the desktop the user is talking from; another one leaves it.
+      if (!isAddressedToThisDesktop(request.targetClientId)) return;
       // The pane that navigates and acks is unmounted while Git (or another
       // tool) is showing, and the runtime event is not replayed. Hold the
       // request so the Browser panel can drain it on mount.
@@ -1182,6 +1282,18 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     browserRemoteBinding,
     setWorkSidebarTool,
   ]);
+
+  // A chat on another machine, shown here: this desktop runs its agent's
+  // browser commands from now on, in the browser the user can see. Registered
+  // once the chat is in front and kept after the user moves to another chat,
+  // because the agent keeps working (`remoteBrowserCallHost`).
+  useServeRemoteBrowserCalls({
+    active,
+    binding: browserRemoteBinding,
+    chatSessionId: activeWorkSession?.id ?? null,
+    laneId: activeWorkSession?.laneId || null,
+    projectRoot: browserCheckoutRoot ?? null,
+  });
 
   // "Open this tool" asked for from outside the Work page — the app shell's
   // browser open-request handler, the command palette. Only this page knows the
@@ -1208,22 +1320,39 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     });
   }, [active, setWorkSidebarTool]);
 
-  const toggleWorkSidebar = useCallback(() => {
+  // An issue link clicked anywhere while this page is the active one opens in
+  // the tools pane's Issues tab, beside the chat. Registering only while active
+  // matters: this page stays mounted behind Lanes and PRs, and a click there
+  // must open the issue sheet instead of a tab nobody can see. As with files,
+  // this only reveals the tool; the Issues panel drains the request itself.
+  useEffect(() => {
+    if (!active) return undefined;
+    const release = registerIssueInPlaceHost();
+    const unsubscribe = subscribeIssueToolRequests(() => {
+      setWorkSidebarTool("issues");
+    });
+    return () => {
+      unsubscribe();
+      release();
+    };
+  }, [active, setWorkSidebarTool]);
+
+  const toggleWorkSidebar = useLatestCallback(() => {
     work.setWorkSidebarOpen(!work.workSidebarOpen);
-  }, [work]);
+  });
   const terminalPaneOpen = work.workSidebarOpen && workSidebarTool === "terminal";
-  const toggleTerminalPane = useCallback(() => {
+  const toggleTerminalPane = useLatestCallback(() => {
     if (work.workSidebarOpen && workSidebarTool === "terminal") {
       work.setWorkSidebarOpen(false);
     } else {
       setWorkSidebarTool("terminal");
     }
-  }, [setWorkSidebarTool, work, workSidebarTool]);
-  const openTerminalPane = useCallback(() => {
+  });
+  const openTerminalPane = useLatestCallback(() => {
     if (!work.workSidebarOpen || workSidebarTool !== "terminal") {
       setWorkSidebarTool("terminal");
     }
-  }, [setWorkSidebarTool, work, workSidebarTool]);
+  });
   const closeWorkSidebar = useCallback(() => {
     work.setWorkSidebarOpen(false);
   }, [work]);
@@ -1232,7 +1361,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   // A session card dropped onto an existing grid tile. PaneTilingLayout already
   // spliced the dragged session into the tree at the hovered edge; here we only
   // update the grid set's membership and focus the dropped session.
-  const handleAddSessionToGrid = useCallback((draggedId: string, targetId: string, _edge: DropEdge) => {
+  const handleAddSessionToGrid = useLatestCallback((draggedId: string, targetId: string, _edge: DropEdge) => {
     if (draggedId === targetId) return;
     work.setGridSets((prev) => addSessionBesideTarget(prev, {
       sessionId: draggedId,
@@ -1241,11 +1370,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     }).gridSets);
     work.openSessionTab(draggedId);
     work.setActiveItemId(draggedId);
-  }, [work, projectStateKey]);
+  });
 
   // A session card dropped onto a single (non-grid) session — create a new grid
   // from the pair, seeding the split tree to honor the drop edge.
-  const handleCreateGridFromSingle = useCallback((draggedId: string, targetId: string, edge: DropEdge) => {
+  const handleCreateGridFromSingle = useLatestCallback((draggedId: string, targetId: string, edge: DropEdge) => {
     if (draggedId === targetId) return;
     const placeAfter = edge === "right" || edge === "bottom";
     const { gridSets: next, gridSetId } = addSessionBesideTarget(work.gridSets, {
@@ -1263,20 +1392,55 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     work.setGridSets(next);
     work.openSessionTab(draggedId);
     work.setActiveItemId(draggedId);
-  }, [work, projectStateKey]);
+  });
 
   // Remove a session from any grid it belongs to (right-click / drag-out) and
   // open it as a single session.
-  const handleRemoveSessionFromGrid = useCallback((sessionId: string) => {
+  const handleRemoveSessionFromGrid = useLatestCallback((sessionId: string) => {
     work.setGridSets((prev) => removeSessionFromGrids(prev, sessionId));
     work.openSessionTab(sessionId);
     work.setActiveItemId(sessionId);
-  }, [work]);
+  });
 
   const gridSessionIds = useMemo(
     () => work.gridSets.flatMap((set) => set.sessionIds),
     [work.gridSets],
   );
+
+  // Bulk menu → grid: the selection becomes one new grid set, pulled out of any
+  // set its members already sat in.
+  const handleOpenSessionsInGrid = useCallback((sessionIds: string[]) => {
+    const ids = sessionIds.filter((id) => work.sessionsById.has(id)).slice(0, MAX_WORK_GRID_TILES);
+    if (ids.length < 2) return;
+    const detached = ids.reduce((sets, id) => removeSessionFromGrids(sets, id), work.gridSets);
+    const id = makeGridSetId();
+    const layoutId = makeGridLayoutId(projectStateKey, id);
+    window.ade.tilingTree.set(layoutId, buildWorkSessionTilingTree(ids)).catch(() => {});
+    work.setGridSets([...detached, { id, layoutId, sessionIds: ids }]);
+    work.openSessionTab(ids[0]!);
+    work.setActiveItemId(ids[0]!);
+  }, [projectStateKey, work]);
+
+  const handleRemoveSessionsFromGrid = useCallback((sessionIds: string[]) => {
+    work.setGridSets((prev) => sessionIds.reduce((sets, id) => removeSessionFromGrids(sets, id), prev));
+  }, [work]);
+
+  const gridableSessionIds = useMemo(() => new Set(work.sessionsById.keys()), [work.sessionsById]);
+  const localSessionIds = useMemo(() => new Set(work.sessions.map((session) => session.id)), [work.sessions]);
+
+  // Bulk menu → Lanes tab, through the same `action=batch` deep link the Work
+  // lane menu's "Manage N Open Lanes" already uses. `open` only selects them.
+  const handleBulkLanes = useCallback((laneIds: string[], intent: BulkLaneIntent) => {
+    if (!laneIds.length) return;
+    const params = new URLSearchParams({
+      action: intent === "open" ? "select" : "batch",
+      laneId: laneIds[0]!,
+      laneIds: laneIds.join(","),
+    });
+    if (intent === "archive" || intent === "delete") params.set("manageTab", intent);
+    work.selectLane(laneIds[0]!);
+    work.navigate(`/lanes?${params.toString()}`);
+  }, [work]);
 
   // Keep grid membership in sync with live sessions: drop members that no longer
   // exist (closed/deleted) and dissolve any set that falls below two tiles.
@@ -1297,7 +1461,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       return changed ? next : prev;
     });
   }, [work.canPruneSessionIndex, work.loading, work.sessionsById, setGridSets]);
-  const handleStopRunningSession = useCallback((session: TerminalSessionSummary) => {
+  const handleStopRunningSession = useLatestCallback((session: TerminalSessionSummary) => {
     if (!session.ptyId) return;
     work.stopRuntime(session.ptyId, session.id).catch((err: unknown) => {
       console.error("[TerminalsPage] Failed to stop CLI session from header", {
@@ -1306,7 +1470,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         err,
       });
     });
-  }, [work]);
+  });
   /**
    * Teardown for a splitter drag that is currently in flight.
    *
@@ -1425,6 +1589,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     work.setWorkSidebarWidthPct(next);
   }, [work]);
 
+  // The handlers passed here are `useLatestCallback`s. Most of them read
+  // `work`, which changes identity whenever any session state moves; as
+  // `useCallback`s they broke this memo and re-rendered the whole Work view,
+  // chat pane included, a few times a second at idle.
   const workViewArea = useMemo(
     () => (
       <WorkViewArea
@@ -1512,7 +1680,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         six subscriptions, and two `offline` values that disagreed. The provider
         is the single owner; both children read `useNativeToolFeeds()`.
       */
-      <NativeToolFeedsProvider active={active} runtimePin={activeWorkSessionRuntimePin}>
+      <NativeToolFeedsProvider active={active} runtimePin={activeWorkSessionRuntimePin} laneId={activeLaneId}>
         <div
           className="relative flex h-full min-h-0 min-w-0 overflow-hidden"
           data-work-tools-maximized={workToolsMaximized ? "true" : undefined}
@@ -1615,6 +1783,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
                   runtimePin={activeWorkSessionRuntimePin}
                   maximized={workToolsMaximized}
                   onMaximizedChange={setWorkToolsMaximized}
+                  showOwner={Boolean(activeWorkSession && findGridSetForSession(work.gridSets, activeWorkSession.id))}
                 />
               </motion.div>
             ) : null}
@@ -1625,7 +1794,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               aria-live="polite"
               aria-busy="true"
             >
-              <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-card/95 px-3 py-2 text-[12px] font-medium text-muted-fg shadow-xl">
+              <div className="flex items-center gap-2 rounded-lg border border-fg/10 bg-card/95 px-3 py-2 text-[12px] font-medium text-muted-fg shadow-xl">
                 <span className="h-3.5 w-3.5 animate-spin rounded-full border border-muted-fg/35 border-t-accent" />
                 {getLaneDeleteStatusLabel(activeLaneDeleteProgress)} lane
               </div>
@@ -1635,6 +1804,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       </NativeToolFeedsProvider>
     ),
     [
+      work.gridSets,
       activeLaneId,
       activeWorkSession,
       activeWorkSessionRuntimePin,
@@ -1669,6 +1839,92 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const boardMode = work.workViewMode === "board";
   const boardBesideList = boardMode && hasProjectSidebar && !projectSidebarHidden;
 
+  /** Leave the grid and open this chat in the normal view, where Tools live. */
+  const openFocusChatInWork = useLatestCallback((sessionId: string) => {
+    setSelectedSessionIds(new Set());
+    setSelectionAnchorId(sessionId);
+    work.setSelectedSessionId(sessionId);
+    work.openSessionTab(sessionId);
+    work.setWorkFocusGrid(false);
+  });
+  const renderFocusSurface = useLatestCallback((session: TerminalSessionSummary) => (
+    <SessionSurface
+      session={session}
+      lanes={sortedLanes}
+      isActive={session.id === focus.activeId}
+      shouldAutofocus={session.id === focus.focusedId}
+      runtimePin={focus.bindingById.get(session.id) ?? resolveSessionRuntimePin(session)}
+      pageActive={active}
+      terminalVisible
+      onContextMenu={handleContextMenu}
+      onInfoClick={handleInfoClick}
+      onOpenChatSession={handleOpenChatSession}
+      onContinueCliSession={handleContinueCliSession}
+      onResumeCliSession={handleResumeCliSession}
+      onToggleTerminalPane={toggleTerminalPane}
+      onOpenTerminalPane={openTerminalPane}
+      terminalPaneOpen={terminalPaneOpen}
+      onOpenFullView={() => openFocusChatInWork(session.id)}
+    />
+  ));
+  const focusGrid = focusGridMode ? (
+    <div className="flex h-full min-h-0 w-full flex-col" data-testid="work-focus-grid">
+      <div key={focus.pageKey} {...focus.pageProps}>
+        {focus.members.length === 0 ? (
+          <WorkFocusGridEmpty
+            workingCount={work.runningFiltered.length}
+            playing={active}
+          />
+        ) : focus.members.length === 1 ? (
+          renderFocusSurface(focus.members[0]!)
+        ) : (
+          <WorkGridView
+            gridSet={focus.gridSet}
+            sessions={focus.members}
+            lanes={sortedLanes}
+            activeItemId={focus.activeId}
+            renderSession={renderFocusSurface}
+            onFocusSession={focus.setFocusedId}
+            columns={focus.columns}
+            // Membership follows what waits for the user, not drags.
+            onAddSessionToGrid={() => {}}
+            onRemoveFromGrid={() => {}}
+            className="ade-work-grid-tiling h-full min-h-0"
+          />
+        )}
+      </div>
+      {focus.rosterProps ? (
+        <WorkFocusRoster
+          {...focus.rosterProps}
+          onChatContextMenu={(session, event) => handleContextMenu(session, event, focus.bindingById.get(session.id) ?? null)}
+        />
+      ) : null}
+    </div>
+  ) : null;
+
+  // Stable handles for the session list: these callbacks are rebuilt whenever
+  // the sessions, selection or filters change (several times a second while
+  // agents run), and each new identity re-rendered every lane header and card.
+  const listSelectSession = useLatestCallback(handleSelectSession);
+  // A new draft draws in the normal view, so starting one leaves the grid.
+  const listShowDraftKind = useLatestCallback((...args: Parameters<typeof work.showDraftKind>) => {
+    if (work.workFocusGrid) work.setWorkFocusGrid(false);
+    return work.showDraftKind(...args);
+  });
+  const listSelectForeignRuntimeSession = useLatestCallback(handleSelectForeignRuntimeSession);
+  const listClearSelection = useLatestCallback(() => {
+    setSelectedSessionIds(new Set());
+    setSelectionAnchorId(null);
+  });
+  const listBulkClose = useLatestCallback(handleBulkCloseSelected);
+  const listBulkDelete = useLatestCallback(handleBulkDeleteSelected);
+  const listBulkStopAndDelete = useLatestCallback(handleBulkStopAndDeleteSelected);
+  const listRefreshOrphanSessions = useLatestCallback(handleRefreshOrphanSessions);
+
+  // In the Focus grid the sidebar's one filled row is the focused tile, not
+  // the chat that was last open in the normal view (it may be on another page).
+  const listSelectedSessionId = focus.selectedSessionId ?? work.selectedSessionId;
+
   /**
    * The session roster. It lives in the project sidebar in list mode, stays
    * there beside the board in board mode, and fills the main area only when
@@ -1697,23 +1953,23 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             setFilterLaneId={work.setFilterLaneId}
             q={work.q}
             setQ={work.setQ}
-            selectedSessionId={work.selectedSessionId}
+            selectedSessionId={listSelectedSessionId}
             selectedSessionIds={selectedSessionIds}
             gridSets={work.gridSets}
             activeItemId={work.activeItemId}
             draftKind={work.draftKind}
             showingDraft={work.activeItemId == null}
-            onShowDraftKind={work.showDraftKind}
-            onSelectSession={handleSelectSession}
-            onSelectForeignRuntimeSession={handleSelectForeignRuntimeSession}
-            onClearSelection={() => {
-              setSelectedSessionIds(new Set());
-              setSelectionAnchorId(null);
-            }}
-            onBulkClose={handleBulkCloseSelected}
-            onBulkDelete={handleBulkDeleteSelected}
-            onBulkStopAndDelete={handleBulkStopAndDeleteSelected}
-            onRefreshOrphanSessions={handleRefreshOrphanSessions}
+            onShowDraftKind={listShowDraftKind}
+            onSelectSession={listSelectSession}
+            // The board and the Focus grid have more than a selection to put
+            // back when a press becomes a drag, so there a row waits for the click.
+            selectOnPress={work.workViewMode !== "board" && !focusGridMode}
+            onSelectForeignRuntimeSession={listSelectForeignRuntimeSession}
+            onClearSelection={listClearSelection}
+            onBulkClose={listBulkClose}
+            onBulkDelete={listBulkDelete}
+            onBulkStopAndDelete={listBulkStopAndDelete}
+            onRefreshOrphanSessions={listRefreshOrphanSessions}
             onContextMenu={handleContextMenu}
             sessionListOrganization={work.sessionListOrganization}
             setSessionListOrganization={work.setSessionListOrganization}
@@ -1733,6 +1989,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             toggleWorkLanePinned={work.toggleWorkLanePinned}
             workLaneSortMode={work.workLaneSortMode}
             setWorkLaneSortMode={work.setWorkLaneSortMode}
+            workFoldBusyLanes={work.workFoldBusyLanes}
+            setWorkFoldBusyLanes={work.setWorkFoldBusyLanes}
+            workFocusGrid={work.workFocusGrid}
+            setWorkFocusGrid={work.setWorkFocusGrid}
+            onFocusQueueChange={focus.setQueueItems}
+            focusMarks={focus.marks}
+            focusPager={focus.pager}
+            workSeenAtBySessionId={work.workSeenAtBySessionId}
             workLaneOrder={work.workLaneOrder}
             reorderWorkLanes={work.reorderWorkLanes}
             handoffJobs={handoffLaunchJobs}
@@ -1741,20 +2005,26 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       </div>
     ),
     [
+      listShowDraftKind,
       work,
       active,
       sortedLanes,
-      handleSelectSession,
-      handleSelectForeignRuntimeSession,
+      listSelectSession,
+      listSelectForeignRuntimeSession,
+      listClearSelection,
       selectedSessionIds,
-      handleBulkCloseSelected,
-      handleBulkDeleteSelected,
-      handleBulkStopAndDeleteSelected,
-      handleRefreshOrphanSessions,
+      listSelectedSessionId,
+      listBulkClose,
+      listBulkDelete,
+      listBulkStopAndDelete,
+      listRefreshOrphanSessions,
       handleContextMenu,
       handoffLaunchJobs,
       boardBesideList,
       boardHost,
+      focus.marks,
+      focus.pager,
+      focus.setQueueItems,
     ],
   );
 
@@ -1767,7 +2037,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
 
   let mainArea: React.ReactNode;
-  if (boardBesideList) {
+  if (focusGridMode && hasProjectSidebar) {
+    mainArea = (
+      <div className="ade-work-surface flex min-h-0 min-w-0 flex-1 overflow-hidden" data-tour="work.viewArea">
+        {focusGrid}
+      </div>
+    );
+  } else if (boardBesideList) {
     /* Board mode never renders the chat beside the board. That also keeps
        `workSidebarWidthPct`, the user's LIST-mode tools width, untouched on
        the round trip. Clicking a card selects the session and flips back to
@@ -1793,7 +2069,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     mainArea = (
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div
-          className="flex min-h-0 shrink-0 flex-col border-r border-white/[0.06]"
+          className="flex min-h-0 shrink-0 flex-col border-r border-fg/[0.06]"
           style={{ width: PROJECT_SIDEBAR_DEFAULT_WIDTH }}
           data-testid="work-sessions-column"
         >
@@ -1832,7 +2108,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onDeleteSession={handleDeleteSession}
         deletingSessionId={deletingSessionId}
         onGoToLane={handleGoToLane}
-        onCopySessionId={(id) => navigator.clipboard.writeText(id).catch(() => {})}
+        onCopySessionId={(id) => copyToClipboard(id, "session ID")}
         onSettle={handleSettleSession}
         onOpenChatHandoff={handleOpenChatHandoff}
         onCopySessionDeepLink={(session) => {
@@ -1860,7 +2136,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               },
               { form: "ade" },
             );
-            await navigator.clipboard.writeText(href).catch(() => {});
+            copyToClipboard(href, "deep link");
           })();
         }}
         onOpenSessionInWeb={(session) => {
@@ -1913,6 +2189,33 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               }
             },
           });
+        }}
+      />
+
+      <SessionBulkContextMenu
+        menu={bulkMenu}
+        sessions={selectedSessionsInSidebarOrder}
+        lanes={work.lanes}
+        localSessionIds={localSessionIds}
+        resolvePin={resolveSessionRuntimePin}
+        onClose={() => setBulkMenu(null)}
+        pinnedSessionIds={work.pinnedSessionIds}
+        onSetPinned={(sessionIds, pinned) => {
+          const ids = new Set(sessionIds);
+          void work.setSessionsPinned(selectedSessionsInSidebarOrder.filter((session) => ids.has(session.id)), pinned);
+        }}
+        gridSessionIds={gridSessionIds}
+        gridableSessionIds={gridableSessionIds}
+        onOpenInGrid={handleOpenSessionsInGrid}
+        onRemoveFromGrid={handleRemoveSessionsFromGrid}
+        onStopRuntimes={() => { void handleBulkCloseSelected(); }}
+        onDelete={() => { void handleBulkDeleteSelected(); }}
+        onStopAndDelete={handleBulkStopAndDeleteSelected}
+        onCopySessionIds={(ids) => copyToClipboard(ids.join("\n"), "session IDs")}
+        onLanes={handleBulkLanes}
+        onClearSelection={() => {
+          setSelectedSessionIds(new Set());
+          setSelectionAnchorId(null);
         }}
       />
 

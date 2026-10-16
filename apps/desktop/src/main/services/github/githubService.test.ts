@@ -323,6 +323,22 @@ describe("githubService.apiRequest", () => {
     ).rejects.toThrow("Validation Failed: err1; err2");
   });
 
+  it("reads the async merge API's details.message and keeps the status and body", async () => {
+    const body = {
+      status: "pending",
+      details: { message: "A merge request already exists for this pull request.", uuid: "u-1" },
+    };
+    mockFetch.mockResolvedValueOnce(jsonResponse(409, body));
+
+    const service = makeService();
+    const error = await service
+      .apiRequest({ method: "PUT", path: "/repos/o/r/pulls/1/merge-async", token: "ghp_test123" })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("A merge request already exists for this pull request.");
+    expect(error).toEqual(expect.objectContaining({ status: 409, responseBody: body }));
+  });
+
   it("includes rate limit info and rateLimitResetAtMs when rate-limited", async () => {
     const resetTimestamp = Math.floor(Date.now() / 1000) + 3600;
     mockFetch.mockResolvedValueOnce(

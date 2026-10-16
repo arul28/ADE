@@ -59,13 +59,13 @@ export function SettingsDashboardStat({
         gap: 4,
         minWidth: 0,
         padding: "12px 16px",
-        background: "var(--color-card)",
-        border: `1px solid ${COLORS.outlineBorder}`,
-        borderRadius: 10,
+        background: "color-mix(in srgb, var(--color-card) 55%, var(--color-bg) 45%)",
+        border: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)",
+        borderRadius: 12,
         fontFamily: SANS_FONT,
       }}
     >
-      <span style={{ fontSize: 10.5, color: COLORS.textMuted, letterSpacing: "0.02em" }}>{label}</span>
+      <span style={{ fontSize: 12, color: COLORS.textMuted }}>{label}</span>
       <span
         style={{
           fontSize: 18,
@@ -77,7 +77,7 @@ export function SettingsDashboardStat({
       >
         {value}
       </span>
-      {hint ? <span style={{ fontSize: 10.5, color: COLORS.textDim, lineHeight: 1.45 }}>{hint}</span> : null}
+      {hint ? <span style={{ fontSize: 11, color: COLORS.textDim, lineHeight: 1.45 }}>{hint}</span> : null}
     </div>
   );
 }

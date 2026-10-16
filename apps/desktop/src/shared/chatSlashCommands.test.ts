@@ -20,6 +20,12 @@ describe("chat slash command input classification", () => {
     expect(shouldTreatLeadingSlashInputAsChatText("/automate")).toBe(false);
   });
 
+  it("does not treat a slash token that is not in the leading position as a command", () => {
+    expect(extractLeadingSlashCommand("please /ship")).toBeNull();
+    expect(isProviderSlashCommandInput("please /ship")).toBe(false);
+    expect(isProviderSlashCommandInput("run /ship after the tests")).toBe(false);
+  });
+
   it("treats slash-prefixed natural-language questions as chat text", () => {
     expect(shouldTreatLeadingSlashInputAsChatText("/automate is a slash command in the .claude folder right?")).toBe(true);
     expect(shouldTreatLeadingSlashInputAsChatText("/automate?")).toBe(true);

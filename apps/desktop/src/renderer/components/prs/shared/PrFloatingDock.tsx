@@ -34,13 +34,12 @@ import {
   type PrRequirementChip,
 } from "../../../../shared/prNextStep";
 import { classifyPrAuthor, normalizeGithubLogin } from "../../../../shared/prBotIdentity";
-import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, fgTint } from "../../lanes/laneDesignTokens";
 import { PrAgentAvatar } from "./PrAgentAvatar";
 import { PrMarkdownEditor } from "./PrMarkdownEditor";
 import { PrMergeDialog, type PrMergeDialogResult } from "./PrMergeDialog";
 import { PrShippedSummary } from "./PrShippedSummary";
-import { readLastMergeMethod, writeLastMergeMethod } from "./prMergeRailUtils";
-import { prSolidButton } from "./prSection";
+import { MERGE_METHODS, mergeMethodShortLabel, readLastMergeMethod, writeLastMergeMethod } from "./prMergeRailUtils";
 import type { PrReviewEvent } from "./PrReviewSubmitModal";
 import "./PrFloatingDock.css";
 
@@ -158,7 +157,7 @@ function CardHeader({ icon: Glyph, title, onClose, trailing }: { icon: Icon; tit
       <span className="flex-1" />
       {trailing}
       {onClose ? (
-        <button type="button" onClick={onClose} aria-label="Close panel" className="inline-flex rounded p-0.5 hover:bg-white/[0.07]" style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer" }}>
+        <button type="button" onClick={onClose} aria-label="Close panel" className="inline-flex rounded p-0.5 hover:bg-fg/[0.07]" style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer" }}>
           <X size={12} />
         </button>
       ) : null}
@@ -242,6 +241,7 @@ export function PrMergeCard({
   actionBusy,
   actions,
   onMerge,
+  mergeBlockedReason = null,
   notice,
   onClose,
 }: {
@@ -253,6 +253,8 @@ export function PrMergeCard({
   actionBusy: boolean;
   actions: PrMergeCardActions;
   onMerge: (result: PrMergeDialogResult) => void;
+  /** Merge buttons disable with this reason (e.g. "<Machine> is offline"). */
+  mergeBlockedReason?: string | null;
   notice?: { tone: "success" | "error"; text: string } | null;
   onClose: () => void;
 }) {
@@ -268,21 +270,17 @@ export function PrMergeCard({
 
   if (pr.stack) {
     return (
-      <div data-testid="pr-merge-card" data-kind="stack">
-        <CardHeader icon={GitMerge} title="Merge" onClose={onClose} />
-        <div className="flex items-center gap-2" style={{ color: COLORS.accent }}>
-          <Stack size={16} weight="fill" />
-          <span className="text-[13px] font-semibold" style={{ fontFamily: SANS_FONT }}>
-            GitHub Stack {pr.stack.position} of {pr.stack.size}
-          </span>
-        </div>
-        <p className="mb-3 mt-1 text-[11.5px] leading-relaxed" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
-          GitHub manages this stack&apos;s rebases, reviews, and merge order. Finish the merge on GitHub.
-        </p>
-        <button type="button" onClick={() => void window.ade.app.openExternal(pr.githubUrl)} style={prSolidButton({ height: 32, width: "100%" })}>
-          <ArrowSquareOut size={13} /> Review and merge on GitHub
-        </button>
-      </div>
+      <PrStackMergeCard
+        pr={pr}
+        stack={pr.stack}
+        status={status}
+        mergeMethod={mergeMethod}
+        actionBusy={actionBusy}
+        mergeBlockedReason={mergeBlockedReason}
+        notice={notice ?? null}
+        onMerge={onMerge}
+        onClose={onClose}
+      />
     );
   }
 
@@ -308,7 +306,7 @@ export function PrMergeCard({
             <div className="mt-0.5 text-[12px] leading-snug" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>{step.detail}</div>
           ) : null}
         </div>
-        <button type="button" onClick={onClose} aria-label="Close panel" className="-mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-white/[0.07]" style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer" }}>
+        <button type="button" onClick={onClose} aria-label="Close panel" className="-mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-fg/[0.07]" style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer" }}>
           <X size={12} />
         </button>
       </div>
@@ -317,7 +315,7 @@ export function PrMergeCard({
       {step.chips.length > 0 ? (
         <ul
           className="flex flex-col overflow-hidden rounded-xl"
-          style={{ background: "color-mix(in srgb, var(--color-fg) 3.5%, transparent)", boxShadow: `inset 0 0 0 1px ${COLORS.border}` }}
+          style={{ background: fgTint(3.5), boxShadow: `inset 0 0 0 1px ${COLORS.border}` }}
           data-testid="pr-merge-chips"
         >
           {step.chips.map((chip, index) => (
@@ -327,7 +325,7 @@ export function PrMergeCard({
                 onClick={() => actions.onChip?.(chip)}
                 data-chip={chip.id}
                 data-state={chip.state}
-                className="flex h-8 w-full items-center gap-2 px-3 text-left text-[12px] hover:bg-white/[0.03]"
+                className="flex h-8 w-full items-center gap-2 px-3 text-left text-[12px] hover:bg-fg/[0.03]"
                 style={{ color: chip.state === "pass" ? COLORS.textSecondary : COLORS.textPrimary, background: "none", border: "none", cursor: actions.onChip ? "pointer" : "default", fontFamily: SANS_FONT }}
               >
                 <span className="inline-flex shrink-0" style={{ color: CHIP_COLOR[chip.state] }}><ChipGlyph state={chip.state} /></span>
@@ -346,7 +344,8 @@ export function PrMergeCard({
             <button
               type="button"
               onClick={() => runAction(primary.action)}
-              disabled={primary.busy || (primaryIsMerge && actionBusy)}
+              disabled={primary.busy || (primaryIsMerge && (actionBusy || Boolean(mergeBlockedReason)))}
+              title={primaryIsMerge && mergeBlockedReason ? mergeBlockedReason : undefined}
               data-testid="pr-merge-card-primary"
               className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg px-3 text-[12.5px] font-semibold transition-opacity disabled:opacity-60"
               style={{
@@ -368,8 +367,8 @@ export function PrMergeCard({
               onClick={() => runAction(secondary.action)}
               disabled={secondary.busy}
               data-testid="pr-merge-card-secondary"
-              className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-3 text-[12px] font-medium hover:bg-white/[0.08]"
-              style={{ color: COLORS.textSecondary, background: "color-mix(in srgb, var(--color-fg) 6%, transparent)", border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
+              className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-3 text-[12px] font-medium hover:bg-fg/[0.08]"
+              style={{ color: COLORS.textSecondary, background: COLORS.hoverBg, border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
             >
               {secondary.busy ? <CircleNotch size={12} className="animate-spin" /> : null}
               {secondary.label}
@@ -379,14 +378,14 @@ export function PrMergeCard({
             <button
               type="button"
               onClick={() => openMergeDialog(anyway.bypass)}
-              disabled={anyway.blocked || actionBusy}
-              title={anyway.blockedReason ?? (anyway.skips.length ? `Skips: ${anyway.skips.join(", ")}` : undefined)}
+              disabled={anyway.blocked || actionBusy || Boolean(mergeBlockedReason)}
+              title={mergeBlockedReason ?? anyway.blockedReason ?? (anyway.skips.length ? `Skips: ${anyway.skips.join(", ")}` : undefined)}
               data-testid="pr-merge-anyway"
               data-bypass={anyway.bypass || undefined}
-              className={`inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-3 text-[12px] font-medium transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40${primary ? "" : " flex-1"}`}
+              className={`inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-3 text-[12px] font-medium transition-colors hover:bg-fg/[0.08] disabled:cursor-not-allowed disabled:opacity-40${primary ? "" : " flex-1"}`}
               style={{
                 color: anyway.bypass ? COLORS.danger : COLORS.textSecondary,
-                background: anyway.bypass ? `color-mix(in srgb, ${COLORS.danger} 12%, transparent)` : "color-mix(in srgb, var(--color-fg) 6%, transparent)",
+                background: anyway.bypass ? `color-mix(in srgb, ${COLORS.danger} 12%, transparent)` : fgTint(6),
                 border: "none",
                 cursor: "pointer",
                 fontFamily: SANS_FONT,
@@ -405,9 +404,7 @@ export function PrMergeCard({
         </div>
       ) : null}
 
-      {notice ? (
-        <div className="text-[11.5px]" style={{ color: notice.tone === "error" ? COLORS.danger : COLORS.success, fontFamily: SANS_FONT }}>{notice.text}</div>
-      ) : null}
+      <PrMergeCardFooter mergeBlockedReason={mergeBlockedReason} notice={notice} />
 
       <PrMergeDialog
         open={dialog.open}
@@ -427,6 +424,189 @@ export function PrMergeCard({
         }}
       />
     </div>
+  );
+}
+
+/** The card's text line for a stacked PR. `count` is how many open PRs one merge covers. */
+function stackCardText(pr: PrWithConflicts, stackNumber: number, count: number, bypassing: boolean): string {
+  if (pr.state === "merged") return `Merged as part of GitHub Stack #${stackNumber}.`;
+  if (pr.state === "draft") return "This PR is a draft. Mark it ready for review before you merge the stack.";
+  if (pr.state !== "open") return "GitHub manages this stack's rebases, reviews, and merge order.";
+  if (count > 1 && bypassing) {
+    return `ADE merges the ${count} open PRs up to #${pr.githubPrNumber} one at a time from the bottom, each bypassing the branch rules. If one fails, the ones below it stay merged.`;
+  }
+  if (count > 1) {
+    return `GitHub merges the ${count} open PRs up to #${pr.githubPrNumber} together, or none of them. It checks the branch rules during the merge.`;
+  }
+  return "This is the bottom open PR of the stack. GitHub checks the branch rules during the merge.";
+}
+
+function stackMergeButtonLabel(args: { armed: boolean; count: number; prNumber: number; bypassing: boolean }): string {
+  if (args.armed) {
+    const verb = args.bypassing ? "bypass and merge" : "merge";
+    return args.count > 1 ? `Confirm: ${verb} the ${args.count} open PRs up to #${args.prNumber}` : `Confirm: ${verb} this PR`;
+  }
+  if (args.count > 1) return args.bypassing ? `Bypass & merge ${args.count} PRs` : `Merge ${args.count} PRs`;
+  return args.bypassing ? "Bypass & merge" : "Merge";
+}
+
+/**
+ * Merge card for a PR in a GitHub Stack. GitHub merges a stack as one unit:
+ * every open PR from the stack base up to this one, all or none. A bypass from
+ * above the bottom merges layer by layer instead (see `githubStackMerge`). The
+ * first click arms the button and the second one merges, because one click
+ * merges more than this PR.
+ */
+function PrStackMergeCard({
+  pr,
+  stack,
+  status,
+  mergeMethod,
+  actionBusy,
+  mergeBlockedReason,
+  notice,
+  onMerge,
+  onClose,
+}: {
+  pr: PrWithConflicts;
+  stack: NonNullable<PrWithConflicts["stack"]>;
+  status: PrStatus | null;
+  mergeMethod: MergeMethod;
+  actionBusy: boolean;
+  mergeBlockedReason: string | null;
+  notice: PrMergeCardNotice | null;
+  onMerge: (result: PrMergeDialogResult) => void;
+  onClose: () => void;
+}) {
+  const [method, setMethod] = React.useState<MergeMethod>(() => readLastMergeMethod(mergeMethod));
+  const [armed, setArmed] = React.useState(false);
+  const [bypass, setBypass] = React.useState(false);
+  React.useEffect(() => {
+    setArmed(false);
+    setBypass(false);
+  }, [pr.id]);
+  // A new head disarms the confirm. The first status load (no head yet, then
+  // a head) is not a new head.
+  const lastHeadRef = React.useRef<string | null>(status?.headSha ?? null);
+  React.useEffect(() => {
+    const head = status?.headSha ?? null;
+    if (head && lastHeadRef.current && head !== lastHeadRef.current) setArmed(false);
+    if (head) lastHeadRef.current = head;
+  }, [status?.headSha]);
+  const canMerge = pr.state === "open";
+  // Older hosts do not send `openThroughHere`; the position is the upper bound.
+  const count = stack.openThroughHere || stack.position;
+
+  const merge = () => {
+    if (!armed) {
+      setArmed(true);
+      return;
+    }
+    setArmed(false);
+    writeLastMergeMethod(method);
+    onMerge({ method, bypassRules: bypass, expectedHeadSha: status?.headSha ?? undefined });
+  };
+
+  return (
+    <div data-testid="pr-merge-card" data-kind="stack">
+      <CardHeader icon={GitMerge} title="Merge" onClose={onClose} />
+      <div className="flex items-center gap-2" style={{ color: COLORS.accent }}>
+        <Stack size={16} weight="fill" />
+        <span className="min-w-0 flex-1 text-[13px] font-semibold" style={{ fontFamily: SANS_FONT }}>
+          GitHub Stack {stack.position} of {stack.size}
+        </span>
+        <button
+          type="button"
+          onClick={() => void window.ade.app.openExternal(pr.githubUrl)}
+          className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11.5px] hover:bg-fg/[0.07]"
+          style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
+        >
+          GitHub <ArrowSquareOut size={12} />
+        </button>
+      </div>
+      <p className="mb-3 mt-1 text-[11.5px] leading-relaxed" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
+        {stackCardText(pr, stack.number, count, bypass)}
+      </p>
+      {pr.state === "merged" ? <div className="mb-3"><PrShippedSummary pr={pr} /></div> : null}
+      {canMerge ? (
+        <>
+          <div className="mb-2 flex gap-1" role="radiogroup" aria-label="Merge method">
+            {MERGE_METHODS.map((option) => (
+              <button
+                key={option}
+                type="button"
+                role="radio"
+                aria-checked={method === option}
+                onClick={() => { setMethod(option); setArmed(false); }}
+                className="h-7 flex-1 rounded-md text-[11.5px]"
+                style={{
+                  color: method === option ? COLORS.textPrimary : COLORS.textMuted,
+                  background: method === option ? fgTint(10) : "transparent",
+                  border: `1px solid ${COLORS.border}`,
+                  cursor: "pointer",
+                  fontFamily: SANS_FONT,
+                }}
+              >
+                {mergeMethodShortLabel(option)}
+              </button>
+            ))}
+          </div>
+          <label className="mb-2 flex items-start gap-2 text-[11.5px]" style={{ color: bypass ? COLORS.danger : COLORS.textMuted, fontFamily: SANS_FONT, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={bypass}
+              onChange={(event) => { setBypass(event.target.checked); setArmed(false); }}
+              data-testid="pr-stack-merge-bypass"
+            />
+            <span className="min-w-0">
+              <span className="block">Bypass branch rules (needs bypass permission)</span>
+              {bypass && count === 1 ? (
+                <span className="block leading-snug" style={{ color: COLORS.textMuted }}>
+                  Merges without the reviews and checks the branch rules require.
+                </span>
+              ) : null}
+            </span>
+          </label>
+          {/* Pinned to the card's bottom edge, so a short pane that scrolls
+              the card still shows the merge button. */}
+          <div className="ade-pr-dock-card-actions">
+            <button
+              type="button"
+              onClick={merge}
+              disabled={actionBusy || Boolean(mergeBlockedReason)}
+              title={mergeBlockedReason ?? undefined}
+              data-testid="pr-stack-merge"
+              data-armed={armed || undefined}
+              className="mb-2 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg px-3 text-[12.5px] font-semibold disabled:opacity-60"
+              style={{ color: "#fff", background: bypass ? COLORS.danger : MERGE_BUTTON_FILL, border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
+            >
+              {actionBusy ? <CircleNotch size={13} className="animate-spin" /> : <GitMerge size={13} weight="bold" />}
+              {stackMergeButtonLabel({ armed, count, prNumber: pr.githubPrNumber, bypassing: bypass })}
+            </button>
+          </div>
+        </>
+      ) : null}
+      <PrMergeCardFooter mergeBlockedReason={mergeBlockedReason} notice={notice} />
+    </div>
+  );
+}
+
+type PrMergeCardNotice = { tone: "success" | "error"; text: string };
+
+/** The offline reason and the update-branch notice, shared by both merge cards. */
+function PrMergeCardFooter({ mergeBlockedReason, notice }: { mergeBlockedReason: string | null; notice: PrMergeCardNotice | null | undefined }) {
+  return (
+    <>
+      {mergeBlockedReason ? (
+        <div className="text-[11.5px] leading-snug" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }} data-testid="pr-merge-offline-reason">
+          {mergeBlockedReason}
+        </div>
+      ) : null}
+      {notice ? (
+        <div className="text-[11.5px]" style={{ color: notice.tone === "error" ? COLORS.danger : COLORS.success, fontFamily: SANS_FONT }}>{notice.text}</div>
+      ) : null}
+    </>
   );
 }
 
@@ -487,7 +667,7 @@ export function PrCommentCard({
     <div ref={cardRef} data-testid="pr-comment-card" className="flex flex-col gap-3">
       <div className="flex items-center gap-2">
         {canReview ? (
-          <div role="tablist" aria-label="Comment or review" className="inline-flex rounded-lg p-0.5" style={{ background: "color-mix(in srgb, var(--color-fg) 6%, transparent)" }}>
+          <div role="tablist" aria-label="Comment or review" className="inline-flex rounded-lg p-0.5" style={{ background: COLORS.hoverBg }}>
             {(["comment", "review"] as const).map((value) => (
               <button
                 key={value}
@@ -498,7 +678,7 @@ export function PrCommentCard({
                 className="rounded-md px-3 py-1 text-[12px] font-medium capitalize"
                 style={{
                   color: mode === value ? COLORS.textPrimary : COLORS.textMuted,
-                  background: mode === value ? "color-mix(in srgb, var(--color-fg) 11%, transparent)" : "transparent",
+                  background: mode === value ? fgTint(11) : "transparent",
                   border: "none",
                   cursor: "pointer",
                   fontFamily: SANS_FONT,
@@ -512,7 +692,7 @@ export function PrCommentCard({
           <span className="text-[11px] font-semibold uppercase tracking-[0.07em]" style={{ color: COLORS.textMuted }}>Comment</span>
         )}
         <span className="flex-1" />
-        <button type="button" onClick={onClose} aria-label="Close panel" className="inline-flex rounded p-1 hover:bg-white/[0.07]" style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer" }}>
+        <button type="button" onClick={onClose} aria-label="Close panel" className="inline-flex rounded p-1 hover:bg-fg/[0.07]" style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer" }}>
           <X size={12} />
         </button>
       </div>
@@ -531,7 +711,7 @@ export function PrCommentCard({
                 className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-2 text-[12px] font-medium"
                 style={{
                   color: on ? tone : COLORS.textMuted,
-                  background: on ? `color-mix(in srgb, ${tone} 13%, transparent)` : "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+                  background: on ? `color-mix(in srgb, ${tone} 13%, transparent)` : fgTint(4),
                   boxShadow: on ? `inset 0 0 0 1px color-mix(in srgb, ${tone} 38%, transparent)` : "none",
                   border: "none",
                   cursor: "pointer",
@@ -548,7 +728,7 @@ export function PrCommentCard({
       <div
         className="overflow-hidden rounded-xl"
         data-testid="pr-comment-card-editor"
-        style={{ background: "color-mix(in srgb, var(--color-fg) 3.5%, transparent)", boxShadow: `inset 0 0 0 1px ${COLORS.border}` }}
+        style={{ background: fgTint(3.5), boxShadow: `inset 0 0 0 1px ${COLORS.border}` }}
       >
         <PrMarkdownEditor
           value={draft}

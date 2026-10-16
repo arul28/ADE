@@ -67,12 +67,13 @@ function darwinPackageArchForContext(context) {
   return "darwin-x64";
 }
 
-// `opencode-ai` ships a 107 MB Windows executable in its own bin/ on every
-// platform. The JS launcher package still ships (the resolver and the ADE CLI
-// both load it), but that payload never does: OpenCode itself comes from the
-// machine tools cache now, on Windows as much as anywhere else.
+// `@opencode/cli`'s postinstall copies the ~170 MB native binary into its own
+// bin/opencode.exe on every platform. The launcher package still ships (the
+// resolver and the ADE CLI both look for it), but that payload never does:
+// OpenCode itself comes from the machine tools cache now, on Windows as much
+// as anywhere else.
 function pruneOpenCodeInstallShim(runtimeRoot) {
-  const shimPath = path.join("node_modules", "opencode-ai", "bin", "opencode.exe");
+  const shimPath = path.join("node_modules", "@opencode", "cli", "bin", "opencode.exe");
   if (removeIfPresent(runtimeRoot, shimPath)) {
     console.log(`[afterPack] Pruned runtime-fetched OpenCode install shim: ${shimPath}`);
   }

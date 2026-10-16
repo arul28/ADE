@@ -442,6 +442,9 @@ struct ChatLaunchChatConfig: Equatable {
   var model: String
   var reasoningEffort: String? = nil
   var codexFastMode: Bool? = nil
+  /// Saved Custom harness the launch runs under; the host resolves it against
+  /// its own account-scoped list and machine stores.
+  var presetId: String? = nil
   var piProfileId: String? = nil
   var piProviderId: String? = nil
   var piModelId: String? = nil
@@ -453,6 +456,7 @@ struct ChatLaunchChatConfig: Equatable {
   var codexConfigSource: String? = nil
   var opencodePermissionMode: String? = nil
   var droidPermissionMode: String? = nil
+  var musePermissionMode: String? = nil
   var cursorModeId: String? = nil
 }
 
@@ -503,6 +507,7 @@ extension ChatLaunchRequest {
     modelId: String,
     reasoningEffort: String,
     codexFastMode: Bool?,
+    presetId: String? = nil,
     piMetadata: WorkPiModelMetadata?,
     wire: WorkRuntimeWireFields,
     projectId: String?,
@@ -532,6 +537,7 @@ extension ChatLaunchRequest {
         model: modelId,
         reasoningEffort: reasoning.isEmpty ? nil : reasoning,
         codexFastMode: codexFastMode,
+        presetId: presetId,
         piProfileId: piMetadata?.profileId,
         piProviderId: piMetadata?.providerId,
         piModelId: piMetadata?.modelId,
@@ -543,6 +549,7 @@ extension ChatLaunchRequest {
         codexConfigSource: wire.codexConfigSource,
         opencodePermissionMode: wire.opencodePermissionMode,
         droidPermissionMode: wire.droidPermissionMode,
+        musePermissionMode: wire.musePermissionMode,
         cursorModeId: wire.cursorModeId
       ),
       projectId: projectId,

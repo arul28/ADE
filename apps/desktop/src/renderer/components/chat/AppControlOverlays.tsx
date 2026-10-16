@@ -72,7 +72,7 @@ export function AppControlObserveOverlay({
                 "absolute inset-0 rounded-[3px] border transition-colors duration-[120ms] ease-out",
                 isActive
                   ? "border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]"
-                  : "border-white/25 bg-white/[0.03]",
+                  : "border-white/25 bg-fg/[0.03]",
               )}
               // A white halo keeps the outline readable on light app surfaces
               // as well as dark ones.
@@ -97,8 +97,8 @@ export function AppControlObserveOverlay({
                 "transition-colors duration-[120ms] ease-out",
                 "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-bg)]",
                 isActive
-                  ? "bg-[var(--color-accent)] text-[#14121F]"
-                  : "bg-black/72 text-fg/90 hover:bg-[var(--color-accent)] hover:text-[#14121F]",
+                  ? "bg-[var(--color-accent)] text-(color:--color-composer-bg)"
+                  : "bg-black/72 text-fg/90 hover:bg-[var(--color-accent)] hover:text-(color:--color-composer-bg)",
               )}
             >
               {glyph}
@@ -108,7 +108,7 @@ export function AppControlObserveOverlay({
               <div
                 className={cn(
                   "pointer-events-auto absolute left-0 top-[calc(100%+4px)] z-20 w-[190px]",
-                  "rounded-[var(--radius-md)] border border-white/[0.1] bg-card/95 p-1.5",
+                  "rounded-[var(--radius-md)] border border-fg/[0.1] bg-card/95 p-1.5",
                   "shadow-[var(--shadow-popup)] backdrop-blur-[var(--blur-popup)]",
                 )}
                 role="group"
@@ -138,8 +138,8 @@ export function AppControlObserveOverlay({
                       onClick={() => onAddToChat(element)}
                       className={cn(
                         "ml-auto inline-flex h-[22px] items-center gap-1 rounded-[var(--radius-sm)]",
-                        "border border-white/[0.1] bg-white/[0.04] px-2 text-[10.5px] font-medium text-fg/85",
-                        "transition-colors duration-[120ms] ease-out hover:bg-white/[0.08]",
+                        "border border-fg/[0.1] bg-fg/[0.04] px-2 text-[10.5px] font-medium text-fg/85",
+                        "transition-colors duration-[120ms] ease-out hover:bg-fg/[0.08]",
                         "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
                       )}
                     >

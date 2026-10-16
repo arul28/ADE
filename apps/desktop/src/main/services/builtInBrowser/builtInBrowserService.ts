@@ -1,6 +1,7 @@
+import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
 import { existsSync } from "node:fs";
 import { WebContentsView, app, nativeImage, screen, session } from "electron";
-import type { BrowserWindow, DownloadItem, WebContents } from "electron";
+import type { BrowserWindow, WebContents } from "electron";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -52,8 +53,13 @@ import type {
   BuiltInBrowserSessionsResult,
   BuiltInBrowserStartSessionArgs,
   BuiltInBrowserAgentPresence,
+  BuiltInBrowserAgentAccessAnswer,
+  BuiltInBrowserAgentAccessMode,
+  BuiltInBrowserAgentAccessRevokeArgs,
+  BuiltInBrowserAgentAccessSnapshot,
   BuiltInBrowserStatus,
   BuiltInBrowserTab,
+  BuiltInBrowserTabLoadError,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
   BuiltInBrowserTraceArgs,
@@ -73,6 +79,8 @@ import type {
   BuiltInBrowserExportHarResult,
   BuiltInBrowserFindInPageArgs,
   BuiltInBrowserFindInPageResult,
+  BuiltInBrowserReadTextArgs,
+  BuiltInBrowserReadTextResult,
   BuiltInBrowserHoverArgs,
   BuiltInBrowserNetworkLogArgs,
   BuiltInBrowserNetworkLogEntry,
@@ -96,6 +104,7 @@ import type {
   BuiltInBrowserZoomResult,
 } from "../../../shared/types";
 import {
+  BUILT_IN_BROWSER_RECORDING_VIEWPORT,
   BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
   BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
   BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
@@ -103,23 +112,38 @@ import {
   BUILT_IN_BROWSER_PREVIEW_WARM_MS,
   BUILT_IN_BROWSER_VIEW_CORNER_RADIUS,
 } from "../../../shared/types";
-import { isRedactedBuiltInBrowserQueryParam } from "../../../shared/types/builtInBrowser";
+import type { ComputerUseActionEffect } from "../../../shared/types/agentObservation";
+import {
+  BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS,
+  isRedactedBuiltInBrowserQueryParam,
+} from "../../../shared/types/builtInBrowser";
 import {
   EPHEMERAL_LOOPBACK_PORT_MIN,
   isLoopbackHostname,
 } from "../../../shared/remoteLoopbackUrl";
 import type { Logger } from "../logging/logger";
-import { isRecord } from "../shared/utils";
+import {
+  BACKGROUND_AUDIO_WEB_CONTENTS,
+  MANAGED_BROWSER_WEB_CONTENTS,
+  announceBuiltInBrowserWebContents,
+  registerBrowserMediaPreload,
+} from "./builtInBrowserMediaHooks";
+import { isRecord, normalizeRelative } from "../shared/utils";
 import { pathKey } from "../shared/pathCompare";
 import {
   AGENT_DOM_COLLECTOR_FUNCTION,
   AGENT_ELEMENT_MAP_OVERLAY_FUNCTION,
-  keyEventForAgentInput,
+  keyEventsForAgentInput,
   parseObservationElementHandle,
   sanitizeObservationPathSegment,
 } from "../../../shared/agentObservation";
 import {
+  agentActionEffect,
   agentActionTargetForTrace,
+  createAgentActionEffectTracker,
+  noteAgentActionBaseline,
+  noteAgentActionResolved,
+  type AgentActionEffectTracker,
   resolveAgentElementLocatePayload,
   agentHasElementTarget as hasElementTarget,
   applyAgentObservationHandles as applyObservationHandles,
@@ -140,18 +164,43 @@ import {
   errorMessage,
   normalizeDimension,
 } from "./builtInBrowserConstants";
-import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
 import {
+  recordingViewportViewRect,
+  createBuiltInBrowserRecordingViewport,
+  narrowPageHint,
+  tabUsesRecordingViewport,
+} from "./builtInBrowserRecordingViewport";
+import { createPanelRectSettler } from "./builtInBrowserPanelRectSettler";
+import { createUrlLoader, isAllowedNavigationUrl, normalizeBrowserUrl, urlForBrowserLog } from "./builtInBrowserNavigation";
+import {
+  builtInBrowserRecordingKey,
   builtInBrowserTabTitle,
   createBuiltInBrowserTabCapabilities,
 } from "./builtInBrowserTabCapabilities";
 import { evaluateInTab } from "./builtInBrowserCdp";
+import type { DemoEngine, DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
+import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
+import {
+  DEMO_VIEWPORT_ISOLATED_WORLD_ID,
+  DEMO_VIEWPORT_SOURCE,
+  demoElementLabel,
+  demoTypedLabel,
+  demoUrlHost,
+  noteDemoPageAction,
+  parseDemoViewport,
+} from "../demoVideo/demoTrackTargets";
 import {
   BuiltInBrowserHandoffActiveError,
   handoffOrigin,
   normalizeHandoffTimeoutMs,
 } from "./builtInBrowserHandoff";
-import { createBuiltInBrowserAgentAccessController } from "./builtInBrowserAgentAccess";
+import {
+  BuiltInBrowserApprovalBlockedError,
+  createBuiltInBrowserAgentAccessController,
+  type BuiltInBrowserAgentAccessGate,
+  type BuiltInBrowserAgentAccessStore,
+  type BuiltInBrowserAgentDescription,
+} from "./builtInBrowserAgentAccess";
 import { configureBuiltInBrowserAuthentication } from "./builtInBrowserAuthentication";
 import { migrateLegacyBuiltInBrowserProfiles } from "./builtInBrowserProfileMigration";
 import {
@@ -159,11 +208,17 @@ import {
 } from "./builtInBrowserPermissions";
 import { configureBuiltInBrowserSessionWebAuthn } from "./builtInBrowserWebAuthn";
 import {
+  createBuiltInBrowserIsolatedSessions,
+  type BrowserDownloadListener,
+  type BrowserTabIsolation,
+} from "./builtInBrowserIsolation";
+import {
   createBuiltInBrowserStateStore,
   type BuiltInBrowserRestoredCollection,
 } from "./builtInBrowserStateStore";
 import {
   BUILT_IN_BROWSER_DEFAULT_ZOOM_FACTOR,
+  BUILT_IN_BROWSER_MIN_EMULATION_VIEW_SCALE,
   BUILT_IN_BROWSER_OBSERVATION_NETWORK_LOG_LIMIT,
   clampBuiltInBrowserEmulationViewScale,
   createBuiltInBrowserNetworkLog,
@@ -209,7 +264,7 @@ const OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "browser-observations")
 const INSPECT_BINDING_NAME = "__adeBuiltInBrowserInspectSelect";
 const DOWNLOAD_FILENAME_UNSAFE_RE = /[<>:"/\\|?*\x00-\x1F]/g;
 const RESERVED_BROWSER_DOWNLOAD_PATH_KEYS = new Set<string>();
-const MANAGED_BROWSER_WEB_CONTENTS = new WeakSet<WebContents>();
+
 type BrowserCollection = {
   key: string;
   projectRoot: string | null;
@@ -274,9 +329,48 @@ type CdpRuntimeBindingCalledParams = {
 
 type CdpInputMouseButton = "left" | "middle" | "right" | "none";
 
+/**
+ * The action in flight on a tab: what it learned before sending input, and
+ * whether it set off a navigation that is waiting on the user's origin
+ * approval (which the page comparison alone would misreport as "nothing
+ * changed").
+ */
+type ActionEffectEntry = {
+  action: string;
+  tracker: AgentActionEffectTracker;
+  navigationApproval: { origin: string; state: "pending" | "allowed" | "blocked" } | null;
+};
+
+function browserOriginOf(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/** An action's effect when it set off a navigation held for approval; null otherwise. */
+function navigationApprovalEffect(
+  approval: ActionEffectEntry["navigationApproval"],
+): ComputerUseActionEffect | null {
+  if (!approval || approval.state === "allowed") return null;
+  if (approval.state === "pending") {
+    return {
+      status: "waiting_for_approval",
+      reason: `navigation to ${approval.origin} is waiting for the user to allow this agent to use the ADE browser`,
+    };
+  }
+  return {
+    status: "not_checked",
+    reason: `the user blocked navigation to ${approval.origin} for this chat; the page did not leave`,
+  };
+}
+
 export type BrowserTabState = {
   id: string;
   view: WebContentsView | null;
+  isolation: BrowserTabIsolation | null;
   webContents: WebContents;
   ownsWebContents: boolean;
   consoleDiagnostics: BuiltInBrowserDiagnostics["console"];
@@ -308,6 +402,8 @@ export type BrowserTabState = {
    * launchpad rather than a page. Cleared the moment it navigates anywhere.
    */
   isLaunchpad: boolean;
+  /** The current page's main-frame load failure; cleared when the next navigation starts. */
+  loadError: BuiltInBrowserTabLoadError | null;
   /**
    * The favicon the renderer draws, and the origin it belongs to.
    *
@@ -325,6 +421,12 @@ export type BrowserTabState = {
   networkLog: BuiltInBrowserNetworkLogStore;
   networkLogPending: Map<string, BuiltInBrowserNetworkLogEntry>;
   recording: BuiltInBrowserRecordingSession | null;
+  /**
+   * Set for the moment a recording is starting, before its session exists, so
+   * the tab lays out at `BUILT_IN_BROWSER_RECORDING_VIEWPORT` for the very
+   * first frame rather than relaying out mid-video (`tabUsesRecordingViewport`).
+   */
+  recordingStarting?: boolean;
   /**
    * Error tallies since this tab's last main-frame navigation, which is what
    * the Work tools pane's red activity dot reports. Kept as counters rather
@@ -345,7 +447,9 @@ export type BrowserTabState = {
    */
   findWaiters: Set<(requestId: number) => void>;
   /**
-   * The last non-empty rect this tab was actually shown at in the panel.
+   * The last non-empty rect this tab was shown at in the panel AND the panel
+   * stopped at (`createPanelRectSettler`): never a frame of the pane opening, closing
+   * or being dragged.
    *
    * Parking a previewed tab has to give it a size, and the panel's live bounds
    * are already zero by then (`hideBuiltInBrowserView` sends `0×0` on the way
@@ -365,8 +469,11 @@ export type BrowserTabState = {
  * `network` is the opt-in request log; `emulation` is a device override, which
  * Chromium drops the instant the DevTools session that set it detaches — which
  * is exactly why device presets used to change the label and nothing else.
+ * `recording-viewport` is the same override, held for a recording
+ * tab (see `BUILT_IN_BROWSER_RECORDING_VIEWPORT`); it steps aside for a preset and
+ * for DevTools rather than blocking either.
  */
-export type BrowserDebuggerHoldOwner = "network" | "emulation";
+export type BrowserDebuggerHoldOwner = "network" | "emulation" | "recording-viewport";
 
 /**
  * Side-channel for the parts of a login handoff that are not the browser's job:
@@ -432,11 +539,6 @@ type BrowserSessionState = {
 };
 
 export type BuiltInBrowserElementTargetInput = BuiltInBrowserObservationArgs & BuiltInBrowserElementTargetArgs;
-type BrowserDownloadListener = (
-  event: { preventDefault: () => void },
-  item: DownloadItem,
-  downloadWebContents: WebContents,
-) => void;
 
 type BrowserNetworkObserver = {
   onRequestStarted: (details: Record<string, unknown>) => void;
@@ -596,8 +698,26 @@ export function isBuiltInBrowserNoTabError(error: unknown): error is BuiltInBrow
 
 export function createBuiltInBrowserService(args: {
   getLogger?: () => Logger;
+  /** Makes a recording's demo video. Without one, a recording fails at its stop. */
+  demoEngine?: DemoEngine | null;
   getProjectRootForWindow?: (win: BrowserWindow) => string | null | undefined;
   getWindowForProjectRoot?: (projectRoot: string) => BrowserWindow | null | undefined;
+  /**
+   * The window that hosts a project's browser when no window is bound to it.
+   *
+   * Tabs show every machine's sessions, so this computer's chat routinely sits
+   * in a window whose project tab is bound to another machine. Its browser is
+   * still this desktop's, and the window showing the chat is where it belongs;
+   * refusing ("No ADE browser window is open") left local agents with no
+   * browser at all. Consulted only after the caller's own window, the bound
+   * window, and a window already hosting the collection — so in practice by
+   * agents over the bridge, whose calls are still gated by their actor
+   * capability and the per-project agent-access setting. The collection stays
+   * keyed by `projectRoot` either way, and its views stay hidden until shown.
+   */
+  getFallbackWindowForProjectRoot?: (projectRoot: string) => BrowserWindow | null | undefined;
+  /** A live ADE window that can host a personal tab while it stays off-screen. */
+  getFallbackWindowForPersonalCollection?: () => BrowserWindow | null | undefined;
   onEvent?: ((payload: BuiltInBrowserEventPayload, targetWindow?: BrowserWindow | null) => void) | null;
   stateFilePath?: string | null;
   permissionFilePath?: string | null;
@@ -629,6 +749,23 @@ export function createBuiltInBrowserService(args: {
    * front, and vice versa.
    */
   isDevServerAutoOpenEnabled?: ((record: DevServerRecord) => boolean | Promise<boolean>) | null;
+  /**
+   * The chat title and lane name the "may this agent use the browser?" prompt
+   * shows instead of raw ids. Owned by the chat/lane stack, so it is injected.
+   */
+  describeAgent?: ((identity: {
+    laneId: string | null;
+    chatSessionId: string | null;
+  }) => BuiltInBrowserAgentDescription | null | Promise<BuiltInBrowserAgentDescription | null>) | null;
+  /**
+   * Where "Agents can use the ADE browser" and the lane/chat grants are saved.
+   * Machine-wide (the desktop's global state). Omitted: in memory.
+   */
+  agentAccessStore?: BuiltInBrowserAgentAccessStore | null;
+  /** The setting, the grants or the open prompts changed; the renderer shows the prompt. */
+  onAgentAccessChange?: ((snapshot: BuiltInBrowserAgentAccessSnapshot) => void) | null;
+  /** Test seam: the mode used when nothing is saved. */
+  agentAccessInitialMode?: BuiltInBrowserAgentAccessMode;
 }) {
   type WindowBrowserService = ReturnType<typeof createBuiltInBrowserWindowService>;
   type WindowBrowserEntry = {
@@ -674,9 +811,11 @@ export function createBuiltInBrowserService(args: {
     getLogger: args.getLogger,
   });
   const agentAccessController = createBuiltInBrowserAgentAccessController({
-    hasAllowedPermissionForOrigin: (origin) => permissionController.hasAllowedDecisionForOrigin(origin),
-    resolveParentWindow,
+    store: args.agentAccessStore ?? null,
     getLogger: args.getLogger,
+    describeAgent: args.describeAgent ?? undefined,
+    onChange: args.onAgentAccessChange ?? undefined,
+    initialMode: args.agentAccessInitialMode,
   });
   const networkRouter = createBrowserNetworkRouter();
   const profileMigrationPromise = userDataPath
@@ -750,13 +889,14 @@ export function createBuiltInBrowserService(args: {
         ? path.join(collection.projectRoot, OBSERVATION_CACHE_DIR)
         : personalObservationRootPath,
       permissionController,
-      agentAccessController,
+      agentAccessController: agentAccessController.forProjectRoot(collection.projectRoot),
       networkRouter,
       waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
       onHandoff: args.onHandoff ?? null,
       presenceHolds: presenceRouter,
       createRecordingWindow: args.createRecordingWindow ?? null,
       createTabRecorder: args.createTabRecorder ?? null,
+      demoEngine: args.demoEngine ?? null,
     });
 
   const serviceKey = (windowId: number, collection: BrowserCollection): string =>
@@ -787,7 +927,8 @@ export function createBuiltInBrowserService(args: {
   const requestsPersonalCollection = (input: unknown): boolean =>
     isRecord(input) && input.tabCollection === "personal";
 
-  const liveWindowForProjectRoot = (projectRoot: string): BrowserWindow | null => {
+  /** A live window that has the project open (active or as a tab), or null. */
+  const boundWindowForProjectRoot = (projectRoot: string): BrowserWindow | null => {
     const normalized = normalizedProjectRoot(projectRoot);
     if (!normalized) return null;
     const resolved = args.getWindowForProjectRoot?.(normalized) ?? null;
@@ -799,6 +940,41 @@ export function createBuiltInBrowserService(args: {
       if (projectRootsMatch(projectRootForWindow(win), normalized)) return win;
     }
     return null;
+  };
+
+  /** The live window already hosting this project's collection, if any. */
+  const hostingEntryForProjectRoot = (normalized: string): WindowBrowserEntry | null => {
+    const key = collectionForProjectRoot(normalized).key;
+    for (const entry of windowServices.values()) {
+      if (entry.collection.key === key && isLiveWindow(entry.win)) return entry;
+    }
+    return null;
+  };
+
+  /**
+   * Where a project's browser lives, for the creating write path only.
+   *
+   * A renderer call hosts it in the caller's own window: a pane positions a
+   * view in its own window, never in another one at its coordinates, and with
+   * every machine's sessions in every tab the project a pane shows need not be
+   * the one its window is bound to. A caller with no window (an agent over the
+   * bridge) gets the bound window, else the window already hosting the
+   * collection — so it joins the pane's service rather than racing a second
+   * one over the same saved state — and only then the app's fallback.
+   * `viaSource` marks the caller's window chosen for a project it is not bound
+   * to, which makes that collection the window's active one.
+   */
+  const hostWindowForProjectRoot = (
+    normalized: string,
+    sourceWindow?: BrowserWindow | null,
+  ): { win: BrowserWindow; viaSource: boolean } | null => {
+    if (isLiveWindow(sourceWindow)) return { win: sourceWindow, viaSource: true };
+    const bound = boundWindowForProjectRoot(normalized);
+    if (bound) return { win: bound, viaSource: false };
+    const hosting = hostingEntryForProjectRoot(normalized);
+    if (hosting) return { win: hosting.win, viaSource: false };
+    const fallback = args.getFallbackWindowForProjectRoot?.(normalized) ?? null;
+    return isLiveWindow(fallback) ? { win: fallback, viaSource: false } : null;
   };
 
   const detachInactiveWindowServices = (win: BrowserWindow, activeKey: string): void => {
@@ -865,10 +1041,31 @@ export function createBuiltInBrowserService(args: {
   const serviceForWindow = (win: BrowserWindow): WindowBrowserService =>
     serviceForWindowCollection(win, collectionForWindow(win), { markActive: true });
 
+  /**
+   * The project browser a window is showing, for a call that names no project.
+   *
+   * Normally the window's own collection. But when its pane is showing another
+   * binding's project (this computer's session in a tab bound elsewhere, see
+   * `hostWindowForProjectRoot`), that collection is the active one, and
+   * re-marking the window's own would detach the view on screen.
+   */
+  const serviceShownInWindow = (win: BrowserWindow): WindowBrowserService => {
+    const activeKey = activeServiceKeyByWindow.get(win.id);
+    const active = activeKey ? windowServices.get(activeKey) : null;
+    if (
+      active
+      && active.collection.projectRoot
+      && !projectRootsMatch(projectRootForWindow(win), active.collection.projectRoot)
+    ) {
+      return active.service;
+    }
+    return serviceForWindow(win);
+  };
+
   const activeService = (): WindowBrowserService => {
     if (activeWindowId != null) {
       const activeWindow = windowClosedListeners.get(activeWindowId)?.win;
-      if (isLiveWindow(activeWindow)) return serviceForWindow(activeWindow);
+      if (isLiveWindow(activeWindow)) return serviceShownInWindow(activeWindow);
       const activeKey = activeServiceKeyByWindow.get(activeWindowId);
       const active = activeKey ? windowServices.get(activeKey) : null;
       if (active) return active.service;
@@ -885,13 +1082,14 @@ export function createBuiltInBrowserService(args: {
         onStateChange: (state) => stateStore?.record("window", state),
         observationRootPath: personalObservationRootPath,
         permissionController,
-        agentAccessController,
+        agentAccessController: agentAccessController.forProjectRoot(null),
         networkRouter,
         waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
         onHandoff: args.onHandoff ?? null,
         presenceHolds: presenceRouter,
         createRecordingWindow: args.createRecordingWindow ?? null,
         createTabRecorder: args.createTabRecorder ?? null,
+        demoEngine: args.demoEngine ?? null,
       });
       fallbackServices.set("window", fallbackService);
     }
@@ -906,15 +1104,22 @@ export function createBuiltInBrowserService(args: {
       && !(value as { isDestroyed: () => boolean }).isDestroyed()
     );
 
-  const serviceForProjectRoot = (projectRoot: string): WindowBrowserService => {
+  const serviceForProjectRoot = (
+    projectRoot: string,
+    sourceWindow?: BrowserWindow | null,
+    activateSource = true,
+  ): WindowBrowserService => {
     const normalized = normalizedProjectRoot(projectRoot);
     if (!normalized) return activeService();
-    const win = liveWindowForProjectRoot(normalized);
-    if (!win) {
+    const host = hostWindowForProjectRoot(normalized, sourceWindow);
+    if (!host) {
       throw new Error(`No ADE browser window is open for project: ${normalized}`);
     }
+    const { win } = host;
     const service = serviceForWindowCollection(win, collectionForProjectRoot(normalized), {
-      markActive: projectRootsMatch(projectRootForWindow(win), normalized),
+      // The window's own project, or a project no window is bound to that this
+      // window's pane is showing: either way it is what is on screen.
+      markActive: projectRootsMatch(projectRootForWindow(win), normalized) || (activateSource && host.viaSource),
     });
     service.attachToWindow(win);
     return service;
@@ -924,11 +1129,15 @@ export function createBuiltInBrowserService(args: {
     const activeWindow = activeWindowId == null
       ? null
       : windowClosedListeners.get(activeWindowId)?.win ?? null;
-    const win = isLiveWindow(sourceWindow)
+    let win = isLiveWindow(sourceWindow)
       ? sourceWindow
       : isLiveWindow(activeWindow)
         ? activeWindow
         : null;
+    if (!win) {
+      const fallback = args.getFallbackWindowForPersonalCollection?.() ?? null;
+      if (isLiveWindow(fallback)) win = fallback;
+    }
     if (!win) {
       let fallbackService = fallbackServices.get("personal") ?? null;
       if (!fallbackService) {
@@ -940,7 +1149,7 @@ export function createBuiltInBrowserService(args: {
           onStateChange: (state) => stateStore?.record("personal", state),
           observationRootPath: personalObservationRootPath,
           permissionController,
-          agentAccessController,
+          agentAccessController: agentAccessController.forProjectRoot(null),
           networkRouter,
           waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
           onHandoff: args.onHandoff ?? null,
@@ -951,7 +1160,15 @@ export function createBuiltInBrowserService(args: {
       return fallbackService;
     }
     activeWindowId = win.id;
-    const service = serviceForWindowCollection(win, collectionForProjectRoot(null, "personal"), { markActive: true });
+    const service = serviceForWindowCollection(
+      win,
+      collectionForProjectRoot(null, "personal"),
+      // A renderer explicitly opening its personal browser owns the pane. A
+      // bridge action with no panel only needs a host for its parked surface;
+      // it must not switch the visible window away from the user's current
+      // project collection.
+      { markActive: isLiveWindow(sourceWindow) },
+    );
     service.attachToWindow(win);
     return service;
   };
@@ -959,11 +1176,12 @@ export function createBuiltInBrowserService(args: {
   const serviceForInput = (
     input?: BuiltInBrowserProjectScopeArgs | null,
     sourceWindow?: BrowserWindow | null,
+    options: { activateSource?: boolean } = {},
   ): WindowBrowserService => {
     if (requestsPersonalCollection(input)) return serviceForPersonalCollection(sourceWindow);
     const projectRoot = projectRootFromInput(input);
-    if (projectRoot) return serviceForProjectRoot(projectRoot);
-    if (isLiveWindow(sourceWindow)) return serviceForWindow(sourceWindow);
+    if (projectRoot) return serviceForProjectRoot(projectRoot, sourceWindow, options.activateSource);
+    if (isLiveWindow(sourceWindow)) return serviceShownInWindow(sourceWindow);
     return activeService();
   };
 
@@ -998,10 +1216,15 @@ export function createBuiltInBrowserService(args: {
   ): WindowBrowserService | null => {
     const normalized = normalizedProjectRoot(projectRoot);
     if (!normalized) return null;
-    const win = liveWindowForProjectRoot(normalized);
-    if (!win) return null;
-    const key = serviceKey(win.id, collectionForProjectRoot(normalized));
-    return windowServices.get(key)?.service ?? null;
+    const win = boundWindowForProjectRoot(normalized);
+    if (win) {
+      const key = serviceKey(win.id, collectionForProjectRoot(normalized));
+      const bound = windowServices.get(key)?.service;
+      if (bound) return bound;
+    }
+    // A project no window is bound to may still be hosted by the window that
+    // shows its session (see `hostWindowForProjectRoot`).
+    return hostingEntryForProjectRoot(normalized)?.service ?? null;
   };
 
   /**
@@ -1011,13 +1234,14 @@ export function createBuiltInBrowserService(args: {
    * The distinction the read above cannot make on its own: "the desktop doesn't
    * have this project open" and "it does, you just haven't opened the Browser
    * tool" are opposite instructions, and giving the second user the first
-   * sentence tells them to open something already in front of them. Pure: this
-   * is window bookkeeping only, with no collection lookup and no construction.
+   * sentence tells them to open something already in front of them. Pure: a
+   * bound window, or a window already hosting the collection for a project no
+   * window is bound to; nothing is constructed.
    */
   const hasLiveWindowForProjectRoot = (projectRoot: string | null): boolean => {
     const normalized = normalizedProjectRoot(projectRoot);
     if (!normalized) return false;
-    return liveWindowForProjectRoot(normalized) != null;
+    return boundWindowForProjectRoot(normalized) != null || hostingEntryForProjectRoot(normalized) != null;
   };
 
   /* ── Dev-server discovery ───────────────────────────────────────────────── */
@@ -1230,6 +1454,24 @@ export function createBuiltInBrowserService(args: {
 
   return {
     flushStorage,
+    /**
+     * Which tab a `WebContents` is, and whose: `personal` is the Browser top
+     * tab's collection. Null for anything that is not a live browser tab.
+     */
+    locateWebContents(wc: WebContents): { tabId: string; collection: "personal" | "window" | "project"; projectRoot: string | null } | null {
+      if (!MANAGED_BROWSER_WEB_CONTENTS.has(wc)) return null;
+      const candidates: Array<{ service: WindowBrowserService; collection: BrowserCollection }> = [
+        ...windowServices.values(),
+        ...Array.from(fallbackServices, ([kind, service]) => ({ service, collection: collectionForProjectRoot(null, kind) })),
+      ];
+      for (const { service, collection } of candidates) {
+        const tabId = service.tabIdForWebContents(wc);
+        if (!tabId) continue;
+        const kind = collection.key === "personal" ? "personal" : collection.projectRoot ? "project" : "window";
+        return { tabId, collection: kind, projectRoot: collection.projectRoot };
+      }
+      return null;
+    },
     /** Stops the dev-server subscription; used when a test disposes a service. */
     stopDevServerWatch(): void {
       unsubscribeDevServers();
@@ -1310,7 +1552,7 @@ export function createBuiltInBrowserService(args: {
     ): BuiltInBrowserStatus {
       const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
       const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
-      const status = serviceForInput(input, win).getStatusForInput(input ?? {});
+      const status = serviceForInput(input, win, { activateSource: false }).getStatusForInput(input ?? {});
       // Seed value for a surface that mounted mid-flight; the `agent-presence`
       // event carries every change after this. Scoped to the collection the
       // status describes, so one project's pane cannot report another's agent.
@@ -1357,6 +1599,26 @@ export function createBuiltInBrowserService(args: {
     ): Promise<BuiltInBrowserOriginAccessResult> {
       return serviceForInput(input, sourceWindow).requestOriginAccess(input);
     },
+    /*
+      "Agents can use the ADE browser": the setting, the saved grants and the
+      open prompts. Human-only — these are renderer IPC, never desktop-bridge
+      methods, so an agent cannot answer its own prompt or widen the setting.
+    */
+    getAgentAccess(): BuiltInBrowserAgentAccessSnapshot {
+      return agentAccessController.getSnapshot();
+    },
+    setAgentAccessMode(mode: BuiltInBrowserAgentAccessMode): BuiltInBrowserAgentAccessSnapshot {
+      return agentAccessController.setMode(mode);
+    },
+    answerAgentAccessPrompt(
+      promptId: string,
+      answer: BuiltInBrowserAgentAccessAnswer,
+    ): BuiltInBrowserAgentAccessSnapshot {
+      return agentAccessController.answerPrompt(promptId, answer);
+    },
+    revokeAgentAccess(input: BuiltInBrowserAgentAccessRevokeArgs): BuiltInBrowserAgentAccessSnapshot {
+      return agentAccessController.revoke(input);
+    },
     claim(input: BuiltInBrowserClaimArgs = {}, sourceWindow?: BrowserWindow | null): BuiltInBrowserStatus {
       return serviceForInput(input, sourceWindow).claim(input);
     },
@@ -1397,6 +1659,9 @@ export function createBuiltInBrowserService(args: {
     },
     switchTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
       return serviceForInput(input, sourceWindow).switchTab(input);
+    },
+    handTabToChat(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): BuiltInBrowserStatus {
+      return serviceForInput(input, sourceWindow).handTabToChat(input);
     },
     /**
      * Closing a tab ends whatever the agent was doing on it, and the closure is
@@ -1524,6 +1789,12 @@ export function createBuiltInBrowserService(args: {
     ): Promise<BuiltInBrowserStopFindInPageResult> {
       return serviceForInput(input, sourceWindow).stopFindInPage(input);
     },
+    readText(
+      input: BuiltInBrowserReadTextArgs = {},
+      sourceWindow?: BrowserWindow | null,
+    ): Promise<BuiltInBrowserReadTextResult> {
+      return serviceForInput(input, sourceWindow).readText(input);
+    },
     /**
      * Give the OS keyboard back to the window's own renderer.
      *
@@ -1612,6 +1883,18 @@ export function createBuiltInBrowserService(args: {
       return serviceForInput(input, sourceWindow).stopRecording(input);
     },
     /**
+     * A step caption (`ade proof step`) for the browser recordings in scope:
+     * the lane's, else the chat's. Browser recordings live in this process's
+     * demo track registry, so the brain forwards its steps here.
+     */
+    noteDemoStep(input: { laneId?: string | null; chatSessionId?: string | null; text?: string | null } = {}): { noted: number } {
+      const text = typeof input.text === "string" ? input.text : "";
+      const laneId = typeof input.laneId === "string" && input.laneId.trim() ? input.laneId.trim() : null;
+      const chatSessionId = typeof input.chatSessionId === "string" && input.chatSessionId.trim() ? input.chatSessionId.trim() : null;
+      if (!laneId && !chatSessionId) return { noted: 0 };
+      return { noted: demoTrackRegistry.noteStep({ laneId, chatSessionId }, text) };
+    },
+    /**
      * `owner` identifies the renderer holding the subscription (its
      * `webContents` id), so a crash releases its subscriptions and nobody
      * else's. Derived in main at the IPC boundary — never taken from `input`,
@@ -1669,6 +1952,9 @@ type GeometryEmitter = {
 };
 
 const asGeometryEmitter = (value: unknown): GeometryEmitter => value as GeometryEmitter;
+
+/** How long a tab that left the screen stays parked (surface kept) before it is detached. */
+const RECENTLY_ATTENDED_GRACE_MS = 60_000;
 
 /**
  * Screen events that can invalidate a parked view's position without the window
@@ -1745,7 +2031,7 @@ function createBuiltInBrowserWindowService(args: {
   onStateChange?: ((state: BuiltInBrowserRestoredCollection) => void) | null;
   observationRootPath: string | null;
   permissionController: ReturnType<typeof createBuiltInBrowserPermissionController>;
-  agentAccessController: ReturnType<typeof createBuiltInBrowserAgentAccessController>;
+  agentAccessController: BuiltInBrowserAgentAccessGate;
   networkRouter: ReturnType<typeof createBrowserNetworkRouter>;
   waitForProfileMigration: () => Promise<void>;
   onHandoff?: BuiltInBrowserHandoffListener | null;
@@ -1762,6 +2048,8 @@ function createBuiltInBrowserWindowService(args: {
   createRecordingWindow?: (() => CaptureWindowLike) | null;
   /** Test seam that replaces the whole recorder (skips Electron entirely). */
   createTabRecorder?: BuiltInBrowserRecorderFactory | null;
+  /** Makes a recording's demo video. */
+  demoEngine?: DemoEngine | null;
 }) {
   const presenceHolds = args.presenceHolds ?? builtInBrowserAgentPresence;
   let win: BrowserWindow | null = null;
@@ -1815,6 +2103,44 @@ function createBuiltInBrowserWindowService(args: {
    * behaviour.
    */
   let hasPreviewWatchers: (tabId: string) => boolean = () => false;
+  /**
+   * Scoped "capture holds": agent paths that need pixels from a tab nobody is
+   * looking at (observe, screenshot, proof, recording). Refcounted per tab, and
+   * read by `attachViewsToCurrentWindow` exactly like a preview watcher, so a
+   * held tab is parked with the same mechanism the corner card uses and goes
+   * back to detached only when the last holder AND the last watcher are gone —
+   * and never while it is the tab the visible pane is showing.
+   */
+  const captureHoldCounts = new Map<string, number>();
+  const needsParkedSurface = (tabId: string): boolean =>
+    hasPreviewWatchers(tabId) || (captureHoldCounts.get(tabId) ?? 0) > 0;
+  /**
+   * Tabs that just left the screen (the person switched route or tab), held
+   * parked rather than detached until the time here. A detached view loses its
+   * compositor surface, and Chromium takes the better part of a second to
+   * draw a re-added one, so coming straight back showed a black page. Parked,
+   * coming back is a move.
+   */
+  const recentlyAttendedUntil = new Map<string, number>();
+  let recentlyAttendedTimer: ReturnType<typeof setTimeout> | null = null;
+  const inRecentlyAttendedGrace = (tabId: string): boolean =>
+    (recentlyAttendedUntil.get(tabId) ?? 0) > Date.now();
+  const scheduleRecentlyAttendedExpiry = (): void => {
+    if (recentlyAttendedTimer) clearTimeout(recentlyAttendedTimer);
+    recentlyAttendedTimer = null;
+    const now = Date.now();
+    for (const [tabId, until] of recentlyAttendedUntil) {
+      if (until <= now) recentlyAttendedUntil.delete(tabId);
+    }
+    if (recentlyAttendedUntil.size === 0) return;
+    const next = Math.min(...recentlyAttendedUntil.values());
+    recentlyAttendedTimer = setTimeout(() => {
+      recentlyAttendedTimer = null;
+      attachViewsToCurrentWindow();
+      scheduleRecentlyAttendedExpiry();
+    }, Math.max(0, next - now) + 50);
+    recentlyAttendedTimer.unref?.();
+  };
   let tabs: BrowserTabState[] = [];
   let browserSessions: BrowserSessionState[] = [];
   let activeTabId: string | null = null;
@@ -1879,9 +2205,14 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   const emitStatus = (): void => {
+    // Before the status is built: a claim, release or recording edge that got
+    // us here may have to pin or free the tab's layout, and re-park it.
+    reconcileRecordingViewports();
     const status = getStatus();
     if (!restoringTabs && args.onStateChange) {
-      const liveTabs = tabs.filter((tab) => !tab.webContents.isDestroyed());
+      // An isolated tab's sign-in lives only in memory, so restoring its URL
+      // after a restart would reopen it in the user's own profile.
+      const liveTabs = tabs.filter((tab) => !tab.webContents.isDestroyed() && !tab.isolation);
       const activeIndex = Math.max(0, liveTabs.findIndex((tab) => tab.id === activeTabId));
       args.onStateChange({
         tabs: liveTabs.map((tab) => ({ url: tab.webContents.getURL() })),
@@ -1904,6 +2235,9 @@ function createBuiltInBrowserWindowService(args: {
     logger()?.warn("built_in_browser.error", { err: message });
     emit({ type: "error", message, occurredAt: new Date().toISOString() });
   };
+
+  const urlLoader = createUrlLoader({ logger, onLoadSettled: () => emitStatus() });
+  const loadUrlSafely = urlLoader.load;
 
   const currentCursorPointInView = (): BrowserInspectPoint | null => {
     if (!win || win.isDestroyed() || !visible || bounds.width <= 0 || bounds.height <= 0) return null;
@@ -2028,6 +2362,7 @@ function createBuiltInBrowserWindowService(args: {
         teardownTabCapabilities(tab);
       }
       tabs = nextTabs;
+      releaseUnusedIsolatedSessions();
     }
     endSessionsForMissingTabs(new Set(tabs.map((tab) => tab.id)));
     pruneBrowserSessions();
@@ -2157,13 +2492,16 @@ function createBuiltInBrowserWindowService(args: {
     if (!laneId && !chatSessionId) return false;
     assertTabLeaseAvailable(tab, input);
     let changed = false;
+    let ownerChanged = false;
     if (laneId && laneId !== tab.ownerLaneId) {
       tab.ownerLaneId = laneId;
       changed = true;
+      ownerChanged = true;
     }
     if (chatSessionId && chatSessionId !== tab.ownerChatSessionId) {
       tab.ownerChatSessionId = chatSessionId;
       changed = true;
+      ownerChanged = true;
     }
     const leaseExpiresAt = new Date(Date.now() + normalizeLeaseTtlMs(input.leaseTtlMs)).toISOString();
     if (tab.ownerLeaseExpiresAt !== leaseExpiresAt) {
@@ -2171,6 +2509,18 @@ function createBuiltInBrowserWindowService(args: {
       changed = true;
     }
     if (changed) tab.ownerClaimedAt = new Date().toISOString();
+    /*
+     * A new owner is news the moment it happens. Reads and actions claim the
+     * tab they touch (`prepareAgentReadTabAsync`, `prepareAgentActionTab`) but
+     * emit nothing of their own, so an agent that picked up a tab it did not
+     * open — one restored at launch, one a person opened — drove it for minutes
+     * while every renderer still saw it unowned. The floating card only shows
+     * an unowned tab in a chat whose pane has shown it, so the preview never
+     * came up until the owner opened the Browser tool by hand (2026-09-27).
+     * Only the owner, not the lease renewal every call makes, and only for a
+     * tab already in the list: a tab being created is announced by its creator.
+     */
+    if (ownerChanged && tabs.includes(tab)) emitStatus();
     return changed;
   };
 
@@ -2267,9 +2617,14 @@ function createBuiltInBrowserWindowService(args: {
       tab.webContents.getURL(),
       input,
       "The agent requested an interactive browser action.",
+      { waitBudgetMs: BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS },
     );
     claimTabOwnerFromInput(tab, input);
     armAgentNavigationGuard(tab, input);
+    // A recording tab may still be moving onto the recording viewport, which
+    // relays the page out. Locating a target before that lands would aim at
+    // the old layout.
+    await settleRecordingViewport(tab);
   };
 
   const prepareAgentReadTab = (
@@ -2289,8 +2644,11 @@ function createBuiltInBrowserWindowService(args: {
     await args.waitForProfileMigration();
     assertHandoffAllowsAgentAction(tab, input);
     assertTabLeaseAvailable(tab, input);
-    await args.agentAccessController.requireUrlAccess(tab.webContents.getURL(), input, reason);
+    await args.agentAccessController.requireUrlAccess(tab.webContents.getURL(), input, reason, {
+      waitBudgetMs: BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS,
+    });
     claimTabOwnerFromInput(tab, input);
+    await settleRecordingViewport(tab);
   };
 
   /**
@@ -2350,14 +2708,18 @@ function createBuiltInBrowserWindowService(args: {
     && !tab.handoff?.previousOwner.laneId
     && !tab.handoff?.previousOwner.chatSessionId;
 
-  const reusableOwnedTabForInput = (input: BuiltInBrowserClaimArgs = {}): BrowserTabState | null => {
+  const reusableOwnedTabForInput = (
+    input: BuiltInBrowserClaimArgs = {},
+    accept: (tab: BrowserTabState) => boolean = () => true,
+  ): BrowserTabState | null => {
     pruneDestroyedTabs();
+    const matches = (entry: BrowserTabState): boolean => tabMatchesOwnerInput(entry, input) && accept(entry);
     // Prefer the tab the user most recently activated for this lane; otherwise
     // fall back to the newest matching tab (reverse creation order) so a lane
     // with multiple owned tabs doesn't keep driving the oldest one.
     const current = activeTab();
-    if (current && tabMatchesOwnerInput(current, input)) return current;
-    return [...tabs].reverse().find((entry) => tabMatchesOwnerInput(entry, input)) ?? null;
+    if (current && matches(current)) return current;
+    return [...tabs].reverse().find(matches) ?? null;
   };
 
   const clearSelectionInternal = (): void => {
@@ -2585,6 +2947,14 @@ function createBuiltInBrowserWindowService(args: {
     return entry;
   };
 
+  /**
+   * The action in flight on each tab, and what it learned before sending
+   * input: the element it hit and the page state to compare the post-action
+   * observation with. Keyed by tab so the locate helpers and `actionResult`,
+   * which the tab-capability module also calls, need no extra parameter.
+   */
+  const actionEffectTrackers = new WeakMap<BrowserTabState, ActionEffectEntry>();
+
   const runTracedAgentAction = async (
     tab: BrowserTabState,
     action: string,
@@ -2593,9 +2963,15 @@ function createBuiltInBrowserWindowService(args: {
   ): Promise<BuiltInBrowserAgentActionResult> => {
     const sessionEntry = sessionFromInput(input);
     const traceDraft = beginActionTrace(tab, action, input as Record<string, unknown>);
+    const effectEntry: ActionEffectEntry = { action, tracker: createAgentActionEffectTracker(), navigationApproval: null };
+    actionEffectTrackers.set(tab, effectEntry);
     try {
       await prepareAgentActionTab(tab, input);
-      const result = await fn();
+      // A tab nobody is looking at has no compositor surface, and Chromium
+      // drops synthesized input to it: a click found its element, was sent,
+      // and nothing happened. Hold the tab parked (attached, off screen) for
+      // the whole action, as observe already does for its screenshot.
+      const result = await withCaptureSurface(tab, fn);
       const trace = finishActionTrace(tab, traceDraft, "ok", {
         sessionId: sessionEntry?.id ?? null,
         observationId: result.observation?.id ?? null,
@@ -2613,6 +2989,33 @@ function createBuiltInBrowserWindowService(args: {
       });
       touchSession(sessionEntry, { lastTraceEntryId: trace.id });
       throw error;
+    } finally {
+      if (actionEffectTrackers.get(tab) === effectEntry) actionEffectTrackers.delete(tab);
+    }
+  };
+
+  /**
+   * The pre-action page state for an action that locates nothing first (a
+   * point, or whatever has focus). One collector pass, no screenshot. A
+   * failure only costs the effect check, never the action.
+   */
+  const captureActionBaseline = async (
+    tab: BrowserTabState,
+    input: BuiltInBrowserAgentActionArgs,
+  ): Promise<void> => {
+    const tracker = actionEffectTrackers.get(tab)?.tracker;
+    if (!tracker || tracker.before || input.observe === false) return;
+    try {
+      noteAgentActionBaseline(
+        tracker,
+        await evaluateBrowserDom(tab.webContents, {
+          maxElements: normalizeObservationMaxElements(input.maxElements),
+        }),
+      );
+    } catch (error) {
+      logger()?.debug("built_in_browser.action_baseline_failed", {
+        err: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 
@@ -2752,6 +3155,17 @@ function createBuiltInBrowserWindowService(args: {
     wc.once("destroyed", () => {
       MANAGED_BROWSER_WEB_CONTENTS.delete(wc);
     });
+    // Media that starts while the tab is heard (on screen, so unmuted) keeps
+    // playing when the person leaves the tab; a new document starts over.
+    wc.on("media-started-playing", () => {
+      if (!wc.isDestroyed() && !wc.isAudioMuted()) BACKGROUND_AUDIO_WEB_CONTENTS.add(wc);
+    });
+    wc.on("did-navigate", () => {
+      if (!BACKGROUND_AUDIO_WEB_CONTENTS.delete(wc)) return;
+      const tab = tabForWebContents(wc);
+      if (tab && !(visible && tab.id === activeTabId)) applyTabLifecycle(tab, false);
+    });
+    announceBuiltInBrowserWebContents(wc);
     configureBuiltInBrowserAuthentication({
       webContents: wc,
       resolveParentWindow: () => (win && !win.isDestroyed() ? win : null),
@@ -2783,7 +3197,7 @@ function createBuiltInBrowserWindowService(args: {
         && args.agentAccessController.isUrlAccessRequiredSync(popupUrl, guard)
       ) {
         emitError(new Error(
-          `Blocked an agent-triggered popup to ${popupUrl}. Navigate to that origin explicitly so ADE can request human approval.`,
+          `Blocked an agent-triggered popup to ${popupUrl}: the user has not allowed this agent to use the ADE browser. Open it with ade browser open so ADE can ask them.`,
         ));
         return { action: "deny" };
       }
@@ -2794,12 +3208,14 @@ function createBuiltInBrowserWindowService(args: {
           const popupWebContents = (
             options as Electron.BrowserWindowConstructorOptions & { webContents?: WebContents }
           ).webContents;
+          // Chromium opens a popup in its opener's partition, so an isolated
+          // tab's popup (an OAuth window, a "share" link) keeps its sign-in.
           const nextView = popupWebContents
             ? new WebContentsView({ webContents: popupWebContents })
-            : new WebContentsView({ webPreferences: browserWebPreferences() });
+            : new WebContentsView({ webPreferences: browserWebPreferences(opener?.isolation?.partition) });
           const tab = createPopupTabStateFromView(popupUrl, opener, nextView, { activate });
           if (!popupWebContents) {
-            void tab.webContents.loadURL(popupUrl).catch((error) => {
+            void loadUrlSafely(tab.webContents, popupUrl).catch((error) => {
               emitError(new Error(`Could not load deferred browser popup: ${errorMessage(error)}`));
             });
           }
@@ -2826,6 +3242,16 @@ function createBuiltInBrowserWindowService(args: {
         return;
       }
       event.preventDefault();
+      urlLoader.noteHeldForApproval(wc, browserOriginOf(url) ?? url);
+      // The action that caused this (a click on a cross-origin link, a submit
+      // that redirects) is usually still in flight. Its answer must say the
+      // navigation is held for the user, not "nothing changed".
+      const effectEntry = tab ? actionEffectTrackers.get(tab) ?? null : null;
+      const approval: NonNullable<ActionEffectEntry["navigationApproval"]> = {
+        origin: browserOriginOf(url) ?? url,
+        state: "pending",
+      };
+      if (effectEntry) effectEntry.navigationApproval = approval;
       void args.agentAccessController.authorizeUrl(
         url,
         guard,
@@ -2833,6 +3259,7 @@ function createBuiltInBrowserWindowService(args: {
           ? "An agent-triggered request is redirecting to another browser origin."
           : "An agent-triggered page action is navigating to another browser origin.",
       ).then(async (result) => {
+        approval.state = result.granted ? "allowed" : "blocked";
         if (!result.granted || wc.isDestroyed()) {
           if (!result.granted) {
             emitError(new Error(
@@ -2847,17 +3274,22 @@ function createBuiltInBrowserWindowService(args: {
           ));
           return;
         }
-        await wc.loadURL(url);
+        await loadUrlSafely(wc, url);
       }).catch(emitError);
     };
     wc.on("will-navigate", (event, url) => enforceAgentNavigation(event, url, "navigation"));
     wc.on("will-redirect", (event, url) => enforceAgentNavigation(event, url, "redirect"));
     wc.on("did-start-loading", () => {
-      noteNetworkActivity(tabForWebContents(wc));
+      const tab = tabForWebContents(wc);
+      if (tab) tab.loadError = null;
+      noteNetworkActivity(tab);
+      if (tab) demoTrackRegistry.noteLoad(builtInBrowserRecordingKey(tab.id), "start");
       emitStatus();
     });
     wc.on("did-stop-loading", () => {
-      noteNetworkActivity(tabForWebContents(wc));
+      const tab = tabForWebContents(wc);
+      noteNetworkActivity(tab);
+      if (tab) demoTrackRegistry.noteLoad(builtInBrowserRecordingKey(tab.id), "end");
       emitStatus();
     });
     wc.on("did-navigate", (_event, url: string) => {
@@ -2886,6 +3318,7 @@ function createBuiltInBrowserWindowService(args: {
         tabCapabilities.applyTabZoom(tab, tab.zoomFactor);
       }
       if (tab) tabCapabilities.reapplyTabEmulation(tab);
+      if (tab) refreshRecordingViewport(tab);
       emitStatus();
     });
     wc.on("page-favicon-updated", (_event, favicons: string[]) => {
@@ -2956,14 +3389,24 @@ function createBuiltInBrowserWindowService(args: {
     wc.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
       if (!isMainFrame || errorCode === -3) return;
       const tab = tabForWebContents(wc);
+      const failedUrl = stringOrNull(validatedURL) ?? emptyToNull(wc.getURL());
+      const failure = errorDescription || `Browser load failed with code ${errorCode}`;
       if (tab) {
+        // Chromium paints a failed main-frame load as a plain white page. The
+        // status carries the failure so a preview can step aside rather than
+        // float that white page, and an agent can read why.
+        tab.loadError = {
+          code: errorCode,
+          description: failure,
+          url: failedUrl,
+        };
         noteNetworkActivity(tab);
         pushNetworkDiagnostic(tab, {
-          url: stringOrNull(validatedURL) ?? emptyToNull(wc.getURL()) ?? "about:blank",
+          url: failedUrl ?? "about:blank",
           method: null,
           resourceType: "mainFrame",
           statusCode: null,
-          error: errorDescription || `Browser load failed with code ${errorCode}`,
+          error: failure,
           startedAt: null,
           endedAt: new Date().toISOString(),
           durationMs: null,
@@ -2974,13 +3417,13 @@ function createBuiltInBrowserWindowService(args: {
         errorDescription,
         validatedURL,
       });
-      emitError(new Error(errorDescription || `Browser load failed with code ${errorCode}`));
+      emitError(new Error(failure));
       emitStatus();
     });
   };
 
-  const browserWebPreferences = (): Electron.WebPreferences => ({
-    partition: BROWSER_PARTITION,
+  const browserWebPreferences = (partition: string = BROWSER_PARTITION): Electron.WebPreferences => ({
+    partition,
     nodeIntegration: false,
     contextIsolation: true,
     sandbox: true,
@@ -2988,7 +3431,10 @@ function createBuiltInBrowserWindowService(args: {
     backgroundThrottling: false,
   });
 
-  const createTabStateForView = (nextView: WebContentsView): BrowserTabState => {
+  const createTabStateForView = (
+    nextView: WebContentsView,
+    isolation: BrowserTabIsolation | null = null,
+  ): BrowserTabState => {
     // Match a normal browser canvas. Many sites leave their root background
     // transparent, so a dark ADE-specific backing color makes light pages
     // unreadable even though the site's own text remains dark.
@@ -3001,6 +3447,7 @@ function createBuiltInBrowserWindowService(args: {
     return {
       id: `tab-${randomUUID()}`,
       view: nextView,
+      isolation,
       webContents: wc,
       ownsWebContents: true,
       consoleDiagnostics: [],
@@ -3019,6 +3466,7 @@ function createBuiltInBrowserWindowService(args: {
       zoomFactor: BUILT_IN_BROWSER_DEFAULT_ZOOM_FACTOR,
       emulation: null,
       isLaunchpad: false,
+      loadError: null,
       faviconUrl: null,
       faviconSourceUrl: null,
       faviconOrigin: null,
@@ -3027,6 +3475,7 @@ function createBuiltInBrowserWindowService(args: {
       networkLog: createBuiltInBrowserNetworkLog(),
       networkLogPending: new Map(),
       recording: null,
+      recordingStarting: false,
       consoleErrorCount: 0,
       failedRequestCount: 0,
       debuggerHolds: new Set(),
@@ -3037,11 +3486,12 @@ function createBuiltInBrowserWindowService(args: {
     };
   };
 
-  const createTabState = (): BrowserTabState => {
+  const createTabState = (isolation: BrowserTabIsolation | null = null): BrowserTabState => {
     configureBrowserSession();
+    if (isolation) isolatedSessions.ensure(isolation, browserDownloadListener);
     return createTabStateForView(new WebContentsView({
-      webPreferences: browserWebPreferences(),
-    }));
+      webPreferences: browserWebPreferences(isolation?.partition),
+    }), isolation);
   };
 
   const popupUrlForOpen = (url: string): string | null => {
@@ -3064,7 +3514,7 @@ function createBuiltInBrowserWindowService(args: {
     options: { activate: boolean },
   ): BrowserTabState => {
     configureBrowserSession();
-    const tab = createTabStateForView(nextView);
+    const tab = createTabStateForView(nextView, opener?.isolation ?? null);
     copyTabOwner(opener, tab);
     tabs = [...tabs, tab];
     const shouldActivate = options.activate || !activeTab();
@@ -3144,27 +3594,55 @@ function createBuiltInBrowserWindowService(args: {
     return { right, bottom };
   };
 
-  const parkedPreviewRect = (tab: BrowserTabState): Electron.Rectangle => {
+  /**
+   * The size a parked view is laid out at while nobody watches it on screen.
+   * Window-relative placement is `parkedPreviewRect`'s job; this is only the box.
+   */
+  const parkedPreviewSize = (tab: BrowserTabState): { width: number; height: number } => {
+    // A recording tab is laid out at the recording viewport whatever its box, so
+    // its park box IS that size: scale 1, and every frame recorded while
+    // nobody watches it is the full page, not a shrunk copy of the pane.
+    if (tabUsesRecordingViewport(tab)) {
+      return { width: BUILT_IN_BROWSER_RECORDING_VIEWPORT.width, height: BUILT_IN_BROWSER_RECORDING_VIEWPORT.height };
+    }
+    // A device preset draws the device at the pane's letterbox scale, pinned
+    // to the view's top-left corner, so any larger box frames it with blank
+    // space. Boxed at the device's drawn size, every frame is the device alone.
+    if (tab.emulation) {
+      const scale = tabCapabilities.emulationInputScale(tab);
+      return {
+        width: Math.max(1, Math.round(tab.emulation.width * scale)),
+        height: Math.max(1, Math.round(tab.emulation.height * scale)),
+      };
+    }
+    // The size the person gave it. A tab the pane has shown is parked at
+    // exactly the pane's last settled rect, however narrow, so parking never
+    // resizes the page: not on the way out, not on the way back. An agent that
+    // needs a desktop layout asks for one (`narrowPageHint` on its
+    // observation tells it how).
+    //
+    // The floor is only for a tab the pane never showed: it has no rect to
+    // reuse, and a zero-sized view captures nothing.
+    const panelRect = tab.lastPanelRect;
+    if (panelRect && panelRect.width > 0 && panelRect.height > 0) {
+      return { width: panelRect.width, height: panelRect.height };
+    }
+    return { width: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH, height: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT };
+  };
+
+  /** The park point past every display, at `size` (window-relative, as `setBounds` is). */
+  const parkedPreviewRect = (size: { width: number; height: number }): Electron.Rectangle => {
     const content = win && !win.isDestroyed()
       ? win.getContentBounds()
       : { x: 0, y: 0, width: 0, height: 0 };
     const union = displayUnionBottomRight();
     const right = Math.max(union.right, content.x + Math.max(0, content.width));
     const bottom = Math.max(union.bottom, content.y + Math.max(0, content.height));
-    // Window-relative, because `WebContentsView.setBounds` is.
-    const panelRect = tab.lastPanelRect;
     return {
       x: Math.max(0, right - content.x) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
       y: Math.max(0, bottom - content.y) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
-      // A remembered rect is used AS IS — not floored — because the whole point
-      // is that parking must not resize the page. The Work pane is clamped to
-      // 26–55% of the window, so every realistic pane is narrower than the
-      // floor; applying it on top would fire a real `window` resize inside the
-      // page on the way out and another on the way back. The floor is only the
-      // fallback for a tab the panel never showed: it has no rect to reuse, and
-      // a zero-sized view captures nothing.
-      width: panelRect ? panelRect.width : BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
-      height: panelRect ? panelRect.height : BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
+      width: size.width,
+      height: size.height,
     };
   };
 
@@ -3215,7 +3693,7 @@ function createBuiltInBrowserWindowService(args: {
    * (120 ms) is the bound that makes that unreachable in practice, and is the
    * reason this must not be lengthened.
    */
-  const warmingPreviewRect = (tab: BrowserTabState): Electron.Rectangle | null => {
+  const warmingPreviewRect = (size: { width: number; height: number }): Electron.Rectangle | null => {
     const content = win && !win.isDestroyed()
       ? win.getContentBounds()
       : null;
@@ -3228,12 +3706,11 @@ function createBuiltInBrowserWindowService(args: {
     // every 120 ms for as long as the window stayed hidden, because the warm can
     // never be marked complete. Park directly and warm when the window is back.
     if (!hostWindowIsOnScreen()) return null;
-    const parked = parkedPreviewRect(tab);
     return {
       x: Math.round(content.width) - 1,
       y: Math.round(content.height) - 1,
-      width: parked.width,
-      height: parked.height,
+      width: size.width,
+      height: size.height,
     };
   };
 
@@ -3254,20 +3731,61 @@ function createBuiltInBrowserWindowService(args: {
    */
   const surfacedTabIds = new Set<string>();
   /**
+   * The size each surfaced view was last given while it overlapped the window.
+   *
+   * Chromium does not re-lay out a view whose bounds lie wholly off the window,
+   * so a park at a different size would keep the old layout — a page laid out
+   * at the width of a pane caught mid-close stays that sliver inside the park
+   * box, and the corner card shows a strip. A park whose size differs from this
+   * warms again, so the resize lands while the view overlaps by one pixel.
+   *
+   * Recorded from the rect handed to `setBounds`, not read back with
+   * `getBounds`: the comparison must be against exactly what the park asks for,
+   * or a rounding difference would re-warm on every attach pass.
+   */
+  const surfacedSizes = new Map<string, { width: number; height: number }>();
+  const noteSurfacedSize = (tabId: string, rect: { width: number; height: number }): void => {
+    if (rect.width > 0 && rect.height > 0) surfacedSizes.set(tabId, { width: rect.width, height: rect.height });
+    else surfacedSizes.delete(tabId);
+  };
+  /** `lastPanelRect` is the size the pane settled at (`createPanelRectSettler`). */
+  const panelRectSettler = createPanelRectSettler({
+    isStillShownAt: (tab, rect) => {
+      if (disposed || tab.webContents.isDestroyed()) return false;
+      if (!visible || tab.id !== activeTabId || parkedTabIds.has(tab.id)) return false;
+      const current = toElectronRect(bounds);
+      return current.width === rect.width && current.height === rect.height;
+    },
+  });
+  /**
    * Per tab, not one shared handle: two watched tabs warm independently, and a
    * single timer meant the second one cancelled the first — leaving that view
    * sitting on its warming rect, with its one pixel showing, for good.
    */
   const warmingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * Capture holds waiting for a warm to finish. Resolved when the warm timer
+   * fires (the view is now parked with a surface) or is cancelled (the view
+   * left the window or became attended) — never left pending.
+   */
+  const warmWaiters = new Map<string, Array<() => void>>();
+  const resolveWarmWaiters = (tabId: string): void => {
+    const waiters = warmWaiters.get(tabId);
+    if (!waiters) return;
+    warmWaiters.delete(tabId);
+    for (const resolve of waiters) resolve();
+  };
   const clearWarmingTimer = (tabId: string): void => {
     const handle = warmingTimers.get(tabId);
     if (handle == null) return;
     clearTimeout(handle);
     warmingTimers.delete(tabId);
+    resolveWarmWaiters(tabId);
   };
   const clearWarmingTimers = (): void => {
     for (const handle of warmingTimers.values()) clearTimeout(handle);
     warmingTimers.clear();
+    for (const tabId of [...warmWaiters.keys()]) resolveWarmWaiters(tabId);
   };
   const scheduleParkAfterWarming = (tabId: string): void => {
     if (warmingTimers.has(tabId)) return;
@@ -3275,9 +3793,68 @@ function createBuiltInBrowserWindowService(args: {
       warmingTimers.delete(tabId);
       if (hostWindowIsOnScreen()) surfacedTabIds.add(tabId);
       attachViewsToCurrentWindow();
+      resolveWarmWaiters(tabId);
     }, BUILT_IN_BROWSER_PREVIEW_WARM_MS);
     handle.unref?.();
     warmingTimers.set(tabId, handle);
+  };
+
+  /** Resolves once this tab has no warm in flight. Immediate when none is. */
+  const waitForWarmToFinish = (tabId: string): Promise<void> => {
+    if (!warmingTimers.has(tabId)) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const waiters = warmWaiters.get(tabId) ?? [];
+      waiters.push(resolve);
+      warmWaiters.set(tabId, waiters);
+    });
+  };
+
+  /**
+   * Take a capture hold on a tab: park it (attached, visible, off every screen)
+   * if nobody is showing it, so `capturePage()` and CDP screenshots have a
+   * compositor surface to read. Returns an idempotent release.
+   *
+   * Shares the preview watchers' parking — `needsParkedSurface` is the single
+   * question `attachViewsToCurrentWindow` asks — so holds and watchers compose
+   * by construction: the tab stays parked while either count is non-zero, and
+   * the attended tab is never parked or detached by a release, because the
+   * attended branch wins before either count is read.
+   */
+  const acquireCaptureHold = (tabId: string): (() => void) => {
+    const hadSurfaceNeed = needsParkedSurface(tabId);
+    captureHoldCounts.set(tabId, (captureHoldCounts.get(tabId) ?? 0) + 1);
+    if (!hadSurfaceNeed && !disposed) attachViewsToCurrentWindow();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next = (captureHoldCounts.get(tabId) ?? 0) - 1;
+      if (next > 0) {
+        captureHoldCounts.set(tabId, next);
+        return;
+      }
+      captureHoldCounts.delete(tabId);
+      if (disposed || needsParkedSurface(tabId)) return;
+      attachViewsToCurrentWindow();
+    };
+  };
+
+  /**
+   * Run `fn` with the tab held parked and — if the park had to warm a view that
+   * never had a surface — only after the warm has moved it to the real park
+   * point. Nested calls on the same tab just add a reference.
+   */
+  const withCaptureSurface = async <T>(tab: BrowserTabState, fn: () => Promise<T>): Promise<T> => {
+    const release = acquireCaptureHold(tab.id);
+    try {
+      await waitForWarmToFinish(tab.id);
+      // Parking a recording-viewport tab refits it to scale 1; a capture taken
+      // before that lands is the previous pane's shrunk page.
+      await settleRecordingViewport(tab);
+      return await fn();
+    } finally {
+      release();
+    }
   };
 
   /**
@@ -3324,6 +3901,21 @@ function createBuiltInBrowserWindowService(args: {
     }
   };
 
+  /* ── Recording viewport (see `builtInBrowserRecordingViewport.ts`) ─────── */
+
+  const recordingViewport = createBuiltInBrowserRecordingViewport({
+    tabs: () => tabs,
+    reattachViews: () => attachViewsToCurrentWindow(),
+    acquireDebuggerHold: (tab, owner) => acquireDebuggerHold(tab, owner),
+    releaseDebuggerHold: (tab, owner) => releaseDebuggerHold(tab, owner),
+    sendDebuggerCommand: (wc, method, params) => sendDebuggerCommand(wc, method, params),
+    logger,
+  });
+  const syncRecordingViewport = recordingViewport.sync;
+  const refreshRecordingViewport = recordingViewport.refresh;
+  const reconcileRecordingViewports = recordingViewport.reconcile;
+  const settleRecordingViewport = recordingViewport.settle;
+
   const attachViewsToCurrentWindow = (): void => {
     if (!win || win.isDestroyed()) return;
     const electronRect = toElectronRect(bounds);
@@ -3336,20 +3928,50 @@ function createBuiltInBrowserWindowService(args: {
       const isActive = tab.id === activeTabId;
       const shouldAttach = visible && isActive;
       if (!shouldAttach) {
-        if (hasPreviewWatchers(tab.id)) {
+        // Leaving the screen: the size it was passing through is not a size
+        // the person chose.
+        panelRectSettler.cancel(tab.id);
+        const wasAttended = win.contentView.children.includes(tab.view) && !parkedTabIds.has(tab.id);
+        if (wasAttended && surfacedTabIds.has(tab.id)) {
+          recentlyAttendedUntil.set(tab.id, Date.now() + RECENTLY_ATTENDED_GRACE_MS);
+          scheduleRecentlyAttendedExpiry();
+        }
+        const graceOnly = !needsParkedSurface(tab.id) && inRecentlyAttendedGrace(tab.id);
+        if (needsParkedSurface(tab.id) || graceOnly) {
           const wasAttached = win.contentView.children.includes(tab.view);
           const wasParked = parkedTabIds.has(tab.id);
           if (!wasAttached) win.contentView.addChildView(tab.view);
+          // A grace park keeps the page exactly as it was on screen: same size,
+          // no recording viewport, so the way back is a move and not a relayout.
+          const graceSize = graceOnly ? tab.lastPanelRect : null;
+          const targetRect = parkedPreviewRect(graceSize ?? parkedPreviewSize(tab));
+          // A surface laid out at another size cannot be resized from off the
+          // window (see `surfacedSizes`), so it is warmed again at the new one.
+          const surfacedSize = surfacedSizes.get(tab.id);
+          if (
+            surfacedTabIds.has(tab.id)
+            && !warmingTimers.has(tab.id)
+            && surfacedSize
+            && (surfacedSize.width !== targetRect.width || surfacedSize.height !== targetRect.height)
+          ) {
+            surfacedTabIds.delete(tab.id);
+          }
           // Warm first if this view has no surface yet; the timer moves it to
           // the real park point two frames later.
-          const warming = surfacedTabIds.has(tab.id) ? null : warmingPreviewRect(tab);
+          const warming = surfacedTabIds.has(tab.id) ? null : warmingPreviewRect(targetRect);
+          // The warm lays the page out at the park size; that is the size the
+          // surface now holds, whether this warm or an earlier one set it.
+          if (warming) noteSurfacedSize(tab.id, warming);
           // Square while parked: the rounded corners belong to the panel's
           // frame, and a preview frame with four transparent notches in it is
           // not what the corner card is asking for. The one exception is the
           // warm, where the radius exists to clip the pixel that overlaps the
           // UI rather than to decorate anything.
           applyTabViewCornerRadius(tab, warming ? warmingCornerRadius : 0);
-          tab.view.setBounds(warming ?? parkedPreviewRect(tab));
+          const parkedRect = warming ?? targetRect;
+          tab.view.setBounds(parkedRect);
+          if (graceSize) syncRecordingViewport(tab);
+          else syncRecordingViewport(tab, parkedRect);
           if (warming) scheduleParkAfterWarming(tab.id);
           tab.view.setVisible(true);
           // Still not the active tab: parked means composited, not attended, so
@@ -3366,29 +3988,63 @@ function createBuiltInBrowserWindowService(args: {
         tab.view.setVisible(false);
         removeTabViewFromWindow(tab);
         applyTabLifecycle(tab, false);
+        syncRecordingViewport(tab, null);
         continue;
       }
+      // Parked (off screen) or detached a moment ago: Chromium can present the
+      // returning view black until something invalidates it.
+      const cameOnScreen = parkedTabIds.has(tab.id) || !win.contentView.children.includes(tab.view);
+      recentlyAttendedUntil.delete(tab.id);
       parkedTabIds.delete(tab.id);
       if (!win.contentView.children.includes(tab.view)) {
         win.contentView.addChildView(tab.view);
       }
       if (electronRect.width > 0 && electronRect.height > 0) {
-        tab.lastPanelRect = { ...electronRect };
+        panelRectSettler.note(tab, electronRect);
       }
       applyTabViewCornerRadius(tab, BUILT_IN_BROWSER_VIEW_CORNER_RADIUS);
       // On screen at real bounds: whatever else happens, this view has a surface.
       surfacedTabIds.add(tab.id);
-      tab.view.setBounds(electronRect);
+      const viewRect = tabUsesRecordingViewport(tab) ? recordingViewportViewRect(electronRect) : electronRect;
+      tab.view.setBounds(viewRect);
+      noteSurfacedSize(tab.id, viewRect);
+      syncRecordingViewport(tab, viewRect);
       tab.view.setVisible(true);
       applyTabLifecycle(tab, true);
+      if (cameOnScreen) repaintTab(tab);
     }
+  };
+
+  /**
+   * Ask Chromium for a fresh frame now and again a few frames later. A view
+   * that was off screen, hidden, or behind another app keeps no frame worth
+   * showing, and without this it stays black until the pointer moves over it.
+   */
+  const repaintTab = (tab: BrowserTabState): void => {
+    const invalidate = () => {
+      try {
+        if (!tab.webContents.isDestroyed()) tab.webContents.invalidate?.();
+      } catch {
+        // a renderer mid-swap repaints on its own
+      }
+    };
+    invalidate();
+    const timer = setTimeout(invalidate, 60);
+    timer.unref?.();
+  };
+
+  /** The window came back (shown, restored, refocused): repaint the page the person sees. */
+  const repaintAttendedTab = (): void => {
+    if (!visible) return;
+    const tab = activeTab();
+    if (tab?.view) repaintTab(tab);
   };
 
   const applyTabLifecycle = (tab: BrowserTabState, active: boolean): void => {
     const wc = tab.webContents;
     if (wc.isDestroyed()) return;
     try {
-      wc.setAudioMuted(!active);
+      wc.setAudioMuted(!active && !BACKGROUND_AUDIO_WEB_CONTENTS.has(wc));
     } catch {
       // ignore optional platform support differences
     }
@@ -3414,17 +4070,35 @@ function createBuiltInBrowserWindowService(args: {
     browserDownloadListener = null;
   };
 
+  /** Session setup every tab's profile gets, shared or isolated. */
+  const configureTabSession = (browserSession: Electron.Session): void => {
+    configureBuiltInBrowserSessionWebAuthn(browserSession, logger);
+    registerBrowserMediaPreload(browserSession, logger);
+    args.permissionController.configureSession(browserSession);
+    args.networkRouter.configureSession(browserSession);
+  };
+
+  const isolatedSessions = createBuiltInBrowserIsolatedSessions({
+    ownerKey: `${args.collection.key}\u0000${randomUUID()}`,
+    configureSession: configureTabSession,
+    logger,
+  });
+
+  const releaseUnusedIsolatedSessions = (): void => {
+    isolatedSessions.release(new Set(tabs.flatMap((tab) => (
+      tab.isolation && !tab.webContents.isDestroyed() ? [tab.isolation.partition] : []
+    ))));
+  };
+
   const configureBrowserSession = (): void => {
     if (browserSessionConfigured) return;
     const browserSession = browserSessionForProfile();
     configuredBrowserSession = browserSession;
-    configureBuiltInBrowserSessionWebAuthn(browserSession, logger);
-    args.permissionController.configureSession(browserSession);
+    configureTabSession(browserSession);
     unsubscribeNetworkObserver = args.networkRouter.subscribe({
       onRequestStarted: trackNetworkRequestStart,
       onRequestFinished: trackNetworkRequestEnd,
     });
-    args.networkRouter.configureSession(browserSession);
     browserDownloadListener = (event, item, downloadWebContents) => {
       const tab = tabForWebContents(downloadWebContents);
       if (!tab) {
@@ -3489,6 +4163,10 @@ function createBuiltInBrowserWindowService(args: {
    * process-wide `screen` registry above, because `screen` is a singleton and
    * these services are not.
    */
+  /** The window coming back into view; the attended page repaints on each. */
+  const WINDOW_REVEAL_EVENTS = ["show", "restore", "focus"] as const;
+  let winRevealListener: (() => void) | null = null;
+
   const WINDOW_GEOMETRY_EVENTS = [
     "resize",
     "move",
@@ -3503,7 +4181,7 @@ function createBuiltInBrowserWindowService(args: {
     tab.view != null
     && !tab.webContents.isDestroyed()
     && !(visible && tab.id === activeTabId)
-    && hasPreviewWatchers(tab.id)
+    && needsParkedSurface(tab.id)
   ));
 
   const clearGeometryDebounce = (): void => {
@@ -3576,7 +4254,18 @@ function createBuiltInBrowserWindowService(args: {
         }
       }
     }
+    if (win && !win.isDestroyed() && winRevealListener) {
+      const emitter = asGeometryEmitter(win);
+      for (const event of WINDOW_REVEAL_EVENTS) {
+        try {
+          emitter.removeListener?.(event, winRevealListener);
+        } catch {
+          // ignore teardown races
+        }
+      }
+    }
     winGeometryListener = null;
+    winRevealListener = null;
     releaseScreenGeometryWatcher?.();
     releaseScreenGeometryWatcher = null;
     if (hostWebContents && hostRendererGoneListener) {
@@ -3605,12 +4294,26 @@ function createBuiltInBrowserWindowService(args: {
         // A platform without one of these events is not a failure.
       }
     }
+    winRevealListener = () => repaintAttendedTab();
+    for (const event of WINDOW_REVEAL_EVENTS) {
+      try {
+        windowEmitter.on?.(event, winRevealListener);
+      } catch {
+        // A platform without one of these events is not a failure.
+      }
+    }
     releaseScreenGeometryWatcher = addScreenGeometryWatcher(() => scheduleParkedViewRecheck());
     const wc = nextWin.webContents ?? null;
     if (!wc || wc.isDestroyed?.()) return;
     hostWebContents = wc;
     hostWebContentsId = typeof wc.id === "number" ? wc.id : null;
-    hostRendererGoneListener = () => stopPreviewStreamsForWindow();
+    hostRendererGoneListener = () => {
+      // The pane that would come back to a grace-parked page is gone with it.
+      const hadGrace = recentlyAttendedUntil.size > 0;
+      recentlyAttendedUntil.clear();
+      stopPreviewStreamsForWindow();
+      if (hadGrace) attachViewsToCurrentWindow();
+    };
     try {
       wc.on("render-process-gone", hostRendererGoneListener);
       wc.once("destroyed", hostRendererGoneListener);
@@ -3754,17 +4457,26 @@ function createBuiltInBrowserWindowService(args: {
   ): Promise<BuiltInBrowserOriginAccessResult> {
     await args.waitForProfileMigration();
     await tabRestorationPromise;
-    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before requesting origin access.");
-    assertHandoffAllowsAgentAction(tab, input);
-    assertTabLeaseAvailable(tab, input);
+    // The answer covers the caller, not a tab, so asking needs no tab. A named
+    // tab or session is still resolved (and must exist) so it can be claimed.
+    const targetsTab = Boolean(stringOrNull(input.tabId) || stringOrNull(input.sessionId));
+    const tab = targetsTab || tabs.length > 0
+      ? targetTabFromInput(input, "No active browser tab.")
+      : null;
+    if (tab) {
+      assertHandoffAllowsAgentAction(tab, input);
+      assertTabLeaseAvailable(tab, input);
+    }
     const result = await args.agentAccessController.authorizeUrl(
-      tab.webContents.getURL(),
+      tab?.webContents.getURL() ?? null,
       input,
-      "The agent requested access to inspect or control this browser tab.",
+      "The agent asked to use the ADE browser.",
+      { waitBudgetMs: BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS },
     );
     if (!result.granted) {
-      throw new Error(`Human approval was denied for ADE agent access to ${result.origin ?? "this browser origin"}.`);
+      throw new BuiltInBrowserApprovalBlockedError(stringOrNull(input.chatSessionId) ? "chat" : "lane");
     }
+    if (!tab) return { ...result, status: scopeStatusForInput(getStatus(), input) };
     reclaimTabForHumanNavigation(tab, input);
     claimTabOwnerFromInput(tab, input);
     emitStatus();
@@ -4160,8 +4872,13 @@ function createBuiltInBrowserWindowService(args: {
       height: normalizeDimension(nextBounds.height),
     };
     const nextVisible = nextBounds.visible && normalized.width > 0 && normalized.height > 0;
+    // A hidden tab is parked at its device's full size, whatever fit the
+    // closing pane last measured (0 once it reaches nothing). A visible pane's
+    // tiny fit is the smallest scale, not "no scale" (which the clamp reads as 1).
     const nextScale = clampBuiltInBrowserEmulationViewScale(
-      typeof nextBounds.scale === "number" ? nextBounds.scale : 1,
+      typeof nextBounds.scale === "number" && nextVisible
+        ? Math.max(nextBounds.scale, BUILT_IN_BROWSER_MIN_EMULATION_VIEW_SCALE)
+        : 1,
     );
     const scaleChanged = nextScale !== emulationViewScale;
     const unchanged = (
@@ -4196,13 +4913,25 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function navigate(input: BuiltInBrowserNavigateArgs): Promise<BuiltInBrowserStatus> {
+    addSentryBreadcrumb("browser", "navigate: waiting for profile migration");
     await args.waitForProfileMigration();
+    addSentryBreadcrumb("browser", "navigate: waiting for tab restore");
     await tabRestorationPromise;
     const targetUrl = normalizeBrowserUrl(input.url);
+    const isolation = isolatedSessions.forInput(input);
     const explicitNewTab = Boolean(input.newTab);
     const reuseOwnedTab = Boolean(input.reuseOwnedTab) && !explicitNewTab && !input.tabId;
-    const reusableOwnedTab = reuseOwnedTab ? reusableOwnedTabForInput(input) : null;
-    const createNewTab = explicitNewTab || (reuseOwnedTab && !reusableOwnedTab);
+    // A chat never drifts between identities by reusing a tab: only a tab in
+    // the sign-in this call asked for (the shared one when it asked for none).
+    const inRequestedSignIn = (tab: BrowserTabState): boolean => (
+      (tab.isolation?.partition ?? null) === (isolation?.partition ?? null)
+    );
+    const reusableOwnedTab = reuseOwnedTab ? reusableOwnedTabForInput(input, inRequestedSignIn) : null;
+    // An isolated open never lands in whatever tab happens to be active: that
+    // tab is in some other sign-in.
+    let createNewTab = explicitNewTab
+      || (reuseOwnedTab && !reusableOwnedTab)
+      || (Boolean(isolation) && !input.tabId && !reusableOwnedTab);
     const shouldActivate = input.openPanel === true || input.activate !== false || !activeTabId;
     if (createNewTab && tabs.length >= MAX_BROWSER_TABS) {
       throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
@@ -4213,6 +4942,11 @@ function createBuiltInBrowserWindowService(args: {
     if (!createNewTab && input.tabId) {
       existingTab = tabs.find((entry) => entry.id === input.tabId) ?? null;
       if (!existingTab) throw new Error(`Browser tab not found: ${input.tabId}`);
+      if (isolation && existingTab.isolation?.partition !== isolation.partition) {
+        throw new Error(
+          `Browser tab ${input.tabId} is not in the isolated profile "${isolation.profile}". A tab's sign-in is fixed when it opens; open a new tab with that profile instead.`,
+        );
+      }
     } else if (reusableOwnedTab) {
       existingTab = reusableOwnedTab;
     }
@@ -4223,7 +4957,24 @@ function createBuiltInBrowserWindowService(args: {
       targetUrl,
       input,
       "The agent requested navigation to this browser origin.",
+      { waitBudgetMs: BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS },
     );
+    // Decide reuse again now that approval is in: the answer can take a human
+    // minutes, and every open this chat issued meanwhile waited on the same
+    // prompt. Deciding before the wait let each of them see "no owned tab yet"
+    // and open its own — three example.com tabs for one intent.
+    if (reuseOwnedTab && !reusableOwnedTab) {
+      const ownedNow = reusableOwnedTabForInput(input, inRequestedSignIn);
+      if (ownedNow) {
+        assertHandoffAllowsAgentAction(ownedNow, input);
+        assertTabLeaseAvailable(ownedNow, input);
+        existingTab = ownedNow;
+        createNewTab = false;
+      }
+    }
+    // A sign-in whose last tab just closed is still being wiped; a tab made in
+    // it now would lose whatever it signs in to when the wipe lands.
+    if (createNewTab && isolation) await isolatedSessions.whenReady(isolation);
     const targetTabBeforeNavigate = createNewTab ? null : existingTab ?? activeTab();
     const targetIsInspectTab = Boolean(inspecting && targetTabBeforeNavigate && targetTabBeforeNavigate.id === activeTabId);
     const nextActiveTabId = shouldActivate ? existingTab?.id ?? null : activeTabId;
@@ -4234,7 +4985,7 @@ function createBuiltInBrowserWindowService(args: {
     if (switchingTabs) {
       clearSelectionInternal();
     }
-    let tab = createNewTab ? createTabState() : null;
+    let tab = createNewTab ? createTabState(isolation) : null;
     if (tab) {
       tabs = [...tabs, tab];
       if (shouldActivate) activeTabId = tab.id;
@@ -4250,12 +5001,14 @@ function createBuiltInBrowserWindowService(args: {
     armAgentNavigationGuard(tab, input);
     const wc = tab.webContents;
     attachViewsToCurrentWindow();
-    await wc.loadURL(targetUrl);
+    void noteDemoAction(tab, input, "navigate", { label: demoUrlHost(targetUrl) });
+    addSentryBreadcrumb("browser", "navigate: loading", { origin: urlForBrowserLog(targetUrl) });
+    await loadUrlSafely(wc, targetUrl);
     if (input.openPanel) {
       requestOpenPanel({ url: targetUrl, tabId: tab.id, laneId: input.laneId, chatSessionId: input.chatSessionId });
     }
     emitStatus();
-    return scopeStatusForInput(getStatus(), input);
+    return { ...scopeStatusForInput(getStatus(), input), targetTabId: tab.id, targetTabCreated: createNewTab };
   }
 
   async function createTab(input: BuiltInBrowserCreateTabArgs = {}): Promise<BuiltInBrowserStatus> {
@@ -4264,19 +5017,23 @@ function createBuiltInBrowserWindowService(args: {
     if (tabs.length >= MAX_BROWSER_TABS) {
       throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
     }
-    // Normalize URL up front so we don't leave an orphan tab on invalid input.
+    // Normalize URL and profile up front so we don't leave an orphan tab, or
+    // side effects, on invalid input.
     const normalizedUrl = input.url ? normalizeBrowserUrl(input.url) : null;
+    const isolation = isolatedSessions.forInput(input);
     await args.agentAccessController.requireUrlAccess(
       normalizedUrl,
       input,
       "The agent requested a new tab at this browser origin.",
+      { waitBudgetMs: BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS },
     );
     const willActivate = input.activate !== false || !activeTabId;
     if (willActivate) {
       await stopInspectQuietly("built_in_browser.create_tab_stop_inspect_failed");
       clearSelectionInternal();
     }
-    const tab = createTabState();
+    if (isolation) await isolatedSessions.whenReady(isolation);
+    const tab = createTabState(isolation);
     // No URL means "give me somewhere to start": the tab stays on about:blank
     // and the pane renders its launchpad. ADE never picks a home page for you,
     // and never issues a request you did not ask for.
@@ -4288,11 +5045,38 @@ function createBuiltInBrowserWindowService(args: {
     if (willActivate) activeTabId = tab.id;
     attachViewsToCurrentWindow();
     if (normalizedUrl) {
-      await tab.webContents.loadURL(normalizedUrl);
+      await loadUrlSafely(tab.webContents, normalizedUrl);
     }
     if (input.openPanel) {
       requestOpenPanel({ url: normalizedUrl, tabId: tab.id, laneId: input.laneId, chatSessionId: input.chatSessionId });
     }
+    emitStatus();
+    return { ...scopeStatusForInput(getStatus(), input), targetTabId: tab.id, targetTabCreated: true };
+  }
+
+  /**
+   * "Attach to chat": the person hands a tab to one chat. The tab's lease moves
+   * to that chat (or is dropped, for a chat that does not exist yet), so the
+   * agent's `ade browser claim` is not refused by another chat's lease.
+   * Renderer-only — deliberately absent from the desktop-bridge allowlist, so
+   * an agent can never reassign a tab this way.
+   */
+  function handTabToChat(input: BuiltInBrowserTabArgs): BuiltInBrowserStatus {
+    const tabId = input.tabId?.trim();
+    if (!tabId) throw new Error("Browser tab id is required.");
+    const tab = tabs.find((entry) => entry.id === tabId);
+    if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
+    if (tab.handoff) throw new Error("Someone is signing in on this tab. Hand it back before attaching it to a chat.");
+    const chatSessionId = stringOrNull(input.chatSessionId);
+    const laneId = chatSessionId ? stringOrNull(input.laneId) : null;
+    tab.ownerChatSessionId = chatSessionId;
+    tab.ownerLaneId = laneId;
+    tab.ownerClaimedAt = chatSessionId ? new Date().toISOString() : null;
+    tab.ownerLeaseExpiresAt = chatSessionId
+      ? new Date(Date.now() + normalizeLeaseTtlMs(null)).toISOString()
+      : null;
+    tab.agentNavigationGuard = null;
+    assignTabGroupLane(tab, { laneId });
     emitStatus();
     return scopeStatusForInput(getStatus(), input);
   }
@@ -4337,7 +5121,9 @@ function createBuiltInBrowserWindowService(args: {
       // `surfacedTabIds` and runs a pointless attach pass, and both collections
       // then grow with every closed tab for the life of the window.
       surfacedTabIds.delete(removed.id);
+      surfacedSizes.delete(removed.id);
       clearWarmingTimer(removed.id);
+      panelRectSettler.cancel(removed.id);
       tabCapabilities.stopPreviewStreamsForTab(removed.id);
       teardownTabCapabilities(removed);
       MANAGED_BROWSER_WEB_CONTENTS.delete(removed.webContents);
@@ -4363,6 +5149,7 @@ function createBuiltInBrowserWindowService(args: {
     if (activeTabId === tabId) {
       activeTabId = tabs[Math.max(0, index - 1)]?.id ?? tabs[0]?.id ?? null;
     }
+    releaseUnusedIsolatedSessions();
     attachViewsToCurrentWindow();
     emitStatus();
     return scopeStatusForInput(getStatus(), input);
@@ -4505,6 +5292,14 @@ function createBuiltInBrowserWindowService(args: {
       emptyMessage: "No active browser tab. Open a tab before capturing a screenshot.",
       consentReason: "The agent requested a screenshot of this browser tab.",
     });
+    // Held parked for the length of the capture: a tab the pane is not showing
+    // (pane closed, another tab active, Work home screen) is otherwise detached
+    // or hidden, has no compositor surface, and both capture paths below time
+    // out against it.
+    return withCaptureSurface(tab, () => captureTabScreenshot(tab));
+  }
+
+  const captureTabScreenshot = async (tab: BrowserTabState): Promise<BuiltInBrowserScreenshot> => {
     const wc = tab.webContents;
     try {
       return await capturePageScreenshot(wc);
@@ -4515,11 +5310,12 @@ function createBuiltInBrowserWindowService(args: {
       try {
         return await captureCdpScreenshot(wc);
       } catch (cdpError) {
-        // Both paths need a surface, so both fail together for a view that is
-        // hidden, parked or mid-teardown. Tagged rather than re-thrown raw so
-        // the trusted-renderer boundary can answer `{ ok: false }` instead of
-        // logging a handler error on every tool switch, while the agent tool
-        // path — which does not soften it — still sees a real failure.
+        // Both paths need a surface, so both fail together for a view that
+        // still has none — a minimised or hidden host window, no host window
+        // at all, or a view mid-teardown. Tagged rather than re-thrown raw so
+        // the trusted-renderer boundary can answer `{ ok: false }` and observe
+        // can return its DOM half, while callers that require pixels (proof)
+        // still see a real failure.
         throw new BuiltInBrowserCaptureUnavailableError(
           `Browser screenshot is unavailable for tab ${tab.id}: ${
             cdpError instanceof Error ? cdpError.message : String(cdpError)
@@ -4528,7 +5324,7 @@ function createBuiltInBrowserWindowService(args: {
         );
       }
     }
-  }
+  };
 
   async function observe(input: BuiltInBrowserObservationArgs = {}): Promise<BuiltInBrowserObservation> {
     const sessionEntry = sessionFromInput(input);
@@ -4536,25 +5332,55 @@ function createBuiltInBrowserWindowService(args: {
       emptyMessage: "No active browser tab. Open a tab before observing.",
       consentReason: "The agent requested page content from this browser tab.",
     });
-    const screenshot = await captureScreenshot({ tabId: tab.id });
-    const dom = input.includeDom === false
-      ? null
-      : await readDomSnapshot(tab.webContents, input).catch((error) => {
-          logger()?.debug("built_in_browser.observe_dom_failed", {
-            err: error instanceof Error ? error.message : String(error),
-          });
-          return null;
+    // One hold across the screenshot, the DOM read and the element map, so the
+    // view is parked once rather than parked and detached per capture.
+    const { screenshot, screenshotUnavailable, dom, elementMapScreenshot } = await withCaptureSurface(tab, async () => {
+      let shot: BuiltInBrowserScreenshot | null = null;
+      let unavailable: string | null = null;
+      try {
+        shot = await captureScreenshot({ tabId: tab.id });
+      } catch (error) {
+        // A DOM observation with no image is still useful to an agent, and a
+        // wait or action whose follow-up observation cannot capture has still
+        // done its job. Only a caller that needs the pixels (proof) fails here.
+        if (input.requireScreenshot === true || !isBuiltInBrowserCaptureUnavailableError(error)) throw error;
+        unavailable = error.message;
+        logger()?.warn("built_in_browser.observe_screenshot_unavailable", {
+          tabId: tab.id,
+          err: unavailable,
         });
-    const elementMapScreenshot = input.includeElementMap && dom
-      ? await captureElementMapScreenshot(tab.webContents, dom).catch((error) => {
-          logger()?.debug("built_in_browser.observe_element_map_failed", {
-            err: error instanceof Error ? error.message : String(error),
+      }
+      const snapshot = input.includeDom === false
+        ? null
+        : await readDomSnapshot(tab.webContents, input).catch((error) => {
+            logger()?.debug("built_in_browser.observe_dom_failed", {
+              err: error instanceof Error ? error.message : String(error),
+            });
+            return null;
           });
-          return null;
-        })
-      : null;
+      // No base screenshot means no surface; the map capture would only spend
+      // another timeout learning the same thing.
+      const mapShot = input.includeElementMap && snapshot && shot
+        ? await captureElementMapScreenshot(tab.webContents, snapshot).catch((error) => {
+            logger()?.debug("built_in_browser.observe_element_map_failed", {
+              err: error instanceof Error ? error.message : String(error),
+            });
+            return null;
+          })
+        : null;
+      return { screenshot: shot, screenshotUnavailable: unavailable, dom: snapshot, elementMapScreenshot: mapShot };
+    });
     const diagnostics = input.includeDiagnostics === false ? null : snapshotDiagnostics(tab);
-    const observation = await writeObservation(tab, screenshot, input, dom, elementMapScreenshot, diagnostics, sessionEntry?.id ?? null);
+    const observation = await writeObservation(
+      tab,
+      screenshot,
+      input,
+      dom,
+      elementMapScreenshot,
+      diagnostics,
+      sessionEntry?.id ?? null,
+      screenshotUnavailable,
+    );
     touchSession(sessionEntry, { lastObservationId: observation.id });
     return observation;
   }
@@ -4574,22 +5400,44 @@ function createBuiltInBrowserWindowService(args: {
     };
   }
 
+  /** An action on a tab that is recording, for its demo track (see `noteDemoPageAction`). */
+  async function noteDemoAction(
+    tab: BrowserTabState,
+    input: { chatSessionId?: string | null },
+    kind: DemoTrackEventKind,
+    target: { point?: { x: number; y: number } | null; element?: BuiltInBrowserElementSnapshot | null; label?: string },
+  ): Promise<void> {
+    await noteDemoPageAction({
+      key: builtInBrowserRecordingKey(tab.id),
+      kind,
+      by: input.chatSessionId ? "agent" : "user",
+      target,
+      readViewport: async () => tab.webContents.isDestroyed()
+        ? null
+        : parseDemoViewport(await tab.webContents.executeJavaScriptInIsolatedWorld(
+          DEMO_VIEWPORT_ISOLATED_WORLD_ID,
+          [{ code: DEMO_VIEWPORT_SOURCE }],
+        )),
+    });
+  }
+
   async function click(input: BuiltInBrowserClickArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before clicking.");
     return runTracedAgentAction(tab, "click", input, async () => {
       const wc = tab.webContents;
-      const { x, y } = await resolveClickTarget(tab, input);
+      const { x, y, element } = await resolveClickTarget(tab, input);
+      await noteDemoAction(tab, input, "click", { point: { x, y }, element, label: demoElementLabel(element) });
       const button = normalizeMouseButton(input.button);
       const clickCount = normalizeClickCount(input.clickCount);
       await withTemporaryDebugger(wc, async () => {
-        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+        await dispatchPageMouseEvent(tab, {
           type: "mousePressed",
           x,
           y,
           button,
           clickCount,
         });
-        await sendDebuggerCommand(wc, "Input.dispatchMouseEvent", {
+        await dispatchPageMouseEvent(tab, {
           type: "mouseReleased",
           x,
           y,
@@ -4607,6 +5455,9 @@ function createBuiltInBrowserWindowService(args: {
     return runTracedAgentAction(tab, "typeText", input, async () => {
       const text = stringOrNull(input.text);
       if (!text) throw new Error("Text is required.");
+      await captureActionBaseline(tab, input);
+      // No label: what had focus is unknown, so the text may be a secret.
+      await noteDemoAction(tab, input, "type", {});
       await withTemporaryDebugger(tab.webContents, async () => {
         await sendDebuggerCommand(tab.webContents, "Input.insertText", { text });
       });
@@ -4620,21 +5471,18 @@ function createBuiltInBrowserWindowService(args: {
     return runTracedAgentAction(tab, "dispatchKey", input, async () => {
       const key = stringOrNull(input.key);
       if (!key) throw new Error("Key is required.");
+      // Parsed before any side effect, so a refused key records nothing.
+      const events = keyEventsForAgentInput(key);
+      let element: BuiltInBrowserElementSnapshot | null = null;
       if (hasElementTarget(input)) {
-        await focusElementTarget(tab, input, { select: false });
+        element = await focusElementTarget(tab, input, { select: false });
+      } else {
+        await captureActionBaseline(tab, input);
       }
-      const event = keyEventForAgentInput(key);
+      await noteDemoAction(tab, input, "key", { element, label: key });
       await withTemporaryDebugger(tab.webContents, async () => {
-        await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", {
-          type: "keyDown",
-          ...event,
-        });
-        await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", {
-          type: "keyUp",
-          ...event,
-          text: undefined,
-          unmodifiedText: undefined,
-        });
+        await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", events.down);
+        await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", events.up);
       });
       emitStatus();
       return actionResult(tab, input);
@@ -4647,8 +5495,14 @@ function createBuiltInBrowserWindowService(args: {
       const deltaX = finiteNumber(input.deltaX) ?? 0;
       const deltaY = finiteNumber(input.deltaY) ?? 0;
       if (deltaX === 0 && deltaY === 0) throw new Error("Scroll requires deltaX or deltaY.");
+      await captureActionBaseline(tab, input);
+      const scrollX = finiteNumber(input.x);
+      const scrollY = finiteNumber(input.y);
+      await noteDemoAction(tab, input, "scroll", {
+        point: scrollX != null && scrollY != null ? { x: normalizeDimension(scrollX), y: normalizeDimension(scrollY) } : null,
+      });
       await withTemporaryDebugger(tab.webContents, async () => {
-        await sendDebuggerCommand(tab.webContents, "Input.dispatchMouseEvent", {
+        await dispatchPageMouseEvent(tab, {
           type: "mouseWheel",
           x: normalizeDimension(finiteNumber(input.x)),
           y: normalizeDimension(finiteNumber(input.y)),
@@ -4669,7 +5523,8 @@ function createBuiltInBrowserWindowService(args: {
         ? input.value
         : (typeof input.text === "string" ? input.text : null);
       if (text == null) throw new Error("Fill text is required.");
-      await focusElementTarget(tab, input, { select: true, clear: true });
+      const element = await focusElementTarget(tab, input, { select: true, clear: true });
+      await noteDemoAction(tab, input, "type", { element, label: demoTypedLabel(text, element) });
       await withTemporaryDebugger(tab.webContents, async () => {
         await sendDebuggerCommand(tab.webContents, "Input.insertText", { text });
       });
@@ -4778,6 +5633,10 @@ function createBuiltInBrowserWindowService(args: {
       tab.recording.abort();
       tab.recording = null;
     }
+    // Outstanding releases become no-ops against a missing entry; nothing is
+    // left to park for a tab that no longer exists.
+    captureHoldCounts.delete(tab.id);
+    resolveWarmWaiters(tab.id);
     tab.networkLoggingEnabled = false;
     tab.networkLogPending.clear();
     tab.debuggerHolds.clear();
@@ -4856,6 +5715,9 @@ function createBuiltInBrowserWindowService(args: {
 
   function dispose(): void {
     disposed = true;
+    if (recentlyAttendedTimer) clearTimeout(recentlyAttendedTimer);
+    recentlyAttendedTimer = null;
+    recentlyAttendedUntil.clear();
     // Clear inspecting flags up front so any in-flight debugger callbacks that fire
     // during teardown don't act on torn-down state. stopInspect() is async, but the
     // synchronous flag flip here protects the message listener (handleInspectNodeRequested
@@ -4876,6 +5738,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     unregisterWindowWatchers();
     clearWarmingTimers();
+    panelRectSettler.dispose();
     tabCapabilities.dispose();
     removeBrowserDownloadListener();
     unsubscribeNetworkObserver?.();
@@ -4896,6 +5759,7 @@ function createBuiltInBrowserWindowService(args: {
     tabs = [];
     browserSessions = [];
     activeTabId = null;
+    releaseUnusedIsolatedSessions();
     configuredBrowserSession = null;
   }
 
@@ -5254,6 +6118,32 @@ function createBuiltInBrowserWindowService(args: {
     return normalizeDomSnapshot(isRecord(result) ? result.snapshot : null);
   };
 
+  /**
+   * Send a synthesized mouse event at a point in CSS viewport pixels.
+   *
+   * Chromium reads `Input.dispatchMouseEvent` coordinates in the space it
+   * draws the page in, and an emulation override with `scale` draws CSS pixels
+   * smaller: the recording viewport (1280×800) fitted into a narrower pane, or a
+   * device preset letterboxed into it. Element rects, handles and `--x/--y`
+   * are CSS pixels, so without this a click aimed at an element's centre
+   * landed at centre ÷ scale, on some other element or off the page, and was
+   * "delivered" without doing anything. Every synthesized mouse event goes
+   * through here.
+   */
+  const dispatchPageMouseEvent = async (
+    tab: BrowserTabState,
+    params: { type: string; x: number; y: number } & Record<string, unknown>,
+  ): Promise<void> => {
+    const scale = tab.emulation
+      ? tabCapabilities.emulationInputScale(tab)
+      : recordingViewport.inputScale(tab);
+    await sendDebuggerCommand(
+      tab.webContents,
+      "Input.dispatchMouseEvent",
+      scale === 1 ? params : { ...params, x: params.x * scale, y: params.y * scale },
+    );
+  };
+
   const resolveClickTarget = async (
     tab: BrowserTabState,
     input: BuiltInBrowserClickArgs,
@@ -5264,6 +6154,7 @@ function createBuiltInBrowserWindowService(args: {
       if (x == null || y == null) {
         throw new Error("Browser click requires both x and y when using coordinates.");
       }
+      await captureActionBaseline(tab, input);
       return { x: normalizeDimension(x), y: normalizeDimension(y), element: null };
     }
 
@@ -5283,6 +6174,9 @@ function createBuiltInBrowserWindowService(args: {
       throw new Error("No matching browser element was found for click.");
     }
     if (target.disabled) throw new Error("Matching browser element is disabled.");
+    const tracker = actionEffectTrackers.get(tab)?.tracker;
+    noteAgentActionBaseline(tracker, record);
+    noteAgentActionResolved(tracker, target, input.handle);
     return {
       x: normalizeDimension(target.center.x),
       y: normalizeDimension(target.center.y),
@@ -5312,6 +6206,9 @@ function createBuiltInBrowserWindowService(args: {
     const target = normalizeElementSnapshot(record.target);
     if (!target) throw new Error("No matching browser element was found.");
     if (target.disabled) throw new Error("Matching browser element is disabled.");
+    const tracker = actionEffectTrackers.get(tab)?.tracker;
+    noteAgentActionBaseline(tracker, record);
+    noteAgentActionResolved(tracker, target, input.handle);
     return target;
   };
 
@@ -5440,23 +6337,34 @@ function createBuiltInBrowserWindowService(args: {
       const waitMs = normalizeActionObserveDelayMs(input.waitAfterMs);
       if (waitMs > 0) await delay(waitMs);
     }
+    const observation = input.observe === false ? null : await observe({ ...input, tabId: tab.id });
+    const effectEntry = actionEffectTrackers.get(tab);
+    const tracker = effectEntry?.tracker ?? createAgentActionEffectTracker();
     return {
       ok: true,
-      observation: input.observe === false ? null : await observe({ ...input, tabId: tab.id }),
+      observation,
       status: scopeStatusForInput(getStatus(), input),
       trace: null,
       session: sessionEntry ? sessionSnapshot(sessionEntry) : null,
+      resolved: tracker.resolved,
+      effect: navigationApprovalEffect(effectEntry?.navigationApproval ?? null)
+        ?? agentActionEffect(tracker, {
+          action: effectEntry?.action ?? "action",
+          observed: observation != null,
+          after: observation?.dom,
+        }),
     };
   };
 
   const writeObservation = async (
     tab: BrowserTabState,
-    screenshot: BuiltInBrowserScreenshot,
+    screenshot: BuiltInBrowserScreenshot | null,
     input: BuiltInBrowserObservationArgs,
     dom: BuiltInBrowserDomSnapshot | null,
     elementMapScreenshot: BuiltInBrowserScreenshot | null,
     diagnostics: BuiltInBrowserDiagnostics | null,
     sessionId: string | null,
+    screenshotUnavailable: string | null = null,
   ): Promise<BuiltInBrowserObservation> => {
     if (!observationRelativeBasePath) {
       throw new Error("Browser observations are unavailable because no scratch root is configured.");
@@ -5464,13 +6372,17 @@ function createBuiltInBrowserWindowService(args: {
     const keepCount = normalizeObservationKeepCount(input.keepCount);
     const id = `obs-${Date.now()}-${randomUUID()}`;
     const dir = observationDirectory(tab);
-    const filePath = path.join(dir, `${id}.png`);
     const elementMapPath = path.join(dir, `${id}.map.png`);
     const jsonPath = path.join(dir, `${id}.json`);
-    const image = decodeDataUrl(screenshot.dataUrl);
     await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(filePath, image.buffer);
-    const relativePath = path.relative(observationRelativeBasePath, filePath);
+    // No image means no `.png` and a null path: the sidecar JSON still keeps the
+    // DOM handles resolvable, and readers that look for `filePath` (proof, the
+    // Work-tools frame list) skip it rather than filing a missing file.
+    const image = screenshot ? decodeDataUrl(screenshot.dataUrl) : null;
+    const filePath = image ? path.join(dir, `${id}.png`) : null;
+    if (image && filePath) await fs.writeFile(filePath, image.buffer);
+    // Agents read these paths; they use forward slashes on every OS.
+    const relativePath = filePath ? normalizeRelative(path.relative(observationRelativeBasePath, filePath)) : null;
     const domWithHandles = dom ? applyObservationHandles(dom, id) : null;
     let elementMap: BuiltInBrowserObservationElementMap | null = null;
     if (elementMapScreenshot) {
@@ -5478,7 +6390,7 @@ function createBuiltInBrowserWindowService(args: {
       await fs.writeFile(elementMapPath, elementMapImage.buffer);
       elementMap = {
         filePath: elementMapPath,
-        relativePath: path.relative(observationRelativeBasePath, elementMapPath),
+        relativePath: normalizeRelative(path.relative(observationRelativeBasePath, elementMapPath)),
         width: elementMapScreenshot.width,
         height: elementMapScreenshot.height,
         mimeType: elementMapImage.mimeType,
@@ -5486,19 +6398,22 @@ function createBuiltInBrowserWindowService(args: {
         ...(input.includeDataUrl ? { dataUrl: elementMapScreenshot.dataUrl } : {}),
       };
     }
+    const pageHint = narrowPageHint(tab, screenshot?.width ?? null);
     const observation: BuiltInBrowserObservation = {
       id,
       tabId: tab.id,
       sessionId,
       url: tab.webContents.isDestroyed() ? null : emptyToNull(tab.webContents.getURL()),
       title: tab.webContents.isDestroyed() ? null : emptyToNull(tab.webContents.getTitle()),
-      capturedAt: screenshot.capturedAt,
-      width: screenshot.width,
-      height: screenshot.height,
-      mimeType: image.mimeType,
+      capturedAt: screenshot?.capturedAt ?? new Date().toISOString(),
+      width: screenshot?.width ?? null,
+      height: screenshot?.height ?? null,
+      mimeType: image?.mimeType ?? null,
       filePath,
       relativePath,
-      ...(input.includeDataUrl ? { dataUrl: screenshot.dataUrl } : {}),
+      ...(screenshotUnavailable ? { screenshotUnavailable } : {}),
+      ...(pageHint ? { narrowPageHint: pageHint } : {}),
+      ...(input.includeDataUrl && screenshot ? { dataUrl: screenshot.dataUrl } : {}),
       ...(domWithHandles ? { dom: domWithHandles } : {}),
       ...(elementMap ? { elementMap } : {}),
       ...(diagnostics ? { diagnostics } : {}),
@@ -5562,6 +6477,7 @@ function createBuiltInBrowserWindowService(args: {
    */
   const tabCapabilities = createBuiltInBrowserTabCapabilities({
     logger,
+    demoEngine: args.demoEngine ?? null,
     emit,
     emitStatus,
     statusForInput: (input) => scopeStatusForInput(getStatus(), input),
@@ -5578,6 +6494,7 @@ function createBuiltInBrowserWindowService(args: {
     releaseDebuggerHold,
     sendDebuggerCommand,
     withTemporaryDebugger,
+    dispatchPageMouseEvent,
     resolveClickTarget,
     focusElementTarget,
     observationDirectory,
@@ -5600,7 +6517,21 @@ function createBuiltInBrowserWindowService(args: {
       }
       attachViewsToCurrentWindow();
     },
+    // A parked tab is boxed at its device's size (see `parkedPreviewRect`).
+    onTabEmulationChanged: () => attachViewsToCurrentWindow(),
     isTabSurfaced: (tabId) => surfacedTabIds.has(tabId),
+    holdCaptureSurface: async (tabId) => {
+      const release = acquireCaptureHold(tabId);
+      await waitForWarmToFinish(tabId);
+      return release;
+    },
+    // Pin the tab to the fixed recording viewport and wait for the override to
+    // land before the recorder negotiates its first frame, so the video opens
+    // at 1280×800 rather than the pane's size.
+    prepareRecordingViewport: async (tab) => {
+      reconcileRecordingViewports();
+      await settleRecordingViewport(tab);
+    },
     createRecordingWindow: args.createRecordingWindow ?? null,
     createTabRecorder: args.createTabRecorder ?? null,
   });
@@ -5632,6 +6563,8 @@ function createBuiltInBrowserWindowService(args: {
      * destroyed and the last moment their ids are knowable.
      */
     listTabIds: (): string[] => tabs.map((tab) => tab.id),
+    /** This collection's tab id for a `WebContents`, or null. */
+    tabIdForWebContents: (wc: WebContents): string | null => tabForWebContents(wc)?.id ?? null,
     requestOriginAccess,
     claim,
     startHandoff,
@@ -5645,6 +6578,7 @@ function createBuiltInBrowserWindowService(args: {
     navigate,
     createTab,
     switchTab,
+    handTabToChat,
     closeTab,
     reload,
     goBack,
@@ -5665,10 +6599,18 @@ function createBuiltInBrowserWindowService(args: {
     selectPoint,
     selectCurrent,
     clearSelection,
-    setEmulation: tabCapabilities.setEmulation,
+    setEmulation: async (input: BuiltInBrowserSetEmulationArgs) => {
+      const result = await tabCapabilities.setEmulation(input);
+      // Clearing a preset clears Chromium's override outright, ours included
+      // when no preset was on; put the recording viewport back if it still applies.
+      const tab = tabById(result.tabId);
+      if (tab) refreshRecordingViewport(tab);
+      return result;
+    },
     setZoom: tabCapabilities.setZoom,
     findInPage: tabCapabilities.findInPage,
     stopFindInPage: tabCapabilities.stopFindInPage,
+    readText: tabCapabilities.readText,
     setDevTools: tabCapabilities.setDevTools,
     setNetworkLogging: tabCapabilities.setNetworkLogging,
     getNetworkLog: tabCapabilities.getNetworkLog,
@@ -5840,19 +6782,6 @@ async function fetchFaviconDataUrl(wc: WebContents, value: string): Promise<stri
   }
 }
 
-function urlForBrowserLog(value: string): string | null {
-  const url = emptyToNull(value);
-  if (!url) return null;
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed.origin;
-    if (parsed.protocol === "about:") return parsed.href === "about:blank" ? parsed.href : "about:";
-    return parsed.protocol;
-  } catch {
-    return null;
-  }
-}
-
 function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
   const wc = tab.webContents;
   const url = wc.isDestroyed() ? null : emptyToNull(wc.getURL());
@@ -5864,6 +6793,8 @@ function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
     url,
     title: isLaunchpad ? "New tab" : (wc.isDestroyed() ? null : emptyToNull(wc.getTitle())),
     isLaunchpad,
+    loadError: tab.loadError,
+    isolatedProfile: tab.isolation?.profile ?? null,
     faviconUrl: tab.faviconUrl,
     isLoading: wc.isDestroyed() ? false : wc.isLoading(),
     canGoBack: wc.isDestroyed() ? false : wc.canGoBack(),
@@ -5876,6 +6807,9 @@ function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
     zoomFactor: tab.zoomFactor,
     devToolsOpen: tab.devToolsMode !== null,
     emulation: tab.emulation,
+    agentViewport: tabUsesRecordingViewport(tab)
+      ? { width: BUILT_IN_BROWSER_RECORDING_VIEWPORT.width, height: BUILT_IN_BROWSER_RECORDING_VIEWPORT.height }
+      : null,
     networkLogging: tab.networkLoggingEnabled,
     recording: tab.recording
       ? { startedAt: tab.recording.startedAt, fps: tab.recording.fps }

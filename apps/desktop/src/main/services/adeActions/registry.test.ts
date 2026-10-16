@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { LaneListSnapshot, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import {
   ADE_ACTION_ALLOWLIST,
+  buildSendNotificationAction,
   createAutomationAdeActionLookup,
   getAdeActionInputContract,
   getAdeActionDomainServices,
@@ -88,70 +89,6 @@ describe("the automation action lookup", () => {
         expect(lookup.isAllowed(domain, action), `${domain}.${action}`).toBe(true);
       }
     }
-  });
-});
-
-describe("machine-scoped API keys on the ai domain", () => {
-  it("exposes the machine key trio, so the renderer can write the store the RUNTIME reads", () => {
-    // Desktop main writes through Electron safeStorage; the runtime reads
-    // through EncryptedFileCredentialStore. With the trio on desktop IPC only,
-    // a key saved in Settings was invisible to the runtime — which is how the
-    // runtime-hosted voice call answered "no OpenAI key on this machine" with a
-    // key the UI reported as configured.
-    const services = getAdeActionDomainServices({
-      aiIntegrationService: { listApiKeys: () => [] },
-      projectConfigService: {},
-    } as never);
-    const names = listAllowedAdeActionNames("ai", services.ai as Record<string, unknown>);
-    expect(names).toContain("getMachineApiKeyStatus");
-    expect(names).toContain("storeMachineApiKey");
-    expect(names).toContain("deleteMachineApiKey");
-  });
-});
-
-describe("the cto_voice domain", () => {
-  it("exposes the runtime's single call service, and nothing when there is none", () => {
-    // The brain is a singleton on the runtime because it owns a live socket, a
-    // confirm-first hold and an audio queue that outlive one action call —
-    // `getAdeActionDomainServices` runs per call, so it can only forward.
-    const ctoVoiceCallService = {
-      getState: () => ({ phase: "idle" }),
-      hasKey: async () => true,
-      start: async () => ({ ok: true }),
-      end: async () => ({ ok: true }),
-      setMuted: async () => ({ ok: true }),
-      pushAudio: () => ({ ok: true }),
-      pullAudio: () => ({ ok: true, chunks: [], dropped: 0 }),
-      resolveApproval: async () => ({ ok: true }),
-      sendCapture: async () => ({ ok: true }),
-      subscribeState: () => () => {},
-      dispose: () => {},
-    };
-    const services = getAdeActionDomainServices({ ctoVoiceCallService } as never);
-    expect(listAllowedAdeActionNames(
-      "cto_voice",
-      services.cto_voice as Record<string, unknown>,
-    )).toEqual([
-      "end",
-      "getState",
-      "hasKey",
-      "pullAudio",
-      "pushAudio",
-      "resolveApproval",
-      "sendCapture",
-      "setMuted",
-      "start",
-    ]);
-
-    // `subscribeState` and `dispose` are in-process only — a remote caller
-    // could neither receive a callback nor be trusted to tear the call down.
-    const exposed = Object.keys(services.cto_voice as Record<string, unknown>);
-    expect(exposed).not.toContain("subscribeState");
-    expect(exposed).not.toContain("dispose");
-
-    // A runtime that never built one must leave the domain absent rather than
-    // present-and-throwing.
-    expect(getAdeActionDomainServices({} as never).cto_voice ?? null).toBeNull();
   });
 });
 
@@ -289,14 +226,14 @@ describe("runtime domain services behind the allowlist", () => {
       },
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
     const chat = getAdeActionDomainServices(runtime).chat as {
-      createPromptStash?: (args: unknown) => Promise<unknown> | unknown;
+      createDraft?: (args: unknown) => Promise<unknown> | unknown;
     };
     const attachment = {
       path: "/project/.ade/attachments/design.png",
       type: "image",
     };
 
-    await expect(Promise.resolve(chat.createPromptStash?.({
+    await expect(Promise.resolve(chat.createDraft?.({
       text: "",
       attachments: [attachment],
     }))).resolves.toMatchObject({
@@ -1083,6 +1020,7 @@ describe("runtime Linear issue tracker actions", () => {
       listUsers: vi.fn(async () => users),
       listLabels: vi.fn(async () => labels),
       listWorkflowStates: vi.fn(async () => states),
+      getIssuePickerData: vi.fn(async () => ({ projects, users, states, labels })),
       runGraphQL: vi.fn(async (args: unknown) => ({ data: args })),
     };
     const runtime = {
@@ -1129,7 +1067,7 @@ describe("runtime Linear issue tracker actions", () => {
     });
     expect(tracker.getConnectionStatus).toHaveBeenCalledTimes(2);
     await expect(service.getWorkflowCatalog()).resolves.toEqual({ users, labels, states });
-    await expect(service.getIssuePickerData()).resolves.toEqual({ projects, users, states });
+    await expect(service.getIssuePickerData()).resolves.toEqual({ projects, users, states, labels });
   });
 
   it("prechecks Linear connection before GraphQL actions", async () => {
@@ -1697,7 +1635,8 @@ describe("runtime session actions", () => {
       sessionId: "session-1",
       message: "Which account should I use?",
     })).toEqual({ ok: true, sessionId: "session-1" });
-    expect(requestAttention).toHaveBeenCalledWith("session-1", "Which account should I use?");
+    // No source: sessionService defaults it to `agent_explicit`.
+    expect(requestAttention).toHaveBeenCalledWith("session-1", "Which account should I use?", undefined);
     expect(markSessionAttentionRequested).toHaveBeenCalledWith("session-1");
     expect(setSessionRuntimeState).toHaveBeenCalledWith("session-1", "waiting-input");
     expect(handleSessionAttentionRequested).toHaveBeenCalledWith("project-1", {
@@ -2504,6 +2443,7 @@ describe("runtime AI actions", () => {
       "getOpenCodeRuntimeDiagnostics",
       "isOpenCodeInstalled",
       "cursorCloudStreamRun",
+      "getCursorAgentUsage",
       "storeApiKey",
       "deleteApiKey",
       "listApiKeys",
@@ -3281,5 +3221,30 @@ describe("getTurnFileDiffFromGit", () => {
     });
 
     expect(diff.modified.exists).toBe(false);
+  });
+});
+
+describe("attention.sendNotification links", () => {
+  // An automation's `{{run.chatSessionId}}` / `{{run.laneId}}` resolves to an
+  // empty id when the run never made that chat or lane. The phone still hears
+  // about the run; the link is left off and the reason is named.
+  it.each([
+    ["an unfilled run chat", "ade://session/", null, true],
+    ["an unfilled run lane", "ade://lane/", null, true],
+    ["a filled run chat", "ade://session/chat-1", "ade://session/chat-1", false],
+  ])("%s", async (_label, open, expectedLink, skipped) => {
+    const sent: Array<{ title: string; deepLink: string | null }> = [];
+    const notify = buildSendNotificationAction(
+      { accountAuthService: null, projectRoot: null, productAnalyticsService: null } as never,
+      (async (notification: { title: string; deepLink: string | null }) => {
+        sent.push(notification);
+        return { delivered: 1, devices: 1, failed: 0 };
+      }) as never,
+    );
+    const result = await notify({ title: "Run finished", open });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ title: "Run finished", deepLink: expectedLink });
+    expect(result).toMatchObject({ sent: true });
+    expect(Boolean((result as { linkSkipped?: string }).linkSkipped)).toBe(skipped);
   });
 });

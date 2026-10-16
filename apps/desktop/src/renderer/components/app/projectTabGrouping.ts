@@ -5,6 +5,7 @@ import type {
   OpenProjectBinding,
   RecentProjectSummary,
   RemoteRuntimeConnectionSnapshot,
+  RemoteOpenProjectBinding,
   RemoteRuntimeConnectionState,
 } from "../../../shared/types";
 
@@ -15,7 +16,6 @@ import {
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 export { LOCAL_MACHINE_ID, LOCAL_MACHINE_NAME };
 
-export type RemoteProjectTabBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 
 /** One checkout of a repo, on one machine. */
 export type ProjectTabMachine = {
@@ -27,6 +27,10 @@ export type ProjectTabMachine = {
   isLocal: boolean;
   rootPath: string;
   displayName: string;
+  /** False only for a local checkout whose directory is known to be missing.
+   *  Remote machines report true without probing; their reachability is the
+   *  connection state, not the filesystem. */
+  exists: boolean;
   laneCount?: number;
   iconDataUrl?: string | null;
   /** Full binding when the location can be opened without first becoming a tab. */
@@ -42,6 +46,38 @@ export type ProjectTabGroup = {
   activeBindingKey: string | null;
 };
 
+/** The binding that opens a recent project on the machine it lives on. */
+export function remoteBindingFromRecent(recent: RecentProjectSummary): RemoteOpenProjectBinding | null {
+  if (recent.kind !== "remote" || !recent.remote) return null;
+  return {
+    kind: "remote",
+    key: remoteProjectBindingKey(recent.remote.targetId, recent.remote.projectId),
+    targetId: recent.remote.targetId,
+    runtimeName: recent.remote.runtimeName,
+    hostname: recent.remote.hostname,
+    // Paired machines have no SSH path; dropping this made them read as SSH.
+    ...(recent.remote.transport ? { transport: recent.remote.transport } : {}),
+    projectId: recent.remote.projectId,
+    rootPath: recent.rootPath,
+    displayName: recent.displayName,
+    gitOriginUrl: recent.gitOriginUrl ?? recent.remote.gitOriginUrl ?? null,
+    iconDataUrl: recent.remote.iconDataUrl ?? null,
+  };
+}
+
+/** The binding that opens a recent project from this machine's checkout. */
+export function localBindingFromRecent(
+  recent: Pick<RecentProjectSummary, "rootPath" | "displayName" | "gitOriginUrl">,
+): Extract<OpenProjectBinding, { kind: "local" }> {
+  return {
+    kind: "local",
+    key: `local:${recent.rootPath}`,
+    rootPath: recent.rootPath,
+    displayName: recent.displayName,
+    gitOriginUrl: recent.gitOriginUrl,
+  };
+}
+
 function localMachine(tab: RecentProjectSummary): ProjectTabMachine {
   return {
     bindingKey: tab.rootPath,
@@ -50,18 +86,13 @@ function localMachine(tab: RecentProjectSummary): ProjectTabMachine {
     isLocal: true,
     rootPath: tab.rootPath,
     displayName: tab.displayName,
+    exists: tab.exists !== false,
     laneCount: tab.laneCount,
-    binding: {
-      kind: "local",
-      key: `local:${tab.rootPath}`,
-      rootPath: tab.rootPath,
-      displayName: tab.displayName,
-      gitOriginUrl: tab.gitOriginUrl,
-    },
+    binding: localBindingFromRecent(tab),
   };
 }
 
-function remoteMachine(binding: RemoteProjectTabBinding): ProjectTabMachine {
+function remoteMachine(binding: RemoteOpenProjectBinding): ProjectTabMachine {
   return {
     bindingKey: binding.key,
     machineId: binding.targetId,
@@ -69,14 +100,17 @@ function remoteMachine(binding: RemoteProjectTabBinding): ProjectTabMachine {
     isLocal: false,
     rootPath: binding.rootPath,
     displayName: binding.displayName,
+    exists: true,
     iconDataUrl: binding.iconDataUrl,
     binding,
   };
 }
 
 /**
- * Collapses the open local and remote project tabs into one tab per repository,
- * with the machine as a dimension inside it.
+ * Builds one tab per open project. A project can have checkouts on several
+ * machines; the tab records every known checkout of the same repository, so
+ * the project's context spans all of its machines. There is no per-tab
+ * machine picker in the UI.
  *
  * The join key is the repo's normalized git origin. Three rules keep it honest:
  *
@@ -87,24 +121,27 @@ function remoteMachine(binding: RemoteProjectTabBinding): ProjectTabMachine {
  *   has not opened join an existing group. Two open tabs are two things the
  *   user asked to keep in front of them, and collapsing them produced a single
  *   tab whose machine changed every time the other tab was activated — the tab
- *   you left appeared to jump machines. Merging is for reaching a checkout you
- *   do NOT have open, which is exactly what the machine switcher is for.
+ *   you left appeared to jump machines. Only checkouts you do NOT have open are
+ *   attached, so tab fallback can reach them.
  * - At most one checkout per machine joins a group. A lane worktree shares its
  *   parent repo's origin, so without this a worktree and its parent would
  *   silently become one tab that can't represent both.
  */
 export function groupProjectTabs(args: {
   localTabs: readonly RecentProjectSummary[];
-  remoteTabs: readonly RemoteProjectTabBinding[];
+  remoteTabs: readonly RemoteOpenProjectBinding[];
   /** Known-but-not-open locations. They are attached to an existing logical
    *  tab, but never create a tab by themselves. */
   knownLocalTabs?: readonly RecentProjectSummary[];
-  knownRemoteTabs?: readonly RemoteProjectTabBinding[];
+  knownRemoteTabs?: readonly RemoteOpenProjectBinding[];
   /** Normalized origin per remote binding key, from the live connection
    *  snapshots the renderer already holds. */
   remoteOriginByKey?: Readonly<Record<string, string | null | undefined>>;
   activeBindingKey?: string | null;
   preferredBindingKeyByGroup?: Readonly<Record<string, string | null | undefined>>;
+  /** The user's tab order, as binding keys. Open tabs missing from it keep
+   *  their relative order after the ordered ones. */
+  order?: readonly string[];
 }): ProjectTabGroup[] {
   const {
     localTabs,
@@ -114,6 +151,7 @@ export function groupProjectTabs(args: {
     remoteOriginByKey = {},
     activeBindingKey = null,
     preferredBindingKeyByGroup = {},
+    order = [],
   } = args;
 
   const openEntries: { machine: ProjectTabMachine; origin: string | null }[] = [
@@ -128,6 +166,15 @@ export function groupProjectTabs(args: {
       ),
     })),
   ];
+  if (order.length > 0) {
+    const rank = new Map(order.map((key, index) => [key, index]));
+    const unranked = order.length;
+    // Array.prototype.sort is stable, so unranked tabs keep their order.
+    openEntries.sort(
+      (a, b) =>
+        (rank.get(a.machine.bindingKey) ?? unranked) - (rank.get(b.machine.bindingKey) ?? unranked),
+    );
+  }
   const knownEntries: { machine: ProjectTabMachine; origin: string | null }[] = [
     ...knownLocalTabs.map((tab) => ({
       machine: localMachine(tab),
@@ -203,6 +250,11 @@ export function groupProjectTabs(args: {
   return groups;
 }
 
+/** The key a tab is ordered by: the binding key of the checkout it opened on. */
+export function tabOrderKey(group: ProjectTabGroup): string {
+  return group.machines[0]?.bindingKey ?? group.id;
+}
+
 /** The machine a group is currently showing: the bound one, else its first. */
 export function activeMachineForGroup(group: ProjectTabGroup): ProjectTabMachine | null {
   if (group.machines.length === 0) return null;
@@ -212,9 +264,86 @@ export function activeMachineForGroup(group: ProjectTabGroup): ProjectTabMachine
   );
 }
 
-/** True when a group spans more than one machine and therefore needs a picker. */
-export function isMultiMachine(group: ProjectTabGroup): boolean {
-  return group.machines.length > 1;
+/**
+ * This computer's checkout of the repo another machine's checkout belongs to,
+ * when there is one on disk. A project tab always runs on it: another
+ * machine's copy is only for a repo this computer does not have. Open tabs
+ * win over recents, and lane worktrees never stand in for the repo itself.
+ */
+export function localCheckoutForRemote(args: {
+  remoteOrigin: string | null | undefined;
+  openLocalTabs: readonly RecentProjectSummary[];
+  knownLocalTabs: readonly RecentProjectSummary[];
+}): string | null {
+  const origin = cachedGitRemoteIdentity(args.remoteOrigin ?? null);
+  if (!origin) return null;
+  const match = [...args.openLocalTabs, ...args.knownLocalTabs].find((entry) =>
+    entry.kind !== "remote"
+    && entry.exists !== false
+    && !entry.worktreeOf
+    && Boolean(entry.rootPath)
+    && cachedGitRemoteIdentity(entry.gitOriginUrl ?? null) === origin);
+  return match?.rootPath ?? null;
+}
+
+/** Where a project tab moves when its machine is disconnected or removed. */
+export type ProjectTabFallback =
+  | { kind: "local"; rootPath: string }
+  | { kind: "remote"; binding: RemoteOpenProjectBinding };
+
+/**
+ * A logical tab is a repo, so one machine going away is not a reason to close
+ * it: the tab falls back to another checkout of the same repo — the local
+ * checkout first (it needs no connection and is the tab's natural default),
+ * then a connected machine, then any other. `null` means the repo lives nowhere
+ * else and the tab must close.
+ */
+export function resolveProjectTabFallback(args: {
+  bindingKey: string;
+  groups: readonly ProjectTabGroup[];
+  openLocalRoots: readonly string[];
+  openRemoteBindingKeys: readonly string[];
+  connectedTargetIds: ReadonlySet<string>;
+  excludeTargetId: string;
+}): ProjectTabFallback | null {
+  const {
+    bindingKey,
+    groups,
+    openLocalRoots,
+    openRemoteBindingKeys,
+    connectedTargetIds,
+    excludeTargetId,
+  } = args;
+  const group = groups.find((candidate) =>
+    candidate.machines.some((machine) => machine.bindingKey === bindingKey),
+  );
+  if (!group) return null;
+  const others = group.machines.filter(
+    (machine) => machine.bindingKey !== bindingKey,
+  );
+  if (others.length === 0) return null;
+
+  const openRemoteKeys = new Set(openRemoteBindingKeys);
+  const isOpen = (machine: ProjectTabMachine) =>
+    machine.isLocal
+      ? openLocalRoots.includes(machine.rootPath)
+      : openRemoteKeys.has(machine.bindingKey);
+
+  const locals = others.filter(
+    (machine) => machine.isLocal && machine.exists && machine.rootPath,
+  );
+  const local = locals.find(isOpen) ?? locals[0];
+  if (local) return { kind: "local", rootPath: local.rootPath };
+
+  const remotes = others.filter(
+    (machine): machine is ProjectTabMachine & { binding: RemoteOpenProjectBinding } =>
+      machine.binding?.kind === "remote" &&
+      machine.binding.targetId !== excludeTargetId,
+  );
+  const remote =
+    remotes.find((machine) => connectedTargetIds.has(machine.binding.targetId)) ??
+    remotes[0];
+  return remote ? { kind: "remote", binding: remote.binding } : null;
 }
 
 export type RecentProjectLocation = {
@@ -399,7 +528,12 @@ export function groupRecentProjects(args: {
       const locations = [...group.locations].sort(
         (left, right) => recentTimestamp(right.summary) - recentTimestamp(left.summary),
       );
-      const primary = locations.find((location) => location.reachable) ?? locations[0]!;
+      // This computer's checkout first: opening a project should never land
+      // on another machine's copy just because that one was opened last.
+      const primary =
+        locations.find((location) => location.summary.kind !== "remote" && location.reachable)
+        ?? locations.find((location) => location.reachable)
+        ?? locations[0]!;
       return {
         id: group.id,
         displayName: group.displayName,

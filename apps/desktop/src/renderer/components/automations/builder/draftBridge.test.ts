@@ -26,6 +26,20 @@ function baseDraft(overrides: Partial<AutomationRuleDraft> = {}): AutomationRule
 }
 
 describe("draftBridge step round-trips", () => {
+  it.each(["require-on-trigger", "pr-branch"])("drops step lane overrides when the lane comes from the event (%s)", (laneMode) => {
+    const saved = applyStepsToDraft(
+      baseDraft({ execution: { kind: "built-in", laneMode, builtIn: { actions: [] } } as AutomationRuleDraft["execution"] }),
+      [
+        { kind: "run-command", command: "pwd", targetLaneId: "lane-old" },
+        { kind: "run-command", command: "git push" },
+      ],
+    );
+    const actions = saved.execution?.kind === "built-in" ? saved.execution.builtIn?.actions ?? [] : [];
+    expect(actions).toHaveLength(2);
+    expect(actions.map((action) => action.targetLaneId ?? null)).toEqual([null, null]);
+    expect(actions.map((action) => action.command)).toEqual(["pwd", "git push"]);
+  });
+
   it("preserves alwaysRun on every step kind through save and reload", () => {
     // Regression: stepRuntime dropped alwaysRun for non-delete-lane steps, so
     // the "Always run" toggle silently reverted on save and the executor

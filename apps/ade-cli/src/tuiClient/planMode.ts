@@ -11,6 +11,8 @@ export function isPlanMode(modelState: AdeCodeModelState): boolean {
       return modelState.codexApprovalPolicy === "on-request" && modelState.codexSandbox === "read-only";
     case "droid":
       return modelState.droidPermissionMode === "read-only";
+    case "muse":
+      return modelState.interactionMode === "plan";
     case "cursor":
       return modelState.cursorModeId === "plan";
     default:

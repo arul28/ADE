@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -79,6 +80,32 @@ const discoveryCache = new Map<string, { at: number; value: DiscoveredClaudeSlas
  */
 export function invalidateClaudeSlashCommandCache(): void {
   discoveryCache.clear();
+  for (const cache of listingCaches) cache.clear();
+}
+
+/** Memos of things built from a discovery result; dropped with it. */
+const listingCaches = new Set<Map<string, unknown>>();
+
+/**
+ * A memo, on discovery's own TTL, for a listing built from a discovery
+ * result: a listing that is rebuilt on every turn would otherwise stat the
+ * disk again each time, for a result that cannot be newer than the discovery
+ * it was built from. `invalidateClaudeSlashCommandCache` clears it too.
+ */
+export function createSlashCommandListingCache<V>(): (key: string, build: () => V) => V {
+  const cache = new Map<string, { at: number; value: V }>();
+  listingCaches.add(cache);
+  return (key, build) => {
+    const now = Date.now();
+    const cached = cache.get(key);
+    if (cached && now - cached.at < DISCOVERY_TTL_MS) return cached.value;
+    for (const [entryKey, entry] of cache) {
+      if (now - entry.at >= DISCOVERY_TTL_MS) cache.delete(entryKey);
+    }
+    const value = build();
+    cache.set(key, { at: Date.now(), value });
+    return value;
+  };
 }
 
 export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashCommand[] {
@@ -128,6 +155,9 @@ function discoverClaudeSlashCommandsUncached(cwd: string): DiscoveredClaudeSlash
   });
 }
 
+/** The command and skill roots a harness reads for itself, so ADE lists nothing under them. */
+export type NativeSlashCommandRoots = { commandRoots: readonly string[]; skillRoots: readonly string[] };
+
 /**
  * The command and skill roots Claude Code finds without ADE's help.
  *
@@ -144,7 +174,7 @@ export function claudeNativeSlashCommandRoots(
   cwd: string,
   pluginRoots: readonly string[] = [],
   home: string = os.homedir(),
-): { commandRoots: string[]; skillRoots: string[] } {
+): NativeSlashCommandRoots {
   // Deliberately only the session directory and the home directory, not ADE's
   // full ancestor walk. Claude Code stops walking at ITS project root, and
   // reproducing that boundary here would mean reproducing its git logic. Under-
@@ -160,7 +190,40 @@ export function claudeNativeSlashCommandRoots(
   };
 }
 
-export type ClaudeSlashCommandInjectionPlan = {
+function realPathOrNull(target: string): string | null {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return null;
+  }
+}
+
+/** Skill roots hold one folder per skill; a few hundred is already far past any real collection. */
+const MAX_SKILL_DIRS_PER_ROOT = 500;
+
+/**
+ * The real folders behind the entries of Claude's own skill roots that are
+ * links. An entry that is a plain folder is already matched by its path.
+ */
+function realSkillDirsUnder(skillRoots: readonly string[]): Set<string> {
+  const dirs = new Set<string>();
+  for (const root of skillRoots) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries.slice(0, MAX_SKILL_DIRS_PER_ROOT)) {
+      if (!entry.isSymbolicLink()) continue;
+      const real = realPathOrNull(path.join(root, entry.name));
+      if (real) dirs.add(pathKey(real));
+    }
+  }
+  return dirs;
+}
+
+export type SlashCommandInjectionPlan = {
   commands: DiscoveredClaudeSlashCommand[];
   skills: DiscoveredClaudeSlashCommand[];
   nativeCount: number;
@@ -178,18 +241,36 @@ export type ClaudeSlashCommandInjectionPlan = {
 export function planClaudeSlashCommandInjection(
   commands: readonly DiscoveredClaudeSlashCommand[],
   options: { cwd: string; pluginRoots?: readonly string[]; home?: string },
-): ClaudeSlashCommandInjectionPlan {
-  const native = claudeNativeSlashCommandRoots(
+): SlashCommandInjectionPlan {
+  return planSlashCommandInjection(commands, claudeNativeSlashCommandRoots(
     options.cwd,
     options.pluginRoots ?? [],
     options.home ?? os.homedir(),
-  );
+  ));
+}
+
+/** Drops everything under the roots a harness already reads for itself. */
+export function planSlashCommandInjection(
+  commands: readonly DiscoveredClaudeSlashCommand[],
+  native: NativeSlashCommandRoots,
+): SlashCommandInjectionPlan {
+  // A skill Claude reaches through a link counts as native too. A common setup
+  // keeps the real skill in `~/.agents/skills` and links it into
+  // `~/.claude/skills`, so Claude lists it under the link while ADE finds the
+  // same folder under the root Claude does not read, and the skill appeared
+  // twice. Matched on the folder's real path only: two different skills that
+  // share a name are both kept, because hiding one Claude does not have is the
+  // worse mistake.
+  const linkedSkillDirs = realSkillDirsUnder(native.skillRoots);
   const isNative = (entry: DiscoveredClaudeSlashCommand): boolean => {
     const roots = entry.source === "command" ? native.commandRoots : native.skillRoots;
-    return roots.some((root) => isPathInside(entry.filePath, root));
+    if (roots.some((root) => isPathInside(entry.filePath, root))) return true;
+    if (entry.source !== "skill" || !linkedSkillDirs.size) return false;
+    const real = realPathOrNull(path.dirname(entry.filePath));
+    return real !== null && linkedSkillDirs.has(pathKey(real));
   };
 
-  const plan: ClaudeSlashCommandInjectionPlan = { commands: [], skills: [], nativeCount: 0 };
+  const plan: SlashCommandInjectionPlan = { commands: [], skills: [], nativeCount: 0 };
   for (const entry of commands) {
     if (isNative(entry)) {
       plan.nativeCount += 1;
@@ -231,18 +312,19 @@ export function formatClaudeSlashCommandEntry(entry: DiscoveredClaudeSlashComman
 }
 
 /**
- * Renders entries newest-budget-first, returning what did not fit so the caller
- * can say so in the prompt instead of hiding it.
+ * Renders entries in order until the budget is spent, counting what did not
+ * fit. The first entry always goes in: a list of nothing helps nobody.
  */
-export function renderClaudeSlashCommandEntries(
-  entries: readonly DiscoveredClaudeSlashCommand[],
-  budgetBytes: number = CLAUDE_SKILL_LISTING_BUDGET_BYTES,
+export function renderWithinBudget<T>(
+  entries: readonly T[],
+  format: (entry: T) => string,
+  budgetBytes: number,
 ): { lines: string[]; omitted: number } {
   const lines: string[] = [];
   let used = 0;
   let omitted = 0;
   for (const entry of entries) {
-    const rendered = formatClaudeSlashCommandEntry(entry);
+    const rendered = format(entry);
     const cost = Buffer.byteLength(rendered, "utf8") + 1;
     if (lines.length && used + cost > budgetBytes) {
       omitted += 1;
@@ -252,6 +334,17 @@ export function renderClaudeSlashCommandEntries(
     used += cost;
   }
   return { lines, omitted };
+}
+
+/**
+ * Renders entries newest-budget-first, returning what did not fit so the caller
+ * can say so in the prompt instead of hiding it.
+ */
+export function renderClaudeSlashCommandEntries(
+  entries: readonly DiscoveredClaudeSlashCommand[],
+  budgetBytes: number = CLAUDE_SKILL_LISTING_BUDGET_BYTES,
+): { lines: string[]; omitted: number } {
+  return renderWithinBudget(entries, formatClaudeSlashCommandEntry, budgetBytes);
 }
 
 export function resolveClaudeSlashCommandInvocation(

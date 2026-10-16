@@ -1,27 +1,52 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowCounterClockwise, ChatCircleDots, Plus, Trash } from "@phosphor-icons/react";
+import { BROWSER_TAB_ROUTE, browserTabAvailable } from "../browser/browserTab";
+import { HomeAppButton, openMusicApp } from "../music/musicApps";
+import { musicTabAvailable } from "../music/musicTab";
+import {
+  AppWindow,
+  ArrowCounterClockwise,
+  ChatCircleDots,
+  FolderOpen,
+  GitMerge,
+  Globe,
+  MusicNotes,
+  Plus,
+  SlidersHorizontal,
+  Trash,
+} from "@phosphor-icons/react";
+import { cloneTargetFor, projectMenuSections } from "./projectMenuEntries";
+import {
+  ContextMenu,
+  type ContextMenuEntry,
+  type ContextMenuState,
+} from "../ui/ContextMenu";
+import { ProjectIconDialog, type ProjectIconDialogTarget } from "./ProjectIconDialog";
+import { CloneLocallyDialog, type CloneLocallyTarget } from "./CloneLocallyDialog";
 import { useAppStore } from "../../state/appStore";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
-import {
-  COLORS,
-  LABEL_STYLE,
-  MONO_FONT,
-  outlineButton,
-  primaryButton,
-} from "../lanes/laneDesignTokens";
+import { COLORS } from "../lanes/laneDesignTokens";
 import { CommandPalette } from "../app/CommandPalette";
 import { Banner } from "../ui/notice";
 import { dismissToast, showToast } from "../app/toast/toastStore";
 import {
   groupRecentProjects,
   recentProjectLocationKey,
+  localBindingFromRecent,
+  remoteBindingFromRecent,
   type RecentProjectGroup,
 } from "../app/projectTabGrouping";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useOptionalWebWorkspace, useWebMachines } from "../../webclient/workspace/WebWorkspaceContext";
 import { webRecentProjects } from "../../webclient/workspace/webWorkspaceModel";
-import { RecentProjectRow, type WebRowChrome } from "./ProjectWelcomeWebRows";
+import { ProjectsCard } from "./ProjectWelcomeProjectsCard";
+import { HomeAction, WelcomeHero, useMachineRows } from "./ProjectWelcomeHome";
+import { HomeWidgetGrid, useHomeGridMetrics } from "../home/HomeWidgetGrid";
+import { gridMetrics } from "../home/homeGridPack";
+import { HomeDataContext, HomeRenderWidgetContext } from "../home/homeData";
+import { useHomeLayoutStore } from "../home/homeLayout";
+import { useHomePageWiring } from "../home/useHomePageWiring";
+import { useBackgroundContextMenu } from "../../scene/BackgroundContextMenu";
 import {
   WebAddProjectNotice,
   WebZeroMachines,
@@ -33,6 +58,11 @@ import type {
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionState,
 } from "../../../shared/types";
+import "./ProjectWelcomePage.css";
+
+// Edit mode's toolbar, gallery and appearance sliders: loaded the first time
+// someone customizes the page, never on the boot path.
+const HomeEditTools = lazy(() => import("../home/HomeEditTools"));
 
 function recentKey(rp: RecentProjectSummary): string {
   return recentProjectLocationKey(rp);
@@ -99,6 +129,43 @@ export function ProjectWelcomePage() {
     null,
   );
   const [isDragOver, setIsDragOver] = useState(false);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const pageRef = useRef<HTMLDivElement | null>(null);
+  // The side column folds into a tabbed strip when the page itself is narrow
+  // (the page can sit in a pane, so this is the page's width, not the window's).
+  const [narrow, setNarrow] = useState(false);
+  // The grid's width: as many columns as the page holds (homeGridPack), so
+  // the hero lines up with the grid at every window size.
+  const [gridWidth, setGridWidth] = useState<number | null>(null);
+  useEffect(() => {
+    // Measure the page, not the body: the body narrows itself in the
+    // one-column layout, which would latch this state on.
+    const element = pageRef.current;
+    if (!element || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? element.clientWidth;
+      setNarrow(width < 880);
+      setGridWidth(gridMetrics(Math.max(0, width - 40), 0).width);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  // The width the grid actually packed to (fewer, centred columns on a wide
+  // window), so the hero's buttons end where the cards end.
+  const packedGridWidth = useHomeGridMetrics((s) => s.packedWidth);
+  const editingHome = useHomeLayoutStore((s) => s.editing);
+  const hiddenApps = useHomeLayoutStore((s) => s.layout.hiddenApps);
+  const setEditingHome = useHomeLayoutStore((s) => s.setEditing);
+  const homeAppearance = useHomeLayoutStore((s) => s.layout.appearance);
+  useEffect(() => {
+    if (!editingHome) return undefined;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) setEditingHome(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editingHome, setEditingHome]);
+  useEffect(() => () => setEditingHome(false), [setEditingHome]);
   const forgetTimerRef = useRef<number | null>(null);
   const dragDepthRef = useRef(0);
 
@@ -156,6 +223,8 @@ export function ProjectWelcomePage() {
   // before the first relay dial and fills in as machines come up.
   // ---------------------------------------------------------------------
   const webMachines = useWebMachines();
+  const machineRows = useMachineRows(webMode, remoteSnapshot, webMachines);
+  const machinesOnline = machineRows.filter((row) => row.dot === "online").length;
   const webMachineByKey = useMemo(
     () => new Map(webMachines.map((machine) => [machine.key, machine])),
     [webMachines],
@@ -434,33 +503,262 @@ export function ProjectWelcomePage() {
     [switchProjectToPath],
   );
 
+  const rows = useMemo(() => visibleProjectGroups.map((group) => {
+    const primary = group.primary;
+    const rp = {
+      ...primary.summary,
+      pinned: group.pinned,
+    };
+    return { group, rp, key: recentKey(rp) };
+  }), [visibleProjectGroups]);
+
+  const [rowMenu, setRowMenu] = useState<(NonNullable<ContextMenuState> & { key: string }) | null>(null);
+  const closeRowMenu = useCallback(() => setRowMenu(null), []);
+  const [iconDialogTarget, setIconDialogTarget] = useState<ProjectIconDialogTarget | null>(null);
+  const closeIconDialog = useCallback(() => setIconDialogTarget(null), []);
+  const [cloneLocallyTarget, setCloneLocallyTarget] = useState<CloneLocallyTarget | null>(null);
+
+  const rowMenuEntries = useMemo((): ContextMenuEntry[] => {
+    if (!rowMenu) return [];
+    const row = rows.find((entry) => entry.key === rowMenu.key);
+    if (!row) return [];
+    const { group, rp } = row;
+    const remoteBinding = remoteBindingFromRecent(rp);
+    const connected = remoteBinding
+      ? connectionByTarget.get(remoteBinding.targetId) === "connected"
+      : false;
+    const localReady = !remoteBinding && rp.exists !== false;
+    const sections = projectMenuSections(
+      {
+        rootPath: rp.rootPath,
+        displayName: rp.displayName,
+        binding: remoteBinding ?? localBindingFromRecent(rp),
+        available: localReady || remoteBinding != null,
+        pinned: Boolean(group.pinned),
+        hostIconDataUrl: remoteBinding?.iconDataUrl ?? null,
+        cloneTarget: cloneTargetFor({
+          binding: remoteBinding,
+          hasLocalCheckout: group.locations.some((location) => location.summary.kind !== "remote"),
+          gitOriginUrl: rp.gitOriginUrl ?? rp.remote?.gitOriginUrl,
+        }),
+      },
+      { webMode },
+      {
+        onChangeIcon: setIconDialogTarget,
+        onClone: setCloneLocallyTarget,
+        onTogglePin: () => void handleTogglePin(group),
+      },
+    );
+    const canMerge = !remoteBinding && Boolean(rp.worktreeOf) && rp.exists;
+    const entries: Array<ContextMenuEntry | null> = [
+      { kind: "item", key: "open", label: "Open", icon: FolderOpen, onSelect: () => handleOpen(rp) },
+      !webMode && (localReady || connected)
+        ? {
+            kind: "item",
+            key: "new-window",
+            label: "Open in new window",
+            icon: AppWindow,
+            onSelect: () => {
+              void window.ade.app
+                .openProjectInNewWindow(remoteBinding ?? localBindingFromRecent(rp))
+                .catch((error: unknown) =>
+                  setRowError(error instanceof Error ? error.message : String(error)),
+                );
+            },
+          }
+        : null,
+      ...sections.open,
+      { kind: "separator", key: "sep-project" },
+      ...sections.project,
+      !webMode && canMerge && rp.worktreeOf
+        ? {
+            kind: "item",
+            key: "merge",
+            label: `Merge into ${rp.worktreeOf.displayName} as a lane…`,
+            icon: GitMerge,
+            onSelect: () => setMergeTarget(rp),
+          }
+        : null,
+      { kind: "separator", key: "sep-copy" },
+      ...sections.copy,
+      !webMode ? { kind: "separator", key: "sep-remove" } : null,
+      !webMode
+        ? {
+            kind: "item",
+            key: "forget",
+            label: "Remove from recents",
+            icon: Trash,
+            danger: true,
+            onSelect: () => handleForget(group),
+          }
+        : null,
+    ];
+    return entries.filter((entry): entry is ContextMenuEntry => entry != null);
+  }, [connectionByTarget, handleForget, handleOpen, handleTogglePin, rowMenu, rows, webMode]);
+
+  const focusRowButton = useCallback((index: number) => {
+    const buttons = listRef.current?.querySelectorAll<HTMLButtonElement>('[data-welcome-row="true"]');
+    buttons?.[index]?.focus();
+  }, []);
+
+  // Arrow keys walk the rows once focus is on one of them.
+  const handleListKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const target = event.target as HTMLElement;
+    if (target.dataset.welcomeRow !== "true") return;
+    const buttons = [...(listRef.current?.querySelectorAll<HTMLButtonElement>('[data-welcome-row="true"]') ?? [])];
+    const index = buttons.indexOf(target as HTMLButtonElement);
+    if (index < 0) return;
+    event.preventDefault();
+    const next = event.key === "ArrowDown"
+      ? Math.min(index + 1, buttons.length - 1)
+      : Math.max(index - 1, 0);
+    focusRowButton(next);
+  }, [focusRowButton]);
+
+  const browserAvailable = !webMode && browserTabAvailable();
+  const musicAvailable = !webMode && musicTabAvailable();
+  const showSide = !webMode || webMachines.length > 0;
+
+
+
+  // The page's own card look, when the user set one in edit mode. Scoped to
+  // this page: the same tokens drive every other kit card in the app.
+  const appearanceStyle = useMemo((): CSSProperties | undefined => {
+    const style: Record<string, string> = {};
+    if (homeAppearance.cardOpacity != null) {
+      style["--kit-card-bg"] = `color-mix(in srgb, var(--color-bg) ${homeAppearance.cardOpacity}%, transparent)`;
+    }
+    if (homeAppearance.cardBlur != null) {
+      style["--kit-card-blur"] = homeAppearance.cardBlur > 0 ? `blur(${homeAppearance.cardBlur}px) saturate(1.25)` : "none";
+    }
+    return Object.keys(style).length > 0 ? (style as CSSProperties) : undefined;
+  }, [homeAppearance.cardBlur, homeAppearance.cardOpacity]);
+  // Memoized, so the widget renderer (and the gallery's previews) stay stable between page renders.
+  const projectsCard = useCallback((preview: boolean) => (
+    <ProjectsCard
+      preview={preview}
+      rows={rows}
+      count={visibleProjectGroups.length}
+      webMode={webMode}
+      listRef={listRef}
+      onListKeyDown={handleListKeyDown}
+      connectionByTarget={connectionByTarget}
+      connectingKeys={connectingKeys}
+      pendingForgetKeys={pendingForgetKeys}
+      openingRowKey={openingRowKey}
+      openRootPath={project?.rootPath ?? null}
+      projectBinding={projectBinding}
+      webMachineByKey={webMachineByKey}
+      onOpen={handleOpen}
+      onTogglePin={handleTogglePin}
+      onForget={handleForget}
+      onMerge={setMergeTarget}
+      onRowMenu={setRowMenu}
+    />
+  ), [
+    connectingKeys,
+    connectionByTarget,
+    handleForget,
+    handleListKeyDown,
+    handleOpen,
+    handleTogglePin,
+    openingRowKey,
+    pendingForgetKeys,
+    project?.rootPath,
+    projectBinding,
+    rows,
+    visibleProjectGroups.length,
+    webMachineByKey,
+    webMode,
+  ]);
+
+
+  const { homeData, headline, openHeadlineTarget, renderWidget } = useHomePageWiring({
+    navigate,
+    project,
+    webMode,
+    machineRows,
+    remoteSnapshot,
+    visibleProjectGroups,
+    renderProjects: projectsCard,
+  });
+
+  const backgroundPageEntries = useMemo((): ContextMenuEntry[] => {
+    const entries: ContextMenuEntry[] = [
+      {
+        kind: "item",
+        key: "add-project",
+        label: "Add project…",
+        icon: Plus,
+        disabled: webMode && !activeWebMachine,
+        onSelect: () => (webMode ? setWebAddProjectNoticeOpen(true) : setProjectBrowserOpen(true)),
+      },
+      {
+        kind: "item",
+        key: "chat",
+        label: "Chat without a project",
+        icon: ChatCircleDots,
+        disabled: webMode && !activeWebMachine,
+        onSelect: () => (webMode ? openWebChats() : navigate("/chats")),
+      },
+    ];
+    entries.push({
+      kind: "item",
+      key: "customize-home",
+      label: "Customize home page",
+      icon: SlidersHorizontal,
+      onSelect: () => setEditingHome(true),
+    });
+    if (musicAvailable) {
+      entries.push(
+        { kind: "item", key: "apple-music", label: "Open Apple Music", icon: MusicNotes, onSelect: () => openMusicApp("appleMusic") },
+        { kind: "item", key: "spotify", label: "Open Spotify", icon: MusicNotes, onSelect: () => openMusicApp("spotify") },
+      );
+    }
+    if (browserAvailable) {
+      entries.push({
+        kind: "item",
+        key: "browser",
+        label: "Open the browser",
+        icon: Globe,
+        onSelect: () => navigate(BROWSER_TAB_ROUTE),
+      });
+    }
+    return entries;
+  }, [activeWebMachine, browserAvailable, musicAvailable, navigate, openWebChats, setEditingHome, webMode]);
+  const backgroundMenu = useBackgroundContextMenu(backgroundPageEntries);
+
   return (
     <div
+      ref={pageRef}
+      className="ade-welcome"
       onDragEnter={(event) => {
+        // Only a folder from outside; a widget being moved in edit mode is not one.
+        if (!event.dataTransfer.types.includes("Files")) return;
         event.preventDefault();
         dragDepthRef.current += 1;
         setIsDragOver(true);
       }}
       onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = "copy";
       }}
-      onDragLeave={() => {
+      onDragLeave={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
         dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
         if (dragDepthRef.current === 0) setIsDragOver(false);
       }}
-      onDrop={handleDropFolder}
+      onDrop={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        handleDropFolder(event);
+      }}
+      onContextMenu={backgroundMenu.onContextMenu}
       data-ade-web-welcome={webMode ? "true" : undefined}
       style={{
-        position: "relative",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        height: "100%",
         // The window gradient paints over this base; see the backdrop below.
         background: COLORS.pageBg,
-        isolation: "isolate",
-        overflow: "hidden",
         outline: isDragOver
           ? "2px dashed color-mix(in srgb, var(--color-accent) 70%, transparent)"
           : "none",
@@ -473,44 +771,12 @@ export function ProjectWelcomePage() {
         <WorkToolPickerBackdrop theme={theme} field="window" />
       </div>
       <style>
-        {`@keyframes ade-recent-dot-pulse {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.4; transform: scale(0.7); }
-          }
-          @keyframes ade-recent-spin {
-            to { transform: rotate(360deg); }
-          }
-          @keyframes ade-welcome-mark {
+        {`@keyframes ade-welcome-mark {
             from { opacity: 0; transform: translateY(8px) scale(0.985); }
             to { opacity: 1; transform: none; }
           }
-          @keyframes ade-recent-shimmer {
-            from { transform: translateX(-60%); }
-            to { transform: translateX(160%); }
-          }
-          /* A cached row says so by shimmering until live data replaces it. */
-          [data-ade-stale="true"] { overflow: hidden; border-radius: 12px; }
-          [data-ade-stale="true"]::after {
-            content: "";
-            position: absolute;
-            inset: 0;
-            width: 45%;
-            pointer-events: none;
-            background: linear-gradient(
-              90deg,
-              transparent,
-              color-mix(in srgb, var(--color-accent) 9%, transparent),
-              transparent
-            );
-            animation: ade-recent-shimmer 2.4s ease-in-out infinite;
-          }
           @media (prefers-reduced-motion: reduce) {
-            [data-ade-stale="true"]::after { animation: none; opacity: 0.35; }
             [data-ade-welcome-motion] { animation: none !important; }
-          }
-          @media (pointer: coarse) {
-            [data-ade-web-welcome] [role="menuitem"],
-            [data-ade-web-welcome] [role="button"] { min-height: 44px; }
           }`}
       </style>
       {isDragOver ? (
@@ -519,153 +785,100 @@ export function ProjectWelcomePage() {
           style={{
             position: "absolute",
             inset: 16,
-            borderRadius: 16,
+            borderRadius: 12,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             background:
               "color-mix(in srgb, var(--color-accent) 10%, transparent)",
             color: COLORS.accent,
-            fontFamily: MONO_FONT,
-            fontSize: 13,
-            fontWeight: 700,
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
+            fontSize: 14,
+            fontWeight: 600,
             zIndex: 30,
             pointerEvents: "none",
           }}
         >
-          Drop a folder to open
+          Drop a folder to open it
         </div>
       ) : null}
-      {/* Keep the entry actions and project list in the first viewport. */}
-      <div
-        aria-hidden
-        style={{ flex: "0 0 auto", height: webMode ? 16 : 24 }}
-      />
 
-      {/* Pinned header: logo + add button */}
+      <HomeDataContext.Provider value={homeData}>
+      <HomeRenderWidgetContext.Provider value={renderWidget}>
       <div
+        className="ade-home"
+        data-narrow={narrow ? "true" : undefined}
+        data-editing={editingHome ? "true" : undefined}
         style={{
-          flexShrink: 0,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: webMode ? 12 : 18,
-          paddingBottom: webMode ? 8 : 14,
-        }}
+          ...(gridWidth ? { "--welcome-grid-max": `${gridWidth}px` } : {}),
+          ...(packedGridWidth ? { "--welcome-hero-max": `${packedGridWidth}px` } : {}),
+        } as CSSProperties}
       >
-        <div style={{ textAlign: "center", maxWidth: 520 }}>
-          <div
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              marginBottom: webMode ? 4 : 16,
-              filter:
-                "drop-shadow(0 0 22px color-mix(in srgb, var(--color-accent) 45%, transparent))",
-            }}
-          >
-            <img
-              src="./logo.png"
-              alt="ADE Logo"
-              data-ade-welcome-motion={webMode ? "true" : undefined}
-              style={{
-                width: webMode ? 220 : 280,
-                height: webMode ? 110 : 150,
-                objectFit: "contain",
-                maxWidth: "72vw",
-                ...(webMode
-                  ? { animation: "ade-welcome-mark 620ms cubic-bezier(0.16, 1, 0.3, 1) both" }
-                  : {}),
-              }}
-            />
-          </div>
-        </div>
+        <WelcomeHero
+          headline={headline}
+          onHeadline={openHeadlineTarget}
+          machinesOnline={machinesOnline}
+          machinesTotal={machineRows.length}
+          actions={editingHome ? (
+            <Suspense fallback={null}>
+              <HomeEditTools onDone={() => setEditingHome(false)} />
+            </Suspense>
+          ) : (
+            <>
+              <HomeAction
+                icon={Plus}
+                primary
+                label="Add project"
+                tour="project.welcomeAddButton"
+                disabled={webMode && !activeWebMachine}
+                title={
+                  webMode && !activeWebMachine
+                    ? "Connect a machine first — projects are added on the machine that hosts them."
+                    : undefined
+                }
+                onClick={() => {
+                  if (!webMode) {
+                    setProjectBrowserOpen(true);
+                    return;
+                  }
+                  setWebAddProjectNoticeOpen(true);
+                }}
+              />
+              <HomeAction
+                icon={ChatCircleDots}
+                label={webMode && activeWebMachine ? `Chat on ${activeWebMachine.name}` : "Chat without a project"}
+                disabled={webMode && !activeWebMachine}
+                onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
+              />
+              {/* The desktop's own browser and Apple Music, each a tab of its
+                  own, as square app-icon buttons beside the text actions. */}
+              {browserAvailable ? (
+                <button
+                  type="button"
+                  className="ade-home-action ade-home-icon-action"
+                  aria-label="Browser"
+                  title="Browser"
+                  onClick={() => navigate(BROWSER_TAB_ROUTE)}
+                >
+                  <Globe size={17} aria-hidden />
+                </button>
+              ) : null}
+              {musicAvailable && !hiddenApps.includes("appleMusic") ? <HomeAppButton app="appleMusic" /> : null}
+              {musicAvailable && !hiddenApps.includes("spotify") ? <HomeAppButton app="spotify" /> : null}
+              {showSide ? (
+                <button
+                  type="button"
+                  className="ade-home-action ade-home-customize"
+                  aria-label="Customize home page"
+                  title="Customize home page"
+                  onClick={() => setEditingHome(true)}
+                >
+                  <SlidersHorizontal size={15} aria-hidden />
+                </button>
+              ) : null}
+            </>
+          )}
+        />
 
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap", marginTop: webMode ? -4 : -8 }}>
-        <button
-          type="button"
-          data-tour="project.welcomeAddButton"
-          disabled={webMode && !activeWebMachine}
-          title={
-            webMode && !activeWebMachine
-              ? "Connect a machine first — projects are added on the machine that hosts them."
-              : undefined
-          }
-          onClick={() => {
-            if (!webMode) {
-              setProjectBrowserOpen(true);
-              return;
-            }
-            setWebAddProjectNoticeOpen(true);
-          }}
-          style={{
-            ...primaryButton({ height: 42, padding: "0 24px", fontSize: 12 }),
-            opacity: webMode && !activeWebMachine ? 0.5 : 1,
-            gap: 12,
-            border:
-              connectedRemoteCount > 0
-                ? "1px solid rgba(245,158,11,0.72)"
-                : undefined,
-            boxShadow:
-              connectedRemoteCount > 0
-                ? "0 0 0 1px rgba(245,158,11,0.24), 0 6px 28px rgba(245,158,11,0.24)"
-                : `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`,
-            transition: "transform 0.2s ease, box-shadow 0.2s ease",
-          }}
-          onMouseEnter={(event) => {
-            event.currentTarget.style.transform = "translateY(-2px)";
-            event.currentTarget.style.boxShadow =
-              connectedRemoteCount > 0
-                ? "0 0 0 1px rgba(245,158,11,0.38), 0 8px 34px rgba(245,158,11,0.34)"
-                : `0 6px 24px color-mix(in srgb, var(--color-accent) 60%, transparent)`;
-          }}
-          onMouseLeave={(event) => {
-            event.currentTarget.style.transform = "none";
-            event.currentTarget.style.boxShadow =
-              connectedRemoteCount > 0
-                ? "0 0 0 1px rgba(245,158,11,0.24), 0 6px 28px rgba(245,158,11,0.24)"
-                : `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`;
-          }}
-        >
-          <Plus size={20} weight="bold" />
-          ADD PROJECT
-        </button>
-        <button
-          type="button"
-          disabled={webMode && !activeWebMachine}
-          onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
-          style={{
-            ...outlineButton({ height: 42, padding: "0 18px", fontSize: 11 }),
-            opacity: webMode && !activeWebMachine ? 0.5 : 1,
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 9,
-            color: COLORS.textPrimary,
-            border: `1px solid ${COLORS.border}`,
-            background: "color-mix(in srgb, var(--color-surface-raised) 88%, transparent)",
-            boxShadow: `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`,
-            transition: "transform 0.2s ease, box-shadow 0.2s ease",
-          }}
-          onMouseEnter={(event) => {
-            event.currentTarget.style.transform = "translateY(-2px)";
-            event.currentTarget.style.boxShadow = `0 6px 24px color-mix(in srgb, var(--color-accent) 60%, transparent)`;
-          }}
-          onMouseLeave={(event) => {
-            event.currentTarget.style.transform = "none";
-            event.currentTarget.style.boxShadow = `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`;
-          }}
-        >
-          <ChatCircleDots size={18} weight="duotone" />
-          CHAT WITHOUT A PROJECT
-          {webMode && activeWebMachine ? (
-            <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>
-              · {activeWebMachine.name}
-            </span>
-          ) : null}
-        </button>
-        </div>
         {webMode && webAddProjectNoticeOpen && activeWebMachine ? (
           <WebAddProjectNotice
             machineName={activeWebMachine.name}
@@ -678,7 +891,7 @@ export function ProjectWelcomePage() {
         {rowError ? (
           <Banner
             layout="inline"
-            style={{ maxWidth: 440, width: "100%" }}
+            style={{ maxWidth: 520, width: "100%" }}
             model={{
               id: "welcome-row-error",
               tone: "error",
@@ -688,108 +901,31 @@ export function ProjectWelcomePage() {
           />
         ) : null}
         {webZeroMachines ? <WebZeroMachines notice={webZeroMachines} /> : null}
-      </div>
 
-      {/* Scrollable recent projects list */}
-      {visibleProjectGroups.length > 0 ? (
-        <div style={{ flex: "1 1 auto", minHeight: 0, width: "100%", display: "flex", justifyContent: "center", overflow: "hidden" }}>
-          <div style={{ width: "100%", maxWidth: 440, overflowY: "auto", paddingLeft: 16, paddingRight: 16, paddingBottom: 40 }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
-                marginBottom: 10,
-                padding: "0 2px",
-              }}
-            >
-              <span style={{ ...LABEL_STYLE, color: COLORS.textSecondary }}>
-                RECENT PROJECTS
-              </span>
-              {connectedRemoteCount > 0 ? (
-                <span
-                  style={{
-                    ...LABEL_STYLE,
-                    color: "#FBBF24",
-                    fontFamily: MONO_FONT,
-                    fontSize: 9,
-                    letterSpacing: "0.04em",
-                  }}
-                >
-                  {connectedRemoteCount} remote device
-                  {connectedRemoteCount === 1 ? "" : "s"} available
-                </span>
-              ) : null}
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {visibleProjectGroups.map((group) => {
-                const primary = group.primary;
-                const rp = {
-                  ...primary.summary,
-                  pinned: group.pinned,
-                };
-                const key = recentKey(rp);
-                const isRemote = rp.kind === "remote" && Boolean(rp.remote);
-                const targetId = rp.remote?.targetId;
-                const baseState = isRemote && targetId
-                  ? (connectionByTarget.get(targetId) ?? "idle")
-                  : null;
-                const connectionState: RemoteRuntimeConnectionState | null =
-                  connectingKeys.has(key) ? "connecting" : baseState;
-                const isOpenLocal =
-                  !isRemote && project?.rootPath === rp.rootPath;
-                const isOpenRemote =
-                  isRemote
-                  && projectBinding?.kind === "remote"
-                  && projectBinding.targetId === rp.remote?.targetId
-                  && projectBinding.projectId === rp.remote?.projectId;
-                const canMerge = !isRemote && Boolean(rp.worktreeOf) && rp.exists;
-                const machine = webMode && targetId ? webMachineByKey.get(targetId) ?? null : null;
-                // The connect/open stages belong to the row that was clicked.
-                // Every other row on the same machine sees the same machine-level
-                // "connecting", so it has to be suppressed there explicitly —
-                // otherwise one click spins the whole list.
-                const isOpeningRow = openingRowKey === key;
-                const web: WebRowChrome | null = machine
-                  ? {
-                      status: isOpeningRow
-                        ? "connecting"
-                        : machine.status === "connecting"
-                          ? "available"
-                          : machine.status,
-                      connectStage: isOpeningRow
-                        ? machine.connectStage ?? "Dialing relay…"
-                        : null,
-                      stale: machine.stale,
-                    }
-                  : null;
-                return (
-                  <RecentProjectRow
-                    key={group.id}
-                    rp={rp}
-                    connectionState={connectionState}
-                    isOpen={isOpenLocal || isOpenRemote}
-                    isForgetting={pendingForgetKeys.has(group.id)}
-                    busy={openingRowKey != null && !isOpeningRow}
-                    onOpen={() => handleOpen(rp)}
-                    onTogglePin={() => void handleTogglePin(group)}
-                    onForget={() => handleForget(group)}
-                    onMerge={canMerge ? () => setMergeTarget(rp) : undefined}
-                    primary={primary}
-                    locations={group.locations}
-                    onSelectMachine={(location) => handleOpen(location.summary)}
-                    lastActiveAt={group.lastOpenedAt}
-                    web={web}
-                  />
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div aria-hidden style={{ flex: "1 1 auto" }} />
-      )}
+        <HomeWidgetGrid
+          single={!showSide}
+          style={appearanceStyle}
+          renderWidget={renderWidget}
+        />
+      </div>
+      </HomeRenderWidgetContext.Provider>
+      </HomeDataContext.Provider>
+
+      {backgroundMenu.menu}
+      <ContextMenu
+        menu={rowMenu}
+        entries={rowMenuEntries}
+        onClose={closeRowMenu}
+        label="Project"
+      />
+      <ProjectIconDialog target={iconDialogTarget} onClose={closeIconDialog} />
+      <CloneLocallyDialog
+        target={cloneLocallyTarget}
+        onClose={() => setCloneLocallyTarget(null)}
+        onCloned={(result) => {
+          void switchProjectToPath(result.rootPath).catch(() => {});
+        }}
+      />
 
       {mergeTarget ? (
         <MergeWorktreeProjectDialog

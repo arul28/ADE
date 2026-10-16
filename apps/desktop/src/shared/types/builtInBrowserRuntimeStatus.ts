@@ -1,17 +1,14 @@
 /**
  * The read-only browser snapshot the runtime daemon itself may read.
  *
- * Every other desktop-bridge method requires a per-chat actor capability, minted
- * by Electron for one agent. The daemon holds none: its Work-tools aggregator is
- * not an agent, it is the process that renders the Tools pane for iOS and the
- * hosted web client. Rather than mint a service-wide capability (which would be
- * a token that can drive the browser), the bridge serves this one deliberately
- * narrow shape under bridge authentication alone.
+ * The daemon's Work-tools aggregator is not an agent: it is the process that
+ * renders the Tools pane for iOS and the hosted web client, and it reads this
+ * deliberately narrow shape instead of one chat's view.
  *
  * What is here is what the Tools pane shows: which tabs exist, who owns them,
- * and whether one is recording or handed off. What is NOT here is everything the
- * capability protects — no cookies, no observation bytes, no network log, no
- * screenshot, no page content, and no way to act on a tab.
+ * and whether one is recording or handed off. What is NOT here — no cookies,
+ * no observation bytes, no network log, no screenshot, no page content, and no
+ * way to act on a tab — is what a phone mirroring the pane has no use for.
  */
 import type { BuiltInBrowserAgentPresence } from "./builtInBrowser";
 

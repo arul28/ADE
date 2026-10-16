@@ -2,6 +2,7 @@ import React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { WarningCircle } from "@phosphor-icons/react";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import { captureError } from "../../../shared/sentry/capture";
 import {
   ERROR_PRIMARY_BUTTON,
   ERROR_SECONDARY_BUTTON,
@@ -35,6 +36,11 @@ class PageErrorBoundaryInner extends React.Component<
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
     console.error("page.crash", error, errorInfo, error?.stack);
+    captureError(error, {
+      handled: false,
+      tags: { boundary: "page", route: window.location.hash || window.location.pathname },
+      extra: { componentStack: errorInfo.componentStack ?? null },
+    });
     logRendererDebugEvent("renderer.page_boundary_crash", {
       message: error?.message ?? String(error),
       route: window.location.hash || window.location.pathname,
@@ -52,7 +58,7 @@ class PageErrorBoundaryInner extends React.Component<
           <div className="flex min-h-full items-center justify-center p-8">
           <div className="w-full max-w-[520px]">
             <ErrorSurfaceCard
-              icon={<WarningCircle size={18} weight="fill" aria-hidden="true" />}
+              icon={<WarningCircle size={14} weight="bold" aria-hidden="true" />}
               headline="Something went wrong on this screen"
               body="The rest of ADE is still running, and your project, chats and files are safe."
             >

@@ -58,6 +58,12 @@ export type CursorCloudIngressServiceDeps = {
   /** Awaited before the cursor advances past the delivery. */
   dispatch: (record: CursorCloudIngressEventRecord) => void | Promise<void>;
   logger: Logger;
+  /**
+   * Polling (and the first relay registration) only runs while this returns
+   * true. Every poll is a relay request, and an always-on poll from every
+   * brain is what turned an unused feature into a billed full-table scan.
+   */
+  wantsEvents?: () => boolean;
   fetchImpl?: typeof fetch;
   pollIntervalMs?: number;
 };
@@ -306,6 +312,7 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
   };
 
   const poll = async (): Promise<void> => {
+    if (deps.wantsEvents && !deps.wantsEvents()) return;
     let status = getStatus();
     if (status.state === "unconfigured" || (status.state === "error" && !status.webhookId)) {
       try {
@@ -342,6 +349,12 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
       });
       const rawPayload = await response.json().catch(() => null) as unknown;
       if (!response.ok) {
+        // The relay sweeps unowned secrets it has not heard from in weeks.
+        // Re-registering the stored secret is idempotent and restores access.
+        if (response.status === 401 && binding?.secret) {
+          await registerSecret({ relayBaseUrl: status.relayBaseUrl, secret: binding.secret });
+          return;
+        }
         const detail = isRecord(rawPayload) ? readString(rawPayload, "error") : null;
         throw new Error(detail ?? `Cursor Cloud relay poll failed (HTTP ${response.status}).`);
       }

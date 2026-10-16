@@ -20,19 +20,24 @@ import {
   IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
+import { ACP_PROVIDER_UPDATE_RUN_BUDGET_MS } from "../ai/acpProviderUpdate";
+import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 
 describe("ipcInvokeTimeoutMs", () => {
-  it("gives a Pi sign-in longer than the flow it waits on, on every transport", () => {
+  it.each([
     // The flow blocks on a human finishing OAuth in a browser. At the 30s
     // default the renderer reported failure while the daemon was still signing
     // in, so in-app sign-in could never complete.
-    const flowBudgetMs = 10 * 60 * 1000;
-
-    expect(ipcInvokeTimeoutMs(IPC.aiPiLoginStart)).toBeGreaterThan(flowBudgetMs);
-    expect(longRunningLocalRuntimeActionTimeoutMs("ai.piLoginStart")).toBeGreaterThan(flowBudgetMs);
+    ["a Pi sign-in", IPC.aiPiLoginStart, "piLoginStart", 10 * 60 * 1000],
+    // An npm or vendor install plus the version re-read. At the 30s default the
+    // renderer reported a failure (and offered "Try again") mid-install.
+    ["a provider CLI update", IPC.aiAcpProviderUpdate, "acpProviderUpdate", ACP_PROVIDER_UPDATE_RUN_BUDGET_MS],
+  ] as const)("gives %s longer than the work it waits on, on every transport", (_label, channel, action, flowBudgetMs) => {
+    expect(ipcInvokeTimeoutMs(channel)).toBeGreaterThan(flowBudgetMs);
+    expect(longRunningLocalRuntimeActionTimeoutMs(`ai.${action}`)).toBeGreaterThan(flowBudgetMs);
     // The runtime-action route the preload actually prefers, local and remote.
-    const routed = [IPC.localRuntimeCallAction, IPC.remoteRuntimeCallAction].map((channel) =>
-      ipcInvokeTimeoutMs(channel, [{ request: { domain: "ai", action: "piLoginStart", args: { providerId: "anthropic" } } }]));
+    const routed = [IPC.localRuntimeCallAction, IPC.remoteRuntimeCallAction].map((routeChannel) =>
+      ipcInvokeTimeoutMs(routeChannel, [{ request: { domain: "ai", action, args: {} } }]));
     for (const timeoutMs of routed) expect(timeoutMs).toBeGreaterThan(flowBudgetMs);
   });
 
@@ -137,6 +142,14 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(ipcInvokeTimeoutMs(IPC.accountRepairSession)).toBeGreaterThanOrEqual(WORST_CASE_MS);
   });
 
+  it("outlasts every leg project recovery's Repair can wait on", () => {
+    // repair() may first wait out an in-flight restart, then stops the service
+    // (10s socket wait), reinstalls it, waits for the socket and pings the brain;
+    // each of the four waits is bounded by RUNTIME_SERVICE_START_WAIT_MS.
+    const WORST_CASE_MS = RUNTIME_SERVICE_START_WAIT_MS * 4 + 10_000;
+    expect(ipcInvokeTimeoutMs(IPC.recoveryRepair)).toBeGreaterThanOrEqual(WORST_CASE_MS);
+  });
+
   it("gives retryable remote runtime actions enough time to reconnect", () => {
     expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
       id: "target-1",
@@ -231,6 +244,22 @@ describe("ipcInvokeTimeoutMs", () => {
         request: { domain: "ios_simulator", action, args: {} },
       }])).toBeGreaterThan(IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS);
     }
+  });
+
+  // A GitHub Stack merge polls GitHub for up to 20s, then cleans up each
+  // merged PR. The 30s default fired a false timeout while the merge went on,
+  // so the direct channel and both runtime-action routes need the same 120s
+  // budget; the local route composes the daemon action budget with cold setup.
+  it("keeps a stack merge alive on the direct, local, and remote runtime paths", () => {
+    expect(ipcInvokeTimeoutMs(IPC.prsLand)).toBe(120_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "pr", action: "land", args: { prId: "pr-1", method: "squash" } },
+    }])).toBe(405_000);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "pr", action: "land", args: { prId: "pr-1", method: "squash" } },
+    }])).toBe(120_000);
   });
 
   it("lets transcription run longer than the default invoke ceiling", () => {
@@ -355,6 +384,67 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "chat", action: "suggestLaneNameFromPrompt", args: {} },
     }])).toBe(405_000);
+  });
+
+  // A project that is not runtime-backed calls the direct channel for the same
+  // work, so it must wait at least as long as the daemon would. On the 30s
+  // default these rejected while the work went on.
+  it.each([
+    [IPC.lanesUnarchive, "lane.unarchive"],
+    [IPC.archiveRestore, "archive.restore"],
+    [IPC.archiveDelete, "archive.delete"],
+    [IPC.githubCreateIssue, "github.createIssue"],
+    [IPC.agentChatSuggestLaneName, "chat.suggestLaneNameFromPrompt"],
+    [IPC.agentChatGenerateAutoLaneIdentity, "chat.generateAutoLaneIdentity"],
+    [IPC.appControlStopRecording, "app_control.stopRecording"],
+    [IPC.builtInBrowserStopRecording, "built_in_browser.stopRecording"],
+    [IPC.macDesktopStopRecording, "mac_desktop.stopRecording"],
+    [IPC.iosSimulatorRecordStop, "ios_simulator.recordStop"],
+    [IPC.iosSimulatorDeviceCleanup, "ios_simulator.deviceCleanup"],
+  ] as const)("waits on direct channel %s at least as long as %s does in the daemon", (channel, actionKey) => {
+    const daemonBudgetMs = longRunningLocalRuntimeActionTimeoutMs(actionKey);
+    expect(daemonBudgetMs, "the action has a long daemon budget").toBeGreaterThan(LOCAL_RUNTIME_ACTION_TIMEOUT_MS);
+    expect(ipcInvokeTimeoutMs(channel)).toBeGreaterThanOrEqual(daemonBudgetMs!);
+  });
+
+  it("gives a remote iOS device cleanup the same budget as a local one", () => {
+    const remote = ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      request: { domain: "ios_simulator", action: "deviceCleanup", args: {} },
+    }]);
+    expect(remote).toBe(ipcInvokeTimeoutMs(IPC.iosSimulatorDeviceCleanup));
+    expect(remote).toBeGreaterThanOrEqual(longRunningLocalRuntimeActionTimeoutMs("ios_simulator.deviceCleanup")!);
+  });
+
+  // A browser command from an agent on another machine carries the same budget
+  // the daemon waiting for its `done` reply uses. On the old 30s default the
+  // desktop's own IPC timer cut a person's sign-in handoff off mid-way.
+  it.each([
+    ["a plain observe", { method: "observe", input: {} }, 60_000],
+    ["a wait that asked for two minutes", { method: "wait", input: { timeoutMs: 120_000 } }, 135_000],
+    ["a sign-in handoff with no timeout of its own", { method: "waitForHandoff", input: {} }, 30 * 60_000],
+  ] as const)("gives %s the desktop's own remote-call budget", (_label, payload, expectedMs) => {
+    expect(ipcInvokeTimeoutMs(IPC.builtInBrowserRunRemoteAgentCall, [payload])).toBe(expectedMs);
+  });
+
+  // These wait on a person at a native dialog, or on a download that can run
+  // for many minutes. The renderer must not report a failure while either is
+  // still going; the reset confirmation in particular stayed answerable after
+  // the window had already reported it failed.
+  it.each([
+    IPC.transcriptionDownloadModel,
+    IPC.aiEnsureToolsCache,
+    IPC.updateCheckForUpdates,
+    IPC.projectClone,
+    IPC.adeCliInstallForUser,
+    IPC.projectChooseDirectory,
+    IPC.projectChooseIcon,
+    IPC.projectSecretsChooseEnvFile,
+    IPC.machineResetChooseRescueDir,
+    IPC.historyExportOperations,
+    IPC.projectOpenRepo,
+    IPC.machineResetStart,
+  ])("keeps %s open well past a person or a slow download", (channel) => {
+    expect(ipcInvokeTimeoutMs(channel)).toBeGreaterThanOrEqual(5 * 60_000);
   });
 });
 

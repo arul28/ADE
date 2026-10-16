@@ -1,5 +1,11 @@
 import type { SyncRemoteCommandAction, SyncRemoteCommandPolicy } from "../../../../desktop/src/shared/types/sync";
+import { isAppleLaneDeviceOrigin, type AppleLaneDeviceOrigin } from "../../../../desktop/src/shared/types/iosSimulator";
 import { isAllowedAdeAction } from "../../../../desktop/src/main/services/adeActions/actionPolicy";
+import { externalChatContext } from "../../../../desktop/src/main/services/chat/externalChats";
+import {
+  parseForeignCallerSessionId,
+  remoteAgentHolderLabel,
+} from "../../../../desktop/src/shared/runtimeClientNames";
 
 /**
  * `apple.*` remote commands — the Apple device environment, as a phone or a
@@ -50,9 +56,9 @@ export type AppleDeviceRemoteService = {
   }): Promise<unknown>;
   tapElement(args: { laneId?: string | null; chatSessionId?: string | null; ref?: string; label?: string }): Promise<unknown>;
   openUrl(args: { laneId?: string | null; chatSessionId?: string | null; url: string }): Promise<unknown>;
-  deviceCreate(args: { laneId: string; from?: string | null; name?: string | null }): Promise<unknown>;
+  deviceCreate(args: { laneId: string; from?: string | null; runtime?: string | null; deviceType?: string | null; name?: string | null }): Promise<unknown>;
   deviceAttach(args: { laneId: string; simulator: string }): Promise<unknown>;
-  deviceList(args: { laneId?: string | null; installed?: boolean; disk?: boolean }): Promise<unknown>;
+  deviceList(args: { laneId?: string | null; installed?: boolean; disk?: boolean; runtimes?: boolean }): Promise<unknown>;
   recordStart(args: { laneId?: string | null; chatSessionId?: string | null; label?: string | null }): Promise<unknown>;
   recordStop(args: { laneId?: string | null; chatSessionId?: string | null; keep?: boolean }): Promise<unknown>;
   recordList(args: { laneId?: string | null }): Promise<unknown>;
@@ -96,7 +102,7 @@ export type AppleStatusPayload = {
     name: string;
     family: "iphone" | "ipad" | "watch";
     runtime: string | null;
-    origin: "clone" | "attached" | null;
+    origin: AppleLaneDeviceOrigin | null;
     state: string | null;
   } | null;
   app: { bundleId: string | null; name: string | null; state: string | null } | null;
@@ -206,7 +212,7 @@ export function buildAppleStatusPayload(laneId: string, status: unknown): AppleS
         name: name ?? udid,
         family: appleDeviceFamily(asString(laneDevice?.family) ?? name),
         runtime: asString(activeDevice?.runtime) ?? asString(laneDevice?.runtime),
-        origin: origin === "clone" || origin === "attached" ? origin : null,
+        origin: isAppleLaneDeviceOrigin(origin) ? origin : null,
         state: asString(activeDevice?.state),
       }
       : null,
@@ -322,7 +328,14 @@ export function createAppleRemoteCommandHandlers(deps: {
    */
   const withOwnerTitle = async (status: AppleStatusPayload): Promise<AppleStatusPayload> => {
     const chatSessionId = status.owner?.chatSessionId;
-    if (!chatSessionId || !deps.resolveChatTitle) return status;
+    if (!chatSessionId) return status;
+    // An agent on another machine holds it (`ade apple … --machine`): there is
+    // no chat here to name, so name the machine it is driving from.
+    if (parseForeignCallerSessionId(chatSessionId)) {
+      const chatTitle = remoteAgentHolderLabel(externalChatContext(chatSessionId)?.machineName);
+      return { ...status, owner: { chatSessionId, chatTitle } };
+    }
+    if (!deps.resolveChatTitle) return status;
     try {
       const chatTitle = asString(await deps.resolveChatTitle(chatSessionId));
       return { ...status, owner: { chatSessionId, chatTitle } };
@@ -496,6 +509,8 @@ export function createAppleRemoteCommandHandlers(deps: {
         // Opt-in, so the phone's list paints before the `du` and the web
         // picker reports disk the same way the desktop one does.
         disk: payload.disk === true,
+        // The web picker's Create control needs the runtimes and the default.
+        runtimes: payload.runtimes === true,
       }),
     },
     {
@@ -504,6 +519,8 @@ export function createAppleRemoteCommandHandlers(deps: {
       handler: async (payload) => service.deviceCreate({
         laneId: laneOf(payload, "apple.deviceCreate"),
         from: asString(payload.from),
+        runtime: asString(payload.runtime),
+        deviceType: asString(payload.deviceType),
         name: asString(payload.name),
       }),
     },

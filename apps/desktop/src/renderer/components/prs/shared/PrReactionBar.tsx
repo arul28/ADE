@@ -1,4 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
+import { usePrRuntimePin } from "../state/prMachines";
+import { pinArg } from "../../../state/laneMachineRouting";
 
 import type { PrReactionContent, PrReviewThreadReaction } from "../../../../shared/types";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
@@ -47,6 +49,7 @@ export const PrReactionBar = memo(function PrReactionBar({
   viewerLogin: string | null;
   onError?: (error: unknown) => void;
 }) {
+  const onPin = pinArg(usePrRuntimePin());
   const canReact = Boolean(subjectId && viewerLogin && window.ade?.prs?.reactToComment);
   const subjectKey = `${prId}:${subjectId ?? ""}`;
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -80,7 +83,7 @@ export const PrReactionBar = memo(function PrReactionBar({
       { id: optimisticId, content, user: viewerLogin },
     ]);
     try {
-      await window.ade.prs.reactToComment({ prId, commentId: subjectId, content });
+      await window.ade.prs.reactToComment({ prId, commentId: subjectId, content }, ...onPin);
     } catch (error) {
       setLocalReactions((current) => current.filter((reaction) => reaction.id !== optimisticId));
       onError?.(error);
@@ -106,7 +109,7 @@ export const PrReactionBar = memo(function PrReactionBar({
             onClick={() => void react(reaction.content)}
             aria-label={label}
             title={mine ? "You reacted" : label}
-            className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors hover:bg-white/[0.04]"
+            className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors hover:bg-fg/[0.04]"
             style={{
               borderColor: mine ? COLORS.accentBorder : COLORS.border,
               background: mine ? COLORS.accentSubtle : COLORS.recessedBg,
@@ -142,7 +145,7 @@ export const PrReactionBar = memo(function PrReactionBar({
             aria-label="Add reaction"
             aria-haspopup="true"
             aria-expanded={pickerOpen}
-            className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-full border text-[11px] transition-colors hover:bg-white/[0.04]"
+            className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-full border text-[11px] transition-colors hover:bg-fg/[0.04]"
             style={{ borderColor: COLORS.border, color: COLORS.textMuted }}
           >
             +
@@ -166,7 +169,7 @@ export const PrReactionBar = memo(function PrReactionBar({
                   setPickerOpen(false);
                 }}
                 aria-label={`React ${option.content}`}
-                className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[4px] text-[13px] transition-colors hover:bg-white/[0.08]"
+                className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[4px] text-[13px] transition-colors hover:bg-fg/[0.08]"
               >
                 {option.label}
               </button>

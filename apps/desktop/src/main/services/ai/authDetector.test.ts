@@ -246,8 +246,16 @@ describe("authDetector", () => {
     fs.mkdirSync(npmBin, { recursive: true });
     fs.writeFileSync(cursorAgentPath, "@echo off\r\n", "utf8");
     // Both names are win32-joined and therefore CWD-relative here; see
-    // windowsStyleFixtures above. File first, then the directory.
+    // windowsStyleFixtures above. Model the directory listing as well, because
+    // executable resolution now discovers Windows shims from readdirSync.
     windowsStyleFixtures.push(cursorAgentPath, npmBin);
+    const realReaddirSync = fs.readdirSync.bind(fs);
+    const readdirSpy = vi.spyOn(fs, "readdirSync").mockImplementation(((directory: fs.PathLike, options?: any) => {
+      if (path.normalize(String(directory)).toLowerCase() === path.normalize(npmBin).toLowerCase()) {
+        return [path.basename(cursorAgentPath)] as any;
+      }
+      return realReaddirSync(directory, options);
+    }) as typeof fs.readdirSync);
     process.env.APPDATA = tempHomeDir;
     process.env.PATH = "C:\\Windows\\System32";
     process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe";
@@ -273,6 +281,7 @@ describe("authDetector", () => {
       paidPlan: true,
     });
     expect(statuses.find((entry) => entry.cli === "cursor")?.path?.toLowerCase()).toBe(cursorAgentPath.toLowerCase());
+    readdirSpy.mockRestore();
   });
 
   it("merges config, store, env, and local endpoint auth sources", async () => {

@@ -20,10 +20,12 @@ import {
   type SyncTailnetDiscoveryStatus,
   type SyncTransferBlocker,
   type SyncTransferReadiness,
+  type SyncFileRequest,
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
+import type { CloudAgentsService } from "../../../../desktop/src/main/services/chat/cloudAgentsService";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
@@ -37,6 +39,7 @@ import type { createFileService } from "../../../../desktop/src/main/services/fi
 import type { createDiffService } from "../../../../desktop/src/main/services/diffs/diffService";
 import type { createGitOperationsService } from "../../../../desktop/src/main/services/git/gitOperationsService";
 import type { createGithubService } from "../../../../desktop/src/main/services/github/githubService";
+import type { createJiraService } from "../../../../desktop/src/main/services/jira/jiraService";
 import type { createConflictService } from "../../../../desktop/src/main/services/conflicts/conflictService";
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
 import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
@@ -61,7 +64,9 @@ import {
   type SyncRosterProvider,
   type SyncForeignChatTranscriptResolver,
   type SyncRuntimeKind,
+  type SyncHostRemoteCommandExecutor,
 } from "./syncHostService";
+import { runSyncFileServiceRequest } from "./syncFileRequests";
 import { createSyncPairingStore } from "./syncPairingStore";
 import { isValidDpopPublicKey } from "./syncPairingStore";
 import { createSyncSecurityStore } from "./syncSecurityStore";
@@ -78,6 +83,7 @@ import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, typ
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
 import type { MacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopSyncStream } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
+import { createAppControlSyncStream, type AppControlSyncSource } from "./appControlSyncStream";
 import type { AppleDeviceRemoteService, AppleStreamTicketIssuer } from "./appleRemoteCommands";
 import {
   buildAddressCandidates,
@@ -86,7 +92,7 @@ import {
 } from "./syncPairingConnectInfo";
 import { buildRelayRouteHealth, deriveListenerHealth } from "./syncRouteHealth";
 import type { PushPublisherService } from "../push/pushPublisherService";
-import { acquireSyncHostSingleton, type SyncHostSingletonLease } from "./syncHostSingleton";
+import { acquireSyncHostSingletonAsync, type SyncHostSingletonLease } from "./syncHostSingleton";
 import type { SharedSyncListener } from "./sharedSyncListener";
 import type { ModelPickerStore } from "../modelPickerStore";
 import type { UsageTrackingHost } from "../../../../desktop/src/main/services/usage/usageTrackingService";
@@ -105,6 +111,8 @@ import {
   type SyncLoopbackProbeResult,
   type SyncLoopbackValidationStatus,
 } from "./syncLoopbackProbe";
+import type { WebhookRemoteSource } from "./webhookRemoteCommands";
+import type { AutomationRuleRemoteSource } from "./automationRuleRemoteCommands";
 
 type SyncServiceArgs = {
   db: AdeDb;
@@ -153,6 +161,7 @@ type SyncServiceArgs = {
   agentChatService: ReturnType<typeof createAgentChatService>;
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
+  cloudAgentsService?: CloudAgentsService | null;
   personalChatScope?: PersonalChatScopeContract;
   /** Brain→push-relay publisher; threaded to the runtime remote-command service. */
   pushPublisherService?: PushPublisherService | null;
@@ -160,6 +169,7 @@ type SyncServiceArgs = {
   ctoMemoryService?: CtoMemoryService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
+  getJiraService?: () => ReturnType<typeof createJiraService> | null;
   /**
    * Resolvers for services that are constructed AFTER createSyncService in
    * main.ts. Using lazy getters lets the sync router forward remote commands
@@ -174,6 +184,10 @@ type SyncServiceArgs = {
   workToolsStateService?: WorkToolsStateService | null;
   /** Apple device environment for remote surfaces; absent off macOS. */
   appleDeviceService?: AppleDeviceRemoteService | null;
+  /** Webhook automations for remote surfaces (read-only). */
+  getWebhookAutomations?: () => WebhookRemoteSource | null;
+  /** Auto-handoff rules for the phone's session menu; null when automations are off. */
+  getAutomationRules?: () => AutomationRuleRemoteSource | null;
   appleStreamRelay?: AppleStreamTicketIssuer | null;
   getAppleRemoteBitrateKbpsCap?: () => number | null;
   /**
@@ -182,6 +196,12 @@ type SyncServiceArgs = {
    * the live-view fan-out reads.
    */
   macDesktopService?: MacDesktopService | null;
+  /**
+   * App Control, for the live view on phones and the hosted web client. Only
+   * the status read and the event stream are used; the host never drives the
+   * app from here. Absent on a chat-only runtime.
+   */
+  appControl?: AppControlSyncSource | null;
   /**
    * Brain-level websocket listener shared across hosted-project switches.
    * When provided, the embedded sync host attaches to it instead of binding
@@ -210,7 +230,8 @@ type SyncServiceArgs = {
   projectCatalogProvider?: SyncProjectCatalogProvider;
   rosterProvider?: SyncRosterProvider;
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
-  remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
+  remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
+  projectScopes?: { getIfBooted(projectId: string): Promise<unknown> | null };
   /**
    * Lazy accessor for the model picker store. iOS uses the `modelPicker.*`
    * sync commands to share favorites + recents with desktop and the TUI; the
@@ -402,6 +423,17 @@ const CANONICAL_SYNC_PORT_MIGRATE_FIRST_MS = 2_000;
 const CANONICAL_SYNC_PORT_MIGRATE_MS = 15_000;
 const TRANSFER_READINESS_CACHE_MS = 15_000;
 const STALE_BRAIN_LAST_SEEN_MS = 5 * 60_000;
+
+/**
+ * This project follows another machine's sync brain, so this machine cannot
+ * host it. `saved_connection` is an explicit join; `cluster_record` is a
+ * replicated cluster row that names a brain seen in the last few minutes.
+ */
+export type SyncHostBlocker = {
+  reason: "saved_connection" | "cluster_record";
+  host: string | null;
+  port: number | null;
+};
 const VIEWER_DRAFT_TRANSPORT_ERROR_CODES = [
   "ECONNREFUSED",
   "ETIMEDOUT",
@@ -652,18 +684,43 @@ export function createSyncService(args: SyncServiceArgs) {
     writeTextAtomic(tokenPath, `${token.trim()}\n`);
   };
 
+  // The draft file lives in the machine-wide pairing directory, but joining
+  // another brain is a decision about ONE project database. The draft records
+  // the site id of the project that made it, and every other project ignores
+  // it. A draft from before that tag applies only to a project whose cluster
+  // record already names another machine's brain: a project that never joined
+  // anything (no record, or a record naming this machine) must not be turned
+  // into a viewer of a machine it has never seen.
+  const projectSiteId = deviceRegistryService.getLocalSiteId();
+
+  const savedDraftAppliesToProject = (raw: unknown): boolean => {
+    const owner = (raw as { projectSiteId?: unknown } | null)?.projectSiteId;
+    if (typeof owner === "string" && owner.trim()) {
+      return owner.trim() === projectSiteId;
+    }
+    const cluster = deviceRegistryService.getClusterState();
+    return cluster != null
+      && cluster.brainDeviceId !== deviceRegistryService.getLocalDeviceId();
+  };
+
+  const readSavedDraftFile = (): unknown => {
+    if (!fs.existsSync(draftPath)) return null;
+    return safeJsonParse(fs.readFileSync(draftPath, "utf8"), null);
+  };
+
   const readSavedDraft = (): SyncDesktopConnectionDraft | null => {
     if (forceHostRole) return null;
-    if (!fs.existsSync(draftPath)) return null;
-    const token = readToken();
-    return sanitizeDraft(
-      safeJsonParse(fs.readFileSync(draftPath, "utf8"), null),
-      token,
-    );
+    const raw = readSavedDraftFile();
+    if (!raw || !savedDraftAppliesToProject(raw)) return null;
+    return sanitizeDraft(raw, readToken());
   };
 
   const writeSavedDraft = (draft: SyncDesktopConnectionDraft | null): void => {
     if (!draft) {
+      // Clearing is scoped the same way: a project that does not own the
+      // machine's draft must not delete the connection another project made.
+      const raw = readSavedDraftFile();
+      if (raw && !savedDraftAppliesToProject(raw)) return;
       try {
         fs.rmSync(draftPath, { force: true });
       } catch {
@@ -681,6 +738,7 @@ export function createSyncService(args: SyncServiceArgs) {
           authKind: draft.authKind ?? "bootstrap",
           pairedDeviceId: draft.pairedDeviceId ?? null,
           lastRemoteDbVersion: draft.lastRemoteDbVersion ?? 0,
+          projectSiteId,
         },
         null,
         2,
@@ -765,6 +823,12 @@ export function createSyncService(args: SyncServiceArgs) {
       })
     : null;
 
+  // One App Control frame fan-out for the whole host, shared by the command
+  // handlers and the host's connection-close cleanup, like the one above.
+  const appControlSyncStream = args.appControl
+    ? createAppControlSyncStream({ logger: args.logger, source: args.appControl })
+    : null;
+
   const remoteCommandService = createSyncRemoteCommandService({
     db: args.db,
     usageTrackingService: args.usageTrackingService,
@@ -789,6 +853,7 @@ export function createSyncService(args: SyncServiceArgs) {
     agentChatService: args.agentChatService,
     chatLaunchService: args.chatLaunchService,
     cursorCloudFleetService: args.cursorCloudFleetService,
+    cloudAgentsService: args.cloudAgentsService,
     personalChatScope: args.personalChatScope,
     pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
@@ -796,13 +861,17 @@ export function createSyncService(args: SyncServiceArgs) {
     linearCredentialService: args.linearCredentialService,
     linearOAuthService: args.linearOAuthService,
     getLinearIssueTracker: args.getLinearIssueTracker,
+    getJiraService: args.getJiraService,
     getExternalSessionsService: args.getExternalSessionsService,
     workToolsStateService: args.workToolsStateService,
     macDesktopService,
     macDesktopSyncStream,
+    appControlSyncStream,
     appleDeviceService: args.appleDeviceService,
     appleStreamRelay: args.appleStreamRelay,
     getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
+    getWebhookAutomations: args.getWebhookAutomations,
+    getAutomationRules: args.getAutomationRules,
     projectConfigService: args.projectConfigService,
     portAllocationService: args.portAllocationService,
     laneEnvironmentService: args.laneEnvironmentService,
@@ -914,7 +983,16 @@ export function createSyncService(args: SyncServiceArgs) {
     const localDevice = deviceRegistryService.ensureLocalDevice();
     const preferredPort = localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT;
     let lastError: unknown = null;
-    hostSingletonLease ??= acquireSyncHostSingleton({ projectRoot: args.projectRoot });
+    if (!hostSingletonLease) {
+      const lease = await acquireSyncHostSingletonAsync({ projectRoot: args.projectRoot });
+      // On Windows the acquire waits on PowerShell probes. A dispose that ran
+      // meanwhile already released nothing, so this lease is released here.
+      if (disposed) {
+        lease.dispose();
+        return;
+      }
+      hostSingletonLease = lease;
+    }
     const buildHostServiceArgs = (port: number): Parameters<typeof createSyncHostService>[0] => ({
       db: args.db,
       logger: args.logger,
@@ -939,6 +1017,7 @@ export function createSyncService(args: SyncServiceArgs) {
       agentChatService: args.agentChatService,
       chatLaunchService: args.chatLaunchService,
       cursorCloudFleetService: args.cursorCloudFleetService,
+      cloudAgentsService: args.cloudAgentsService,
       aiIntegrationService: args.aiIntegrationService,
       accountSettingsStore: args.accountSettingsStore,
       pushPublisherService: args.pushPublisherService,
@@ -953,7 +1032,9 @@ export function createSyncService(args: SyncServiceArgs) {
       // error anywhere.
       workToolsStateService: args.workToolsStateService,
       macDesktopService,
+      getWebhookAutomations: args.getWebhookAutomations,
       macDesktopSyncStream,
+      appControlSyncStream,
       appleDeviceService: args.appleDeviceService,
       appleStreamRelay: args.appleStreamRelay,
       getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
@@ -978,6 +1059,7 @@ export function createSyncService(args: SyncServiceArgs) {
       runtimeVersion: args.appVersion ?? "",
       deviceRegistryService,
       projectCatalogProvider: args.projectCatalogProvider,
+      projectScopes: args.projectScopes,
       rosterProvider: args.rosterProvider,
       foreignChatProvider: args.foreignChatProvider,
       personalChatScope: args.personalChatScope,
@@ -1165,6 +1247,46 @@ export function createSyncService(args: SyncServiceArgs) {
     if (!isViewerDraftTransportError(argsIn.error)) return false;
     if (!isDraftTargetLocalDevice(argsIn.draft, argsIn.localDevice)) return false;
     return !argsIn.cluster || isStaleNonLocalBrainCluster(argsIn.cluster, argsIn.localDevice.deviceId);
+  };
+
+  /**
+   * Why this project would follow another machine instead of hosting, or null
+   * when enabling the host makes this machine its sync host. It mirrors the
+   * decision `refreshRoleState` makes, without dialing anything, so a caller
+   * can refuse a project switch BEFORE the current host is torn down.
+   */
+  const describeHostBlocker = (): SyncHostBlocker | null => {
+    if (forceHostRole) return null;
+    const localDevice = deviceRegistryService.ensureLocalDevice();
+    const cluster = deviceRegistryService.getClusterState();
+    if (cluster?.brainDeviceId === localDevice.deviceId) return null;
+    const savedDraft = readSavedDraft();
+    if (savedDraft) {
+      // A draft aimed at this machine is a leftover the refresh reclaims once
+      // the dial fails, so it ends with this machine hosting. The reclaim only
+      // runs when the cluster record is absent or names a stale brain: a fresh
+      // record naming another machine wins, and the refresh leaves this
+      // project a viewer. Report the blocker there too, so a caller never tears
+      // down the current host for a target that will not take over.
+      if (
+        isDraftTargetLocalDevice(savedDraft, localDevice)
+        && (!cluster || isStaleNonLocalBrainCluster(cluster, localDevice.deviceId))
+      ) return null;
+      return {
+        reason: "saved_connection",
+        host: savedDraft.host,
+        port: savedDraft.port,
+      };
+    }
+    // No record: the refresh bootstraps this machine as the brain. A stale
+    // record naming another machine: the refresh reclaims it.
+    if (!cluster || isStaleNonLocalBrainCluster(cluster, localDevice.deviceId)) return null;
+    const brain = deviceRegistryService.getDevice(cluster.brainDeviceId);
+    return {
+      reason: "cluster_record",
+      host: brain ? buildAddressCandidates(brain)[0]?.host ?? null : null,
+      port: brain?.lastPort ?? null,
+    };
   };
 
   const refreshRoleState = (): Promise<void> => {
@@ -1416,6 +1538,12 @@ export function createSyncService(args: SyncServiceArgs) {
         ? cluster.brainDeviceId === localDevice.deviceId
         : !savedDraft && !syncPeerService.isConnected());
       const role = isLocalBrain ? "brain" : "viewer";
+      // A saved draft makes this runtime a viewer on purpose; without one, a
+      // viewer is following the cluster record `refreshRoleState` reclaims
+      // once its brain goes stale.
+      const viewerReason: SyncRoleSnapshot["viewerReason"] = isLocalBrain
+        ? undefined
+        : cluster && !savedDraft ? "cluster_record" : "saved_connection";
       const runtimeRole = isLocalBrain ? "host" : "viewer";
       const crdtSyncAvailable = isCrdtSyncAvailable();
       const canHostPhonePairing = role === "brain" && hostStartupEnabled && crdtSyncAvailable;
@@ -1523,6 +1651,7 @@ export function createSyncService(args: SyncServiceArgs) {
       return {
         mode,
         role,
+        ...(viewerReason ? { viewerReason } : {}),
         runtimeMode,
         runtimeRole,
         localDevice,
@@ -1585,6 +1714,10 @@ export function createSyncService(args: SyncServiceArgs) {
       void emitStatus();
     },
 
+    getHostBlocker(): SyncHostBlocker | null {
+      return describeHostBlocker();
+    },
+
     async setHostStartupEnabled(enabled: boolean): Promise<void> {
       if (hostStartupEnabled === enabled) return;
       hostStartupEnabled = enabled;
@@ -1637,6 +1770,11 @@ export function createSyncService(args: SyncServiceArgs) {
 
     getPin(): string | null {
       return pinStore.getPin();
+    },
+
+    /** This computer's sync device id — the key for per-device account settings. */
+    getLocalDeviceId(): string {
+      return deviceRegistryService.getLocalDeviceId();
     },
 
     async setPin(pin: string): Promise<SyncRoleSnapshot> {
@@ -1850,8 +1988,50 @@ export function createSyncService(args: SyncServiceArgs) {
       return hostService;
     },
 
+    /**
+     * Run the host/viewer decision again now.
+     *
+     * The decision is otherwise re-made only on events (a host-startup toggle,
+     * remote changes applied). A scope that decided "viewer" because another
+     * device was brain a moment ago -- a brain force-killed seconds before this
+     * one started still looks fresh for `STALE_BRAIN_LAST_SEEN_MS` -- and whose
+     * viewer connect then failed never received another event, so it stayed a
+     * viewer of a dead brain and nobody hosted sync until a restart. The brain's
+     * sync-host startup loop calls this on every retry.
+     */
+    async reevaluateHostRole(): Promise<void> {
+      await refreshRoleState();
+    },
+
     getRemoteCommandDescriptor(action: string) {
       return remoteCommandService.getDescriptor(action);
+    },
+
+    /** Every registered remote-command descriptor, for a routing ingress to advertise. */
+    getRemoteCommandDescriptors() {
+      return remoteCommandService.getDescriptors();
+    },
+
+    /**
+     * Ends every Mac Desktop and App Control viewer a closed sync socket held
+     * on this project, and gives back the Mac Desktop input leases it took
+     * here. The socket may belong to another project's host, which routed
+     * commands here, so its close handler fans this out to every booted
+     * project scope.
+     */
+    releaseStreamConnection(connectionId: string): void {
+      // Idempotent: the host project also releases its own leases directly.
+      remoteCommandService.releaseMacDesktopConnection(connectionId);
+      for (const stream of [macDesktopSyncStream, appControlSyncStream]) {
+        try {
+          stream?.releaseConnection(connectionId);
+        } catch (error) {
+          args.logger.warn("sync.stream_release_connection_failed", {
+            connectionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
     },
 
     async executeRemoteCommand(
@@ -1859,6 +2039,11 @@ export function createSyncService(args: SyncServiceArgs) {
       context?: Parameters<SyncRemoteCommandService["execute"]>[1],
     ): Promise<unknown> {
       return await remoteCommandService.execute(payload, context);
+    },
+
+    /** A `file_request` routed here from the brain's sync host. */
+    async executeRemoteFileRequest(payload: SyncFileRequest, context: { isMobile: boolean }): Promise<unknown> {
+      return await runSyncFileServiceRequest(args.fileService, payload, context);
     },
 
     getDeviceRegistryService() {
@@ -1877,6 +2062,7 @@ export function createSyncService(args: SyncServiceArgs) {
       await stopHostIfRunning();
       // After the host stops, so no pushed record can outlive its socket.
       macDesktopSyncStream?.dispose();
+      appControlSyncStream?.dispose();
       await syncPeerService.dispose();
     },
   };

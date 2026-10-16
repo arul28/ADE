@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  BUILT_IN_BROWSER_RECORDING_MIME_TYPES,
   createBuiltInBrowserRecordingSession,
   createDisplayMediaRecorderFactory,
   type BuiltInBrowserTabRecorder,
@@ -47,6 +46,13 @@ function fakeCaptureWindow(options: {
   finalChunks?: string[];
 } = {}) {
   const takeQueue = [...(options.chunks ?? [])];
+  let timestamp = 0;
+  const records = (chunks: string[] = []) => chunks.map((chunk) => ({
+    kind: 1,
+    flags: 0,
+    t: timestamp++ / 30,
+    data: new Uint8Array(Buffer.from(chunk, "base64")),
+  }));
   const calls: Array<{ code: string; userGesture?: boolean }> = [];
   let destroyed = false;
   const win: CaptureWindowLike & { calls: typeof calls; isDestroyedFlag: () => boolean } = {
@@ -62,10 +68,10 @@ function fakeCaptureWindow(options: {
       executeJavaScript: vi.fn(async (code: string, userGesture?: boolean) => {
         calls.push({ code, userGesture });
         if (code.includes("getDisplayMedia")) {
-          return options.onStart?.() ?? { mimeType: "video/mp4;codecs=avc1", frameRate: 60 };
+          return { mode: "jpeg", width: 640, height: 480, frameRate: 30, ...(options.onStart?.() as object ?? {}) };
         }
-        if (code.includes("__adeCaptureTake")) return takeQueue.shift() ?? [];
-        if (code.includes("__adeCaptureStop")) return options.finalChunks ?? [];
+        if (code.includes("__adeCaptureTake")) return records(takeQueue.shift());
+        if (code.includes("__adeCaptureStop")) return { records: records(options.finalChunks), firstFrameAtMs: Date.now() };
         return null;
       }),
     },
@@ -243,20 +249,20 @@ describe("display-media recorder", () => {
     const startCall = win.calls.find((call) => call.code.includes("getDisplayMedia"));
     expect(startCall?.userGesture).toBe(true);
     // The negotiated mime type decides both the container and the file name.
-    expect(recorder.mimeType).toBe("video/mp4;codecs=avc1");
+    expect(recorder.mimeType).toBe("video/mp4");
     expect(recorder.format).toBe("mp4");
 
     const result = await recorder.stop({ durationMs: 2_000 });
-    expect(result.filePath).toBe(path.join(directory, "rec-a.mp4"));
-    expect(fs.readFileSync(result.filePath, "utf8")).toBe("hello world");
-    // 2s at the negotiated 60fps.
-    expect(result.frameCount).toBe(120);
+    expect(result.filePath).toBe(path.join(directory, "rec-a.aderaw"));
+    expect(result.frameCount).toBe(2);
+    expect(result.filePath).toMatch(/\.aderaw$/);
+    expect(fs.statSync(result.filePath).size).toBeGreaterThan(0);
     expect(result.manifestPath).toBeNull();
     expect(disarmed).toBe(1);
     expect(win.isDestroyedFlag()).toBe(true);
   });
 
-  it("falls back to webm when the page negotiates a webm profile", async () => {
+  it("writes negotiated WebM frames into the shared raw capture format", async () => {
     const directory = scratchDir();
     const win = fakeCaptureWindow({
       onStart: () => ({ mimeType: "video/webm;codecs=vp9", frameRate: 30 }),
@@ -269,20 +275,29 @@ describe("display-media recorder", () => {
     });
     const recorder = await factory({ id: "rec-b", directory, fps: 30 });
     await recorder.start();
-    expect(recorder.format).toBe("webm");
+    expect(recorder.format).toBe("mp4");
+    expect(recorder.mimeType).toBe("video/mp4");
     const result = await recorder.stop({ durationMs: 1_000 });
-    expect(result.filePath).toBe(path.join(directory, "rec-b.webm"));
-    expect(result.frameCount).toBe(30);
+    expect(result.filePath).toBe(path.join(directory, "rec-b.aderaw"));
+    expect(result.frameCount).toBe(1);
   });
 
-  it("prefers mp4/avc1 before webm in its codec preference list", () => {
-    expect(BUILT_IN_BROWSER_RECORDING_MIME_TYPES[0]).toBe("video/mp4;codecs=avc1");
-    const firstWebm = BUILT_IN_BROWSER_RECORDING_MIME_TYPES.findIndex((mime) => mime.startsWith("video/webm"));
-    const lastMp4 = BUILT_IN_BROWSER_RECORDING_MIME_TYPES
-      .map((mime, index) => ({ mime, index }))
-      .filter(({ mime }) => mime.startsWith("video/mp4"))
-      .at(-1)?.index ?? -1;
-    expect(lastMp4).toBeLessThan(firstWebm);
+  it("keeps capture frames in the ADE raw container regardless of browser codec", async () => {
+    const directory = scratchDir();
+    const win = fakeCaptureWindow({
+      onStart: () => ({ mimeType: "video/webm;codecs=vp9", frameRate: 30 }),
+      finalChunks: [Buffer.from("webm").toString("base64")],
+    });
+    const recorder = await createDisplayMediaRecorderFactory({
+      createCaptureWindow: () => win,
+      armDisplayMedia: () => () => undefined,
+      pollIntervalMs: 10_000,
+    })({ id: "rec-codec", directory, fps: 30 });
+    await recorder.start();
+    const result = await recorder.stop({ durationMs: 1_000 });
+    expect(recorder.mimeType).toBe("video/mp4");
+    expect(result.filePath).toMatch(/\.aderaw$/);
+    expect(result.frameCount).toBe(1);
   });
 
   it("tears down the capture window and disarms when aborted before stop", async () => {

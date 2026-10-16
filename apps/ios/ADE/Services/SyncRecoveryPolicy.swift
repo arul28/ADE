@@ -396,3 +396,136 @@ func syncForegroundResumeAction(
   guard let backgroundGapSeconds else { return .refreshOnly }
   return backgroundGapSeconds >= suspendedGapSeconds ? .replaceSession : .probeSession
 }
+
+/// Detects a connection that keeps closing right after it connects for the
+/// same reason (for example the host refusing one reply and closing 4001), and
+/// turns that into an exponential backoff. Without it, the post-hello stability
+/// reset re-armed the fast 1.5 s retry every cycle and the phone hammered the
+/// host forever.
+struct SyncReconnectFlapTracker {
+  /// A connection that dies within this many seconds of hello counts as a flap.
+  static let shortLivedConnectionSeconds: TimeInterval = 30
+  static let windowSeconds: TimeInterval = 120
+  static let threshold = 3
+  static let baseBackoffSeconds: TimeInterval = 15
+  static let maxBackoffSeconds: TimeInterval = 300
+
+  private var closes: [(at: TimeInterval, signature: String)] = []
+  private(set) var consecutiveTrips = 0
+
+  /// Records one close of a live connection. Returns the backoff to use
+  /// instead of the normal reconnect delay when the connection is flapping.
+  mutating func recordClose(
+    signature: String,
+    connectionAgeSeconds: TimeInterval?,
+    now: TimeInterval
+  ) -> TimeInterval? {
+    // Never finished hello: not this failure mode, and no proof of health.
+    guard let connectionAgeSeconds else { return nil }
+    guard connectionAgeSeconds <= Self.shortLivedConnectionSeconds else {
+      // The connection held; whatever was wrong before is over.
+      reset()
+      return nil
+    }
+    closes.removeAll { now - $0.at > Self.windowSeconds }
+    closes.append((at: now, signature: signature))
+    let sameReasonCount = closes.filter { $0.signature == signature }.count
+    guard sameReasonCount >= Self.threshold else { return nil }
+    consecutiveTrips += 1
+    let exponent = Double(min(consecutiveTrips - 1, 10))
+    return min(Self.maxBackoffSeconds, Self.baseBackoffSeconds * pow(2, exponent))
+  }
+
+  mutating func reset() {
+    closes.removeAll()
+    consecutiveTrips = 0
+  }
+}
+
+/// Short connection-banner copy for a flapping connection.
+func syncReconnectFlapMessage(machineName: String, closeReason: String?, retryInSeconds: TimeInterval) -> String {
+  let seconds = Int(retryInSeconds.rounded())
+  let trimmedReason = closeReason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let reasonSuffix = trimmedReason.isEmpty ? "" : " (\(trimmedReason))"
+  return "\(machineName) keeps closing the connection right after connecting\(reasonSuffix). Retrying in \(seconds) s."
+}
+
+/// One relay re-authorization loop, shared by the focused connection and the
+/// fleet's roster connections: refresh shortly before the lease expires,
+/// resend the exact same attempt after a transport miss (the host dedupes it),
+/// rebuild it when the host says the token went stale, and stop on an account
+/// change or once retries would run past the lease. Returns when cancelled or
+/// when `isCurrent` turns false.
+@MainActor
+func syncRunRelayReauthorizationLoop<Attempt>(
+  lease: SyncRelayAuthorizationLease,
+  refreshImmediately: Bool = false,
+  isCurrent: @MainActor () -> Bool,
+  makeAttempt: @MainActor (SyncRelayAuthorizationLease) async throws -> Attempt,
+  perform: @MainActor (Attempt) async throws -> SyncRelayAuthorizationLease,
+  install: @MainActor (SyncRelayAuthorizationLease) throws -> Void,
+  onAccountChanged: @MainActor (RelayReauthorizationFailure) -> Void,
+  onGiveUp: @MainActor (Error) -> Void
+) async {
+  var activeLease = lease
+  var activeAttempt: Attempt?
+  var refreshNow = refreshImmediately
+  var retryAttempt = 0
+  while !Task.isCancelled {
+    guard isCurrent() else { return }
+    if !refreshNow {
+      let delay = syncRelayReauthorizationScheduleDelayNanoseconds(
+        lease: activeLease,
+        nowMilliseconds: Date().timeIntervalSince1970 * 1_000
+      )
+      if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+      guard !Task.isCancelled else { return }
+    }
+    refreshNow = true
+    do {
+      let attemptToSend: Attempt
+      if let pending = activeAttempt {
+        attemptToSend = pending
+      } else {
+        attemptToSend = try await makeAttempt(activeLease)
+        activeAttempt = attemptToSend
+      }
+      let refreshed = try await perform(attemptToSend)
+      try install(refreshed)
+      activeLease = refreshed
+      activeAttempt = nil
+      retryAttempt = 0
+      refreshNow = false
+    } catch is CancellationError {
+      return
+    } catch {
+      if let failure = error as? RelayReauthorizationFailure {
+        let action = syncRelayReauthorizationRetryAction(
+          receivedHostResult: failure.receivedHostResult,
+          errorCode: failure.code,
+          retryable: failure.retryable
+        )
+        if action == .accountChanged {
+          onAccountChanged(failure)
+          return
+        }
+        if action == .rebuildAttempt { activeAttempt = nil }
+        guard action == .retryExactAttempt || action == .rebuildAttempt else {
+          onGiveUp(failure)
+          return
+        }
+      }
+      guard let retryDelay = syncRelayReauthorizationRetryDelayNanoseconds(
+        attempt: retryAttempt,
+        lease: activeLease,
+        nowMilliseconds: Date().timeIntervalSince1970 * 1_000
+      ) else {
+        onGiveUp(error)
+        return
+      }
+      retryAttempt += 1
+      try? await Task.sleep(nanoseconds: retryDelay)
+      guard !Task.isCancelled else { return }
+    }
+  }
+}

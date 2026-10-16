@@ -347,13 +347,18 @@ func workChatInputCanSend(
   text: String,
   attachments: [WorkChatInputAttachment],
   baseEnabled: Bool,
-  canUploadAttachments: Bool
+  canUploadAttachments: Bool,
+  hasSendableThreadComments: Bool = false
 ) -> Bool {
   let readyAttachments = workChatInputReadyAttachments(attachments)
   return baseEnabled
     && !workChatInputHasLoadingAttachments(attachments)
     && !workChatInputHasFailedAttachments(attachments)
-    && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !readyAttachments.isEmpty)
+    && (
+      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        || !readyAttachments.isEmpty
+        || hasSendableThreadComments
+    )
     && (readyAttachments.isEmpty || canUploadAttachments)
 }
 
@@ -536,7 +541,7 @@ func workChatInputAttachments(
               from: image,
               filename: workChatAttachmentDisplayName(ref)
             ) else {
-        throw workChatStashImageRestoreError
+        throw workChatDraftImageRestoreError
       }
       restored.append(attachment)
       continue
@@ -565,7 +570,7 @@ func workChatInputAttachments(
         targetProjectRootPath: projectRootPath
       )
     } else {
-      throw workChatStashImageRestoreError
+      throw workChatDraftImageRestoreError
     }
     guard let image = WorkChatAttachmentImagePreview.image(
             fromDataUrl: dataUrl,
@@ -576,7 +581,7 @@ func workChatInputAttachments(
             from: image,
             filename: workChatAttachmentDisplayName(ref)
           ) else {
-      throw workChatStashImageRestoreError
+      throw workChatDraftImageRestoreError
     }
     attachment.hostRef = ref
     restored.append(attachment)
@@ -584,10 +589,10 @@ func workChatInputAttachments(
   return restored
 }
 
-private let workChatStashImageRestoreError = NSError(
+private let workChatDraftImageRestoreError = NSError(
   domain: "ADE",
   code: 28,
-  userInfo: [NSLocalizedDescriptionKey: "Could not restore a stashed image. The prompt is still in your stash."]
+  userInfo: [NSLocalizedDescriptionKey: "Could not restore a draft image. The draft is still available on the machine that made it."]
 )
 
 private func workChatJPEGDataForUpload(_ image: UIImage) -> (image: UIImage, data: Data)? {
@@ -1109,7 +1114,6 @@ struct WorkChatAttachmentTray: View {
   var alignment: HorizontalAlignment = .trailing
   var style: WorkChatAttachmentTrayStyle = .standalone
 
-  @EnvironmentObject private var syncService: SyncService
   @Environment(\.workChatLaneId) private var laneId
   @Environment(\.workChatRequestedCwd) private var requestedCwd
 
@@ -1155,7 +1159,9 @@ private struct WorkChatAttachmentChip: View {
   let attachment: AgentChatFileRef
   var size: CGFloat = 72
 
-  @EnvironmentObject private var syncService: SyncService
+  /// Not `@EnvironmentObject`: user bubbles render this chip inside transcript
+  /// cells (see `WorkSyncServiceReference`).
+  @Environment(\.workSyncService) private var syncReference
   @Environment(\.workChatLaneId) private var laneId
   @Environment(\.workChatRequestedCwd) private var requestedCwd
   @Environment(\.workChatIsPersonal) private var isPersonalChat
@@ -1306,6 +1312,10 @@ private struct WorkChatAttachmentChip: View {
       }
     }
 
+    guard let syncService = syncReference.service else {
+      loadFailed = true
+      return
+    }
     if isPersonalChat {
       guard syncService.canInvokeRemoteAction("personalChats.getImageDataUrl") else {
         loadFailed = true

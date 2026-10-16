@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CircleNotch, Warning, X } from "@phosphor-icons/react";
 
 import type {
   CtoLinearQuickView,
@@ -8,53 +7,52 @@ import type {
 } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import {
-  consumePendingLinearIssueQuickViewRequest,
-  subscribeLinearIssueQuickViewRequests,
-  type LinearIssueQuickViewRequest,
+  consumePendingLinearPaneOpenRequest,
+  subscribeLinearPaneOpenRequests,
 } from "../../lib/linearIssueQuickViewNavigation";
+import {
+  clearPendingLinearLaunchRequest,
+  subscribeLinearLaunchRequests,
+  takePendingLinearLaunchRequest,
+} from "../../lib/linearLaunchRequests";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
 import { cn } from "../ui/cn";
-import { Dialog } from "../ui/dialog";
-import { linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
+import { LinearPaneModal } from "./LinearPaneModal";
+import { requestIssueCreate } from "../../lib/issueCreateRequests";
+import { useIssueTopBarPreferences } from "../issues/issueTopBarPreferences";
 import {
   clearLinearQuickViewSelection,
   LinearIssueBrowser,
   linearBrowserIssueToLaneIssue,
   type BatchProgress,
 } from "./LinearIssueBrowser";
-import { BatchLaunchModal, type BatchLaunchSubmit } from "./BatchLaunchModal";
-import { BatchLaunchStatusToast } from "./BatchLaunchStatusToast";
+import { buildLinearLaunchIssue, findIssueConflicts } from "../../lib/linearBatchLaunch";
 import {
-  defaultKickoffIntro,
-  defaultKickoffPrompt,
-  findIssueConflicts,
-  isBatchLaunchInFlight,
-  runBatchLaunch,
-  BatchLaunchAgentReadinessTracker,
-  type BatchLaunchIssueConfig,
-  type BatchLaunchItemState,
-} from "../../lib/linearBatchLaunch";
-import {
-  clearCreatingIssue,
-  rememberCreatingIssues,
-  rememberLaunchedLanes,
-} from "../../lib/launchedLanesHighlight";
-import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
-import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
+  getIssueLaunchProgress,
+  requestIssueLaunch,
+  subscribeIssueLaunchCancellations,
+  subscribeIssueLaunchProgress,
+  subscribeIssueLaunchRequestClosed,
+} from "../../lib/issueLaunchRequests";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { LINEAR_CONNECTION_CHANGED_EVENT } from "../../lib/linearConnectionEvents";
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
-const VISIBILITY_RETRY_INTERVAL_MS = 3_000;
+// A backstop for a connection made outside this window (the CLI, another
+// device). Settings in this window announces its changes, and window focus
+// re-checks, so the button does not need to ask the brain every 3 s while
+// Linear is disconnected.
+const VISIBILITY_RETRY_INTERVAL_MS = 60_000;
 const REMOTE_VISIBILITY_RETRY_INTERVAL_MS = 15_000;
 const VISIBILITY_CONNECTED_CACHE_TTL_MS = 60_000;
 const VISIBILITY_DISCONNECTED_CACHE_TTL_MS = 1_500;
 
 const HEADER_STATUS_MENU_ROW_CLASS =
-  "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-white/[0.06] hover:text-fg/90";
+  "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-fg/[0.06] hover:text-fg/90";
 
 type LinearVisibilityCacheEntry = {
   reader: unknown;
@@ -83,7 +81,13 @@ function readLinearVisibilityCached({
       : { reader, value: false, checkedAtMs: 0, inFlight: null };
   linearVisibilityCacheByProject.set(projectRoot, entry);
 
-  if (entry.inFlight) return entry.inFlight;
+  if (entry.inFlight) {
+    if (!force) return entry.inFlight;
+    // A forced read follows a change (a key saved, a connection made); the read
+    // in flight may have started before it, so read again once it settles.
+    const retry = () => readLinearVisibilityCached({ projectRoot, reader, force });
+    return entry.inFlight.then(retry, retry);
+  }
   const ttl = entry.value ? VISIBILITY_CONNECTED_CACHE_TTL_MS : VISIBILITY_DISCONNECTED_CACHE_TTL_MS;
   if (!force && now - entry.checkedAtMs < ttl) {
     return Promise.resolve(entry.value);
@@ -106,51 +110,57 @@ export function LinearQuickViewButton({
   onOpenHarnessSettings,
   variant = "icon",
   onMenuActivate,
+  showTrigger = true,
 }: {
   /** Forwarded to the batch launch modal so its model picker can reach Settings. */
   onOpenHarnessSettings?: () => void;
   variant?: "icon" | "menu-row";
   onMenuActivate?: () => void;
+  /**
+   * False hides the header button while keeping the component mounted, so
+   * issue deeplinks still open the quick view or the project prompt when no
+   * project surface is on screen.
+   */
+  showTrigger?: boolean;
 } = {}) {
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const lanes = useAppStore((s) => s.lanes);
-  const refreshLanes = useAppStore((s) => s.refreshLanes);
-  const selectLane = useAppStore((s) => s.selectLane);
-  const setShowWelcome = useAppStore((s) => s.setShowWelcome);
-  const launchPromptClipboardEnabled = useAppStore((s) => s.launchPromptClipboardEnabled);
   const [visible, setVisible] = useState(false);
+  const topBarPreferences = useIssueTopBarPreferences();
   const [open, setOpen] = useState(false);
   const [quickView, setQuickView] = useState<CtoLinearQuickView | null>(null);
-  const [quickViewRequest, setQuickViewRequest] = useState<LinearIssueQuickViewRequest | null>(null);
-  const [connectionPrompt, setConnectionPrompt] = useState<LinearIssueQuickViewRequest | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [browserLoading, setBrowserLoading] = useState(false);
   const [batchModalOpen, setBatchModalOpen] = useState(false);
-  const [batchIssues, setBatchIssues] = useState<LaneLinearIssue[]>([]);
-  const [batchLaneOnly, setBatchLaneOnly] = useState(false);
-  const [batchLaunchStates, setBatchLaunchStates] = useState<Map<string, BatchLaunchItemState>>(new Map());
+  const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(() => getIssueLaunchProgress());
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const cachedQuickViewRef = useRef<CtoLinearQuickView | null>(null);
-  const batchAgentReadinessRef = useRef(new BatchLaunchAgentReadinessTracker());
-  const occludesNativeBrowser = open || batchModalOpen;
-  // Remembers each issue's chosen config so "Retry failed" reuses the same model.
-  const batchConfigByIssueRef = useRef<Map<string, BatchLaunchIssueConfig>>(new Map());
+  const launchRequestNonceRef = useRef<string | null>(null);
+  // The pane's own modal hides the native browser while it is open.
+  const occludesNativeBrowser = batchModalOpen && !open;
   const activeProjectRoot =
     projectBinding?.kind === "remote" ? projectBinding.rootPath : project?.rootPath;
 
-  useEffect(() => window.ade.agentChat.onEvent((envelope) => {
-    const transition = batchAgentReadinessRef.current.observe(envelope);
-    if (!transition) return;
-    setBatchLaunchStates((current) => {
-      const state = current.get(transition.issueId);
-      if (!state || (state.status !== "initializing-agent" && state.status !== "done")) return current;
-      if (state.status === "done" && transition.outcome.status === "done") return current;
-      const next = new Map(current);
-      next.set(transition.issueId, { ...state, ...transition.outcome });
-      return next;
-    });
+  useEffect(() => subscribeIssueLaunchProgress((progress) => {
+    setBatchProgress(progress);
   }), []);
+
+  useEffect(() => {
+    const unsubscribeClosed = subscribeIssueLaunchRequestClosed((nonce) => {
+      if (launchRequestNonceRef.current !== nonce) return;
+      setBatchModalOpen(false);
+    });
+    const unsubscribeCancelled = subscribeIssueLaunchCancellations((nonce) => {
+      if (launchRequestNonceRef.current !== nonce) return;
+      launchRequestNonceRef.current = null;
+      setOpen(true);
+    });
+    return () => {
+      unsubscribeClosed();
+      unsubscribeCancelled();
+    };
+  }, []);
   // Auto-check Linear visibility for both local and remote projects. The check
   // is driven by getLinearConnectionStatus, which routes to the remote daemon
   // when bound to a remote runtime, so a remote machine's Linear connection is
@@ -171,37 +181,35 @@ export function LinearQuickViewButton({
   }, [activeProjectRoot]);
 
   const openLinearSettings = useCallback(() => {
-    setConnectionPrompt(null);
     window.location.hash = `#${settingsRouteFor("integrations.linear")}`;
   }, []);
 
-  const handleQuickViewRequest = useCallback((request: LinearIssueQuickViewRequest) => {
-    setQuickViewRequest(request);
-    setConnectionPrompt(null);
-    void loadVisibility()
+  // "Open the Linear pane" from elsewhere (the Issues tool's empty state, the
+  // issue sheet). Disconnected: the pane would only say so, so go straight to
+  // the place that fixes it.
+  const handlePaneOpenRequest = useCallback(() => {
+    void loadVisibility({ force: true })
       .then((nextVisible) => {
         setVisible(nextVisible);
         if (nextVisible) {
-          setConnectionPrompt(null);
+          if (cachedQuickViewRef.current) setQuickView(cachedQuickViewRef.current);
           setOpen(true);
         } else {
-          setOpen(false);
-          setConnectionPrompt(request);
+          openLinearSettings();
         }
       })
       .catch(() => {
         setVisible(false);
-        setOpen(false);
-        setConnectionPrompt(request);
+        openLinearSettings();
       });
-  }, [loadVisibility]);
+  }, [loadVisibility, openLinearSettings]);
 
   useEffect(() => {
     if (variant !== "icon") return;
-    const pending = consumePendingLinearIssueQuickViewRequest();
-    if (pending) handleQuickViewRequest(pending);
-    return subscribeLinearIssueQuickViewRequests(handleQuickViewRequest);
-  }, [handleQuickViewRequest, variant]);
+    const pending = consumePendingLinearPaneOpenRequest();
+    if (pending) handlePaneOpenRequest();
+    return subscribeLinearPaneOpenRequests(handlePaneOpenRequest);
+  }, [handlePaneOpenRequest, variant]);
 
   useEffect(() => {
     if (!occludesNativeBrowser || typeof window === "undefined") return undefined;
@@ -278,9 +286,11 @@ export function LinearQuickViewButton({
         });
     };
     window.addEventListener("focus", refresh);
+    window.addEventListener(LINEAR_CONNECTION_CHANGED_EVENT, refresh);
     return () => {
       cancelled = true;
       window.removeEventListener("focus", refresh);
+      window.removeEventListener(LINEAR_CONNECTION_CHANGED_EVENT, refresh);
     };
   }, [loadVisibility, activeProjectRoot, shouldAutoCheckVisibility]);
 
@@ -315,187 +325,38 @@ export function LinearQuickViewButton({
     setOpen(false);
   }, [activeProjectRoot]);
 
-  // The launch dock opens one unified launch-config modal for 1..N issues. The
-  // modal closes on Launch and the bounded-parallel orchestrator runs below, so
-  // the user lands on the Lanes tab immediately rather than watching a progress
-  // bar. Both the multi-select dock and the single-issue row route here, so
-  // every issue→lane(+chat/CLI) launch shares one path.
+  // Linear launch requests join the same app-wide flow as GitHub and Jira.
+  // The pane stays mounted long enough to restore its persisted selection if
+  // the shared launch dialog is cancelled.
   const handleBatchLaunchOpen = useCallback(
-    (issues: Array<NormalizedLinearIssue | LaneLinearIssue>, options: { laneOnly?: boolean }) => {
-      setBatchIssues(issues.map((i) => ("raw" in i ? linearBrowserIssueToLaneIssue(i) : (i as LaneLinearIssue))));
-      setBatchLaunchStates(new Map());
-      setBatchLaneOnly(options.laneOnly === true);
-      setOpen(false);
+    (issues: Array<NormalizedLinearIssue | LaneLinearIssue>, options: { laneOnly?: boolean; fromPane?: boolean }) => {
+      const launchIssues = issues.map((issue) => buildLinearLaunchIssue(
+        "raw" in issue ? linearBrowserIssueToLaneIssue(issue) : issue,
+      ));
+      const request = requestIssueLaunch(launchIssues, {
+        laneOnly: options.laneOnly === true,
+        returnToLinearPane: options.fromPane !== false,
+        ...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {}),
+      });
+      if (!request) return;
+      launchRequestNonceRef.current = request.nonce;
       setBatchModalOpen(true);
+      setOpen(false);
     },
-    [],
+    [onOpenHarnessSettings],
   );
 
-  const launchBatch = useCallback(async (entries: BatchLaunchSubmit[]) => {
-    if (!entries.length) return;
-    batchAgentReadinessRef.current.beginBatch();
-    if (launchPromptClipboardEnabled) {
-      const lastLaunchEntry = [...entries].reverse().find(({ config }) => !config.laneOnly);
-      const lastPrompt = lastLaunchEntry
-        ? lastLaunchEntry.config.kickoffPrompt.trim()
-          || (lastLaunchEntry.config.sessionType === "cli" ? defaultKickoffIntro() : defaultKickoffPrompt())
-        : "";
-      void copyLaunchPromptToClipboard(lastPrompt);
-    }
-    // Record optimistic "creating lane" placeholders for issues that mint a NEW
-    // lane (existing-lane targets already have a lane), keyed by issue id. The
-    // Lanes tab renders these as spinner tabs immediately on reroute and clears
-    // each one as its real lane materializes (below + on lane match).
-    const creatingPlaceholders = entries
-      .filter(({ config }) => !config.existingLaneId)
-      .map(({ issue }) => ({ issueId: issue.id, name: linearIssueLaneName(issue) }));
-    if (creatingPlaceholders.length) {
-      rememberCreatingIssues({ issues: creatingPlaceholders });
-    }
-    // Seed per-issue status so the status toast (and Retry failed) has rows,
-    // and remember each issue's config for retries.
-    setBatchLaunchStates(() => {
-      const next = new Map<string, BatchLaunchItemState>();
-      for (const { issue, config } of entries) {
-        next.set(issue.id, { issue, status: "pending", laneId: null, sessionId: null, error: null });
-        batchConfigByIssueRef.current.set(issue.id, config);
-      }
-      return next;
+  // Launch asked for by the issue viewer (Work tools pane, issue sheet): it
+  // enters the shared modal and runner too.
+  useEffect(() => {
+    if (variant !== "icon") return;
+    const pending = takePendingLinearLaunchRequest();
+    if (pending) handleBatchLaunchOpen(pending.issues, { laneOnly: pending.laneOnly, fromPane: false });
+    return subscribeLinearLaunchRequests((request) => {
+      clearPendingLinearLaunchRequest();
+      handleBatchLaunchOpen(request.issues, { laneOnly: request.laneOnly, fromPane: false });
     });
-    const result = await runBatchLaunch(
-      entries,
-      {
-        createLane: (args) => window.ade.lanes.create(args),
-        // Single headless launch: creates the session and runs the kickoff turn
-        // server-side without a mounted chat pane. When the user picked a
-        // permission mode it is forwarded; otherwise the IPC defaults to an
-        // autonomous-runnable mode.
-        launch: async (args) => {
-          const session = await window.ade.agentChat.launch({
-            laneId: args.laneId,
-            provider: args.provider,
-            model: args.model,
-            modelId: args.modelId,
-            reasoningEffort: args.reasoningEffort,
-            ...(args.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
-            ...(args.permissionMode != null ? { permissionMode: args.permissionMode } : {}),
-            ...(args.interactionMode !== undefined ? { interactionMode: args.interactionMode } : {}),
-            ...(args.claudePermissionMode !== undefined ? { claudePermissionMode: args.claudePermissionMode } : {}),
-            ...(args.codexApprovalPolicy !== undefined ? { codexApprovalPolicy: args.codexApprovalPolicy } : {}),
-            ...(args.codexSandbox !== undefined ? { codexSandbox: args.codexSandbox } : {}),
-            ...(args.codexConfigSource !== undefined ? { codexConfigSource: args.codexConfigSource } : {}),
-            ...(args.opencodePermissionMode !== undefined ? { opencodePermissionMode: args.opencodePermissionMode } : {}),
-            ...(args.droidPermissionMode !== undefined ? { droidPermissionMode: args.droidPermissionMode } : {}),
-            ...(args.cursorModeId !== undefined ? { cursorModeId: args.cursorModeId } : {}),
-            ...(args.cursorConfigValues !== undefined ? { cursorConfigValues: args.cursorConfigValues } : {}),
-            kickoffText: args.kickoffText,
-            contextAttachments: args.contextAttachments,
-          });
-          if (activeProjectRoot) {
-            announceWorkChatSessionCreated(activeProjectRoot, session);
-          }
-          return session;
-        },
-        // CLI-agent variant: spawns a tracked terminal pty with the issue
-        // attached so the agent drives it via `ade linear`. Returns the pty
-        // session id, which runBatchLaunch records like a chat session id.
-        launchCli: (args) =>
-          window.ade.agentChat.launchCli({
-            laneId: args.laneId,
-            provider: args.provider,
-            model: args.model,
-            reasoningEffort: args.reasoningEffort,
-            ...(args.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
-            ...(args.permissionMode != null ? { permissionMode: args.permissionMode } : {}),
-            kickoffPrompt: args.kickoffPrompt,
-            linearIssues: args.linearIssues,
-          }),
-        deleteLane: (args) =>
-          window.ade.lanes.delete(args).then(() => undefined),
-      },
-      {
-        onItem: (issueId, patch) => {
-          // As soon as an issue reports its materialized lane id, drop its
-          // optimistic spinner placeholder — the real lane will render instead.
-          if (patch.laneId) clearCreatingIssue(issueId);
-          const earlyOutcome = patch.sessionId
-            ? batchAgentReadinessRef.current.registerSession(issueId, patch.sessionId)
-            : null;
-          setBatchLaunchStates((current) => {
-            const prev = current.get(issueId);
-            if (!prev) return current;
-            const next = new Map(current);
-            next.set(issueId, {
-              ...prev,
-              ...patch,
-              ...(patch.status === "initializing-agent" && earlyOutcome ? earlyOutcome : {}),
-            });
-            return next;
-          });
-        },
-      },
-    ).finally(() => batchAgentReadinessRef.current.finishRegistration());
-    // Clear any placeholders whose issues failed before a lane materialized so a
-    // failed launch never leaves a permanent spinner tab.
-    for (const issueId of result.failedIssueIds) clearCreatingIssue(issueId);
-    await refreshLanes({ includeStatus: false }).catch(() => undefined);
-    if (result.createdLaneIds.length || result.createdSessionIds.length) {
-      rememberLaunchedLanes({
-        laneIds: result.createdLaneIds,
-        sessionIds: result.createdSessionIds,
-      });
-    }
-  }, [activeProjectRoot, launchPromptClipboardEnabled, refreshLanes]);
-
-  const handleBatchLaunch = useCallback((entries: BatchLaunchSubmit[]) => {
-    // Close + reroute synchronously; the orchestrator runs detached so the
-    // Lanes tab opens immediately rather than this being a progress view.
-    setBatchModalOpen(false);
-    close();
-    window.location.hash = "#/lanes?drawer=stack";
-    void launchBatch(entries).catch((err) => {
-      console.error("[Linear] Batch launch failed:", err);
-    });
-  }, [close, launchBatch]);
-
-  // Cancelling the launch modal (vs. launching) must return the user to the
-  // Linear pane they came from — not strand them on whatever tab is behind it
-  // (handleBatchLaunchOpen hid the pane to show the modal). The launch path
-  // closes the modal via setBatchModalOpen(false) directly, so Radix only fires
-  // this on a genuine user dismiss (Esc/overlay/Cancel); reopen the pane there.
-  // The browser remounts with its persisted filters so the selection context is
-  // preserved.
-  const handleBatchModalOpenChange = useCallback((next: boolean) => {
-    setBatchModalOpen(next);
-    if (!next) setOpen(true);
-  }, []);
-
-  const handleRetryFailed = useCallback(() => {
-    const failed = [...batchLaunchStates.values()].filter((state) => state.status === "failed");
-    if (!failed.length) return;
-    const entries: BatchLaunchSubmit[] = failed.map((state) => ({
-      issue: state.issue,
-      config: batchConfigByIssueRef.current.get(state.issue.id) ?? {
-        modelId: "",
-        reasoningEffort: null,
-        fastMode: false,
-        kickoffPrompt: "",
-        branchOverride: "",
-      },
-    }));
-    void launchBatch(entries).catch((err) => {
-      console.error("[Linear] Batch retry failed:", err);
-    });
-  }, [batchLaunchStates, launchBatch]);
-
-  const handleDismissBatchStatus = useCallback(() => {
-    setBatchLaunchStates(new Map());
-  }, []);
-
-  const handleOpenBatchLane = useCallback((laneId: string) => {
-    selectLane(laneId);
-    window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&focus=single`;
-  }, [selectLane]);
+  }, [handleBatchLaunchOpen, variant]);
 
   // Pre-launch duplicate guard: passed to the browser so the multi-select dock
   // and single-issue rows can show a "Has lane"/"Has agent" badge and confirm a
@@ -516,110 +377,11 @@ export function LinearQuickViewButton({
     [lanes],
   );
 
-  // Live progress for the browser's dock indicator, derived from the per-issue
-  // launch states of the in-flight batch.
-  const batchProgress = useMemo<BatchProgress | null>(() => {
-    if (batchLaunchStates.size === 0) return null;
-    const states = [...batchLaunchStates.values()];
-    const completed = states.filter((s) => s.status === "done").length;
-    const failed = states.filter((s) => s.status === "failed" || s.status === "agent-error").length;
-    const running = states.some((s) => isBatchLaunchInFlight(s.status));
-    return { total: states.length, completed, failed, running };
-  }, [batchLaunchStates]);
-
-  // Raised from a Linear deeplink; it sits one layer above the quick view pane.
-  const connectionPromptModal = connectionPrompt ? (
-    <Dialog
-      open
-      onOpenChange={(next) => {
-        if (!next) setConnectionPrompt(null);
-      }}
-      title="Linear deeplink unavailable"
-      hideHeader
-      layer="nestedDialog"
-      width={440}
-      bodyPadding={false}
-      // As before, nothing is focused for the user; the panel holds focus.
-      preventAutoFocus
-      panelStyle={{
-        background: "var(--ade-shell-surface, #121019)",
-        borderRadius: 12,
-        borderColor: "rgba(255, 255, 255, 0.12)",
-      }}
-    >
-      <div className="flex items-start gap-3 border-b border-white/10 px-4 py-3">
-        <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-yellow-500/12 text-yellow-200">
-          <Warning size={15} weight="fill" />
-        </span>
-        <div className="min-w-0">
-          <div className="text-[13px] font-semibold">
-            {project?.rootPath
-              ? `Connect Linear to open ${connectionPrompt.issueIdentifier}`
-              : `Open the ADE project for ${connectionPrompt.issueIdentifier}`}
-          </div>
-          <div className="mt-1 text-[12px] leading-5 text-muted-fg/75">
-            {project?.rootPath
-              ? "This link opens the Linear pane in ADE, but this project is not connected to Linear yet."
-              : "This link needs the ADE project that owns the issue open before ADE can check Linear."}
-          </div>
-        </div>
-      </div>
-      <div className="grid gap-2 px-4 py-3 text-[12px]">
-        <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-3">
-          <span className="text-muted-fg/50">Issue</span>
-          <span className="min-w-0 truncate font-mono text-muted-fg/80">{connectionPrompt.issueIdentifier}</span>
-        </div>
-        {connectionPrompt.branch ? (
-          <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-3">
-            <span className="text-muted-fg/50">Branch</span>
-            <span className="min-w-0 break-all font-mono text-muted-fg/80">{connectionPrompt.branch}</span>
-          </div>
-        ) : null}
-      </div>
-      <div className="flex justify-end gap-2 border-t border-white/10 px-4 py-3">
-        <button
-          type="button"
-          className="ade-shell-control inline-flex h-8 items-center rounded-md px-3 text-[12px]"
-          data-variant="ghost"
-          onClick={() => setConnectionPrompt(null)}
-        >
-          Dismiss
-        </button>
-        {project?.rootPath ? (
-          <button
-            type="button"
-            className="ade-shell-control inline-flex h-8 items-center rounded-md px-3 text-[12px]"
-            data-variant="primary"
-            onClick={openLinearSettings}
-          >
-            Open Linear settings
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="ade-shell-control inline-flex h-8 items-center rounded-md px-3 text-[12px]"
-            data-variant="primary"
-            onClick={() => {
-              setConnectionPrompt(null);
-              setShowWelcome(true);
-              window.location.hash = "#/work";
-            }}
-          >
-            Open project picker
-          </button>
-        )}
-      </div>
-    </Dialog>
-  ) : null;
-
-  if (!visible) return <>{connectionPromptModal}</>;
-
   const handleToggle = () => {
     if (open) {
       close();
       return;
     }
-    setQuickViewRequest(null);
     openQuickView();
     onMenuActivate?.();
   };
@@ -666,116 +428,39 @@ export function LinearQuickViewButton({
 
   return (
     <>
-      {trigger}
-      {connectionPromptModal}
+      {showTrigger && visible && topBarPreferences.linear ? trigger : null}
 
-      <Dialog
+      <LinearPaneModal
         open={open}
-        onOpenChange={(next) => {
-          if (!next) close();
-        }}
-        title="Linear quick view"
-        hideHeader
-        width={1760}
-        height="min(940px, calc(100dvh - 28px))"
-        maxHeight="calc(100dvh - 28px)"
-        bodyPadding={false}
-        scrollBody={false}
-        bodyStyle={{ display: "flex", flexDirection: "column" }}
-        // Nothing in the pane grabs focus on open; the panel holds it.
-        preventAutoFocus
-        panelStyle={{
-          background: "var(--ade-shell-surface, #121019)",
-          borderRadius: 12,
-          borderColor: "rgba(123, 138, 240, 0.55)",
-          boxShadow: "0 24px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(123, 138, 240, 0.18)",
-        }}
+        ariaLabel="Linear quick view"
+        quickView={quickView}
+        loading={browserLoading}
+        onRefresh={() => setRefreshKey((key) => key + 1)}
+        onNew={() => requestIssueCreate({ provider: "linear", origin: "pane" })}
+        newTitle="New Linear issue"
+        onClose={close}
       >
-        <div
-          className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-3 py-2"
-          style={{ background: LINEAR_BRAND.surface }}
-        >
-          <div className="flex min-w-0 items-center gap-2">
-            <span
-              className="grid h-6 w-6 shrink-0 place-items-center rounded-md"
-              style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
-            >
-              <LinearMark size={14} />
-            </span>
-            <div className="min-w-0 truncate text-[12px] text-fg/90">
-              <span className="font-medium">{quickView?.organization?.name ?? "Linear"}</span>
-              <span className="text-muted-fg/45"> · </span>
-              <span className="text-muted-fg/65">
-                {quickView?.viewer?.displayName ?? quickView?.connection.viewerName ?? "Connected"}
-                {quickView?.organization?.urlKey ? ` · ${quickView.organization.urlKey}` : ""}
-              </span>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              className="ade-shell-control inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px]"
-              data-variant="ghost"
-              onClick={() => setRefreshKey((key) => key + 1)}
-              disabled={browserLoading}
-              title="Refresh Linear"
-            >
-              {browserLoading ? <CircleNotch size={11} className="animate-spin" /> : null}
-              Refresh
-            </button>
-            <button
-              type="button"
-              className="ade-shell-control inline-flex h-6 w-6 items-center justify-center rounded-md"
-              data-variant="ghost"
-              onClick={close}
-              title="Close Linear"
-            >
-              <X size={12} />
-            </button>
-          </div>
-        </div>
+        <LinearIssueBrowser
+          projectRoot={project?.rootPath}
+          actionLabel="Create lane"
+          actionBusyLabel="Creating lane"
+          refreshKey={refreshKey}
+          onIssueAction={async () => undefined}
+          onConnectionVisibilityChange={setVisible}
+          onOpenLinearSettings={openLinearSettings}
+          onQuickViewChange={(data) => {
+            cachedQuickViewRef.current = data;
+            setQuickView(data);
+          }}
+          onLoadingChange={setBrowserLoading}
+          batchActions={{
+            onBatchLaunch: handleBatchLaunchOpen,
+            conflicts,
+            batchProgress,
+          }}
+        />
+      </LinearPaneModal>
 
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <LinearIssueBrowser
-            projectRoot={project?.rootPath}
-            actionLabel="Create lane"
-            actionBusyLabel="Creating lane"
-            refreshKey={refreshKey}
-            onIssueAction={async () => undefined}
-            onConnectionVisibilityChange={setVisible}
-            onOpenLinearSettings={openLinearSettings}
-            requestedIssueIdentifier={quickViewRequest?.issueIdentifier ?? null}
-            requestedIssueRequestKey={quickViewRequest?.requestedAt ?? null}
-            onQuickViewChange={(data) => {
-              cachedQuickViewRef.current = data;
-              setQuickView(data);
-            }}
-            onLoadingChange={setBrowserLoading}
-            batchActions={{
-              onBatchLaunch: handleBatchLaunchOpen,
-              conflicts,
-              batchProgress,
-            }}
-          />
-        </div>
-      </Dialog>
-
-      <BatchLaunchModal
-        onOpenHarnessSettings={onOpenHarnessSettings}
-        open={batchModalOpen}
-        projectRoot={project?.rootPath}
-        issues={batchIssues}
-        lanes={lanes}
-        laneOnly={batchLaneOnly}
-        onOpenChange={handleBatchModalOpenChange}
-        onLaunch={handleBatchLaunch}
-      />
-      <BatchLaunchStatusToast
-        states={batchLaunchStates}
-        onRetryFailed={handleRetryFailed}
-        onDismiss={handleDismissBatchStatus}
-        onOpenLane={handleOpenBatchLane}
-      />
     </>
   );
 }

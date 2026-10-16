@@ -10,7 +10,10 @@ import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   legacyAttachmentCapMessage,
 } from "../../../../desktop/src/shared/chatAttachmentLimits";
-import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
+import {
+  createSyncRemoteCommandService,
+  SyncRemoteCommandResultTooLargeError,
+} from "./syncRemoteCommandService";
 import {
   ATTACHMENT_UPLOAD_PATH,
   createAttachmentUploadRegistry,
@@ -29,6 +32,7 @@ function createService(options?: {
   agentChatService?: Record<string, unknown>;
   chatLaunchService?: Record<string, unknown>;
   aiIntegrationService?: Record<string, unknown>;
+  ctoStateService?: Record<string, unknown>;
   cursorCloudFleetService?: Record<string, unknown>;
   conflictService?: Record<string, unknown>;
   diffService?: Record<string, unknown>;
@@ -57,6 +61,7 @@ function createService(options?: {
   getLinearIssueTracker?: () => Record<string, unknown> | null;
   usageTrackingService?: Record<string, unknown>;
   productAnalyticsService?: Record<string, unknown>;
+  accountSettingsStore?: Record<string, unknown>;
   getProxyService?: () => { status: ReturnType<typeof vi.fn> } | null;
   pushPublisherService?: Record<string, unknown>;
   attachmentUploads?: AttachmentUploadRegistry | null;
@@ -64,6 +69,7 @@ function createService(options?: {
     call: ReturnType<typeof vi.fn>;
     streamEvents?: ReturnType<typeof vi.fn>;
   };
+  remoteCommandResultMaxBytes?: number;
 }) {
   const ptyService = {
     resumeSession: vi.fn().mockResolvedValue({
@@ -106,6 +112,7 @@ function createService(options?: {
     ...(options?.agentChatService ? { agentChatService: options.agentChatService } : {}),
     ...(options?.chatLaunchService ? { chatLaunchService: options.chatLaunchService } : {}),
     ...(options?.aiIntegrationService ? { aiIntegrationService: options.aiIntegrationService } : {}),
+    ...(options?.ctoStateService ? { ctoStateService: options.ctoStateService } : {}),
     ...(options?.cursorCloudFleetService ? { cursorCloudFleetService: options.cursorCloudFleetService } : {}),
     ...(options?.externalSessionsService ? { externalSessionsService: options.externalSessionsService } : {}),
     ...(options?.syncPinStore ? { syncPinStore: options.syncPinStore } : {}),
@@ -121,10 +128,14 @@ function createService(options?: {
     ...(options?.getLinearIssueTracker ? { getLinearIssueTracker: options.getLinearIssueTracker } : {}),
     ...(options?.usageTrackingService ? { usageTrackingService: options.usageTrackingService } : {}),
     ...(options?.productAnalyticsService ? { productAnalyticsService: options.productAnalyticsService } : {}),
+    ...(options?.accountSettingsStore ? { accountSettingsStore: options.accountSettingsStore } : {}),
     ...(options?.getProxyService ? { getProxyService: options.getProxyService } : {}),
     ...(options?.pushPublisherService ? { pushPublisherService: options.pushPublisherService } : {}),
     ...(options?.personalChatScope ? { personalChatScope: options.personalChatScope } : {}),
     ...(options?.attachmentUploads ? { attachmentUploads: options.attachmentUploads } : {}),
+    ...(options?.remoteCommandResultMaxBytes != null
+      ? { remoteCommandResultMaxBytes: options.remoteCommandResultMaxBytes }
+      : {}),
     logger,
   } as any);
   return { service, ptyService, sessionService, externalSessionsService: options?.externalSessionsService, logger };
@@ -147,6 +158,51 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
+  it("restricts credential-backed CLI launches to paired controllers", () => {
+    const { service } = createService();
+
+    expect(service.getDescriptor("work.startCliSession")?.policy).toEqual({
+      viewerAllowed: false,
+      controllerAllowed: true,
+      queueable: true,
+    });
+  });
+
+  it("reads only valid CTO home records from the repository account scope", async () => {
+    const accountSettingsStore = {
+      get: vi.fn().mockReturnValue({ version: 2, deviceId: "device-1", name: "Old shape" }),
+    };
+    const { service } = createService({ accountSettingsStore });
+
+    await expect(service.execute(makePayload("cto.getHomeMachine", {
+      gitOriginUrl: "git@github.com:Owner/Repo.git",
+    }))).resolves.toEqual({ available: true, value: null });
+    expect(accountSettingsStore.get).toHaveBeenCalledWith("repo:github.com/owner/repo", "cto.homeMachine");
+    await expect(service.execute(makePayload("cto.getHomeMachine", { gitOriginUrl: null })))
+      .resolves.toEqual({ available: false, value: null });
+    expect(accountSettingsStore.get).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes the shared CTO home record under the normalized repository scope", async () => {
+    const accountSettingsStore = { set: vi.fn() };
+    const { service } = createService({ accountSettingsStore });
+
+    const result = await service.execute(makePayload("cto.setHomeMachine", {
+      gitOriginUrl: "https://github.com/Owner/Repo.git",
+      record: { deviceId: "device-2", name: "Build Mac", hostname: "build.local" },
+    })) as { ok: boolean; value: { version: number; deviceId: string; name: string; hostname: string | null; chosenAt: string } };
+
+    expect(result.ok).toBe(true);
+    expect(result.value).toMatchObject({ version: 1, deviceId: "device-2", name: "Build Mac", hostname: "build.local" });
+    expect(result.value.chosenAt).not.toBe("");
+    expect(accountSettingsStore.set).toHaveBeenCalledWith("repo:github.com/owner/repo", "cto.homeMachine", result.value);
+    await expect(service.execute(makePayload("cto.setHomeMachine", {
+      gitOriginUrl: "https://github.com/Owner/Repo.git",
+      record: { deviceId: "device-2", name: "  " },
+    }))).rejects.toThrow(/record\.deviceId and record\.name/);
+    expect(accountSettingsStore.set).toHaveBeenCalledTimes(1);
+  });
+
   it("validates a phone's chat.startLaunch with the chat.create / chat.send parsers and hands it to the launch service", async () => {
     const start = vi.fn(async (args: unknown) => ({ launchId: (args as { launchId: string }).launchId, phase: "running" }));
     const { service } = createService({
@@ -177,6 +233,46 @@ describe("createSyncRemoteCommandService", () => {
     await expect(service.execute(makePayload("chat.startLaunch", { kind: "chat", launchId, prompt: "x" })))
       .rejects.toThrow(/chat.create and chat.message/);
     await expect(service.execute(makePayload("chat.listLaunches"))).resolves.toEqual([]);
+  });
+
+  it("strips a client-sent runtimeActor from chat.create and chat.startLaunch before the chat service sees it", async () => {
+    const createSession = vi.fn(async (_args: Record<string, unknown>) => ({ id: "chat-1", laneId: "lane-1", provider: "codex", model: "openai/gpt-5.5" }));
+    const getSessionSummary = vi.fn().mockResolvedValue({ sessionId: "chat-1", laneId: "lane-1" });
+    const start = vi.fn(async (args: unknown) => ({ launchId: (args as { launchId: string }).launchId, phase: "running" }));
+    const { service } = createService({
+      agentChatService: { createSession, getSessionSummary, getAvailableModels: vi.fn().mockResolvedValue([]) },
+      chatLaunchService: { start, list: vi.fn(() => []) },
+    });
+
+    await service.execute(makePayload("chat.create", {
+      laneId: "lane-1",
+      provider: "codex",
+      model: "openai/gpt-5.5",
+      runtimeActor: { kind: "cto" },
+    }));
+    expect(createSession).toHaveBeenCalledTimes(1);
+    const created = createSession.mock.calls[0]![0] as Record<string, unknown>;
+    expect(created).toMatchObject({ laneId: "lane-1", provider: "codex", model: "openai/gpt-5.5" });
+    expect(created).not.toHaveProperty("runtimeActor");
+
+    await service.execute(makePayload("chat.startLaunch", {
+      kind: "chat",
+      mode: "foreground",
+      launchId: "6f1c2a4e-1b2c-4d5e-8f90-123456789abc",
+      laneId: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+      laneName: "fix-flaky-test",
+      prompt: "fix the flaky test",
+      runtimeActor: { kind: "cto" },
+      chat: {
+        create: { provider: "codex", model: "openai/gpt-5.5", runtimeActor: { kind: "cto" } },
+        message: { text: "fix the flaky test" },
+      },
+    }));
+    expect(start).toHaveBeenCalledTimes(1);
+    const launch = start.mock.calls[0]![0] as Record<string, any>;
+    expect(launch).not.toHaveProperty("runtimeActor");
+    expect(launch.chat.create).toMatchObject({ provider: "codex", model: "openai/gpt-5.5" });
+    expect(launch.chat.create).not.toHaveProperty("runtimeActor");
   });
 
   it("rejects an oversized Cursor Cloud artifact before returning it to a peer", async () => {
@@ -1401,10 +1497,12 @@ describe("createSyncRemoteCommandService", () => {
       text: "Redirect the active turn.",
       dispatchMode: "interrupt",
     }))).resolves.toEqual({ ok: true, steerId: "steer-1", queued: false });
+    // A paired controller sends what its user typed.
     expect(steerUserMessage).toHaveBeenCalledWith({
       sessionId: "chat-1",
       text: "Redirect the active turn.",
       dispatchMode: "interrupt",
+      sentByUser: true,
     });
 
     await expect(service.execute(makePayload("chat.cancelSteer", {
@@ -1762,6 +1860,30 @@ describe("createSyncRemoteCommandService", () => {
     });
   });
 
+  it("returns spawn lineage on finished chat rows, but no running-only runtime fields", async () => {
+    const finishedChat = (id: string) => ({ id, laneId: "lane-1", status: "completed", runtimeState: "idle", toolType: "codex-chat" });
+    const { service } = createService({
+      sessionService: { list: vi.fn().mockReturnValue([finishedChat("helper"), finishedChat("subagent")]) },
+      agentChatService: {
+        listSessions: vi.fn().mockResolvedValue([
+          { sessionId: "helper", laneId: "lane-1", launchedBySessionId: "launcher-1", currentTurnStartedAt: "2026-07-31T12:00:00.000Z" },
+          { sessionId: "subagent", laneId: "lane-1", orchestrationParentSessionId: "parent-1", spawnKind: "subagent", currentTurnStartedAt: "2026-07-31T12:00:00.000Z" },
+        ]),
+      },
+    });
+
+    const rows = await service.execute(makePayload("work.listSessions", {})) as Array<Record<string, unknown>>;
+    const byId = new Map(rows.map((row) => [row.id, row] as const));
+
+    expect(byId.get("helper")).toMatchObject({ launchedBySessionId: "launcher-1" });
+    expect(byId.get("helper")).not.toHaveProperty("orchestrationParentSessionId");
+    expect(byId.get("subagent")).toMatchObject({ orchestrationParentSessionId: "parent-1", spawnKind: "subagent" });
+    expect(byId.get("subagent")).not.toHaveProperty("launchedBySessionId");
+    // The chat's turn clock is a running-row projection; a finished row keeps its own shape.
+    expect(byId.get("helper")).not.toHaveProperty("currentTurnStartedAt");
+    expect(byId.get("subagent")).not.toHaveProperty("currentTurnStartedAt");
+  });
+
   it("routes work.getSession through session enrichment and chat state projection", async () => {
     const session = { id: "session-1", status: "running", toolType: "codex-chat", ptyId: "pty-1" };
     const enrichedSession = { ...session, runtimeState: "running" };
@@ -2095,7 +2217,7 @@ describe("createSyncRemoteCommandService", () => {
     };
     const { service } = createService({ db });
 
-    await expect(service.execute(makePayload("chat.createPromptStash", {
+    await expect(service.execute(makePayload("chat.createDraft", {
       text: created.text,
       attachments: created.attachments,
       provider: created.provider,
@@ -2106,10 +2228,32 @@ describe("createSyncRemoteCommandService", () => {
       provider: created.provider,
       modelId: created.modelId,
     });
-    await expect(service.execute(makePayload("chat.listPromptStashes"))).resolves.toEqual([
+    await expect(service.execute(makePayload("chat.listDrafts"))).resolves.toEqual([
       expect.objectContaining({ id: "stash-1", text: created.text, attachmentsAvailable: true }),
     ]);
-    await expect(service.execute(makePayload("chat.deletePromptStash", { id: "stash-1" }))).resolves.toBe(true);
+    await expect(service.execute(makePayload("chat.deleteDraft", { id: "stash-1" }))).resolves.toBe(true);
+  });
+
+  // An update from another machine or the phone must keep Fast's tier: the
+  // parser copies known fields only, so a dropped field is a silent no-op.
+  it.each([
+    { sent: "ultrafast", received: "ultrafast" },
+    { sent: null, received: null },
+    { sent: "turbo", received: undefined },
+  ])("carries fastTier $sent on chat.updateSession as $received", async ({ sent, received }) => {
+    const updateSession = vi.fn().mockResolvedValue({ id: "session-1" });
+    const { service } = createService({ agentChatService: { updateSession } });
+
+    await service.execute(makePayload("chat.updateSession", {
+      sessionId: "session-1",
+      fastMode: true,
+      fastTier: sent,
+    }));
+
+    expect(updateSession).toHaveBeenCalledTimes(1);
+    const args = updateSession.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(args.fastMode).toBe(true);
+    expect(args.fastTier).toBe(received);
   });
 
   it("routes chat.handoff with a trimmed handoff note", async () => {
@@ -2234,6 +2378,7 @@ describe("createSyncRemoteCommandService", () => {
       continuationPrompt: capsule.continuationPrompt,
       reasoningEffort: " high ",
       fastMode: true,
+      fastTier: "ultrafast",
       untrustedExtraField: "must-not-pass-through",
     }))).resolves.toMatchObject({ capsuleFingerprint: "fingerprint-1" });
     expect(prepareCrossMachineHandoff).toHaveBeenCalledWith({
@@ -2243,6 +2388,7 @@ describe("createSyncRemoteCommandService", () => {
       continuationPrompt: capsule.continuationPrompt,
       reasoningEffort: "high",
       fastMode: true,
+      fastTier: "ultrafast",
     });
     await expect(service.execute(makePayload("chat.prepareCrossMachineHandoff", {
       sourceSessionId: "session-1",
@@ -2488,6 +2634,21 @@ describe("createSyncRemoteCommandService", () => {
     await expect(service.execute(makePayload("lanes.listGitHubIssuesForLaneSessions", {
       laneId: "lane-1",
     }))).resolves.toEqual([{ issue }]);
+  });
+});
+
+describe("mobile CTO identity updates", () => {
+  it("drops the desktop-only cross-machine access switch and preserves other identity fields", async () => {
+    const updateIdentity = vi.fn(async (patch: Record<string, unknown>) => patch);
+    const { service } = createService({ ctoStateService: { updateIdentity } });
+
+    const result = await service.execute(makePayload("cto.updateIdentity", {
+      patch: { name: "Operator", crossMachineEnabled: false },
+    }));
+
+    expect(updateIdentity).toHaveBeenCalledWith({ name: "Operator" });
+    expect(result).toEqual({ name: "Operator" });
+    expect(updateIdentity.mock.calls[0]?.[0]).not.toHaveProperty("crossMachineEnabled");
   });
 });
 
@@ -3226,17 +3387,10 @@ describe("web-reachable settings and lane-risk commands", () => {
     // viewers ("not available to paired controller devices" in syncHostService),
     // so registering these that way left AI settings silently unsaveable from
     // the web client — the bug this command exists to fix.
-    const save = vi.fn();
+    const updateAiConfig = vi.fn();
     const refreshScheduledWork = vi.fn();
     const { service } = createService({
-      projectConfigService: {
-        // `defaultModel` used to stand in here. It is gone: nothing ever read
-        // it, so the Settings control that wrote it was deleted and the key
-        // with it. Any surviving `ai` key proves the same thing this test is
-        // about — that a paired device's write reaches `save`.
-        get: vi.fn().mockReturnValue({ shared: { ai: { defaultProvider: "claude" } }, local: {} }),
-        save,
-      },
+      projectConfigService: { updateAiConfig },
       agentChatService: { refreshScheduledWork },
     });
 
@@ -3245,10 +3399,10 @@ describe("web-reachable settings and lane-risk commands", () => {
 
     await service.execute(makePayload("ai.updateConfig", { defaultProvider: "codex" }));
 
-    expect(save).toHaveBeenCalledTimes(1);
-    expect(save.mock.calls[0]![0].shared.ai).toEqual(
-      expect.objectContaining({ defaultProvider: "codex" }),
-    );
+    // The write goes through the AI-config writer (local layer), never a
+    // whole-snapshot save that would put `ai` back into the dropped shared layer.
+    expect(updateAiConfig).toHaveBeenCalledTimes(1);
+    expect(updateAiConfig).toHaveBeenCalledWith(expect.objectContaining({ defaultProvider: "codex" }));
     // The desktop IPC handler does this too; omitting it leaves scheduled runs
     // on the previous AI configuration.
     expect(refreshScheduledWork).toHaveBeenCalledTimes(1);
@@ -3424,6 +3578,55 @@ describe("web-reachable settings and lane-risk commands", () => {
     }
   });
 
+  it("lets a remote client manage the host's provider accounts, with changes reserved for a controller", async () => {
+    const previous = { ADE_HOME: process.env.ADE_HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-provider-accounts-"));
+    process.env.ADE_HOME = path.join(tempRoot, ".ade");
+    process.env.CLAUDE_CONFIG_DIR = path.join(tempRoot, ".claude");
+    resetSharedProviderInstanceStoresForTests();
+
+    try {
+      const { service } = createService();
+      const descriptor = (action: string) => service.getDescriptors().find((entry) => entry.action === action);
+      // Reads open to any paired viewer; changes and a running sign-in's
+      // status (its link and device code) only to a controller. All are
+      // machine-wide, so none needs a project.
+      for (const action of ["providerAccounts.list", "providerAccounts.getSettings"]) {
+        expect(descriptor(action)).toMatchObject({ scope: "runtime", policy: { viewerAllowed: true } });
+      }
+      for (const action of ["providerAccounts.setDefault", "providerAccounts.loginStart", "providerAccounts.loginStatus"]) {
+        expect(descriptor(action)).toMatchObject({
+          scope: "runtime",
+          policy: { viewerAllowed: false, controllerAllowed: true },
+        });
+      }
+      expect(descriptor("providerAccounts.setAccent")).toBeUndefined();
+
+      const run = (action: string, args: Record<string, unknown>) =>
+        service.execute(makePayload(`providerAccounts.${action}`, args)) as Promise<any>;
+      const created = await run("create", { provider: "claude", label: "Work" });
+      await run("setDefault", { id: created.instance.id });
+      await run("setSettings", { provider: "claude", settings: { smartBalance: true } });
+
+      const listed = await run("list", { provider: "claude" });
+      expect(listed.instances.find((instance: any) => instance.isDefault)?.label).toBe("Work");
+      await expect(run("getSettings", { provider: "claude" })).resolves.toMatchObject({ settings: { smartBalance: true } });
+
+      // The default cannot be removed; the base login takes the default back first.
+      await run("setDefault", { id: "claude" });
+      await expect(run("remove", { id: created.instance.id })).resolves.toMatchObject({ removed: true });
+      expect((await run("list", { provider: "claude" })).instances.map((instance: any) => instance.id)).toEqual(["claude"]);
+      await expect(run("loginStatus", { loginId: "no-such-login" })).rejects.toThrow();
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      resetSharedProviderInstanceStoresForTests();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("routes Cursor Cloud fleet reads and actions to the fleet service", async () => {
     const getFleet = vi.fn().mockResolvedValue({ items: [], relayState: "ready", lastEventAt: null, fetchedAt: "t" });
     const resolveLaneForAgent = vi.fn().mockResolvedValue({ laneId: "lane-1", laneName: "L", created: false });
@@ -3450,5 +3653,115 @@ describe("web-reachable settings and lane-risk commands", () => {
 
     await service.execute(makePayload("ai.cursorCloudStopRun", { agentId: "bc-3" }));
     expect(stopAgentRun).toHaveBeenCalledWith("bc-3");
+  });
+});
+
+describe("remote command reply bounds", () => {
+  function pr(id: string, state: string, laneId: string) {
+    return { id, state, laneId };
+  }
+  function snapshot(prId: string, filler = 0) {
+    return { prId, detail: null, status: null, checks: [], reviews: [], comments: [], files: [{ patch: "x".repeat(filler) }], commits: [], updatedAt: null };
+  }
+
+  it("fails any command whose result is over the size limit with result_too_large", async () => {
+    const { service, logger } = createService({
+      remoteCommandResultMaxBytes: 1024,
+      prService: { listAll: vi.fn().mockResolvedValue([{ id: "pr-1", title: "x".repeat(4096) }]) },
+    });
+
+    const failure = await service.execute(makePayload("prs.list")).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(SyncRemoteCommandResultTooLargeError);
+    const details = (failure as SyncRemoteCommandResultTooLargeError).details;
+    expect(details).toMatchObject({ code: "result_too_large", limitBytes: 1024 });
+    expect(details.bytes).toBeGreaterThan(4096);
+    expect(details.message).toContain("prs.list");
+    expect(logger.warn).toHaveBeenCalledWith("sync.remote_command.result_too_large", expect.objectContaining({ action: "prs.list" }));
+  });
+
+  it("prs.refresh without ids returns every PR but only snapshots for open PRs and live lanes", async () => {
+    const listSnapshots = vi.fn((args: { prId?: string; prIds?: string[] } = {}) =>
+      (args.prIds ?? ["open-1", "merged-live", "merged-archived"]).map((id) => snapshot(id)));
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    const { service } = createService({
+      laneService: { list: vi.fn().mockResolvedValue([{ id: "lane-live" }]) },
+      prService: {
+        refresh,
+        listAll: vi.fn().mockResolvedValue([
+          pr("open-1", "open", "lane-gone"),
+          pr("merged-live", "merged", "lane-live"),
+          pr("merged-archived", "merged", "lane-archived"),
+        ]),
+        listSnapshots,
+      },
+    });
+
+    const result = await service.execute(makePayload("prs.refresh")) as {
+      prs: Array<{ id: string }>;
+      snapshots: Array<{ prId: string }>;
+      snapshotScope: string;
+      omittedSnapshotPrIds: string[];
+    };
+
+    expect(refresh).toHaveBeenCalledWith({});
+    expect(result.prs.map((entry) => entry.id)).toEqual(["open-1", "merged-live", "merged-archived"]);
+    expect(listSnapshots).toHaveBeenCalledWith({ prIds: ["open-1", "merged-live"] });
+    expect(result.snapshots.map((entry) => entry.prId).sort()).toEqual(["merged-live", "open-1"]);
+    expect(result.snapshotScope).toBe("active");
+    expect(result.omittedSnapshotPrIds).toEqual([]);
+
+    const none = await service.execute(makePayload("prs.refresh", { includeSnapshots: "none" })) as { snapshots: unknown[] };
+    expect(none.snapshots).toEqual([]);
+
+    const all = await service.execute(makePayload("prs.refresh", { includeSnapshots: "all" })) as { snapshots: unknown[] };
+    expect(all.snapshots).toHaveLength(3);
+  });
+
+  it("prs.refresh caps snapshot bytes and lists the PRs it left out, keeping open PRs first", async () => {
+    const big = 4 * 1024 * 1024;
+    const { service } = createService({
+      laneService: { list: vi.fn().mockResolvedValue([{ id: "lane-a" }]) },
+      prService: {
+        refresh: vi.fn().mockResolvedValue(undefined),
+        listAll: vi.fn().mockResolvedValue([
+          pr("merged-1", "merged", "lane-a"),
+          pr("merged-2", "merged", "lane-a"),
+          pr("open-1", "open", "lane-a"),
+        ]),
+        listSnapshots: vi.fn(() => [snapshot("merged-1", big), snapshot("merged-2", big), snapshot("open-1", big)]),
+      },
+    });
+
+    const result = await service.execute(makePayload("prs.refresh", { includeSnapshots: "all" })) as {
+      snapshots: Array<{ prId: string }>;
+      omittedSnapshotPrIds: string[];
+    };
+
+    expect(result.snapshots.map((entry) => entry.prId)).toEqual(["open-1"]);
+    expect(result.omittedSnapshotPrIds).toEqual(["merged-1", "merged-2"]);
+  });
+
+  it("prs.refresh with a prId returns just that PR's snapshot", async () => {
+    const listSnapshots = vi.fn(() => [snapshot("merged-1")]);
+    const { service } = createService({
+      laneService: { list: vi.fn().mockResolvedValue([]) },
+      prService: {
+        refresh: vi.fn().mockResolvedValue(undefined),
+        listAll: vi.fn().mockResolvedValue([pr("merged-1", "merged", "lane-x"), pr("open-1", "open", "lane-y")]),
+        listSnapshots,
+      },
+    });
+
+    const result = await service.execute(makePayload("prs.refresh", { prId: "merged-1" })) as {
+      refreshedCount: number;
+      prs: Array<{ id: string }>;
+      snapshots: Array<{ prId: string }>;
+    };
+
+    expect(listSnapshots).toHaveBeenCalledWith({ prId: "merged-1" });
+    expect(result.refreshedCount).toBe(1);
+    expect(result.prs.map((entry) => entry.id)).toEqual(["merged-1"]);
+    expect(result.snapshots.map((entry) => entry.prId)).toEqual(["merged-1"]);
   });
 });

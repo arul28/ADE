@@ -6,99 +6,22 @@ import {
   isAllowedAdeAction,
   isAutomationAllowedAdeAction,
   isUserOnlyAdeAction,
-  callerHasRoleAtLeast,
   isCtoOnlyAdeAction,
   listAllowedAdeActionNames,
+  isSecretBearingAdeAction,
 } from "./actionPolicy";
 import type { AdeActionDomain } from "./domains";
+import { ADE_ACTION_ACCESS, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 
 /**
  * The gate, tested over the tables alone.
  *
  * Deliberately loads nothing but `actionPolicy` and its pure siblings — the
- * domain names, the input contracts and the voice action list, none of which
- * import anything at all. A question about who may call what is answered by two
+ * domain names and the input contracts, none of which import anything at all. A question about who may call what is answered by two
  * tables and four predicates, and a test that has to stand up the registry's
  * whole service graph to ask it would be measuring the wiring instead of the
  * policy.
  */
-
-describe("machine-scoped API keys on the ai domain", () => {
-  it("is reachable on the bus, because the runtime owns the store the UI writes", () => {
-    expect(isAllowedAdeAction("ai", "getMachineApiKeyStatus")).toBe(true);
-    expect(isAllowedAdeAction("ai", "storeMachineApiKey")).toBe(true);
-    expect(isAllowedAdeAction("ai", "deleteMachineApiKey")).toBe(true);
-  });
-
-  it("gates the writes like the project-scoped pair, and leaves the status read open", () => {
-    // Writing or destroying a provider credential is operator work; asking
-    // whether one is configured is not, and never returns the key.
-    expect(isCtoOnlyAdeAction("ai", "storeMachineApiKey")).toBe(true);
-    expect(isCtoOnlyAdeAction("ai", "deleteMachineApiKey")).toBe(true);
-    expect(isCtoOnlyAdeAction("ai", "getMachineApiKeyStatus")).toBe(false);
-    // The project-scoped pair it mirrors.
-    expect(isCtoOnlyAdeAction("ai", "storeApiKey")).toBe(true);
-    expect(isCtoOnlyAdeAction("ai", "deleteApiKey")).toBe(true);
-  });
-
-  it("documents the input shape of each", () => {
-    for (const action of ["getMachineApiKeyStatus", "storeMachineApiKey", "deleteMachineApiKey"]) {
-      const contract = getAdeActionInputContract("ai", action);
-      expect(contract, `ai.${action} needs an input contract`).toBeDefined();
-      expect(contract?.input?.length ?? 0).toBeGreaterThan(0);
-    }
-  });
-});
-
-describe("the cto_voice gate", () => {
-  const VOICE_ACTIONS = [
-    "getState",
-    "hasKey",
-    "start",
-    "end",
-    "setMuted",
-    "pushAudio",
-    "pullAudio",
-    "resolveApproval",
-    "sendCapture",
-  ] as const;
-
-  it("puts the whole call surface on the bus, so desktop main can route to it", () => {
-    for (const action of VOICE_ACTIONS) {
-      expect(isAllowedAdeAction("cto_voice", action), action).toBe(true);
-    }
-  });
-
-  it("is fail-closed: every voice action needs cto role, with no exceptions", () => {
-    for (const action of VOICE_ACTIONS) {
-      expect(isCtoOnlyAdeAction("cto_voice", action), action).toBe(true);
-    }
-    // The polarity matters more than the list: an action added later must be
-    // CTO-only by omission rather than by someone remembering this file.
-    expect(isCtoOnlyAdeAction("cto_voice", "somethingAddedLater")).toBe(true);
-    expect(ADE_ACTION_CTO_ONLY.cto_voice).toEqual({ allExcept: [] });
-  });
-
-  it("denies an agent-role caller every voice action", () => {
-    for (const action of VOICE_ACTIONS) {
-      const gated = isCtoOnlyAdeAction("cto_voice", action);
-      expect(gated && !callerHasRoleAtLeast("agent", "cto"), action).toBe(true);
-      expect(gated && !callerHasRoleAtLeast("external", "cto"), action).toBe(true);
-    }
-    // Desktop main launches the project runtime with ADE_DEFAULT_ROLE=cto and
-    // refuses to connect to one that answers with anything else.
-    expect(callerHasRoleAtLeast("cto", "cto")).toBe(true);
-  });
-
-  it("documents the input shape of every voice action", () => {
-    for (const action of VOICE_ACTIONS) {
-      const contract = getAdeActionInputContract("cto_voice", action);
-      expect(contract, `cto_voice.${action} needs an input contract`).toBeDefined();
-      expect(contract?.description?.length ?? 0).toBeGreaterThan(10);
-      expect(contract?.input?.length ?? 0).toBeGreaterThan(0);
-    }
-  });
-});
 
 describe("isAllowedAdeAction", () => {
   it("accepts a canonical action from the allowlist", () => {
@@ -305,8 +228,8 @@ describe("isAllowedAdeAction", () => {
     const CALLED_BY_STRING = [
       // src/preload/preload.ts
       "approveToolUse", "archiveSession", "cancelDispatchedSteer", "cancelScheduledWork",
-      "cancelSteer", "clearCodexGoal", "copyTempAttachment", "createPromptStash",
-      "createScheduledWork", "createSession", "deletePromptStash", "deleteSession",
+      "cancelSteer", "clearCodexGoal", "copyTempAttachment", "createDraft",
+      "createScheduledWork", "createSession", "deleteDraft", "deleteSession",
       "dispatchSteer", "editSteer", "ensureCtoSession", "fileSearch",
       "generateAutoLaneIdentity", "getAvailableModels", "getChatEventHistory",
       "getChatEventHistoryPage", "getClaudeSessionInfo", "getClaudeSessionMessages",
@@ -315,7 +238,7 @@ describe("isAllowedAdeAction", () => {
       "getSlashCommands", "getSubagentTranscript", "getTurnFileDiff", "handoffSession",
       "interrupt", "killDroidWorker", "launchCli", "launchHeadless",
       "listClaudeOutputStyles", "listClaudePlugins", "listCodexPlugins", "listClaudeSessions",
-      "listMentionSuggestions", "listPromptStashes", "listScheduledWork", "listSessions",
+      "listMentionSuggestions", "listDrafts", "listScheduledWork", "listSessions",
       "listSubagents", "markCrossMachineHandoff", "modelCatalog", "resumeUsageLimitNow",
       "continueUsageLimitOnAlternate",
       "prepareCrossMachineHandoff", "recoverCodexTurn", "recoverContinuity", "recoverTurn",
@@ -364,6 +287,52 @@ describe("isAllowedAdeAction", () => {
         expect(isAllowedAdeAction(domain, action)).toBe(true);
       }
     }
+  });
+});
+
+describe("ADE_ACTION_ACCESS", () => {
+  // The preload refuses writes during a project switch and lets reads through,
+  // reading the answer from this table. An allowlisted action missing from it
+  // is refused as a write, so a new read would fail on every switch.
+  it("declares every allowlisted action as exactly one of read or write", () => {
+    const problems: string[] = [];
+    const domains = new Set([...Object.keys(ADE_ACTION_ALLOWLIST), ...Object.keys(ADE_ACTION_ACCESS)]);
+    for (const domain of domains) {
+      const allowed = new Set(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? []);
+      const reads = ADE_ACTION_ACCESS[domain]?.read ?? [];
+      const writes = ADE_ACTION_ACCESS[domain]?.write ?? [];
+      const declared = new Set<string>();
+      for (const action of [...reads, ...writes]) {
+        if (declared.has(action)) problems.push(`${domain}.${action} is declared twice`);
+        declared.add(action);
+        if (!allowed.has(action)) problems.push(`${domain}.${action} is declared but not allowlisted`);
+      }
+      for (const action of allowed) {
+        if (!declared.has(action)) {
+          problems.push(`${domain}.${action} is allowlisted but not declared read or write in shared/adeActionAccess.ts`);
+        }
+      }
+    }
+    expect(problems).toEqual([]);
+  });
+
+  // The runtime pools run a call again after a dropped connection only when
+  // this says so; a replayed write could run twice.
+  it.each([
+    ["lane", "list", true],
+    ["file", "readFile", true],
+    ["chat", "getChatEventHistory", true],
+    ["search", "query", true],
+    ["file", "refreshGitDecorations", true],
+    ["lane", "delete", false],
+    ["chat", "sendMessage", false],
+    ["file", "writeTextAtomic", false],
+    ["ai", "getCursorAgentUsage", false],
+    ["automations", "webhookList", false],
+    ["chat", "waitFor", false],
+    ["lane", "getaway", false],
+  ])("replays %s.%s after a dropped connection: %s", (domain, action, replayable) => {
+    expect(isReplaySafeAdeAction(domain, action)).toBe(replayable);
   });
 });
 
@@ -437,6 +406,36 @@ describe("isCtoOnlyAdeAction", () => {
     expect(isCtoOnlyAdeAction("project_secret", "list")).toBe(false);
   });
 
+  it("keeps archive deletion user-only and archive restore CTO-only", () => {
+    // Reading the archive is open to agents and automations...
+    for (const action of ["list", "summary"]) {
+      expect(isAllowedAdeAction("archive", action)).toBe(true);
+      expect(isCtoOnlyAdeAction("archive", action)).toBe(false);
+      expect(isAutomationAllowedAdeAction("archive", action)).toBe(true);
+    }
+    // ...restoring a lane brings its worktree and services back, so it is the
+    // CTO's call. No automation restores.
+    expect(isAllowedAdeAction("archive", "restore")).toBe(true);
+    expect(isCtoOnlyAdeAction("archive", "restore")).toBe(true);
+    expect(isUserOnlyAdeAction("archive", "restore")).toBe(false);
+    expect(isAutomationAllowedAdeAction("archive", "restore")).toBe(false);
+    // Deleting is the person's alone: it can take a lane's uncommitted work,
+    // so no agent and no automation may reach it.
+    expect(isAllowedAdeAction("archive", "delete")).toBe(true);
+    expect(isUserOnlyAdeAction("archive", "delete")).toBe(true);
+    expect(isCtoOnlyAdeAction("archive", "delete")).toBe(false);
+    expect(isAutomationAllowedAdeAction("archive", "delete")).toBe(false);
+  });
+
+});
+
+describe("secret-bearing action policy", () => {
+  it("recognizes secret-returning actions while leaving metadata-only reads available", () => {
+    expect(isSecretBearingAdeAction("account_vault", "get")).toBe(true);
+    expect(isSecretBearingAdeAction("ai", "readPrivateKey")).toBe(true);
+    expect(isSecretBearingAdeAction("project_secret", "listSecretNames")).toBe(false);
+    expect(isSecretBearingAdeAction("lane", "list")).toBe(false);
+  });
 });
 
 describe("ADE_ACTION_ALLOWLIST shape", () => {
@@ -586,16 +585,25 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(contract?.example).toContain("cto_memory.recordDiscovery");
   });
 
-  it("exposes prompt stashes through the project runtime for connected desktops", () => {
+  // Drafts stopped being CTO-only when they became the store behind scheduled
+  // send: an agent arming a send on the user's behalf is the point of the
+  // feature. The consequence is recorded in actionPolicy.ts — an agent can
+  // read unsent drafts — so this asserts the new boundary rather than the old.
+  it("exposes drafts to agents as well as connected desktops", () => {
     const actions = ADE_ACTION_ALLOWLIST.chat ?? [];
     expect(actions).toEqual(expect.arrayContaining([
-      "listPromptStashes",
-      "createPromptStash",
-      "deletePromptStash",
+      "listDrafts",
+      "createDraft",
+      "updateDraft",
+      "deleteDraft",
+      "claimDraft",
     ]));
-    expect(isCtoOnlyAdeAction("chat", "listPromptStashes")).toBe(true);
-    expect(isCtoOnlyAdeAction("chat", "createPromptStash")).toBe(true);
-    expect(isCtoOnlyAdeAction("chat", "deletePromptStash")).toBe(true);
+    expect(isCtoOnlyAdeAction("chat", "listDrafts")).toBe(false);
+    expect(isCtoOnlyAdeAction("chat", "createDraft")).toBe(false);
+    expect(isCtoOnlyAdeAction("chat", "deleteDraft")).toBe(false);
+    // The post-update resume arm is a different matter: it is machine-wide and
+    // spends a real turn on every chat the desktop names, so it stays CTO-only.
+    expect(isCtoOnlyAdeAction("chat", "armUpdateResume")).toBe(true);
   });
 });
 
@@ -616,7 +624,7 @@ const CTO_DOMAIN_COVERAGE: ReadonlyArray<{
 }> = [
   { domain: "automation_planner", why: "plan / simulate / save automations from plain English", actions: ["parseNaturalLanguage", "validateDraft", "simulate", "saveDraft"] },
   { domain: "automations", why: "read, fire, enable, and delete rules", actions: ["list", "get", "saveRule", "deleteRule", "toggleRule", "triggerManually", "listRuns"] },
-  { domain: "chat", why: "handoff and scheduled work", actions: ["handoffSession", "createScheduledWork", "listScheduledWork", "getScheduledWorkState", "cancelScheduledWork", "setScheduledWorkPaused"] },
+  { domain: "chat", why: "handoff, scheduled work, and Codex voice controls", actions: ["handoffSession", "createScheduledWork", "listScheduledWork", "getScheduledWorkState", "cancelScheduledWork", "setScheduledWorkPaused", "startCodexRealtime", "stopCodexRealtime", "getCodexRealtimeState"] },
   // `ingest` is deliberately absent: it is not on the action bus at all.
   // The CTO's `captureProof` tool reaches the broker in-process, and the only
   // other writer is the `ingest_computer_use_artifacts` RPC tool, which owns
@@ -681,6 +689,11 @@ describe("CTO domain coverage over the ADE action bus", () => {
       ["budget", "updateConfig"],
       ["usage", "forceRefresh"],
       ["computer_use_artifacts", "deleteArtifacts"],
+      ["chat", "startCodexRealtime"],
+      ["chat", "stopCodexRealtime"],
+      ["chat", "getCodexRealtimeState"],
+      ["ai", "museSettings"],
+      ["ai", "museSettingsClose"],
     ] as Array<[AdeActionDomain, string]>) {
       expect(isCtoOnlyAdeAction(domain, action), `${domain}.${action}`).toBe(true);
     }

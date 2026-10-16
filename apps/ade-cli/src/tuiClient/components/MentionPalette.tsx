@@ -17,6 +17,7 @@ const KIND_LABELS: Record<MentionSuggestion["kind"], string> = {
   pr: "PR",
   file: "File",
   commit: "Commit",
+  model: "Model",
 };
 
 function clampPaletteWidth(width?: number): number {
@@ -55,6 +56,8 @@ function useLabel(suggestion: MentionSuggestion): string {
       return "Adds a lane/worktree reference";
     case "chat":
       return "Adds a chat transcript reference";
+    case "model":
+      return "Adds a model with a thinking level and permissions";
   }
 }
 
@@ -190,6 +193,64 @@ export function MentionPalette({
         </React.Fragment>
       ))}
       {paletteLine(bodyLine(selectedSummary, paletteWidth), theme.color.t3)}
+      {paletteLine(footer, theme.color.t4)}
+    </Box>
+  );
+}
+
+/** One choice in the model chip's thinking or permission step. */
+export type ModelChipPaletteOption = { value: string; label: string };
+
+/**
+ * The follow-up list shown right after a model chip is inserted: first the
+ * thinking levels, then the permission modes. It sits where the @ palette was
+ * and uses the same frame and height.
+ */
+export function ModelChipOptionPalette({
+  modelTitle,
+  stepLabel,
+  options,
+  selectedIndex,
+  currentValue,
+  width,
+}: {
+  modelTitle: string;
+  stepLabel: string;
+  options: ModelChipPaletteOption[];
+  selectedIndex: number;
+  currentValue: string | null;
+  width?: number;
+}) {
+  const paletteWidth = clampPaletteWidth(width);
+  const total = options.length;
+  const safeIndex = Math.max(0, Math.min(selectedIndex, total - 1));
+  const half = Math.floor(VISIBLE_ROWS / 2);
+  let start = Math.max(0, safeIndex - half);
+  const end = Math.min(total, start + VISIBLE_ROWS);
+  start = Math.max(0, end - VISIBLE_ROWS);
+  const header = topLine(`${stepLabel} · ${modelTitle}`, paletteWidth);
+  const rowLines = options.slice(start, end).map((option, index) => {
+    const isSelected = start + index === safeIndex;
+    const current = option.value === currentValue ? " (current)" : "";
+    return {
+      selected: isSelected,
+      value: bodyLine(`${isSelected ? theme.rail : " "} ${option.label}${current}`, paletteWidth),
+    };
+  });
+  while (rowLines.length < VISIBLE_ROWS) {
+    rowLines.push({ selected: false, value: bodyLine("", paletteWidth) });
+  }
+  const summary = bodyLine(`${total} option${total === 1 ? "" : "s"}`, paletteWidth);
+  const footer = bottomLine("↑↓ move · Enter/Tab pick · Esc keep and close", paletteWidth);
+  return (
+    <Box width={paletteWidth} flexDirection="column">
+      {paletteLine(header, theme.color.violet)}
+      {rowLines.map((line, index) => (
+        <React.Fragment key={index}>
+          {paletteLine(line.value, line.selected ? theme.color.t1 : theme.color.t2)}
+        </React.Fragment>
+      ))}
+      {paletteLine(summary, theme.color.t3)}
       {paletteLine(footer, theme.color.t4)}
     </Box>
   );

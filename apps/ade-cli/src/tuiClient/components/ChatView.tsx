@@ -12,6 +12,7 @@ import {
   type InlineRun,
   type RenderedChatLine,
 } from "../format";
+import { tuiThreadEntityFactsVersion } from "../threadEntityRuns";
 import {
   aggregateChatBlocks,
   deriveActiveProviderRetryActivityDetail,
@@ -33,11 +34,6 @@ import {
 import { laneIconGlyph } from "./Header";
 import type { AdeCodeProvider } from "../types";
 import type { OlderHistoryStatus } from "../olderHistory";
-import {
-  MOSAIC_FENCE_LANGUAGE,
-  parseMosaicCard,
-  summarizeMosaicCard,
-} from "../../../../desktop/src/shared/chatMosaic";
 import {
   SCENE_FENCE_LANGUAGE,
   summarizeSceneFence,
@@ -223,6 +219,9 @@ function wrapInlineRuns(runs: InlineRun[], width: number, firstPrefix: string, r
     if (run.code) style.code = true;
     if (run.link) style.link = true;
     if (run.href) style.href = run.href;
+    // An entity run (a lane name in its lane colour) keeps its colour when wrapped.
+    if (run.color) style.color = run.color;
+    if (run.dim) style.dim = true;
     for (const part of parts) {
       if (!part) continue;
       const isSpace = /^\s+$/.test(part);
@@ -427,7 +426,7 @@ function inlineRowsFromText(
   options: { color?: string; dim?: boolean; bold?: boolean; italic?: boolean } = {},
 ): RenderedChatRow[] {
   const runs = parseInlineRuns(text);
-  const hasFormatting = runs.some((run) => run.bold || run.italic || run.code || run.link);
+  const hasFormatting = runs.some((run) => run.bold || run.italic || run.code || run.link || run.color);
   if (!hasFormatting) {
     return wrapText(text, width, firstPrefix, restPrefix).map((line) => ({
       id,
@@ -603,12 +602,10 @@ function markdownRows(blocks: AssistantMarkdownBlock[], width: number, id: strin
     } else if (block.kind === "quote") {
       rows.push(...inlineRowsFromText(block.text, width, id, "> ", "> ", { dim: true }));
     } else if (block.kind === "code") {
-      // The two fences ADE renders natively on the desktop collapse to one dim
-      // summary line here instead. A mosaic because its interactive card is
-      // desktop-only; a scene for the blunter reason that it is up to 96 KB of
-      // HTML and CSS, and printing it verbatim buries the answer the user asked
-      // for. A mosaic that fails to parse falls through to a plain code block;
-      // a scene always has a summary, even if only "[scene: generated view]".
+      // A scene, which ADE renders natively on the desktop, collapses to one
+      // dim summary line here: it is up to 96 KB of HTML and CSS, and printing
+      // it verbatim buries the answer the user asked for. A scene always has a
+      // summary, even if only "[scene: generated view]".
       const fenceText = (block.lines.length ? block.lines : [""]).join("\n");
       // Match on the FIRST word of the info string, the way the desktop
       // renderer does — react-markdown hands it `language-<first word>`, so
@@ -616,12 +613,7 @@ function markdownRows(blocks: AssistantMarkdownBlock[], width: number, id: strin
       // info string, and comparing that raw is how the same fence collapses on
       // one surface and dumps 96 KB of HTML on the other.
       const fenceLanguage = block.language?.trim().split(/\s+/)[0] ?? "";
-      const mosaicSpec = fenceLanguage === MOSAIC_FENCE_LANGUAGE ? parseMosaicCard(fenceText) : null;
-      const collapsed = mosaicSpec
-        ? summarizeMosaicCard(mosaicSpec)
-        : fenceLanguage === SCENE_FENCE_LANGUAGE
-          ? summarizeSceneFence(fenceText)
-          : null;
+      const collapsed = fenceLanguage === SCENE_FENCE_LANGUAGE ? summarizeSceneFence(fenceText) : null;
       if (collapsed) {
         rows.push(...inlineRowsFromText(collapsed, width, id, "  ", "  ", { dim: true, color: theme.color.t2 }));
       } else {
@@ -1103,25 +1095,26 @@ function formatCompactDuration(durationMs: number): string {
   return rem ? `${minutes}m ${rem}s` : `${minutes}m`;
 }
 
+/**
+ * One quiet line per queued message: a clock, the message, and where it stands
+ * ("sends next" / "queued"). The full text is in `/steer`; the line truncates.
+ */
 function queuedSteerRows(block: Extract<AggregatedBlock, { kind: "queued-steer" }>, width: number): RenderedChatRow[] {
-  const out: RenderedChatRow[] = [{
+  const status = block.sendsNext ? "sends next" : "queued";
+  const textWidthAvailable = Math.max(8, width - 2 - status.length - 4);
+  const text = truncateEnd(block.text.replace(/\s+/g, " ").trim(), textWidthAvailable);
+  const runs: InlineRun[] = [
+    { text: "◷ ", color: theme.color.t4 },
+    { text, color: theme.color.t2 },
+    { text: `  ${status}`, color: theme.color.t4, dim: true },
+  ];
+  return [{
     id: block.id,
     tone: "work",
-    text: "staged message · sends after turn",
-    color: theme.color.violet,
-    bold: true,
+    text: runs.map((run) => run.text).join(""),
+    runs,
     rail: null,
   }];
-  for (const line of wrapText(block.text, Math.max(8, width - 2), "  ", "  ")) {
-    out.push({
-      id: `${block.id}:text`,
-      tone: "work",
-      text: line,
-      color: theme.color.t2,
-      rail: null,
-    });
-  }
-  return out;
 }
 
 function planRows(block: Extract<AggregatedBlock, { kind: "plan" }>, spinFrame: string): RenderedChatRow[] {
@@ -2192,13 +2185,16 @@ function ChatViewComponent({
       ? { historicalBlocks: presentedBlocks, tailBlocks: [] as AggregatedBlock[] }
       : { historicalBlocks: presentedBlocks.slice(0, idx), tailBlocks: presentedBlocks.slice(idx) };
   }, [presentedBlocks]);
+  // Entity runs (lane names for lane ids) depend on the app's lanes and chats,
+  // which `blocks` does not carry; re-wrap when that lookup changes.
+  const threadEntityVersion = tuiThreadEntityFactsVersion();
   const historicalRows = useMemo(
     // Pre-index historical rows by their final position (they always occupy
     // slots 0..H-1, before the seam spacer + live tail). sliceRows then reuses
     // these stable objects instead of cloning them every tick.
     () => rowsForBlocks(historicalBlocks, rowInnerWidth, STATIC_SPIN_FRAME, STATIC_SPIN_FRAME, expandedLineIds)
       .map((row, index) => ({ ...row, sourceRowIndex: index })),
-    [historicalBlocks, rowInnerWidth, expandedLineIds],
+    [historicalBlocks, rowInnerWidth, expandedLineIds, threadEntityVersion],
   );
   const rows = useMemo(() => {
     const tailRows = tailBlocks.length

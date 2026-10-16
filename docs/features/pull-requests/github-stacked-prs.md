@@ -13,9 +13,11 @@ number as the remote identity.
 
 - Stacks live in the existing PRs tab. There is no separate top-level Stacks
   tab.
-- GitHub remains the final review and merge surface. ADE opens that surface in
-  the built-in browser and does not recreate GitHub's merge box.
-- ADE may create, extend, unstack, rebase, adopt, and locally repair stacks.
+- GitHub remains the authority for reviews, branch rules, and the merge. ADE
+  starts a stack merge through GitHub's async merge API and follows the result;
+  it does not recreate GitHub's merge box.
+- ADE may create, extend, merge, unstack, rebase, adopt, and locally repair
+  stacks.
 - Existing integration PR workflows remain independent from stacked PRs.
 - Users do not need to install `gh-stack`; ADE uses GitHub's API directly.
 - Authorizing the ADE GitHub App is sufficient for desktop and headless CLI
@@ -88,6 +90,7 @@ sync local and remote state
 request a clean GitHub rebase
 resolve conflicts locally with ADE
 unstack with a consequence preview
+merge the stack through GitHub's async merge API
 open the GitHub review/merge surface
 ```
 
@@ -110,15 +113,35 @@ snapshot. Opening the tab never performs per-row stack requests.
 - `Group by stack` shows connected rails; ordinary sorting shows position
   badges without implying row adjacency.
 - Selecting the badge opens a compact stack map.
-- The PR detail pane opens a full stack inspector with GitHub readiness plus
-  ADE lane, agent, worktree, validation, and conflict context.
+- A stacked PR's detail opens with a stack strip (`GitHubStackInspector`): one
+  row with the base branch and each layer as a chip (GitHub state icon, number,
+  CI dot; the selected layer in the accent), and one line saying what blocks
+  the merge, from the bottom up (`Blocked at #842: checks failing.`, `All 3
+  open PRs are ready to merge.`, `All 3 merged.`). Refresh, GitHub, Manage
+  (add PRs, Unstack with a confirm dialog) and a toggle for the full layer list
+  (title, lane, checks and review per layer) sit on the right; the toggle is
+  remembered. A merged PR from closed history finds its finished stack by
+  member number, so the strip also shows a completed stack.
 - Copy uses concrete state: `Blocked by #842: one required check failed`, not
   internal terms such as queue position or landing state.
 - Empty, loading, stale, permission, unsupported-host, conflict, queued,
   partially merged, and completed states have distinct copy and actions.
 
-The primary final action is `Review and merge on GitHub`. Mutating ADE actions
-open the inspector and require confirmation.
+The Merge card for a stacked PR merges the stack from ADE. GitHub merges every
+open PR from the stack base up to the selected one, all or none, and runs branch
+rules during the merge; ADE starts it, polls the result, and reports the outcome
+in a result banner. The first click arms the button because one merge covers more
+than this PR. **Bypass branch rules** is offered on every layer. GitHub honors a
+bypass only for the bottom open PR, so from higher up ADE merges the covered PRs
+one at a time from the bottom, each with the bypass, and waits for GitHub to
+restack the next one first. The stale-head guard still holds: every lower
+layer's head must be inside the top head you confirmed (a stacked branch carries
+the layers below it), the bottom layer merges against that head, and each higher
+layer, whose SHA GitHub
+rewrites when it restacks, must still carry the same commits and leave the same
+files as when you confirmed, or the run stops. If a layer fails, the layers below
+it stay merged and the result names them. iOS offers the same override from its Merge anyway menu above the bottom PR only when the host advertises `prsStackLayeredBypass` in `hello_ok.features`; an older host keeps it on the bottom PR, where GitHub honors it. `GitHub` still opens the review and merge surface in the built-in
+browser, and mutating ADE actions open the inspector and require confirmation.
 
 ## Work card
 
@@ -146,6 +169,29 @@ chat cards until a user adopts them into an ADE work session.
 Card actions navigate to the stack inspector, GitHub review surface, or owning
 agent. Rebase, restructure, and unstack never execute directly from transcript
 history.
+
+## Chat linking
+
+Work chats own PRs through hybrid edges (`pull_request_chat_sessions`) plus
+unlink tombstones (`pull_request_chat_session_dismissals`). `selectPrsForChat`
+is edges-first: a chat that linked any PRs shows only those (including
+cross-lane GitHub stack members); a zero-edge chat may display unedged
+current-branch PRs with no silent write; an unlinked PR never revives as
+fallback. Merge and rebase are not chat-peek actions.
+
+The desktop Work peek is a peek: an `#N` header or a chip switcher, status, and
+a stack-offer banner. A link from a chat on another lane (the stack coordinator) is a reference,
+not a claim, so each layer's own chats keep their PR badge and pane after the
+coordinator links the stack. When the selected PR belongs to a GitHub stack, the
+banner lists unclaimed siblings and offers **Link stack**; **Not now** hides it
+for that chat+stack. Agents silent-expand the next layer onto parent chats that
+already linked the base instead of emitting an offer. A chat that created a
+layer edges that PR.
+
+When every member of a GitHub stack is merged, linked Work chats receive one
+stable `pr_stack_land` card (`pr-stack-land:{owner}:{repo}:{stackNumber}`) so
+later layers update the same episode. The card fans out to every linked chat,
+including chats on another lane.
 
 ## Agent behavior
 

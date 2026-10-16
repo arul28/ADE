@@ -59,7 +59,7 @@ export function MediaViewer({ files, workspaceId, rootPath, tab, content, kind }
         <Icon size={15} color={COLORS.accent} />
         <span className="truncate" style={{ color: COLORS.textMuted }}>{mimeType}</span>
         <span className="ml-auto" style={{ color: COLORS.textDim }}>{formatBytes(content.size)}</span>
-        <button type="button" onClick={openExternally} title={revealLabel} className="rounded p-1 hover:bg-white/5" style={{ color: COLORS.textMuted }}>
+        <button type="button" onClick={openExternally} title={revealLabel} className="rounded p-1 hover:bg-fg/5" style={{ color: COLORS.textMuted }}>
           <ArrowSquareOut size={14} />
         </button>
       </div>

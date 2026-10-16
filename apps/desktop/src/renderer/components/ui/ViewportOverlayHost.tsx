@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode, Ref } from "react";
+import { createPortal } from "react-dom";
 import { Z_LAYERS, type ZLayer } from "./zLayers";
 
 type ViewportFrame = Omit<CSSProperties, "position" | "zIndex">;
@@ -32,6 +33,14 @@ export function ViewportOverlayHost({
       {children}
     </div>
   );
+}
+
+/**
+ * A transient overlay portaled to <body> inside its named layer. Children
+ * position with `pointer-events-auto absolute` and viewport left/top.
+ */
+export function ViewportOverlayPortal({ layer, children }: { layer: ZLayer; children: ReactNode }) {
+  return createPortal(<ViewportOverlayHost layer={layer}>{children}</ViewportOverlayHost>, document.body);
 }
 
 /** Create the same named viewport layer for DOM-only compositor animations. */

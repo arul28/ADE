@@ -6,6 +6,7 @@ import { discoverCursorSessions } from "./discoverCursor";
 import { discoverDroidSessions } from "./discoverDroid";
 import { discoverGrokSessions } from "./discoverGrok";
 import { discoverKimiSessions } from "./discoverKimi";
+import { discoverMuseSessions } from "./discoverMuse";
 import { discoverOpenCodeSessions } from "./discoverOpenCode";
 import { discoverPiSessions } from "./discoverPi";
 import { discoverQwenSessions } from "./discoverQwen";
@@ -22,6 +23,7 @@ export const EXTERNAL_SESSION_DISCOVERERS: Record<
   droid: discoverDroidSessions,
   opencode: discoverOpenCodeSessions,
   pi: discoverPiSessions,
+  muse: discoverMuseSessions,
   qwen: discoverQwenSessions,
   kimi: discoverKimiSessions,
   grok: discoverGrokSessions,

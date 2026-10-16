@@ -22,6 +22,9 @@ import { readFiniteNumber } from "../acpTelemetryReaders";
 import { uncachedInputTokens } from "../../../usage/tokenSplit";
 import { asRecord } from "../../../shared/utils";
 
+/** ADE's full effort ladder, lowest first. Copilot accepts every level on it. */
+export const ACP_EFFORT_LADDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
 /** ADE's identity at `initialize`. */
 export const ADE_CLIENT_INFO = {
   name: "ade",

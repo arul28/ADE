@@ -3,10 +3,12 @@ import {
   claudeInputText,
   claudeNoticeMessages,
   claudeSdkCreateSessionCompat,
+  claudeSdkResumeSessionCompat,
   createAgentChatService,
   createClaudeStreamFixture,
   createMemoryTurnUsageLedger,
   createService,
+  getSessionMessages,
   makeDefaultClaudeSession,
   path,
   query,
@@ -496,51 +498,36 @@ describe("createAgentChatService", () => {
     it("throttles live Claude context usage by both time and percentage movement", async () => {
       let now = 0;
       const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
-      const messages = [
-        {
-          type: "stream_event",
-          event: {
-            type: "message_start",
-            message: {
-              id: "usage-message",
-              usage: {
-                input_tokens: 100_000,
-                cache_read_input_tokens: 20_000,
-                cache_creation_input_tokens: 30_000,
-                output_tokens: 0,
-              },
+      // Live occupancy is input + cache read + cache creation. Output tokens are
+      // not part of it, so the huge output delta must never move the ring.
+      const messageStart = (input: number, cacheRead: number, cacheCreation: number) => ({
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: {
+            id: "usage-message",
+            usage: {
+              input_tokens: input,
+              cache_read_input_tokens: cacheRead,
+              cache_creation_input_tokens: cacheCreation,
+              output_tokens: 0,
             },
           },
         },
-        {
-          type: "stream_event",
-          event: { type: "message_delta", usage: { output_tokens: 20_000 } },
-        },
-        {
-          type: "stream_event",
-          event: { type: "message_delta", usage: { output_tokens: 5_000 } },
-        },
-        {
-          type: "stream_event",
-          event: { type: "message_delta", usage: { output_tokens: 20_000 } },
-        },
-        { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+      });
+      const timeline: Array<{ at: number; message: Record<string, unknown> }> = [
+        // 100k + 20k + 30k = 150k of a 1M window -> 15%. First reading always emits.
+        { at: 0, message: messageStart(100_000, 20_000, 30_000) },
+        // 20% but only 1s after the last emit -> held back by the 5s floor.
+        { at: 1_000, message: messageStart(150_000, 20_000, 30_000) },
+        // 5s have passed but 15.5% is under one point from 15% -> held back.
+        { at: 6_000, message: messageStart(105_000, 20_000, 30_000) },
+        // Output tokens are not occupancy.
+        { at: 6_500, message: { type: "stream_event", event: { type: "message_delta", usage: { output_tokens: 500_000 } } } },
+        // 17% and 7s since the last emit -> emits.
+        { at: 7_000, message: messageStart(120_000, 20_000, 30_000) },
+        { at: 7_000, message: { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } } },
       ];
-      const timedMessages = (async function* () {
-        now = 0;
-        yield messages[0]!;
-        now = 1_000;
-        yield messages[1]!;
-        now = 6_000;
-        yield messages[2]!;
-        now = 7_000;
-        yield messages[3]!;
-        yield messages[4]!;
-      })();
-      const materialized: Array<Record<string, unknown>> = [];
-      for await (const message of timedMessages) materialized.push(message);
-      // Re-apply the intended times from inside the SDK stream rather than while
-      // materializing the fixtures.
       let streamCall = 0;
       const send = vi.fn().mockResolvedValue(undefined);
       const stream = vi.fn(() => (async function* () {
@@ -549,15 +536,10 @@ describe("createAgentChatService", () => {
           yield { type: "system", subtype: "init", session_id: "sdk-live-usage", slash_commands: [] };
           return;
         }
-        now = 0;
-        yield materialized[0]!;
-        now = 1_000;
-        yield materialized[1]!;
-        now = 6_000;
-        yield materialized[2]!;
-        now = 7_000;
-        yield materialized[3]!;
-        yield materialized[4]!;
+        for (const step of timeline) {
+          now = step.at;
+          yield step.message;
+        }
       })());
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send,
@@ -594,7 +576,7 @@ describe("createAgentChatService", () => {
           ],
           totalTokens: 50_000,
           maxTokens: 200_000,
-          rawMaxTokens: 200_000,
+          rawMaxTokens: 150_000,
           percentage: 25,
           gridRows: [],
           model: "claude-sonnet-5",
@@ -645,7 +627,9 @@ describe("createAgentChatService", () => {
                 type: "context_usage",
                 origin: "snapshot",
                 state: "measured",
-                usage: expect.objectContaining({ percentage: 25 }),
+                // The ring measures against the model's 1M window (50k -> 5%), not the
+                // SDK's 200k; the SDK's raw max becomes the compaction threshold.
+                usage: expect.objectContaining({ totalTokens: 50_000, maxTokens: 1_000_000, percentage: 5, compactAtTokens: 150_000 }),
               }),
             ]));
         });
@@ -777,7 +761,7 @@ describe("createAgentChatService", () => {
         ...extra,
         event: { type: "message_start", message: { id: `msg-${Object.values(usage).join("-")}`, usage } },
       });
-      const { events, session } = await createClaudeStreamFixture({
+      const { events, session, service } = await createClaudeStreamFixture({
         sdkSessionId: "sdk-ledger-complete",
         serviceOverrides: { turnUsageLedger: ledger },
         messages: [
@@ -838,6 +822,18 @@ describe("createAgentChatService", () => {
       });
       expect(done?.servedModel).toBeUndefined();
       expect(done?.account).not.toHaveProperty("routedAway");
+
+      // The chat remembers the prompt cache this turn left: most of the write
+      // was 1-hour, and Claude times it from the last main request's start.
+      // The countdown badge and Compact first read this, not a fixed number.
+      const lastRequestStartedAt = done?.usage?.lastRequestStartedAt;
+      expect(lastRequestStartedAt, "the turn reports when its last request started").toEqual(expect.any(String));
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        promptCache: { ttl: "1h", since: lastRequestStartedAt },
+      });
+      expect(readPersistedChatState(session.id)).toMatchObject({
+        promptCache: { ttl: "1h", since: lastRequestStartedAt },
+      });
 
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
@@ -932,13 +928,14 @@ describe("createAgentChatService", () => {
             usage: { input_tokens: 220, output_tokens: 8 },
             session_id: "sdk-idle-ledger",
           };
-          // Background turn two: one request of its own.
+          // Background turn two: one request of its own. Claude reports the
+          // query's running total, so this turn's own cost is 0.03 - 0.02.
           yield requestStart("idle-2a", 140);
           yield {
             type: "result",
             subtype: "success",
             is_error: false,
-            total_cost_usd: 0.01,
+            total_cost_usd: 0.03,
             usage: { input_tokens: 140, output_tokens: 4 },
             session_id: "sdk-idle-ledger",
           };
@@ -971,11 +968,50 @@ describe("createAgentChatService", () => {
       });
       expect(idleDone[1]).toMatchObject({
         usage: { inputTokens: 140, requestCount: 1, contextTokens: 140 },
-        costUsd: 0.01,
         costSource: "list_price",
       });
+      expect(idleDone[1]?.costUsd).toBeCloseTo(0.01, 6);
       expect(rows.filter((row) => row.turnId.startsWith("claude-idle-")).map((row) => row.requestCount)).toEqual([2, 1]);
       service.forceDisposeAll();
+    });
+
+    it("prices a resumed Claude session's first turn from the running total it saved", async () => {
+      // A resumed session continues the total its transcript saved, so after a
+      // brain restart the first result already carries the earlier turns.
+      let total = 0.5;
+      const sdkSession = () => ({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          yield { type: "system", subtype: "init", session_id: "sdk-resume-cost", slash_commands: [] };
+          yield { type: "result", subtype: "success", is_error: false, total_cost_usd: total, usage: { input_tokens: 1, output_tokens: 1 }, session_id: "sdk-resume-cost" };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-resume-cost",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      }) as any;
+      vi.mocked(claudeSdkCreateSessionCompat).mockImplementation(sdkSession);
+      vi.mocked(claudeSdkResumeSessionCompat).mockImplementation(sdkSession);
+      const doneCosts = (events: AgentChatEventEnvelope[]) => events
+        .map((entry) => entry.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "done" }> => event.type === "done")
+        .map((event) => event.costUsd);
+
+      const firstEvents: AgentChatEventEnvelope[] = [];
+      const first = createService({ onEvent: (event: AgentChatEventEnvelope) => firstEvents.push(event) });
+      const session = await first.service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await first.service.runSessionTurn({ sessionId: session.id, text: "First turn." });
+      expect(doneCosts(firstEvents)).toEqual([0.5]);
+      expect(readPersistedChatState(session.id)).toMatchObject({ claudeResultCostTotalUsd: 0.5 });
+      first.service.forceDisposeAll();
+
+      total = 0.6;
+      const resumedEvents: AgentChatEventEnvelope[] = [];
+      const resumed = createService({ onEvent: (event: AgentChatEventEnvelope) => resumedEvents.push(event) });
+      await resumed.service.runSessionTurn({ sessionId: session.id, text: "Second turn after a restart." });
+      const resumedCosts = doneCosts(resumedEvents);
+      expect(resumedCosts).toHaveLength(1);
+      expect(resumedCosts[0]).toBeCloseTo(0.1, 6);
+      resumed.service.forceDisposeAll();
     });
 
     it("stamps user_message_uuid from the first assistant frame onto done", async () => {
@@ -1160,11 +1196,42 @@ describe("createAgentChatService", () => {
         expect(harness.send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
           .toHaveLength(1);
       });
-      expect(harness.events.find((entry) =>
-        entry.event.type === "context_compact"
-        && entry.event.trigger === "ade_fallback"
-        && entry.event.state === "started"
-      )?.event).toMatchObject({ compactionId: expect.any(String) });
+      // Asked for, not running: Claude has not said it is compacting.
+      expect(harness.events.some((entry) => entry.event.type === "context_compact" && entry.event.state === "started"))
+        .toBe(false);
+    });
+
+    it("says Compacting once Claude starts the compaction ADE asked for, and pairs it with the result", async () => {
+      const harness = await createClaudeCompactionFixture({
+        sdkSessionId: "sdk-fallback-compact-started",
+        first: [
+          {
+            type: "stream_event",
+            event: { type: "message_start", message: { id: "fallback-started", usage: { input_tokens: 970_000, output_tokens: 0 } } },
+          },
+          { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+        ],
+        afterCompact: [
+          // Claude repeats its status while it works.
+          { type: "system", subtype: "status", status: "compacting" },
+          { type: "system", subtype: "status", status: "compacting" },
+          {
+            type: "system",
+            subtype: "compact_boundary",
+            compact_metadata: { trigger: "manual", pre_tokens: 970_000, post_tokens: 20_000 },
+          },
+          { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+        ],
+      });
+
+      const compactions = () => harness.events.flatMap((entry) => entry.event.type === "context_compact" ? [entry.event] : []);
+      await vi.waitFor(() => {
+        expect(compactions().some((event) => event.state === "completed")).toBe(true);
+      }, { timeout: 5_000 });
+      const startedEvents = compactions().filter((event) => event.state === "started");
+      expect(startedEvents).toHaveLength(1);
+      expect(startedEvents[0]).toMatchObject({ trigger: "ade_fallback", compactionId: expect.any(String) });
+      expect(compactions().find((event) => event.state === "completed")?.compactionId).toBe(startedEvents[0]?.compactionId);
     });
 
     it("claims a compaction only after the SDK confirms the boundary", async () => {
@@ -1416,6 +1483,137 @@ describe("createAgentChatService", () => {
         .not.toContain("context overflowed — compacted; please re-send your last message");
       expect(harness.send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) =>
         text.includes("Exercise Claude streaming text."))).toHaveLength(1);
+    });
+
+    it.each([
+      { path: "foreground turn", idleReader: false },
+      { path: "idle reader", idleReader: true },
+    ])("shows a Claude image_error turn as one readable failure on the $path, not as a reply", async ({ idleReader }) => {
+      const sdkSessionId = `sdk-image-error-${idleReader ? "idle" : "foreground"}`;
+      const sizeText = "Image base64 size (8.3MB) exceeds API limit (5MB). Please resize the image before sending.";
+      const imageErrorFrames = [
+        {
+          type: "assistant",
+          error: "invalid_request",
+          message: { model: "<synthetic>", content: [{ type: "text", text: sizeText }] },
+        },
+        {
+          type: "result",
+          subtype: "success",
+          is_error: true,
+          terminal_reason: "image_error",
+          result: sizeText,
+          errors: [],
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      ];
+      const events: AgentChatEventEnvelope[] = [];
+      let releaseIdle!: () => void;
+      const idleGate = new Promise<void>((resolve) => { releaseIdle = resolve; });
+      let streamCall = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: sdkSessionId, slash_commands: [] };
+            return;
+          }
+          if (!idleReader) {
+            for (const message of imageErrorFrames) yield message;
+            return;
+          }
+          // The foreground turn ends on a clean result; the image failure
+          // arrives later, while the query is read by the idle reader.
+          yield { type: "result", subtype: "success", is_error: false, session_id: sdkSessionId, usage: { input_tokens: 1, output_tokens: 1 } };
+          await idleGate;
+          for (const message of imageErrorFrames) yield message;
+        })()),
+        close: vi.fn(),
+        sessionId: sdkSessionId,
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      await service.runSessionTurn({ sessionId: session.id, text: "Attach the screenshot." });
+      if (idleReader) releaseIdle();
+
+      const isImageErrorDone = (event: AgentChatEventEnvelope["event"]): event is Extract<AgentChatEventEnvelope["event"], { type: "done" }> =>
+        event.type === "done" && event.terminalReason === "image_error";
+      await waitForCondition(() => events.some((entry) => isImageErrorDone(entry.event)), "the image_error turn to settle");
+      const failedDone = events.map((entry) => entry.event).find(isImageErrorDone);
+
+      const errors = events.map((entry) => entry.event).filter((event) => event.type === "error");
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatchObject({
+        type: "error",
+        detail: expect.stringContaining("8.3MB"),
+        errorInfo: { presentation: expect.any(Object) },
+      });
+      expect(failedDone).toMatchObject({
+        type: "done",
+        status: "failed",
+        terminalReason: "image_error",
+      });
+      expect(failedDone?.model).not.toBe("<synthetic>");
+      expect(events.some((entry) => entry.event.type === "text" && entry.event.text.includes("exceeds API limit"))).toBe(false);
+      service.forceDisposeAll();
+    });
+
+    it("says a Claude process killed by a signal ADE did not send was stopped from outside", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-session-sigterm", slash_commands: [] };
+            return;
+          }
+          yield { type: "assistant", message: { id: "m1", content: [{ type: "text", text: "Working" }], usage: { input_tokens: 1, output_tokens: 1 } } };
+          // What the SDK throws when its process dies of an outside `kill -TERM`.
+          throw new Error("Claude Code process exited with code 143");
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-session-sigterm",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      await service.runSessionTurn({ sessionId: session.id, text: "Do the work." }).catch(() => undefined);
+      await waitForCondition(
+        () => events.some((entry) => entry.event.type === "done" && entry.event.status === "failed"),
+        "the killed turn to settle",
+      );
+
+      const errors = events.map((entry) => entry.event).filter((event) => event.type === "error");
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatchObject({
+        detail: "Claude Code process exited with code 143",
+        errorInfo: {
+          provider: "Claude",
+          presentation: { technicalDetail: "Claude Code process exited with code 143" },
+        },
+      });
+      // The card names the signal instead of forwarding the bare exit code.
+      const presentation = (errors[0] as { errorInfo: { presentation: { body: string } } }).errorInfo.presentation;
+      expect(presentation.body).toContain("SIGTERM");
+      expect(presentation.body).not.toContain("exited with code");
+      service.forceDisposeAll();
     });
 
     it("does not duplicate Claude thinking when the final assistant message repeats streamed content", async () => {
@@ -2344,6 +2542,109 @@ describe("createAgentChatService", () => {
         synthetic: true,
         source: "claude_turn_finalization",
         finalTurnStatus: "completed",
+      });
+    });
+
+    describe("a WebFetch that steps aside for a person's interrupt", () => {
+      const lateResult = "Origin is 203.0.113.7.";
+      const notificationRow = {
+        type: "user",
+        uuid: "notification-1",
+        session_id: "sdk-session-detached",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            "<task-notification>",
+            "<tool-use-id>fetch-1</tool-use-id>",
+            "<task-type>tool_call</task-type>",
+            "<status>completed</status>",
+            "<summary>The WebFetch call finished; its result follows.</summary>",
+            `<result>\n${lateResult}\n</result>`,
+            "</task-notification>",
+          ].join("\n"),
+        },
+      };
+
+      // Turn 1 calls WebFetch and gets Claude Code's placeholder in place of its
+      // result; turn 2 ("Anything else?") only reports a result.
+      const startDetachedFetch = async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        let releaseSecondTurn: () => void = () => {};
+        const secondTurnSent = new Promise<void>((resolve) => { releaseSecondTurn = resolve; });
+        const send = vi.fn(async (message: unknown) => {
+          if (claudeInputText(message).includes("Anything else?")) releaseSecondTurn();
+        });
+        let streamCall = 0;
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-session-detached", slash_commands: [] };
+            return;
+          }
+          yield {
+            type: "stream_event",
+            event: {
+              type: "content_block_start",
+              index: 0,
+              content_block: { type: "tool_use", id: "fetch-1", name: "WebFetch", input: { url: "https://example.com/slow" } },
+            },
+          };
+          yield {
+            type: "user",
+            parent_tool_use_id: null,
+            message: { role: "user", content: [{ type: "tool_result", tool_use_id: "fetch-1", content: "[Still running.]" }] },
+            tool_use_result: { detachedToolCall: true },
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          await secondTurnSent;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-detached",
+          setPermissionMode: vi.fn().mockResolvedValue(undefined),
+        } as any);
+        const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "claude-sonnet-5",
+          modelId: "anthropic/claude-sonnet-5",
+        });
+        await service.runSessionTurn({ sessionId: session.id, text: "Fetch the slow page." });
+        const fetchCall = events.find((event) => event.event.type === "tool_call" && event.event.itemId === "fetch-1");
+        const fetchTurnId = fetchCall?.event.type === "tool_call" ? fetchCall.event.turnId : undefined;
+        expect(fetchTurnId).toBeTruthy();
+        const fetchResults = () => events.flatMap((event) => (
+          event.event.type === "tool_result" && event.event.itemId === "fetch-1" ? [event.event] : []
+        ));
+        return { service, session, fetchTurnId, fetchResults };
+      };
+
+      it("keeps the row running past its turn and settles it with the late result under the turn that called it", async () => {
+        const { service, session, fetchTurnId, fetchResults } = await startDetachedFetch();
+        expect(fetchResults()).toEqual([]);
+
+        vi.mocked(getSessionMessages).mockResolvedValue([notificationRow] as any);
+        await service.runSessionTurn({ sessionId: session.id, text: "Anything else?" });
+
+        expect(fetchResults()).toEqual([
+          expect.objectContaining({ tool: "WebFetch", result: lateResult, turnId: fetchTurnId, status: "completed" }),
+        ]);
+      });
+
+      // Claude Code drops a detached call on any interrupt, so nothing else
+      // would ever settle the row.
+      it("closes the row as interrupted on Stop", async () => {
+        const { service, session, fetchTurnId, fetchResults } = await startDetachedFetch();
+
+        await service.interrupt({ sessionId: session.id });
+        expect(fetchResults()).toEqual([
+          expect.objectContaining({ tool: "WebFetch", turnId: fetchTurnId, status: "interrupted" }),
+        ]);
       });
     });
 

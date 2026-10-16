@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sessionElapsedAnchor, sessionElapsedLabel, sessionStatusPresentation } from "./sessionStatusPresentation";
+import { sessionElapsedAnchor, sessionElapsedLabel, sessionStatusPresentation, turnStallSilenceMs, TURN_STALL_AFTER_MS } from "./sessionStatusPresentation";
 import type { AgentChatUsageLimitResume } from "./types/chat";
 import type { SessionActivityReport } from "./types/sessions";
 
@@ -69,6 +69,63 @@ describe("sessionElapsedAnchor", () => {
   });
 });
 
+describe("turnStallSilenceMs", () => {
+  const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
+  const ago = (ms: number) => new Date(nowMs - ms).toISOString();
+
+  it.each([
+    {
+      name: "stays quiet while a turn is still inside the bar",
+      session: { lastActivityAt: ago(60_000), currentTurnStartedAt: ago(3_600_000) },
+      progressAt: null,
+      expected: null,
+    },
+    {
+      name: "reports the silence once a turn passes the bar",
+      session: { lastActivityAt: ago(TURN_STALL_AFTER_MS + 100_000), currentTurnStartedAt: ago(TURN_STALL_AFTER_MS + 3_600_000) },
+      progressAt: null,
+      expected: TURN_STALL_AFTER_MS + 100_000,
+    },
+    {
+      // A turn that has produced nothing yet still carries the previous turn's
+      // lastActivityAt. The silence clock must start at this turn, not inherit
+      // the idle stretch before it.
+      name: "does not inherit the previous turn's quiet stretch for a fresh turn",
+      session: { lastActivityAt: ago(3_600_000), currentTurnStartedAt: ago(10_000) },
+      progressAt: null,
+      expected: null,
+    },
+    {
+      // The reported bug: the renderer's summary lastActivityAt froze at the
+      // last steer while the transcript kept producing thinking and tool calls.
+      // A recent progress event must keep the turn off the stall bar even
+      // though the summary looks stale.
+      name: "does not fire on a stale summary when the transcript made recent progress",
+      session: { lastActivityAt: ago(TURN_STALL_AFTER_MS + 3_600_000), currentTurnStartedAt: ago(TURN_STALL_AFTER_MS + 3_600_000) },
+      progressAt: ago(60_000),
+      expected: null,
+    },
+    {
+      // The converse of the bug fix: when the newest progress event is itself
+      // past the bar and nothing is newer, a real stall must still fire.
+      name: "fires when the newest progress event is itself past the bar",
+      session: { lastActivityAt: ago(TURN_STALL_AFTER_MS + 3_600_000), currentTurnStartedAt: ago(TURN_STALL_AFTER_MS + 3_600_000) },
+      progressAt: ago(TURN_STALL_AFTER_MS + 100_000),
+      expected: TURN_STALL_AFTER_MS + 100_000,
+    },
+    {
+      // Progress from the previous turn must not hold a freshly started turn
+      // off the bar: a turn's silence cannot start before the turn did.
+      name: "lets a fresh turn keep reporting silence despite stale progress",
+      session: { lastActivityAt: ago(60_000), currentTurnStartedAt: ago(10_000) },
+      progressAt: ago(TURN_STALL_AFTER_MS + 3_600_000),
+      expected: null,
+    },
+  ])("$name", ({ session, expected, progressAt }) => {
+    expect(turnStallSilenceMs(session, nowMs, progressAt ?? null)).toBe(expected);
+  });
+});
+
 describe("sessionStatusPresentation usage-limit resume", () => {
   const resume = (
     state: AgentChatUsageLimitResume["state"],
@@ -113,16 +170,16 @@ describe("sessionStatusPresentation usage-limit resume", () => {
       usageLimitResume: resume("paused", "2026-08-17T21:30:00.000Z"),
       nowMs,
     })).toMatchObject({ label: "Paused · limit", tone: "amber", glyph: "waiting" });
-    // Neither of these is waiting for anything, so the row keeps its ordinary
-    // presentation instead of being quieted into a limit label.
+    // With no automatic restart planned, the limit still needs the user's
+    // attention and takes precedence over the ordinary phase.
     expect(sessionStatusPresentation("idle", {}, {
       usageLimitResume: resume("opted_out", null),
       nowMs,
-    })?.label).toBe("Done");
+    })).toMatchObject({ label: "Usage limit", tone: "amber", glyph: "waiting", prominent: true });
     expect(sessionStatusPresentation("failed", {}, {
       usageLimitResume: resume("no_reset", null),
       nowMs,
-    })).toMatchObject({ label: "Failed", tone: "red" });
+    })).toMatchObject({ label: "Usage limit", tone: "amber", glyph: "waiting", prominent: true });
   });
 
   it("outranks the red Failed label for the turn that died at the limit", () => {
@@ -163,6 +220,23 @@ describe("sessionStatusPresentation usage-limit resume", () => {
       usageLimitResume: null,
       nowMs: Date.parse("2026-08-17T12:00:00.000Z"),
     })?.label).toBe("Done");
+  });
+});
+
+describe("sessionStatusPresentation for a chat that will run again", () => {
+  const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
+  // A resting chat reads Waiting while something will start it again: its own
+  // wake (until the grace after it runs out) or a subagent that wakes it. Past
+  // the grace the wake is presumed lost and the row is Done, asking for a look.
+  it.each<[string, Parameters<typeof sessionStatusPresentation>[0], { nextWakeAt?: string; subagentBusy?: boolean }, string]>([
+    ["a wake still to come", "idle", { nextWakeAt: "2026-08-17T12:10:00.000Z" }, "Waiting"],
+    ["a wake just due, inside the grace", "ready", { nextWakeAt: "2026-08-17T11:59:00.000Z" }, "Waiting"],
+    ["a wake overdue past the grace", "idle", { nextWakeAt: "2026-08-17T11:50:00.000Z" }, "Done"],
+    ["a busy subagent with no wake of its own", "idle", { subagentBusy: true }, "Waiting"],
+    ["neither", "idle", {}, "Done"],
+    ["a busy subagent under a parent that failed", "failed", { subagentBusy: true }, "Failed"],
+  ])("%s", (_label, phase, activity, label) => {
+    expect(sessionStatusPresentation(phase, {}, { ...activity, nowMs })?.label).toBe(label);
   });
 });
 
@@ -210,5 +284,90 @@ describe("sessionStatusPresentation agent-reported activity", () => {
     expect(sessionStatusPresentation("idle", {}, {
       activityStatus: report,
     })?.label).toBe("Done");
+  });
+});
+
+describe("sessionStatusPresentation detected activity", () => {
+  const detected: SessionActivityReport = {
+    value: "exploring",
+    source: "detected",
+    updatedAt: "2026-09-24T12:30:00.000Z",
+  };
+
+  it.each([
+    ["exploring", "Exploring", "exploring"],
+    ["shipping", "Shipping", "shipping"],
+  ] as const)("presents %s as live activity", (value, label, glyph) => {
+    const activityStatus = { ...detected, value };
+    expect(sessionStatusPresentation("running", {}, {
+      activityStatus,
+      currentTurnStartedAt: "2026-09-24T12:45:00.000Z",
+    })).toMatchObject({
+      label,
+      glyph,
+      tone: "blue",
+      activityDetail: true,
+      activitySource: "detected",
+      activityUpdatedAt: detected.updatedAt,
+    });
+    expect(sessionElapsedAnchor({ activityStatus, currentTurnStartedAt: "2026-09-24T12:45:00.000Z" }, "running", "turn"))
+      .toBe(detected.updatedAt);
+    expect(sessionStatusPresentation("needs_you", {}, { activityStatus })?.label).toBe("Needs you");
+  });
+
+  it("carries detection across continuation turns, hides an older agent report, and anchors elapsed at entry", () => {
+    const continuation = "2026-09-24T13:00:00.000Z";
+    const oldAgentReport: SessionActivityReport = {
+      value: "debugging",
+      source: "agent",
+      updatedAt: "2026-09-24T12:00:00.000Z",
+    };
+    const carried = sessionStatusPresentation("running", {}, {
+      activityStatus: detected,
+      currentTurnStartedAt: continuation,
+    });
+    const hidden = sessionStatusPresentation("running", {}, {
+      activityStatus: oldAgentReport,
+      currentTurnStartedAt: continuation,
+    });
+
+    expect(carried).toMatchObject({ label: "Exploring", activitySource: "detected" });
+    expect(hidden?.label).toBe("Working");
+    expect(sessionElapsedAnchor({ activityStatus: detected, currentTurnStartedAt: continuation }, "running", "turn"))
+      .toBe(detected.updatedAt);
+    const reconfirmed = {
+      ...detected,
+      source: "agent" as const,
+      reportedAt: continuation,
+    };
+    expect(sessionStatusPresentation("running", {}, {
+      activityStatus: reconfirmed,
+      currentTurnStartedAt: continuation,
+    })).toMatchObject({ label: "Exploring", activitySource: "agent" });
+    expect(sessionElapsedAnchor({ activityStatus: reconfirmed, currentTurnStartedAt: continuation }, "running", "turn"))
+      .toBe(detected.updatedAt);
+  });
+
+  it("keeps native Planning over detected Exploring but honors an agent refinement", () => {
+    const currentTurnStartedAt = "2026-09-24T12:45:00.000Z";
+    const exploring = sessionStatusPresentation("running", {}, {
+      chatActivityMode: "planning",
+      activityStatus: detected,
+      currentTurnStartedAt,
+    });
+    const explicitTesting: SessionActivityReport = {
+      ...detected,
+      value: "testing",
+      source: "agent",
+      reportedAt: currentTurnStartedAt,
+    };
+    const testing = sessionStatusPresentation("running", {}, {
+      chatActivityMode: "planning",
+      activityStatus: explicitTesting,
+      currentTurnStartedAt,
+    });
+
+    expect(exploring).toMatchObject({ label: "Planning", glyph: "planning", tone: "violet" });
+    expect(testing).toMatchObject({ label: "Testing", glyph: "testing", activitySource: "agent" });
   });
 });

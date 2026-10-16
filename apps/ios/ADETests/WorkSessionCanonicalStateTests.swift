@@ -158,6 +158,28 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertEqual(phaseLabel(exactly.phase), "Stale")
   }
 
+  func testRestingSessionIsStaleOnlyWhileItClaimsBackgroundWork() {
+    let silent = silentFor(sessionStaleAfterSeconds + 60)
+    // A reply waiting on the user does not age into "Stale".
+    XCTAssertEqual(
+      workCanonicalSessionState(status: "running", runtimeState: "idle", toolType: "codex-chat", lastActivityAt: silent, now: now).phase,
+      .ready
+    )
+    XCTAssertEqual(
+      workCanonicalSessionState(status: "running", runtimeState: "idle", toolType: "codex", lastActivityAt: silent, now: now).phase,
+      .idle
+    )
+    // A resting chat that still claims background work, silent past the bar,
+    // is stale: the claim is what went quiet.
+    XCTAssertEqual(
+      workCanonicalSessionState(
+        status: "running", runtimeState: "idle", toolType: "codex-chat",
+        lastActivityAt: silent, backgroundTaskCount: 1, now: now
+      ).phase,
+      .stale
+    )
+  }
+
   func testStaleBeatsRunningPreviewHeuristic() {
     // Silent past threshold AND a prompt-like preview → stale wins (heuristic is
     // consulted only for otherwise-plain running sessions).
@@ -394,7 +416,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
         kind: .stale,
         // The wire phase is still called `stale`; the word the user reads is
         // "Idle", owned by `ActivityStateGroup.idle.label` and identical on the
-        // Activity sheet, the notch, the widget and the publisher. One state,
+        // Activity sheet, the widget and the publisher. One state,
         // one word — this row used to say "Stale" while the same session's
         // Activity row said "is idle".
         label: "Idle",
@@ -470,12 +492,16 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertEqual(paused.tone, .amber)
     XCTAssertEqual(paused.status?.label, "Paused · limit")
 
-    // States with nothing scheduled hand the slot back: the row is a plain
-    // failure again, capsule and all.
-    summary.usageLimitResume = AgentChatUsageLimitResume(state: .optedOut, provider: "claude")
-    let optedOut = workSessionRowPresentation(session: session, summary: summary, now: now)
-    XCTAssertEqual(optedOut.badge?.kind, .failed)
-    XCTAssertEqual(optedOut.tone, .red)
+    // These states have no automatic resume, but the stopped chat is still
+    // waiting on a usage limit rather than a failed turn.
+    for state in [AgentChatUsageLimitResumeState.optedOut, .noReset] {
+      summary.usageLimitResume = AgentChatUsageLimitResume(state: state, provider: "claude")
+      let limited = workSessionRowPresentation(session: session, summary: summary, now: now)
+      XCTAssertNil(limited.badge)
+      XCTAssertEqual(limited.tone, .amber)
+      XCTAssertEqual(limited.status?.label, "Usage limit")
+      XCTAssertEqual(limited.status?.glyph, .parked)
+    }
   }
 
   /// A raised hand outranks an appointment. Desktop returns
@@ -781,6 +807,23 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       workSessionRowPresentation(session: session, summary: summary, now: now).badge?.kind,
       .planning
     )
+  }
+
+  func testDetectedExploringKeepsNativePlanningButAgentActivityCanRefineIt() {
+    var session = makeSession(status: "running", runtimeState: "running", toolType: "codex-chat", startedAt: iso(now))
+    var summary = makeChatSummary(status: "active", awaitingInput: false, codexEffectiveCollaborationMode: "plan")
+    summary.currentTurnStartedAt = iso(now)
+    session.activityStatus = SessionActivityReport(value: "exploring", source: "detected", updatedAt: iso(now))
+
+    XCTAssertEqual(workSessionRowPresentation(session: session, summary: summary, now: now).status?.label, "Planning")
+
+    session.activityStatus = SessionActivityReport(
+      value: "testing",
+      source: "agent",
+      updatedAt: iso(now),
+      reportedAt: iso(now)
+    )
+    XCTAssertEqual(workSessionRowPresentation(session: session, summary: summary, now: now).status?.label, "Testing")
   }
 
   /// A blocked session is amber whatever mode it is in — planning must never
@@ -1880,9 +1923,328 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
 
     XCTAssertFalse(framed.contains("lane:lane-7"), "ordinary lane group must be expanded")
     XCTAssertTrue(framed.contains("lane-open:lane-7"), "quiet lane group must be expanded")
+    XCTAssertTrue(
+      framed.contains("shelf-open:\(workWorkingSectionId)"),
+      "the Working shelf must be expanded too, or a folded lane is not on screen"
+    )
     XCTAssertTrue(framed.contains("lane:other"), "unrelated lane state must be preserved")
     XCTAssertTrue(framed.contains("status:settled"), "unrelated section state must be preserved")
     XCTAssertTrue(saved.contains("lane:lane-7"), "transient framing must not mutate the saved base")
+  }
+
+  /// The iOS mirror of desktop's turn-stall rule, which holds a silent live
+  /// turn's lane out of the Working fold.
+  func testTurnStallMatchesDesktop() {
+    func ago(_ minutes: Double) -> String { iso(now.addingTimeInterval(-minutes * 60)) }
+    let cases: [(String, String?, String?, Int?, Bool)] = [
+      ("silent past five minutes with no open work", ago(20), ago(6), 0, true),
+      ("last output from an earlier turn counts from the turn start", ago(6), ago(120), 0, true),
+      ("waiting on open work", ago(20), ago(6), 1, false),
+      ("an older host that reports no count", ago(20), ago(6), nil, false),
+      ("silent for less than five minutes", ago(20), ago(4), 0, false),
+      ("no live turn", nil, ago(60), 0, false),
+    ]
+    for (name, turnStart, lastActivity, openWork, stalled) in cases {
+      XCTAssertEqual(
+        workTurnIsStalled(currentTurnStartedAt: turnStart, lastActivityAt: lastActivity, turnOpenWorkCount: openWork, now: now),
+        stalled,
+        name
+      )
+    }
+  }
+
+  /// The iOS mirror of desktop's `summarizeLaneFocus` fold rule: a raised hand
+  /// or a finish nobody has left holds the lane out; Waiting is still busy; and
+  /// a lane only folds when at least one live row is actually busy.
+  func testLaneFocusFoldRuleMatchesDesktop() {
+    let running = makeSession(
+      status: "running",
+      runtimeState: "running",
+      toolType: "codex",
+      startedAt: iso(now)
+    )
+    let runningFocus = workRowFocus(
+      session: running,
+      summary: nil,
+      archived: false,
+      laneWaiting: false,
+      seen: false,
+      now: now
+    )
+    XCTAssertEqual(runningFocus?.status, .working)
+    XCTAssertEqual(runningFocus?.holdsOut, false)
+    XCTAssertTrue(workLaneFoldsIntoWorking([runningFocus]))
+    XCTAssertEqual(workRollUpLaneFocus([runningFocus]), .working)
+
+    // A PR wait parks a running row in Waiting; it is still busy and folds.
+    let waitingFocus = workRowFocus(
+      session: running,
+      summary: nil,
+      archived: false,
+      laneWaiting: true,
+      seen: false,
+      now: now
+    )
+    XCTAssertEqual(waitingFocus?.status, .waiting)
+    XCTAssertEqual(waitingFocus?.holdsOut, false)
+    XCTAssertTrue(workLaneFoldsIntoWorking([waitingFocus]))
+
+    let blocked = makeSession(
+      status: "running",
+      runtimeState: "waiting-input",
+      toolType: "codex",
+      pendingInputItemId: "ask-1"
+    )
+    let blockedFocus = workRowFocus(
+      session: blocked,
+      summary: nil,
+      archived: false,
+      laneWaiting: false,
+      seen: false,
+      now: now
+    )
+    XCTAssertEqual(blockedFocus?.status, .needsYou)
+    XCTAssertEqual(blockedFocus?.holdsOut, true)
+    XCTAssertFalse(workLaneFoldsIntoWorking([blockedFocus, runningFocus]))
+    XCTAssertEqual(workRollUpLaneFocus([blockedFocus, runningFocus]), .needsYou)
+
+    let finished = makeSession(
+      status: "ended",
+      runtimeState: "exited",
+      toolType: "codex",
+      exitCode: 0,
+      startedAt: iso(now)
+    )
+    let unseen = workRowFocus(
+      session: finished,
+      summary: nil,
+      archived: false,
+      laneWaiting: false,
+      seen: false,
+      now: now
+    )
+    XCTAssertEqual(unseen?.status, .done)
+    XCTAssertEqual(unseen?.holdsOut, true)
+    XCTAssertFalse(workLaneFoldsIntoWorking([unseen, runningFocus]))
+    XCTAssertFalse(workLaneFoldsIntoWorking([unseen]))
+
+    // Once the user has left it since it finished, the Done row stops holding
+    // the lane out; a lane of only settled finishes is still not "working".
+    let seen = workRowFocus(
+      session: finished,
+      summary: nil,
+      archived: false,
+      laneWaiting: false,
+      seen: true,
+      now: now
+    )
+    XCTAssertEqual(seen?.status, .done)
+    XCTAssertEqual(seen?.holdsOut, false)
+    XCTAssertTrue(workLaneFoldsIntoWorking([seen, runningFocus]))
+    XCTAssertFalse(workLaneFoldsIntoWorking([seen]))
+
+    // A plain shell (a dev server, an App Control shell) runs forever, so it is
+    // not busy work: it cannot keep a seen Done row's lane folded, or fold alone.
+    let shell = makeSession(
+      status: "running",
+      runtimeState: "running",
+      toolType: "shell",
+      startedAt: iso(now)
+    )
+    let shellFocus = workCountedRowFocus(
+      session: shell,
+      summary: nil,
+      archived: false,
+      laneWaiting: false,
+      seen: false,
+      busySubagentParent: false,
+      nestedChild: true,
+      now: now
+    )
+    XCTAssertEqual(shellFocus?.status, .working)
+    XCTAssertEqual(shellFocus?.holdsOut, false)
+    XCTAssertFalse(workLaneFoldsIntoWorking([seen, shellFocus]))
+    XCTAssertFalse(workLaneFoldsIntoWorking([shellFocus]))
+    XCTAssertTrue(workLaneFoldsIntoWorking([runningFocus, shellFocus]))
+    XCTAssertEqual(workRollUpLaneFocus([seen, shellFocus]), .working)
+  }
+
+  /// Desktop `summarizeLaneFocus`'s launcher rule: a finished helper an agent
+  /// launched does not hold its lane out while that agent is busy in the lane,
+  /// and counts again once the agent itself has finished.
+  func testLaneFocusDefersFinishedHelpersToTheirBusyLauncher() {
+    var launcher = makeSession(status: "running", runtimeState: "running", toolType: "codex", startedAt: iso(now))
+    launcher.id = "launcher"
+    var helper = makeSession(status: "ended", runtimeState: "exited", toolType: "codex", exitCode: 0, startedAt: iso(now))
+    helper.id = "helper"
+    helper.launchedBySessionId = "launcher"
+    var userStarted = helper
+    userStarted.id = "user-started"
+    userStarted.launchedBySessionId = nil
+    var finishedLauncher = userStarted
+    finishedLauncher.id = "launcher"
+
+    func counted(_ sessions: [TerminalSessionSummary]) -> [WorkRowFocus?] {
+      workLaneCountedFocus(
+        sessions.map {
+          WorkLaneRosterRow(session: $0, summary: nil, archived: false, seen: false, busySubagentParent: false, nestedChild: false)
+        },
+        laneWaiting: false,
+        now: now
+      )
+    }
+
+    let deferred = counted([launcher, helper])
+    XCTAssertNil(deferred[1])
+    XCTAssertTrue(workLaneFoldsIntoWorking(deferred))
+    XCTAssertEqual(workRollUpLaneFocus(deferred), .working)
+
+    // A chat the user started has no launcher, so it still holds the lane out.
+    let held = counted([launcher, userStarted])
+    XCTAssertEqual(held[1]?.holdsOut, true)
+    XCTAssertFalse(workLaneFoldsIntoWorking(held))
+
+    // Once the launcher has finished, the helper holds the lane out again.
+    let afterLauncher = counted([finishedLauncher, helper])
+    XCTAssertEqual(afterLauncher[1]?.holdsOut, true)
+    XCTAssertFalse(workLaneFoldsIntoWorking(afterLauncher))
+  }
+
+  func testLaneFocusFoldRuleHandlesScheduledAndMissedWakesAndSubagents() {
+    struct Case {
+      let name: String
+      let session: TerminalSessionSummary
+      let summary: AgentChatSessionSummary?
+      let roster: [TerminalSessionSummary]
+      let summaries: [String: AgentChatSessionSummary]
+      let seen: Bool
+      let nestedChild: Bool
+      let expectedStatus: WorkLaneFocusStatus?
+      let expectedHoldsOut: Bool
+      let expectedMissedWake: Bool
+      let expectedFold: Bool
+    }
+
+    func parent() -> TerminalSessionSummary {
+      var session = makeSession(status: "completed", runtimeState: "idle", toolType: "codex-chat")
+      session.id = "parent"
+      return session
+    }
+
+    func child(id: String = "child", status: String = "running", runtime: String = "running") -> TerminalSessionSummary {
+      var session = makeSession(status: status, runtimeState: runtime, toolType: "codex-chat")
+      session.id = id
+      session.spawnKind = .subagent
+      session.orchestrationParentSessionId = "parent"
+      return session
+    }
+
+    func chatSummary(nextWakeAt: Date) -> AgentChatSessionSummary {
+      var summary = makeChatSummary(status: "completed", awaitingInput: false)
+      summary.nextWakeAt = iso(nextWakeAt)
+      return summary
+    }
+
+    let pendingParent = parent()
+    let pendingSummary = chatSummary(nextWakeAt: now.addingTimeInterval(-60))
+    let overdueParent = parent()
+    let overdueSummary = chatSummary(nextWakeAt: now.addingTimeInterval(-121))
+    let busyParent = parent()
+    let busyChild = child()
+    let finishedParent = parent()
+    let finishedChild = child(id: "finished-child", status: "ended", runtime: "exited")
+    let nestedWakeChild = child(id: "nested-wake", status: "completed", runtime: "idle")
+    let nestedWakeSummary = chatSummary(nextWakeAt: now.addingTimeInterval(-121))
+
+    let cases = [
+      Case(
+        name: "pending wake alone folds as waiting",
+        session: pendingParent,
+        summary: pendingSummary,
+        roster: [pendingParent],
+        summaries: [pendingParent.id: pendingSummary],
+        seen: false,
+        nestedChild: false,
+        expectedStatus: .waiting,
+        expectedHoldsOut: false,
+        expectedMissedWake: false,
+        expectedFold: true
+      ),
+      Case(
+        name: "unseen idle parent with busy subagent folds",
+        session: busyParent,
+        summary: nil,
+        roster: [busyParent, busyChild],
+        summaries: [:],
+        seen: false,
+        nestedChild: false,
+        expectedStatus: .waiting,
+        expectedHoldsOut: false,
+        expectedMissedWake: false,
+        expectedFold: true
+      ),
+      Case(
+        name: "finished subagent leaves unseen parent holding the lane out",
+        session: finishedParent,
+        summary: nil,
+        roster: [finishedParent, finishedChild],
+        summaries: [:],
+        seen: false,
+        nestedChild: false,
+        expectedStatus: .done,
+        expectedHoldsOut: true,
+        expectedMissedWake: false,
+        expectedFold: false
+      ),
+      Case(
+        name: "overdue wake holds lane out even when seen",
+        session: overdueParent,
+        summary: overdueSummary,
+        roster: [overdueParent],
+        summaries: [overdueParent.id: overdueSummary],
+        seen: true,
+        nestedChild: false,
+        expectedStatus: .done,
+        expectedHoldsOut: true,
+        expectedMissedWake: true,
+        expectedFold: false
+      ),
+      Case(
+        name: "overdue wake on nested child still holds lane out",
+        session: nestedWakeChild,
+        summary: nestedWakeSummary,
+        roster: [parent(), nestedWakeChild],
+        summaries: [nestedWakeChild.id: nestedWakeSummary],
+        seen: true,
+        nestedChild: true,
+        expectedStatus: .done,
+        expectedHoldsOut: true,
+        expectedMissedWake: true,
+        expectedFold: false
+      ),
+    ]
+
+    for testCase in cases {
+      let busyParents = workBusySubagentParentIds(
+        sessions: testCase.roster,
+        chatSummaries: testCase.summaries,
+        now: now
+      )
+      let focus = workCountedRowFocus(
+        session: testCase.session,
+        summary: testCase.summary,
+        archived: false,
+        laneWaiting: false,
+        seen: testCase.seen,
+        busySubagentParent: busyParents.contains(testCase.session.id),
+        nestedChild: testCase.nestedChild,
+        now: now
+      )
+      XCTAssertEqual(focus?.status, testCase.expectedStatus, testCase.name)
+      XCTAssertEqual(focus?.holdsOut, testCase.expectedStatus == nil ? nil : testCase.expectedHoldsOut, testCase.name)
+      XCTAssertEqual(focus?.missedWake, testCase.expectedStatus == nil ? nil : testCase.expectedMissedWake, testCase.name)
+      XCTAssertEqual(workLaneFoldsIntoWorking([focus]), testCase.expectedFold, testCase.name)
+    }
   }
 
   func testGroupsRefileASnoozedRowOnceItsDeadlineLapses() {
@@ -1934,6 +2296,24 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertNil(nextSessionSnoozeDeadline([awake, lapsed], now: now))
     XCTAssertNil(workSnoozeRegroupDelay(sessions: [], now: now))
     XCTAssertNil(workSnoozeRegroupDelay(sessions: [awake, lapsed], now: now))
+  }
+
+  func testRegroupRefreshTargetsScheduledWakeGraceWithoutPendingSnooze() {
+    var awake = makeSession(status: "completed", runtimeState: "idle", toolType: "codex-chat")
+    awake.id = "scheduled-wake"
+    var summary = makeChatSummary(status: "completed", awaitingInput: false)
+    summary.nextWakeAt = iso(now.addingTimeInterval(30))
+
+    XCTAssertEqual(
+      workSnoozeRegroupDelay(
+        sessions: [awake],
+        chatSummaries: [awake.id: summary],
+        now: now
+      ) ?? -1,
+      150,
+      accuracy: 0.001,
+      "The regroup timer must wake when the scheduled wake exits its two-minute grace"
+    )
   }
 
   func testRefreshIsArmedAtTheSoonestDeadlineOnly() {

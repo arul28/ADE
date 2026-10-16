@@ -1,3 +1,4 @@
+import { appControlFrameEventLaneId } from "../../desktop/src/shared/appControlFrameDemand";
 import type { BufferedEvent } from "./eventBuffer";
 
 /**
@@ -5,9 +6,9 @@ import type { BufferedEvent } from "./eventBuffer";
  *
  * App Control's screencast is a CDP `Page.screencastFrame` pass-through: a
  * base64 JPEG at up to 1600x1000, quality 78, `everyNthFrame: 1`. That is
- * 80-350 KB per frame at monitor refresh, and it is pushed onto the runtime
- * event stream whenever a session is attached, whether or not anything is
- * watching.
+ * 80-350 KB per frame at monitor refresh. The screencast streams only while
+ * something shows or records the lane (or a client from before frame demand
+ * subscribes to frames), and frames are never kept for replay.
  *
  * On a local socket that is merely wasteful. Over a paired sync transport it is
  * fatal: runtime RPC rides `rpc_data`, which is a *required* send, so the host
@@ -32,4 +33,15 @@ export function isHighVolumeRuntimeEvent(event: BufferedEvent): boolean {
   const inner = record.event;
   if (!inner || typeof inner !== "object" || Array.isArray(inner)) return false;
   return (inner as Record<string, unknown>).type === "frame";
+}
+
+/** The lane of a screencast frame event, for keeping each lane's newest frame apart. */
+export function runtimeEventFrameLaneId(event: BufferedEvent): string | null {
+  const inner = (event.payload as Record<string, unknown> | null)?.event;
+  if (!inner || typeof inner !== "object" || Array.isArray(inner)) return null;
+  const record = inner as { laneId?: unknown; frame?: { laneId?: unknown } | null };
+  return appControlFrameEventLaneId({
+    laneId: typeof record.laneId === "string" ? record.laneId : null,
+    frame: { laneId: typeof record.frame?.laneId === "string" ? record.frame.laneId : null },
+  });
 }

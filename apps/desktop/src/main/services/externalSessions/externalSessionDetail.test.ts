@@ -30,12 +30,6 @@ vi.mock("./discoverOpenCode", () => ({
 vi.mock("./discoverPi", () => ({
   discoverPiSessions: vi.fn(),
 }));
-// Never spawn a real `opencode export` from a unit test.
-vi.mock("./events/opencode", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./events/opencode")>()),
-  runOpenCodeExport: vi.fn(async () => null),
-}));
-
 import type {
   ExternalSessionDetail,
   ExternalSessionDetailArgs,

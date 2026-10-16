@@ -106,6 +106,19 @@ describe("WorkStartSurface", () => {
     });
   });
 
+  it("launches on the active project's Primary lane when a draft leaks across A → B → A", async () => {
+    const onLaunchPtySession = vi.fn().mockResolvedValue({ sessionId: "shell", ptyId: "pty", pid: null });
+    const props = { draftKind: "chat" as const, onOpenChatSession: vi.fn(), onLaunchPtySession };
+    const a = { id: "lane-a", name: "A", laneType: "primary" } as any;
+    const b = { id: "lane-b", name: "B", laneType: "primary" } as any;
+    const { rerender } = render(<WorkStartSurface {...props} lanes={[a]} draftLaneId={a.id} />);
+    for (const [lane, staleDraft] of [[b, a.id], [a, b.id]] as const) {
+      rerender(<WorkStartSurface {...props} lanes={[lane]} draftLaneId={staleDraft} />);
+      fireEvent.click(screen.getByText("mock shell"));
+      await waitFor(() => expect(onLaunchPtySession).toHaveBeenLastCalledWith({ laneId: lane.id, profile: "shell", title: "Shell" }));
+    }
+  });
+
   it("passes draft context options through to the chat pane", async () => {
     render(
       <WorkStartSurface
@@ -124,7 +137,10 @@ describe("WorkStartSurface", () => {
     expect(agentChatPaneProps.latest?.suppressDraftLaunchNavigation).toBe(true);
   });
 
-  it("keeps a foreign draft lane selected instead of falling back locally", async () => {
+  it.each([
+    { name: "this machine has lanes", localLanes: [{ id: "lane-local", name: "Local lane" } as any] },
+    { name: "this machine has no lanes", localLanes: [] as any[] },
+  ])("keeps a foreign draft lane selected instead of falling back locally ($name)", async ({ localLanes }) => {
     crossMachineState.lanesByMachine = {
       studio: {
         machineId: "studio",
@@ -147,7 +163,7 @@ describe("WorkStartSurface", () => {
         draftKind="chat"
         draftLaneId="lane-studio"
         draftMachineId="studio"
-        lanes={[{ id: "lane-local", name: "Local lane" } as any]}
+        lanes={localLanes}
         onOpenChatSession={vi.fn()}
         onLaunchPtySession={vi.fn()}
       />,

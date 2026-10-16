@@ -1,19 +1,15 @@
 import React from "react";
 import { LinearSection } from "./LinearSection";
-import { LinearMark } from "../lanes/linearBrand";
-import { SettingsSectionShell } from "./settingsSectionUi";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 
-const LINEAR_BRAND = "#5E6AD2";
-
+/**
+ * Settings › Integrations › Linear. The tab's block already names the group,
+ * so the section's own headings (Connection, ADE agent, …) carry the page.
+ *
+ * Keyed on the machine's pin: a new pin starts a fresh section, so nothing
+ * the last machine was doing (an OAuth sign-in, an agent install) lands here.
+ */
 export function LinearIntegrationSection() {
-  return (
-    <SettingsSectionShell
-      title="Linear integration"
-      description="Connect Linear for issue routing, lane context, PR linkage, and CTO workflows."
-      brandColor={LINEAR_BRAND}
-      iconNode={<LinearMark size={22} />}
-    >
-      <LinearSection embedded />
-    </SettingsSectionShell>
-  );
+  const { pin } = useSettingsMachineScope();
+  return <LinearSection key={pin?.key ?? "unpinned"} embedded />;
 }

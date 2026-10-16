@@ -134,8 +134,8 @@ is not achievable. All three need the author.
   stop with `blocked`. Do not merge and mention them afterwards.
 - If `/quality` was never run on this lane, or its final gate result is not
   available in the lane handoff, stop with `blocked`; unknown is not empty.
-- Any base movement, rebase, conflict resolution, Phase 3b edit, or
-  force-finalize edit clears all three quality binding fields. In stack mode,
+- A rebase, conflict resolution, Phase 3b edit, or force-finalize edit clears
+  all three quality binding fields. Base movement without a conflict does not. In stack mode,
   this lane's own Phase 3b edit clears them and is rebound by revalidation on
   the head it then pushes; external movement of the parent, base, or head
   instead clears the complete stack binding and returns
@@ -223,6 +223,26 @@ to a named higher layer in `deferredProofScenarios`.
 
 ## ADE deltas to the playbook
 
+**Poll with one command, every time, and read all of it.** The poll is
+`node scripts/ship-poll.mjs --pr <n>` (add `--text` for a readable summary).
+Run it on every wake-up, before every push (fixes, rebases, held commits, after
+rerunning a flaky job), and immediately before the merge. It reads CI, review
+bots, every open review thread whatever its age, findings that bots put in a
+review body outside any thread, new comments, bot notices and base movement in
+one call. Do not hand-write a poll: a CI-only or time-filtered check is how
+PR #1469 nearly merged over a CodeRabbit finding and seven unanswered threads.
+
+- `next: fix` — fix every item: CI failures, open threads not yet addressed,
+  `reviewFindings`, `newComments`. Record each handled thread or comment id in
+  `addressedCommentIds` and each review-body finding key in
+  `addressedReviewFindings`.
+- `next: resolve-threads` — the code is fixed but the thread is unanswered.
+  Reply with the fix commit and the test that pins it, or the reason it is
+  rejected, then resolve the thread.
+- `next: merge` — the only state in which Phase 3c may merge.
+- `botNotices` — a bot that could not run reviewed nothing. Name it in the
+  final summary; never report it as clean.
+
 **Every push restarts the review bots — Greptile especially.** Pushing a new
 commit re-triggers Greptile and Codex from scratch; an in-progress Greptile
 review (`Greptile Review` status stuck `pending`/`IN_PROGRESS`, often 15-25 min)
@@ -251,14 +271,17 @@ terminal-neutral, and continue. Record it under `inactiveReviewBots`, never
 If branch protection requires an absent check, Phase 3c will surface that as a
 merge-policy block.
 
-**Rebase only on real conflicts or a stale quality base.** `behindBase` alone
-does not normally trigger a rebase. The one safety exception is base movement
-after quality validation: the final tree is no longer the reviewed head tree,
-so ordinary merge mode rebases and reruns the canonical quality procedure even
-when GitHub reports a clean merge. Stack mode instead invalidates the current
+**Rebase or merge the base only to resolve a conflict.** PRs land on `main`
+all the time, so being behind it is normal and is not a reason to rebase, merge
+`main` in, or rerun quality. Act only when the poll reports `conflicting`
+(GitHub's `DIRTY`). GitHub may still call the PR behind and refuse a plain
+merge, because the "Protect main" ruleset requires branches to be up to date; we
+do not need that, so merge with `--admin` as Phase 3c.3 describes. The `ci-pass`
+run on `main` after the merge catches the rare change that merges cleanly but
+breaks another; fix those forward. Stack mode instead invalidates the current
 and upstack bindings and returns `stack-coordinator-sync-required`; it never
 rebases and never pushes another layer, though it does push its own layer branch
-in Phase 0 and Phase 3b. Otherwise, skip needless rebases.
+in Phase 0 and Phase 3b.
 
 **Bot pings by iteration.** Never ping GitHub Copilot and never ping `@codex` —
 neither is an expected review signal here, and Copilot quota exhaustion
@@ -294,11 +317,12 @@ tree.
 
 ## Concurrency
 
-Use `TeamCreate` if available (one team, reused across iterations: a poll agent,
-plus ci-fix / review-fix / rebase / conflict-resolver agents spawned on demand);
-per the global git-worktrees policy, do **not** pass worktree isolation. Fallback
-to parallel `Agent` calls. The lead reads only the poll agent's structured
-summary, never raw CI logs or full threads; fix agents edit, the lead commits.
+Use `TeamCreate` if available (one team, reused across iterations: ci-fix /
+review-fix / rebase / conflict-resolver agents spawned on demand); per the
+global git-worktrees policy, do **not** pass worktree isolation. Fallback to
+parallel `Agent` calls. The lead runs the poll itself — `scripts/ship-poll.mjs`
+prints the structured summary — and never reads raw CI logs or full threads
+instead; fix agents edit, the lead commits.
 
 ---
 
@@ -341,10 +365,10 @@ sleep, leaves the lane idle.
   `main`) → checkpoint → canonical commit-bound quality revalidation (delta
   since `qualityReviewedSha`) → push → open PR (`ade`, gh fallback) → verify the
   provisional binding → write state → schedule first wake.
-- **Phase 1 — Poll:** wait for CI terminal and every bot that actually started to
-  become terminal. After one 12-minute grace window, classify bots with zero
-  evidence as inactive/terminal-neutral. Return a structured summary (merged /
-  conflicting / ciFailed / newComments). Don't fix on a partial signal.
+- **Phase 1 — Poll:** run `node scripts/ship-poll.mjs --pr <n>`. Wait while it
+  reports CI or a review bot running. After one 12-minute grace window, classify
+  bots with zero evidence as inactive/terminal-neutral. Its `next` field is the
+  Phase 2 route. Don't fix on a partial signal.
 - **Phase 2 — Decide:** merged → run **Confirm the validated merge result** and
   only then set `done-clean`. Real conflict → Phase 3a rebase (rebate). CI or
   bots running → reschedule. Both terminal, no work → 3c merge.

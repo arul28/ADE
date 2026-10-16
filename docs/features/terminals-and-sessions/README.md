@@ -186,6 +186,12 @@ and in tests.
   post-startup rescan. Its transcript-tail read transparently falls back to a
   `<transcript>.gz` generation (`readHistoryFileSync`) so a compacted chat
   transcript still replays. ~580 lines. Branch rewrite.
+- `apps/desktop/src/main/services/sessions/agentShellCleanup.ts` — archives the
+  dead shells an agent started under a chat. It reads the machine-local
+  `agent_shell_cleanup` ledger (excluded from CRR: it records this machine's own
+  launches and typing), sweeps joined `terminal_sessions` rows, and archives
+  through `sessionService.archiveSession` only when the row is eligible. See
+  [Dead agent shells](#dead-agent-shells).
 - `apps/desktop/src/main/services/runtime/processRegistryService.ts` — per-
   process heartbeat registrar against the machine-local `runtime_processes`
   table, which is excluded from CRR replication because PIDs are OS-local.
@@ -293,7 +299,9 @@ and in tests.
   thread store (falling back to the `sessions/` rollout tree only when that
   database is unusable), Cursor artifacts under `~/.cursor/chats` and
   `~/.cursor/projects`, Droid sessions under `<factoryConfigHome>/sessions`,
-  OpenCode through `opencode session list`, Pi sessions in the shared Pi
+  OpenCode by reading the user's own OpenCode SQLite store directly and
+  read-only (v1 `session`/`message`/`part` or v2 `session_v2`/`session_message`;
+  ADE never starts a 2.0 server on that store), Pi sessions in the shared Pi
   store, and the ACP stores of Qwen, Kimi, Grok, and Copilot
   (`discoverQwen/Kimi/Grok/Copilot.ts` over `discoverAcpShared.ts`). The
   provider roots come from `services/shared/providerConfigHomes.ts` so
@@ -386,7 +394,10 @@ Shared types and IPC:
   Parent phases use the same host lifecycle rules for every provider. Provider
   adapters contribute **Needs you** only from structured input/permission
   requests; tracked PTY CLIs also get explicit `ade chat ask`. PTY text is never
-  parsed into a status. Agent-reported activity requires both the
+  parsed into a status. For every chat provider in the table, ADE **detects**
+  the activity detail from the turn's normalized tool calls (see
+  [Activity detection](./pty-and-sessions.md#activity-detection)); an agent
+  report only corrects or refines it. Agent-reported activity requires both the
   runtime-resolved ADE CLI executable and this runtime's RPC socket, and is
   disabled for embedded runtimes. Each provider path is advertised only when
   its command/tool and permission route is verified. Native Plan and
@@ -474,10 +485,12 @@ Shared types and IPC:
   map its dependency-free glyph ids to platform symbols. `sessionStatusShoutsLabel`
   is the nested-compact filter: the status word is painted only for Needs you
   or a red Failed tone.
-- `apps/desktop/src/shared/types/sessions.ts` — the fixed six-value activity
-  vocabulary. `apps/desktop/src/shared/sessionActivity.ts` imports it and
-  normalizes one host-timestamped agent report at the boundary.
-  The report refines a card's single status slot without moving its parent phase;
+- `apps/desktop/src/shared/types/sessions.ts` — the fixed eight-value activity
+  vocabulary and its two sources (`detected`, `agent`).
+  `apps/desktop/src/shared/sessionActivity.ts` imports it, normalizes one
+  host-timestamped activity at the boundary, and owns the precedence between a
+  detected activity and an agent report (`nextDetectedActivityReport`).
+  The activity refines a card's single status slot without moving its parent phase;
   `sessionActivity.test.ts` pins normalization and malformed-input handling.
 - `apps/desktop/src/shared/sessionSpawnNesting.ts` — the one by-lane filing
   rule desktop, ADE Code, and the iOS Swift mirror consult. Same-lane
@@ -521,7 +534,7 @@ Shared types and IPC:
   exported helpers; nothing here reads or writes a canonical phase.
 - `apps/desktop/src/renderer/components/terminals/sessionLifecycleActions.ts` —
   one place for the Work tab's snooze / wake / settle-override writes, so the
-  sidebar row menu, the row context menu, and the chat header snooze affordance can never
+  sidebar row menu, the row context menu, and the composer lifecycle chip can never
   disagree about what an action does or the copy it confirms with. Snooze
   computes the deadline client-side and hands it over as a concrete ISO instant
   (expiry is derived from it everywhere, so no scheduler is involved) and offers
@@ -574,17 +587,16 @@ Shared types and IPC:
   immediately; any other entry earns a fresh delay. It renders icon-led facts,
   supports clickable PR/parent-thread rows, cancels on scroll/resize, clamps to
   the viewport, and uses a reduced-motion-aware fade/slide.
-- `apps/desktop/src/renderer/components/work/SessionLifecycleChips.tsx` —
-  the optional `SessionSnoozeChip` for a chat surface header, mounted by
-  `WorkSurfaceHeader` through its `snoozeSessionId` prop. Settled state is shown
-  once by the compact `ChatLifecyclePill` pill floating above the composer,
-  rather than repeated in the header. Both surfaces read the same local
+- `apps/desktop/src/renderer/components/work/useSessionLifecycleSnapshot.ts` —
+  the lifecycle read behind the `ChatLifecyclePill` chip in the composer status
+  strip (`StatusStrip` (`ui/notice/StatusChip.tsx`)), which shows settled and
+  snoozed state once; the chat header carries no lifecycle chip. It reads the same local
   per-project session cache, with a root cross-machine snapshot fallback for a
-  foreign chat, and the same canonical helpers as the Work sidebar; the snooze
-  menu calls `wakeSessionNow`, while the banner offers Un-settle. A bounded
+  foreign chat, and the same canonical helpers as the Work sidebar; the chip's Wake now calls
+  `wakeSessionNow`, and Un-settle clears a settle. A bounded
   render-only deadline timer repaints an open foreign/local snapshot when its
-  snooze expires. The slot above the composer also hosts lane branch drift
-  (`LaneBranchDriftStrip`).
+  snooze expires. The same strip also hosts the lane branch-drift chip
+  (`LaneBranchComposerChip`).
 - `apps/ade-cli/src/sessionSnoozeDuration.ts` — snooze duration grammar shared
   by the `ade session snooze` planner in `cli.ts` and `ade code`'s
   `/session snooze`, extracted so there is exactly one answer to "what does
@@ -696,6 +708,10 @@ Preload bridge:
   the runtime `external-sessions` ADE action domain and fall back to the
   legacy desktop IPC handlers only when no runtime binding exists. The
   preview watch (`watchDetail` / `onDetailUpdated`) is always local IPC.
+  It reads this computer's provider stores directly, so it works in a
+  runtime-backed project whose desktop context has no external sessions
+  service. If the watch still fails, the preview falls back to one
+  `getDetail` read before it shows the list row's message snippets.
 - `apps/desktop/src/preload/global.d.ts` — renderer-visible typing for
   the `window.ade.externalSessions` bridge (`list`, `import`, `getDetail`,
   and the watch calls).
@@ -717,6 +733,22 @@ IPC registration:
 
 Renderer surfaces:
 
+- `apps/desktop/src/renderer/components/terminals/useWorkFocusGrid.ts` — the
+  Focus grid's state: tile order, the page size measured from the grid's box,
+  the pages, the focused tile (whose page wins when the pages re-spread), the
+  unseen marks, swipe paging, the saved-layout key, and the sidebar-roster marks
+  and toolbar pager. `TerminalsPage` renders the grid from it.
+- `apps/desktop/src/renderer/components/terminals/useWorkFocusQueueReport.ts` —
+  the sidebar's half: every chat the Focus grid shows (this machine's, then
+  other machines' unfolded lanes with their binding), reported up only when
+  what a tile shows can change.
+- `apps/desktop/src/renderer/components/terminals/WorkFocusGrid.tsx` — the
+  Focus grid's pure page math (`focusFit`, `focusEvenPages`,
+  `focusPageColumns`, `focusPageSummary`) and its UI: the empty state, the
+  bottom roster strip, the toolbar pager, and the Focus pill.
+- `apps/desktop/src/renderer/lib/useTurnStallClock.ts` — "now" for the
+  turn-stall rule, re-rendering exactly at the next stall deadline; used by the
+  sidebar fold and `SessionStatusSlot`.
 - `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx` —
   entry surface with `PaneTilingLayout` (sessions list + work view).
   Owns the multi-select state (`selectedSessionIds`, shift/ctrl anchor,
@@ -880,8 +912,9 @@ Renderer surfaces:
   label, a three-to-five-word `hint` for a tool that has measured nothing yet,
   and a `contextLabel` rule for the header's one fact), `workToolAvailability`
   (available, or a reason: desktop-only, macOS-only), and
-  `isReadOnlyWorkTool` for the hosted web client. Six tools, no Pull request
-  tool — PRs have their own tab. Availability is decided from capability flags,
+  `isReadOnlyWorkTool` for the hosted web client. The Issues tool shows Linear
+  issues opened from this lane's chats ([Issues](../issues/README.md)); its
+  card status is the count of open issue tabs, a local read. Availability is decided from capability flags,
   never `process.platform` — the web client renders the same components.
 - `apps/desktop/src/renderer/components/terminals/WorkToolPicker.tsx`,
   `WorkToolPickerBackdrop.tsx`, `WorkToolHeader.tsx`,
@@ -948,6 +981,14 @@ Renderer surfaces:
   the user opens it. A show answers `shown` only when the surface is mounted,
   its pane has real width, and the window is visible. The same hook decides
   whether an agent's automatic request may raise the floating Apple player.
+  Whether the pane is open is the person's own preference, so a show for a
+  screen, app or device tool activates it in an already-open pane and floats the
+  player instead of opening a closed one (`useWorkSidebarTool.showTool`), and
+  the ack names the surface that really appeared (`WorkToolShowAck.shownAs`).
+  The browser, a lane-less chat and a request naming another lane are the
+  exceptions: none of them has a player to float that surface, so their ask
+  opens the pane. So does an ask whose float declines (a lane with no device to
+  float), which would otherwise be a `held` that never lands.
   See [chat › Agents open panes](../chat/README.md#agents-open-panes-ade-ui-show).
 - `apps/desktop/src/renderer/components/apple/useLaneAppleDevices.ts`,
   `LaneAppleDeviceMarker.tsx` — the small Apple mark beside a lane name in the
@@ -1100,6 +1141,26 @@ Renderer surfaces:
   `needs_you` precedence is
   load-bearing: filtering or snoozing must never fold a row that is waiting on
   the user into the quiet header.
+  The toolbar's **Focus** pill (`workFoldBusyLanes`; it also switches the
+  grouping to by-lane) adds a
+  third, non-quiet shelf: a lane whose live rows are all Working/Waiting (or Done
+  after the user has left them) folds onto a collapsed **Working** shelf, the
+  first shelf inside the quiet zone (only the user opens or closes it; the open
+  chat's lane folds too), and the lane unfolds when something needs the user or
+  finishes. The rule is `summarizeLaneFocus` in `workLaneFocus.ts`; a raised
+  hand, a stale run, a stalled turn (`sessionTurnStallMs`: a live turn silent
+  for five minutes that owns no open work), or an unseen finish holds the lane
+  out with its rows visible, a finished nested row never does, and pinned lanes
+  never fold. The primary lane folds like any other lane. The pill's second
+  half turns on the **Focus grid** (see
+  [ui-surfaces.md](ui-surfaces.md#focus-grid)). Each
+  lane header draws one rolled-up status dot (`LaneFocusStatusDot`, Needs you >
+  Working > Waiting > Done) from the same derivation. A finished row counts as
+  seen only once the user leaves it — `useWorkSessions` stamps
+  `workSeenAtBySessionId` on selection change, bounded to `WORK_SEEN_AT_LIMIT` —
+  so opening a finished row does not fold its lane out from under the cursor, and
+  a lane returning from the shelf floats to the front of the active tier (never
+  in Manual sort).
   Renders a bulk action bar at the bottom when sessions are multi-selected
   (Stop N running / Settle N / Delete N ended / clear selection), and offers an
   eight-second undo after bulk settle. The filter panel is width-constrained by
@@ -1173,12 +1234,17 @@ Renderer surfaces:
   or Manual ordering inside those tiers. A non-primary header can be dragged
   before/after a header in the same tier; the native drag controller supplies a
   drop line plus edge autoscroll, seeds Manual from the on-screen order, and
-  never permits a cross-tier move. The funnel also has Status and Tool
-  multi-select chips (OR within a row), Has PR, and Dirty lane filters (AND
-  across rows). Their shared pure matcher files status through
+  never permits a cross-tier move. The funnel also has Status, Tool, and
+  Machine multi-select chips (OR within a row), plus Has PR and Dirty lane
+  filters (AND across rows). Machine starts with every machine selected; picking
+  any subset narrows the union to those machines and a chip for a machine that
+  has since left stays visible so the filter can be cleared. Their shared pure
+  matcher files status through
   `effectiveSessionFilingBuckets` (falling back to `sessionFilingBucket`); the Has PR result reuses the coalesced PR snapshot
   that serves lane badges, and a filtered empty state identifies and clears the
-  active chips.
+  active chips. Another machine's matching rows still count against that empty
+  state, so a Machine filter that hides every local row shows the foreign rows
+  instead of "No sessions match".
 - `apps/desktop/src/renderer/components/terminals/LaneMachineMarker.tsx` — the
   amber tower marker on a lane header, rendered only for lanes that are not on
   the physical Mac you are sitting at, so the common single-machine case pays
@@ -1378,7 +1444,7 @@ Renderer surfaces:
     the left, then the git toolbar, trailing actions, the optional
     `actionsToggle`, and the Tools toggle on the right.
   - `CenteredWorkSurfaceHeader` is the ADE chat header. It has no lane chip
-    and no gradient. The thread title is centered. The snooze chip, Claude cache badge, trailing actions, git
+    and no gradient. The thread title is centered. The Claude cache badge, trailing actions, git
     toolbar, `actionsToggle` (the chat progress icon), and Tools toggle are
     in the right cluster.
   - `prBadgeOnly` hides the create-PR button. The PR badge still shows when
@@ -1393,11 +1459,15 @@ Renderer surfaces:
   preview contains the `Please run /login` / 401 invalid-credentials
   failure. The action creates a tracked shell PTY in the same lane
   (and same chat drawer when there is a chat owner) running
-  `claude auth login`.
+  `claude auth login`. It takes an optional `runtimePin` — the machine the lane
+  lives on — and creates the PTY there, so a chat on another machine opens its
+  login terminal in that machine's CLI home.
 - `apps/desktop/src/renderer/components/terminals/CliSessionWorkSurfaceHeader.tsx`
   — CLI adapter for `WorkSurfaceHeader`. It maps a
   `TerminalSessionSummary` to the shared header, adds the Claude login
-  CTA when auth failure is detected, status dot, Run menu, info, and
+  CTA when auth failure is detected (forwarding the session's owning
+  `runtimePin` so the login terminal opens on the machine the session runs on),
+  status dot, Run menu, info, and
   overflow actions, and intentionally leaves stop controls to the
   sidebar card / chat composer paths.
 - `apps/desktop/src/renderer/components/terminals/WorkStartSurface.tsx` —
@@ -1642,8 +1712,16 @@ Renderer surfaces:
   persisted mutation.
 - `apps/desktop/src/renderer/components/terminals/workSessionFilters.ts` —
   pure Work chip-filter normalization, tool-family projection, active-label
-  formatting, and matching. Status/Tool selections OR within an axis; axes
-  AND together.
+  formatting, and matching. Status, Tool, and Machine selections OR within an
+  axis; axes AND together. Machine matching reads the session's owning
+  `machineId` from the caller's context, so the same predicate serves both the
+  tab's own roster and each foreign machine's rows.
+- `apps/desktop/src/renderer/components/terminals/WorkFilterPanel.tsx` —
+  the Work funnel's panel: Group/Sort segmented controls above a rule, then the
+  Status, Tool, and Machine chip rows (Machine renders only when more than one
+  machine reports this repo), the Lane combobox, Has PR, and Dirty. Filter chips
+  are multi-select with an accent on-state; the panel owns the labels and the
+  Clear control but not the filter state.
 - `apps/desktop/src/renderer/components/terminals/useLanePrs.ts` —
   the lane→PR map shared by the list's PR badges and the Has PR filter. The
   bound machine's half is a coalesced PR read plus a `prs-updated`
@@ -1672,11 +1750,17 @@ Renderer surfaces:
   it waits for Cursor's interactive prompt and submits the ADE guidance
   plus user text through PTY input instead of argv. Droid materializes a
   temp `--settings` JSON keyed off the active
-   permission mode, and OpenCode passes its inline permission policy
-   through the `OPENCODE_CONFIG_CONTENT` env var and always launches the
-   root TUI (`opencode [-m model] [--agent plan] [--prompt …]`) — tracked
-   launches have no `run --interactive` branch and no reasoning/fast
-   variant flag (the root command silently drops unknown args), so
+   permission mode, and OpenCode's launch carries only a session selector
+   and a `--prompt`; permission mode, model, and effort ride as JSON in
+   `ADE_OPENCODE_LAUNCH` (`ADE_OPENCODE_LAUNCH_ENV`), because the 2.0 TUI
+   takes no `--agent`/`--model` flags and its config comes from the server
+   it attaches to. `attachOpenCodeTerminal`
+   (`services/opencode/openCodeTerminal.ts`) reads that intent, creates or
+   resumes the session on ADE's shared server with the matching ADE agent
+   and model, and rewrites the launch to
+   `opencode --server <lease url> --session <id>` — see
+   [OpenCode CLI: attach to ADE's server](#opencode-cli-attach-to-ades-server).
+   OpenCode tracked launches have no reasoning/fast `--variant` flag, so those
    variants remain a chat-runtime feature. ADE session guidance is
   injected on every launch with skill roots resolved from the active
   lane worktree when known: Claude gets `buildAdeCliAgentGuidance(...)`
@@ -1684,8 +1768,8 @@ Renderer surfaces:
   a leading prompt from `buildAdeCliInlineGuidance(...)`; Cursor receives
   that prompt only when there is an initial user message. **OpenCode does
   not**: it receives the same slim ADE base prompt the OpenCode chat
-  runtime sends, through OpenCode's own additive system channel. See
-  [OpenCode CLI instructions](#opencode-cli-ade-instructions). Launch env also
+  runtime sends, as an instruction entry on the session ADE attaches it to. See
+  [OpenCode CLI: attach to ADE's server](#opencode-cli-attach-to-ades-server). Launch env also
   carries `ADE_AGENT_SKILLS_DIRS` when skill roots are known, including
   lane/user `.claude`, `.agents`, `.ade`, `.codex` skill dirs plus
   bundled ADE resources.
@@ -2369,7 +2453,13 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    `agent_explicit` provenance, marks a live tracked CLI as waiting-input, and
    publishes a time-sensitive push; the next accepted user message clears it,
    including an active-turn steer. Agent-to-agent steers do not dismiss the
-   user's pending question. Provider
+   user's pending question. A chat whose turn ends while it still owns live
+   background work reads as running, so ADE raises the same hand for a
+   question left in that reply, with source `turn_end_question`
+   (`chat/turnEndQuestionCheck.ts`): rules on the reply's ending raise it for
+   a clear ask and skip a progress note, and an unsure ending goes to the
+   provider's cheap model (Claude, Codex, Cursor) with a staleness guard on
+   the turn id. Subagents are skipped, and nothing runs on replay. Provider
    structured input carries its own pending item id. OSC markers and
    prompt-looking output never create `Needs you`. `ade chat note ""` clears
    only the status line. Status notes are trimmed to at
@@ -2567,7 +2657,10 @@ in-memory reset stays separate.
   `ade.workViewState.v1`. The sidebar fields are
   `workSidebarOpen: boolean`, `workSidebarWidthPct: number` (clamped to
   26–55), and `workSidebarTool: "terminal" | "browser" | "git" | "pr" | "files" |
-  "ios" | "app-control" | null` (null = the picker page). The PR tool is
+  "ios" | "app-control" | "mac-desktop" | "windows-desktop" | "issues" | null`
+  (null = the picker page). The Issues tool's open issues are stored
+  separately, per lane, under `ade.work.issueTabs.v1` (see
+  [Issues](../issues/README.md)). The PR tool is
   per lane: no pull request, one open, or several.
   `workSidebarTool` is read and written on the **lane** scope, falling back
   to the project scope when no lane is bound; the other two are always
@@ -2645,77 +2738,57 @@ sibling, so `ade terminal read --chat-session <id>` always resolves a
 sensible target for attached-session agents. Every PTY launched through
 `ptyService.create` runs through `withAdeTerminalContextEnv` which
 exports `ADE_PROJECT_ROOT`, `ADE_LANE_ID`, and (when the PTY is
-session-owned) `ADE_CHAT_SESSION_ID` plus an opaque
-`ADE_BROWSER_ACTOR_TOKEN` into the spawn env. The browser capability is
-minted by Electron and bound in Electron memory to that owner
-chat/lane/project; a daemon-hosted terminal requests it over the desktop bridge
-and launches without one when no desktop is running. The runtime rejects
-missing tokens and strips caller routing; Electron validates the token against
-the registry that issued it before restoring its scope on the authenticated
-bridge. The
-remaining identity variables are how a
+session-owned) `ADE_CHAT_SESSION_ID` into the spawn env. There is no
+browser token: `ade browser` from any terminal works, and the chat id only
+tags which chat owns the tabs it opens. These identity variables are how a
 plain shell that the user types `ade --socket terminal read --chat-session
 "$ADE_CHAT_SESSION_ID" --text` into will resolve to the owning session's
 terminal even though no agent runtime spawned it. The headless ADE
 runtime and agent chat runtime both layer the same identity envs
 (plus `ADE_WORKSPACE_ROOT`) on top through `buildAgentRuntimeEnv`.
 
-## OpenCode CLI ADE instructions
+## OpenCode CLI: attach to ADE's server
 
-A tracked OpenCode CLI gets the same slim ADE base prompt the OpenCode chat
-runtime sends — the one `buildCodingAgentSystemPrompt({ runtime: "opencode" })`
-builds — but not through the same transport, because a CLI launch has no
-per-request system channel.
+A tracked OpenCode TUI launch does not run standalone. By default the 2.0 TUI
+connects to OpenCode's own shared background service on the user's default
+data home (and migrates their v1 store in place); ADE instead points it at its
+own managed server, the same one chat sessions use.
 
-- **Not `--prompt`.** OpenCode submits that value as a real user message and
-  renders it in the TUI. Prepending ADE's instructions to the user's text
-  therefore displayed them verbatim on every launch (the reported "OpenCode
-  echoes ADE's system prompt") and delivered them as user content rather than as
-  system instructions. `--prompt` now carries the user's own text and nothing
-  else.
-- **Not `agent.<name>.prompt`.** OpenCode's request builder reads
-  `agent.prompt ? [agent.prompt] : SystemPrompt.provider(model)` — an agent
-  prompt *replaces* the provider base prompt, which would delete OpenCode's own
-  tool instructions.
-- **`instructions` in `OPENCODE_CONFIG_CONTENT`.** This is the additive channel:
-  entries land in the same assembled system block as `AGENTS.md`, after the base
-  prompt, and never appear in the transcript. Config layers union this key rather
-  than overwrite it, so ADE's entry is appended to the user's own instruction
-  files instead of replacing them (verified against opencode 1.18.31).
+`attachOpenCodeTerminal` (`openCodeTerminal.ts`) intercepts a plain `opencode`
+launch (a direct spawn or a startup command whose command line is `opencode`
+with no shell operators — anything more, such as a pipe or `&&`, is refused,
+because only a plain invocation can be redirected) and:
 
-`openCodeAdeInstructions.ts` writes the file to `.ade/cache/opencode-instructions/`
-keyed by lane worktree. Two other placements are wrong: the lane worktree is the
-user's repository, so an ADE-authored prompt would show up in their `git status`;
-and the system temp directory is world-writable on Linux, where a deliberately
-stable, publicly derivable path can be pre-created as a symlink and turn the
-launch into a write through it.
+1. Acquires a lease on ADE's shared OpenCode server
+   (`acquireOpenCodeServer`).
+2. Resolves the session: an explicit `--session <id>` re-attaches (falling back
+   to a fresh session if that id lived only in the user's own store, which
+   ADE's server never opens), `--continue` picks the newest session for the
+   working directory, and otherwise a new session is created with the ADE
+   agent for the permission mode and the resolved model.
+3. Writes ADE's instructions onto the session as an instruction entry
+   (`buildOpenCodeAdeInstructions`, built from the same
+   `buildCodingAgentSystemPrompt({ runtime: "opencode" })` the chat runtime
+   uses) and sets `session.environment` from the terminal's own environment,
+   because the agent's shell commands run in the server process now, not in
+   the TUI.
+4. Rewrites the launch to `opencode --server <lease url> --session <id>`,
+   with `OPENCODE_SERVER_PASSWORD` in the PTY environment — verified on
+   2.0.18: without the password the TUI refuses the server instead of
+   falling back. The TUI takes no `--agent` or `--model` flag, since ADE's
+   agents and rules live on the server; those and any other ADE-owned or
+   2.0-rejected flags (`--agent`, `--model`/`-m`, `--variant`, `--mini`,
+   `--replay*`, a stray `--server`/`--standalone`) are stripped from a
+   persisted 1.x-era resume command, which would otherwise make the 2.0 TUI
+   exit on launch.
 
-The file is keyed by lane **and permission mode**: two tracked terminals can run
-on one lane under different modes at once, and OpenCode re-reads its instruction
-files every turn, so a single per-lane path let the second launch hand its mode
-to the first mid-conversation. `config-toml` is its own key rather than folded
-into edit — it means "use my own OpenCode configuration", ADE deliberately sends
-no permission block for it, and the instructions say so instead of asserting a
-tier ADE never set.
-
-`ptyService.create` is the single place the file is written, which is what makes
-a resumed session carry the same contract as a fresh one; a resume reads its
-permission mode from the session's own resume metadata, so a plan-mode session is
-not told it is in edit mode while the CLI runs `--agent plan`. The path is added
-to **both** the launch `env` and the inline `OPENCODE_CONFIG_CONTENT=…` assignment
-on the startup command — a shell assignment on the command line overrides the
-process environment, so patching only `env` would drop the instructions on every
-launch that goes through the typed-command fallback instead of a direct spawn.
-
-The merge happens immediately before spawn, not when the launch args are first
-materialized, because `startupCommand` is still being rewritten in between:
-resume-target backfill replaces it wholesale with the session's persisted
-`resumeCommand`, which carries its own assignment and no instructions. For the
-same reason the existing config is read from that command line first and the
-environment second — the persisted command holds its `permission` policy there
-while the launch environment has no such key, so rebuilding from `env` alone
-erased the policy. A missing file is skipped by OpenCode, so a write failure
-degrades to "no ADE prompt" rather than a failed launch.
+The server URL and password change on every server start, so neither is ever
+persisted — the stored startup command stays a plain
+`opencode --session <id>`, and the current lease's `--server`/password pair is
+applied fresh on every relaunch. `config-toml` is its own permission mode
+rather than folded into `edit`: it means "use your own OpenCode configuration",
+so ADE sets no agent and no permission policy for it, and the instructions say
+so explicitly rather than asserting a tier ADE never set.
 
 ## Gotchas
 
@@ -2882,6 +2955,32 @@ degrades to "no ADE prompt" rather than a failed launch.
   and legacy `work:grid:v2:*` layouts are intentionally ignored — a new
   tree is seeded from `buildWorkSessionTilingTree` when nothing is
   persisted under the current key.
+
+## Dead agent shells
+
+A shell an agent started under a chat does not linger in the Work sidebar once
+it is dead. `agentShellCleanup` (wired by `ptyService`) tracks the shells this
+machine launched (`markAgentLaunched`), what was typed into them
+(`markUserInput`), and what ADE itself ended (`markRetiredByAde`), then archives
+the eligible ones. A shell is eligible only when an agent started it, it is
+attached to a chat, it has ended (not `running`/`detached`), and nobody typed
+into it. When it goes depends on how it ended: an App Control relaunch archives
+it at once; exit 0 or an ADE stop waits out a 10-minute grace; a crash waits
+until the chat settles, so a failure stays in view.
+
+Typing into a shell the person owns it — `terminal.write { fromUser }` from a
+user client, or a hand resume — and it is never archived. The RPC server strips
+`fromUser` from a non-user caller, so an agent cannot claim its own shell to keep
+it around. The ledger is per machine and never replicates; nothing is ever
+deleted, only hidden.
+
+Chats and shells list with archived rows hidden by default. `ade chat list` and
+`ade terminal list` take `--include-archived`, and `ade archive list` shows every
+archived item across lanes, chats, and shells. A chat's shell and subagent
+drawers start collapsed behind their full header strip — kind icon, kind label
+and count, plus failed/needs-you/running — and collapsing only hides the child
+rows; a selection that lands inside a collapsed drawer opens it once so the
+selected row is on screen.
 
 ## Cross-links
 

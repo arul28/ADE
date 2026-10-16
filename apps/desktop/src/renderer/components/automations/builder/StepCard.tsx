@@ -1,13 +1,14 @@
 import { ArrowDown, ArrowUp, Trash } from "@phosphor-icons/react";
-import type { TestSuiteDefinition } from "../../../../shared/types";
+import type { OpenProjectBinding, TestSuiteDefinition } from "../../../../shared/types";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
 import { SettingsToggle } from "../../settings/settingsSectionUi";
 import { AdeActionEditor } from "../AdeActionEditor";
 import { inputCls, labelCls, selectCls } from "../designTokens";
-import { stepDef } from "../actionCatalog";
+import { isNotifyAdeAction, NOTIFY_STEP, stepDef } from "../actionCatalog";
 import type { WorkflowStep } from "./draftBridge";
 import { AgentStepEditor } from "./AgentStepEditor";
+import { NotifyStepEditor } from "./NotifyStepEditor";
 import { MinutesInput } from "./MinutesInput";
 import { RUN_COMMAND_DEFAULT_TIMEOUT_MS, RUN_COMMAND_MAX_TIMEOUT_MS } from "../../../../shared/automationLimits";
 
@@ -31,7 +32,7 @@ function ToggleRow({
   onChange: (next: boolean) => void;
 }) {
   return (
-    <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-white/[0.06] bg-white/[0.02] px-3 py-2">
+    <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-fg/[0.06] bg-fg/[0.02] px-3 py-2">
       <span className="min-w-0">
         <span className="block text-[11.5px] text-fg/90">{label}</span>
         {hint ? <span className="mt-0.5 block text-[10px] text-muted-fg/60">{hint}</span> : null}
@@ -101,6 +102,7 @@ export function StepCard({
   total,
   triggerType,
   suites,
+  runtimePin = null,
   isCleanup,
   onChange,
   onRemove,
@@ -111,12 +113,15 @@ export function StepCard({
   total: number;
   triggerType: string;
   suites: TestSuiteDefinition[];
+  /** The machine the rule runs on; null is this window's. */
+  runtimePin?: OpenProjectBinding | null;
   isCleanup: boolean;
   onChange: (next: WorkflowStep) => void;
   onRemove: () => void;
   onMove: (direction: -1 | 1) => void;
 }) {
-  const def = stepDef(step.kind);
+  const isNotify = step.kind === "ade-action" && isNotifyAdeAction(step.adeAction);
+  const def = isNotify ? NOTIFY_STEP : stepDef(step.kind);
   const Icon = def.icon;
   const idBase = `step-${index}-${step.kind}`;
   const oddTimeout = describeOddTimeout(step.timeoutMs);
@@ -124,14 +129,14 @@ export function StepCard({
   return (
     <div
       className={cn(
-        "rounded-xl border bg-white/[0.03] shadow-card",
-        isCleanup ? "border-amber-500/25" : "border-white/[0.07]",
+        "rounded-xl border bg-fg/[0.03] shadow-card",
+        isCleanup ? "border-amber-500/25" : "border-fg/[0.07]",
       )}
     >
-      <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] px-3 py-2">
+      <div className="flex items-center justify-between gap-2 border-b border-fg/[0.06] px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <span
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.04]"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-fg/[0.04]"
           >
             <Icon size={12} weight="fill" style={{ color: def.accent }} />
           </span>
@@ -189,7 +194,16 @@ export function StepCard({
           <AgentStepEditor step={step} triggerType={triggerType} onChange={onChange} />
         ) : null}
 
-        {step.kind === "ade-action" ? (
+        {isNotify && step.adeAction ? (
+          <NotifyStepEditor
+            value={step.adeAction}
+            triggerType={triggerType}
+            runtimePin={runtimePin}
+            onChange={(adeAction) => onChange({ ...step, adeAction })}
+          />
+        ) : null}
+
+        {step.kind === "ade-action" && !isNotify ? (
           <AdeActionEditor
             value={step.adeAction ?? { domain: "", action: "" }}
             onChange={(adeAction) => onChange({ ...step, adeAction })}

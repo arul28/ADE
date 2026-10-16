@@ -19,6 +19,7 @@ import {
 import type { WebMachineEntry } from "../workspace/webWorkspaceModel";
 import { WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
 import { mergeWebMachines, webMachineCatalogKeys } from "../workspace/webWorkspaceModel";
+import { createAccountNamespace } from "../adapter/account";
 import { parseOpenTarget, parseWebPath, targetToWebPath } from "./webRoutes";
 import { ScreenShell } from "./ScreenShell";
 import { installSessionLifecycleChrome } from "./sessionLifecycleChrome";
@@ -39,8 +40,20 @@ async function loadFederatedAdapter(
   });
 }
 
+/**
+ * Loads the app's full stylesheet. The entry ships only `gate.css` (the boot
+ * screens and the sign-in card), so the workspace waits for this before its
+ * first render. Callers start it before the app's own modules: stylesheets
+ * apply in the order their links are added, and the app's stylesheet came
+ * ahead of every chunk stylesheet when the entry carried it.
+ */
+function loadAppStylesheet(): Promise<unknown> {
+  return import("../../index.css");
+}
+
 async function loadAppRoot(): Promise<React.ComponentType> {
-  const [{ App }, { RendererErrorBoundary }, { useAppStore }] = await Promise.all([
+  const [, { App }, { RendererErrorBoundary }, { useAppStore }] = await Promise.all([
+    loadAppStylesheet(),
     import("../../components/app/App"),
     import("../../components/app/RendererErrorBoundary"),
     import("../../state/appStore"),
@@ -57,6 +70,21 @@ async function loadAppRoot(): Promise<React.ComponentType> {
       </RendererErrorBoundary>
     );
   };
+}
+
+/**
+ * Starts downloading the signed-in workspace. Module imports are cached, so the
+ * later awaits in `installFederatedAdapter` and `loadAppRoot` resolve at once.
+ * Only called when a stored session says the workspace is coming.
+ */
+function preloadWorkspaceModules(): void {
+  void Promise.all([
+    loadAppStylesheet(),
+    import("../adapter/federated"),
+    import("../../components/app/App"),
+    import("../../components/app/RendererErrorBoundary"),
+    import("../../state/appStore"),
+  ]).catch(() => undefined);
 }
 
 const PENDING_TARGET_KEY = "ade-web:pending-target";
@@ -147,6 +175,7 @@ function relayAccessFromAccount(
 type Phase =
   | { kind: "signing-in" }
   | { kind: "booting"; message: string }
+  | { kind: "signed-out"; SignIn: React.ComponentType }
   | { kind: "ready"; AppRoot: React.ComponentType }
   | { kind: "error"; message: string };
 
@@ -413,6 +442,13 @@ export function WebClientRoot({
       stashTarget(pendingTarget);
 
       const wasCallback = path === "/account/callback";
+      if (!wasCallback) {
+        // A stored session means the signed-in workspace is coming: start its
+        // download now, alongside the session restore, instead of after it.
+        void accountClient.hasPersistedSession().then((restorable) => {
+          if (restorable && !disposed) preloadWorkspaceModules();
+        });
+      }
       const snapshot = await accountClient.bootstrap();
       if (disposed) return;
       setAccount(snapshot);
@@ -429,6 +465,21 @@ export function WebClientRoot({
       sessionManager.setRelayAccess(
         relayAccessFromAccount(snapshot, () => accountClient.getAccessToken()),
       );
+
+      if (!browserAccountIsSignedIn(snapshot.state)) {
+        // The sign-in card needs only the account namespace. The workspace router
+        // and the last-machine reconnect wait for a session, so a signed-out
+        // visitor downloads neither. A pending deep link stays stashed for after
+        // sign-in.
+        // The sign-in card lives in its own chunk, imported here so a failed
+        // download lands on the error screen with Retry instead of a blank page.
+        const { WebSignInScreen } = await import("../../components/onboarding/WebSignInGate");
+        if (disposed) return;
+        Object.assign(window.ade, { account: createAccountNamespace(accountClient) });
+        window.history.replaceState(null, "", WELCOME_PATH);
+        setPhase({ kind: "signed-out", SignIn: WebSignInScreen });
+        return;
+      }
 
       const { restored } = await installFederatedAdapter(snapshot);
       if (disposed) return;
@@ -609,6 +660,10 @@ export function WebClientRoot({
           </button>
         </ScreenShell>
       );
+    case "signed-out": {
+      const SignIn = phase.SignIn;
+      return <SignIn />;
+    }
     case "ready": {
       if (!workspaceContext) {
         return <ProgressScreen title="Starting ADE" message="Preparing your workspace…" />;
@@ -644,7 +699,7 @@ function ProgressScreen({ title, message }: { title: string; message: string }) 
             borderRadius: "50%",
             border: "2px solid color-mix(in srgb, var(--color-fg) 20%, transparent)",
             borderTopColor: "var(--color-accent)",
-            animation: "ade-web-spin 0.8s linear infinite",
+            animation: "ade-web-spin 0.8s steps(24) infinite",
           }}
         />
         {message}

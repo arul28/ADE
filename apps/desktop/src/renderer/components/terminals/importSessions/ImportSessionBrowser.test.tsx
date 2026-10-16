@@ -220,7 +220,7 @@ describe("ImportSessionBrowser", () => {
     list.mockImplementation(() => new Promise<ExternalSessionSummary[]>(() => undefined));
     renderBrowser();
     expect((await screen.findByRole("status")).textContent).toContain("Scanning");
-    expect(list).toHaveBeenCalledTimes(10);
+    expect(list).toHaveBeenCalledTimes(11);
     expect(list).toHaveBeenCalledWith(expect.objectContaining({ scope: "project", providers: ["qwen"] }));
   });
 
@@ -228,13 +228,13 @@ describe("ImportSessionBrowser", () => {
     list.mockRejectedValue(new Error("Project runtime unavailable."));
     renderBrowser();
     // A host that is still starting fails every provider; the dialog waits and
-    // scans again (10 providers x 2) before it shows the error.
+    // scans again (11 providers x 2) before it shows the error.
     await waitFor(() => expect(screen.getByText("Sessions couldn't be loaded")).toBeTruthy(), { timeout: 6000 });
-    expect(list).toHaveBeenCalledTimes(20);
+    expect(list).toHaveBeenCalledTimes(22);
     expect(screen.getByText(/ADE couldn't scan sessions on This computer/i)).toBeTruthy();
     expect(screen.queryByText(/Project runtime unavailable/i)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Retry scan/ }));
-    await waitFor(() => expect(list).toHaveBeenCalledTimes(40), { timeout: 6000 });
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(44), { timeout: 6000 });
   }, 15_000);
 
   it("recovers without an error when the host answers on the automatic second scan", async () => {
@@ -242,7 +242,7 @@ describe("ImportSessionBrowser", () => {
     let calls = 0;
     list.mockImplementation(async (args: { providers?: string[] }) => {
       calls += 1;
-      if (calls <= 10) throw new Error("Project runtime unavailable.");
+      if (calls <= 11) throw new Error("Project runtime unavailable.");
       return rows.filter((row) => args.providers?.includes(row.provider));
     });
     watchDetail.mockImplementation(async () => detailFor(rows[0]!));
@@ -317,6 +317,54 @@ describe("ImportSessionBrowser", () => {
     expect(transcript.dataset.pacing).toBe("false");
     expect(screen.getByText("Alpha reply")).toBeTruthy();
     expect(watchDetail).toHaveBeenCalledWith(expect.objectContaining({ provider: "claude", sessionId: "a" }));
+  });
+
+  it("loads the full transcript when the detail watch rejects", async () => {
+    const row = summary({
+      id: "a",
+      title: "Alpha",
+      messages: [{ role: "assistant", text: "sampled snippet only", at: 3 }],
+    });
+    listRows([row]);
+    watchDetail.mockRejectedValue(new Error("watch unavailable"));
+    getDetail.mockResolvedValue(detailFor(row, {
+      events: [envelope("text", "detail-only full transcript", 1)],
+      messages: [],
+    }));
+
+    renderBrowser();
+
+    const transcript = within(await screen.findByRole("region", { name: "Session conversation" }));
+    expect(await transcript.findByText("detail-only full transcript")).toBeTruthy();
+    expect(transcript.queryByText("sampled snippet only")).toBeNull();
+    expect(screen.queryByText("Couldn't load this conversation.")).toBeNull();
+    expect(getDetail).toHaveBeenCalledWith({ provider: "claude", sessionId: "a" }, null);
+  });
+
+  it("shows sampled snippets and a warning when watched detail is empty", async () => {
+    const row = summary({
+      id: "a",
+      title: "Alpha",
+      messages: [
+        { role: "user", text: "sampled user message", at: 1 },
+        { role: "assistant", text: "sampled assistant message", at: 2 },
+      ],
+    });
+    listRows([row]);
+    watchDetail.mockResolvedValue(detailFor(row, {
+      sourcePath: null,
+      events: [],
+      messages: [],
+      watchable: false,
+    }));
+
+    renderBrowser();
+
+    const conversation = within(await screen.findByRole("region", { name: "Session conversation" }));
+    expect(await conversation.findByText("sampled user message")).toBeTruthy();
+    expect(await conversation.findByText("sampled assistant message")).toBeTruthy();
+    expect(conversation.getByText("Couldn't load this conversation.")).toBeTruthy();
+    expect(conversation.queryByText("No messages to show.")).toBeNull();
   });
 
   it("falls back to plain messages when the host sends no events", async () => {

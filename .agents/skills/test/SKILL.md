@@ -118,11 +118,25 @@ claims, token refresh ordering) that an E2E run cannot reach reliably.
 
 The gate applies even when the branch's main purpose is unrelated to analytics. Future agents should leave ADE with broad, decision-useful coverage and a small, predictable event budget.
 
+### Error tracking (Sentry) gate (always runs)
+
+`docs/logging.md`, "Error tracking (Sentry)", is the ground truth. For the whole branch diff:
+
+1. **New failure paths report.** Every new `catch` that recovers silently, returns a fallback (`null`, `[]`, a default), or turns an error into a status must either call `captureError` / `captureProblem` (`apps/desktop/src/shared/sentry/capture.ts`; Swift `CrashReporting.capture`) or log it with `logger.warn` / `logger.error` so the log bridge carries it. An expected outcome (user cancel, not-installed, offline) is the one exception, and the summary names it. Grep the diff for `catch {`, `catch (_`, `.catch(() =>`, `try?`, and `?? []` after an await.
+2. **New surfaces and processes are wired.** A new Electron window or preload, a new forked worker, a new runtime process, a new Worker or Durable Object, or a new app target: confirm it reports to the right project (the table in `docs/logging.md`), or record why it does not. A forked worker reports through its parent; do not load an SDK into it.
+3. **Grouping and budget.** New capture calls set a `fingerprint` that names the failure, so repeats are one issue. A call site that can fire per keystroke, frame, poll or streamed event must not capture per occurrence; capture the first and aggregate. Never raise the limits in `shared/sentry/guardrails.ts` to fit a call site.
+4. **Nothing forbidden crosses.** No prompt, transcript, model output, file content, diff, terminal output or secret in `extra`, tags, messages or breadcrumbs. New field names that carry such content are added to `CONTENT_KEY` in `shared/sentry/scrub.ts`; new secret shapes to its patterns (and to each Worker's `src/sentry.ts` and the iOS `ADECrashScrubber`).
+5. **Release plumbing.** A new bundle, entry point or deploy target gets source maps uploaded under the shared release name, maps never ship, and the upload never fails the release.
+6. **Prove one path.** For a new capture site, run it once with `ADE_SENTRY_DEV=1` and confirm the issue with `sentry issue list ade-app/<project> --query "environment:development" --period 1h`, then resolve or delete the test issue. When that is not possible (no packaged runtime, no display), say so.
+7. **Update the doc** when a project, surface, capture category, scrub rule or budget changes.
+
 ---
 
 ## Execution Mode: Autonomous
 
 Run end-to-end without user interaction. Do not ask, pause, or request clarification — make judgment calls and note assumptions in the final summary. Stop only on a fatal blocker (e.g. cannot determine the changed feature at all).
+
+**Subagent limits:** follow the **Subagents** rules in `AGENTS.md`. The parity passes below that say "Spawn a general-purpose agent" start one leaf agent each, never in parallel; add "Do not start subagents or parallel reviewers; do all the work yourself." to each prompt, and do a pass yourself when it is small or the user asked to limit agents.
 
 **Do all the work yourself in the main loop.** Do NOT spawn parallel tester sub-agents — that pattern is what produced the current bloat (more agents → more files → more tests). One agent, one judgment.
 
@@ -817,8 +831,10 @@ After the passes that applied:
 ## Harvest and push (when an early PR exists)
 
 After verification, follow **Early PR and harvests → Harvest** in
-`docs/playbooks/ship-lane.md`. It reads round 1 leftovers or round 2 —
-whatever finished while this skill ran — and does not wait for the rest.
+`docs/playbooks/ship-lane.md`: run `node scripts/ship-poll.mjs --pr <n> --text`
+and act on all of it — CI, open review threads, review-body findings, new
+comments and bot notices. It reads round 1 leftovers or round 2 — whatever
+finished while this skill ran — and does not wait for the rest.
 
 - Rerun each failed CI test file locally and fix the real failures. Apply the
   Test value rules: when a failing test pins implementation, rewrite or

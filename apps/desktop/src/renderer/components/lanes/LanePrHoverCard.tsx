@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useClampedFixedPosition, type FixedAnchor } from "../../hooks/useClampedFixedPosition";
+import { rowHoverSuppressProps } from "../ui/rowHoverSuppress";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 
 const GAP = 8;
 const CLOSE_DELAY_MS = 140;
@@ -121,6 +123,7 @@ export function LanePrHoverCard({
     <span
       ref={triggerRef}
       className={className}
+      {...rowHoverSuppressProps}
       onClick={(event) => {
         event.stopPropagation();
       }}
@@ -161,6 +164,7 @@ export function LanePrHoverCard({
       role="dialog"
       aria-label={label}
       data-testid="lane-pr-hover-card"
+      {...rowHoverSuppressProps}
       // React portals retain their logical parent event path. Keep clicks on
       // panel chrome from selecting the enclosing lane/session row while
       // allowing candidate-row handlers to run before this bubble listener.
@@ -179,8 +183,9 @@ export function LanePrHoverCard({
         if (!isWithinCard(event.relatedTarget)) scheduleClose();
       }}
       style={{
-        position: "fixed",
-        zIndex: 9999,
+        // The host is a viewport-sized fixed layer, so these are viewport coordinates.
+        position: "absolute",
+        pointerEvents: "auto",
         left: position?.left ?? fallbackLeft,
         top: position?.top ?? anchor.y,
         width,
@@ -196,7 +201,7 @@ export function LanePrHoverCard({
   return (
     <>
       {trigger}
-      {createPortal(panel, document.body)}
+      {createPortal(<ViewportOverlayHost layer="tooltip">{panel}</ViewportOverlayHost>, document.body)}
     </>
   );
 }

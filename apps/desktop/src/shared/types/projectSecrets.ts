@@ -6,6 +6,12 @@ export type ProjectSecretSummary = {
   updatedAt: string;
   valueLength: number;
   storage: ProjectSecretStorage;
+  /**
+   * An account secret this machine saved that has not reached the account
+   * yet, so the other machines cannot see it. Absent when it has (or when the
+   * runtime could not say).
+   */
+  uploadPending?: boolean;
 };
 
 export type ProjectSecretsStorageInfo = {
@@ -32,6 +38,31 @@ export type ProjectSecretSetArgs = {
 export type ProjectSecretGetArgs = {
   name: string;
 };
+
+/**
+ * Outcome of a pull from the account vault, including the case where it could
+ * not run at all.
+ *
+ * `unavailable` is a distinct answer, not an empty one. "Nothing to pull" and
+ * "this machine cannot pull right now" are different sentences to show a person,
+ * and collapsing them told a signed-out user their secrets were up to date.
+ */
+export type ProjectSecretPullResult =
+  | {
+    state: "pulled";
+    /** Names this machine did not have. */
+    added: number;
+    /** Account-scoped names whose vault copy was newer. */
+    updated: number;
+    /**
+     * Account-scoped names deleted on another machine, dropped here too.
+     *
+     * Optional because a runtime from before account-wide deletes answers
+     * without it, and that is still a pull result.
+     */
+    removed?: number;
+  }
+  | { state: "unavailable" };
 
 export type ProjectSecretDeleteArgs = {
   name: string;

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createRequire } from "node:module";
 import fs from "node:fs";
 import { createServer } from "node:http";
 import net from "node:net";
@@ -192,6 +193,7 @@ function baseResolveOpts(): Omit<
     socketPath: null,
     pretty: false,
     text: false,
+    json: false,
     timeoutMs: 15_000,
   };
 }
@@ -379,6 +381,20 @@ describe("ADE CLI", () => {
       params: { action: "signOut", args: {} },
     });
     expect(shouldAutoRegisterProjectForPlan(logoutPlan)).toBe(false);
+
+    // `ade notify` is machine-wide: it never registers the current folder as a
+    // project (the home folder cannot be one), and it refuses what it cannot
+    // send before connecting at all.
+    const notifyPlan = expectExecutePlan(buildCliPlan([
+      "notify", "--title", "Deploy finished", "--open", "https://ade-app.dev/open?type=pr&number=12&repo=arul28/ADE",
+    ]));
+    expect(notifyPlan.steps[0]).toMatchObject({
+      method: "notify.send",
+      params: { args: { title: "Deploy finished", open: "https://ade-app.dev/open?type=pr&number=12&repo=arul28/ADE" } },
+    });
+    expect(shouldAutoRegisterProjectForPlan(notifyPlan)).toBe(false);
+    expect(() => buildCliPlan(["notify", "--body", "no title"])).toThrow(/needs a title/);
+    expect(() => buildCliPlan(["notify", "--title", "x", "--open", "ade://pr/"])).toThrow(/can't open/);
 
     expect(buildCliPlan(["login", "--max-wait", "42"])).toEqual({
       kind: "account-login",
@@ -843,6 +859,39 @@ describe("ADE CLI", () => {
     ]);
   });
 
+  // `ade secrets list --project-root <dir>` and `ade chat send <id>
+  // --project-root <dir>` used to drop the flag silently and answer from the
+  // session's project. Other commands read the flag as their own.
+  it.each([
+    { argv: ["secrets", "list", "--project-root", "/tmp/crumb"], root: "/tmp/crumb", command: ["secrets", "list"] },
+    { argv: ["secret", "get", "API_KEY", "--project-root=/tmp/crumb"], root: "/tmp/crumb", command: ["secret", "get", "API_KEY"] },
+    {
+      argv: ["secrets", "set", "WEIRD", "--value", "--project-root"],
+      root: null,
+      command: ["secrets", "set", "WEIRD", "--value", "--project-root"],
+    },
+    {
+      argv: ["chat", "send", "chat-1", "--project-root", "/tmp/other", "--text", "go"],
+      root: "/tmp/other",
+      command: ["chat", "send", "chat-1", "--text", "go"],
+    },
+    { argv: ["chats", "list", "--project-root=/tmp/other"], root: "/tmp/other", command: ["chats", "list"] },
+    {
+      argv: ["chat", "create", "--lane", "l1", "--prompt", "--project-root"],
+      root: null,
+      command: ["chat", "create", "--lane", "l1", "--prompt", "--project-root"],
+    },
+    {
+      argv: ["app-control", "launch", "--project-root", "/tmp/app"],
+      root: null,
+      command: ["app-control", "launch", "--project-root", "/tmp/app"],
+    },
+  ])("routes a trailing --project-root for $argv.0 $argv.1", ({ argv, root, command }) => {
+    const parsed = parseCliArgs(argv);
+    expect(parsed.options.projectRoot).toBe(root === null ? null : path.resolve(root));
+    expect(parsed.command).toEqual(command);
+  });
+
   it("defaults ordinary CLI calls to the agent runtime role", () => {
     const previousRole = process.env.ADE_DEFAULT_ROLE;
     delete process.env.ADE_DEFAULT_ROLE;
@@ -1300,7 +1349,7 @@ describe("ADE CLI", () => {
         // routinely is) reachable before the first attempt has even failed
         // once, which is the whole point of the reorder.
         const logDeadline = Date.now() + 45_000;
-        while (!stderr.includes("ADE brain sync host failed")) {
+        while (!stderr.includes("sync.host_start_failed")) {
           if (Date.now() >= logDeadline) {
             throw new Error(`ADE brain never reported a sync host failure:\n${stderr}`);
           }
@@ -1835,8 +1884,66 @@ describe("ADE CLI", () => {
       { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
       "mac-desktop-action",
     );
-    expect(text).toContain("(no element matched)");
+    expect(text).toContain("hit: no element matched");
     expect(text).not.toContain("sent to the focused window");
+  });
+
+  it("prints the same hit and effect lines for an acting command on every computer-use surface", () => {
+    const opts = { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true };
+    const firstTwoLines = (value: unknown, formatter: Parameters<typeof formatOutput>[2]) =>
+      formatOutput(value, opts, formatter).split("\n").slice(0, 2);
+
+    expect(firstTwoLines({
+      ok: true,
+      action: "click",
+      mode: "accessibility",
+      resolved: { index: 12, handle: "obs-1:e:12", role: "AXButton", title: "Save", center: { x: 1, y: 2 } },
+      effect: { status: "observed", reason: "a window opened, closed or changed title" },
+      observation: null,
+    }, "mac-desktop-action")).toEqual([
+      'hit: AXButton "Save" (obs-1:e:12)',
+      "effect: observed — a window opened, closed or changed title",
+    ]);
+
+    expect(firstTwoLines({
+      ok: true,
+      observation: null,
+      trace: { id: "trace-1", action: "click" },
+      resolved: null,
+      effect: { status: "unconfirmed", reason: "nothing on screen changed" },
+    }, "browser-action")).toEqual([
+      "hit: no element; acted on a point",
+      "effect: unconfirmed — nothing on screen changed; observe again before you continue",
+    ]);
+
+    expect(firstTwoLines({
+      ok: true,
+      observation: null,
+      trace: { id: "trace-2", action: "fill" },
+      resolved: { index: 0, handle: "obs-2:e:3", role: null, tagName: "input", label: "Email" },
+      effect: { status: "observed", reason: "1 element changed" },
+    }, "app-control-action")).toEqual([
+      'hit: input "Email" (obs-2:e:3)',
+      "effect: observed — 1 element changed",
+    ]);
+
+    // An Apple coordinate tap answers `{ ok: true }` and never compares.
+    expect(firstTwoLines({ ok: true }, "apple-point-action")).toEqual([
+      "hit: no element; acted on a point",
+      expect.stringMatching(/^effect: not checked — Apple device actions do not compare the screen/),
+    ]);
+    expect(firstTwoLines({
+      ok: true,
+      action: "tap",
+      match: { ref: "ax:4", element: { role: "button", label: "Continue" }, matchCount: 1 },
+      matchCount: 1,
+      message: null,
+      waitedMs: null,
+      effect: { status: "not_checked", reason: "Apple device actions do not compare the screen" },
+    }, "apple-action")).toEqual([
+      'hit: button "Continue" (ax:4)',
+      "effect: not checked — Apple device actions do not compare the screen",
+    ]);
   });
 
   it("names every failed runtime check at once, not only the first", () => {
@@ -1863,13 +1970,14 @@ describe("ADE CLI", () => {
     ).toBeNull();
   });
 
-  it("only disables machine runtime build checks for explicit socket overrides", () => {
-    expect(
-      shouldEnforceMachineRuntimeBuildCompatibility(null),
-    ).toBe(true);
-    expect(
-      shouldEnforceMachineRuntimeBuildCompatibility("/tmp/ade.sock"),
-    ).toBe(false);
+  it.each([
+    { override: null, socket: "machine", enforced: true },
+    { override: null, socket: "/tmp/ade-runtime-lane.sock", enforced: false },
+    { override: null, socket: "tcp://127.0.0.1:9999", enforced: true },
+    { override: "/tmp/ade.sock", socket: "machine", enforced: false },
+  ])("enforces the build check only on the machine socket or TCP, never under a socket override (override $override, socket $socket)", ({ override, socket, enforced }) => {
+    const socketPath = socket === "machine" ? resolveMachineAdeLayout().socketPath : socket;
+    expect(shouldEnforceMachineRuntimeBuildCompatibility(override, socketPath)).toBe(enforced);
   });
 
   it("marks failed service manager results as CLI failures", () => {
@@ -1908,12 +2016,18 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["projects", "list"])).toEqual({
       kind: "execute",
       label: "projects list",
+      machineOnly: true,
+      machineAutoStart: true,
+      // The list `--all-machines` merges; `projects add` below must not carry it.
+      machineList: "projects",
       formatter: "projects-list",
       steps: [{ key: "result", method: "projects.list" }],
     });
     expect(buildCliPlan(["project", "add", "/tmp/project"])).toEqual({
       kind: "execute",
       label: "projects add",
+      machineOnly: true,
+      machineAutoStart: true,
       formatter: "projects-list",
       steps: [
         {
@@ -1930,6 +2044,8 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["projects", "remove", "project_abc"])).toEqual({
       kind: "execute",
       label: "projects remove",
+      machineOnly: true,
+      machineAutoStart: true,
       steps: [
         {
           key: "result",
@@ -1943,6 +2059,8 @@ describe("ADE CLI", () => {
     ).toEqual({
       kind: "execute",
       label: "projects touch",
+      machineOnly: true,
+      machineAutoStart: true,
       formatter: "projects-list",
       steps: [
         {
@@ -1955,6 +2073,8 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["projects", "inspect", "/tmp/worktree"])).toEqual({
       kind: "execute",
       label: "projects inspect",
+      machineOnly: true,
+      machineAutoStart: true,
       steps: [
         {
           key: "result",
@@ -2508,6 +2628,8 @@ describe("ADE CLI", () => {
         lastInstallFailed: { targetVersion: "1.2.38", attempt: 2 },
         autoApplyPending: null,
         autoApplySuppressedUntil: null,
+        lastCheckedAt: Date.UTC(2026, 8, 30, 12),
+        checkFailure: { kind: "network", at: Date.UTC(2026, 8, 30, 11) },
       },
       { text: true } as any,
       inferFormatter(plan),
@@ -2517,6 +2639,10 @@ describe("ADE CLI", () => {
     expect(output).toContain("1.2.38 did not land");
     expect(output).toContain("attempt 2");
     expect(output).toContain("ade update install");
+    expect(output).toContain("last checked");
+    expect(output).toContain("2026-09-30T12:00:00.000Z");
+    expect(output).toContain("check failed");
+    expect(output).toContain("network at 2026-09-30T11:00:00.000Z");
   });
 
   it("renders progress and omits the install-failure row for a clean update snapshot", () => {
@@ -3233,6 +3359,17 @@ describe("ADE CLI", () => {
       /Unknown search kind/,
     );
 
+    // `--query <text>` names the query; its value is not read as a positional.
+    for (const flag of ["--query", "-q"]) {
+      expect(expectExecutePlan(buildCliPlan(["search", flag, "login redirect", "--kind", "chat"])).steps[0]?.params)
+        .toMatchObject({ arguments: { args: { query: "login redirect", kinds: ["chat"] } } });
+    }
+    // An option search does not know is refused, never dropped: a `--socket`
+    // written after the command used to send the search to the default brain.
+    expect(() => buildCliPlan(["search", "q", "--socket", "/tmp/test.sock"])).toThrow(/goes before the command/);
+    expect(() => buildCliPlan(["search", "--query", "--socket", "/tmp/test.sock"])).toThrow(/goes before the command/);
+    expect(() => buildCliPlan(["search", "q", "--bogus"])).toThrow(/Unknown search option: --bogus/);
+
     // A missing query is a usage error, but --status / --rebuild are not queries.
     expect(() => buildCliPlan(["search"])).toThrow(/requires a query/);
     const status = expectExecutePlan(buildCliPlan(["search", "--status"]));
@@ -3893,7 +4030,9 @@ describe("ADE CLI", () => {
         "shell",
         "--print-config",
       ]),
-    ).toThrow(/provider must be one of claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, or copilot/);
+    // Assert the rejection, not the exact provider roster: the roster grows
+    // (muse, pi, qwen, …) and pinning its copy makes every addition edit here.
+    ).toThrow(/provider must be one of/);
   });
 
   it("accepts a mis-cased provider when starting a CLI session", () => {
@@ -4408,6 +4547,22 @@ describe("ADE CLI", () => {
       reasoningEffort: "high",
       fastMode: true,
     });
+  });
+
+  it("asks for Codex Ultrafast with --ultrafast, which means Fast on", () => {
+    const base = ["chat", "create", "--lane", "lane-1", "--provider", "codex", "--model", "openai/gpt-6.1-sol"];
+    const value = expectStaticPlan(buildCliPlan([...base, "--ultrafast", "--dry-run"])).value as {
+      input: Record<string, unknown>;
+    };
+    expect(value.input).toMatchObject({ provider: "codex", fastMode: true, fastTier: "ultrafast" });
+
+    const plainFast = expectStaticPlan(buildCliPlan([...base, "--fast", "--dry-run"])).value as {
+      input: Record<string, unknown>;
+    };
+    expect(plainFast.input.fastMode).toBe(true);
+    expect(plainFast.input).not.toHaveProperty("fastTier");
+
+    expect(() => buildCliPlan([...base, "--ultrafast", "--standard", "--dry-run"])).toThrow(/not both/);
   });
 
   // ADE-135: `ade prs checks` printed nothing but the row table, so three
@@ -4947,8 +5102,8 @@ describe("ADE CLI", () => {
     expect(help.kind).toBe("help");
     if (help.kind === "help") {
       expect(help.text).toContain("ade chat note");
-      expect(help.text).toContain("ade chat activity testing");
-      expect(help.text).toContain("planning | implementing | testing | reviewing | debugging | monitoring");
+      expect(help.text).toContain("ade chat activity debugging");
+      expect(help.text).toContain("planning | exploring | implementing | testing | debugging | reviewing | shipping | monitoring");
       expect(help.text).toContain(
         "Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.",
       );
@@ -5510,7 +5665,7 @@ describe("ADE CLI", () => {
       "chat-1",
       "--arg",
       "mode=discard_everything",
-    ])).toThrow(/stop_and_clear, stop_only, stop_and_background, or stop_and_clear_and_background/);
+    ])).toThrow(/--mode must be/);
     expect(() => buildCliPlan([
       "chat",
       "restore-queue",
@@ -5924,6 +6079,105 @@ describe("ADE CLI", () => {
     }
   });
 
+  posixIt("writes the captured screenshot to --out and reports where it landed", async () => {
+    // Regression: `browser screenshot --out shot.png` exited 0 and wrote
+    // nothing, because the CLI dropped the flag and never copied the daemon's
+    // dataUrl to the caller's machine.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-browser-shot-"));
+    const projectRoot = path.join(root, "project");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const runtimeSocketPath = path.join(root, "runtime.sock");
+    const desktopSocketPath = path.join(root, "desktop.sock");
+    const outPath = path.join(root, "shot.png");
+    const image = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+    const stopRuntime = await startHeadlessRpcSocketServer({
+      socketPath: runtimeSocketPath,
+      createHandler: () => (async (request: any) => {
+        if (request.method === "ade/initialize") {
+          return {
+            runtimeInfo: {
+              version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+              defaultRole: "evaluator",
+              projectRoot: null,
+              pid: process.pid,
+            },
+          };
+        }
+        throw new Error(`Unexpected runtime method: ${request.method}`);
+      }) as any,
+    });
+    const stopDesktop = await startHeadlessRpcSocketServer({
+      socketPath: desktopSocketPath,
+      createHandler: () => (async (request: any) => {
+        if (request.method === "ade/initialize") return {};
+        if (request.method === "projects.add") {
+          return { projectId: "project-42", rootPath: request.params?.rootPath };
+        }
+        if (request.method === "ade/actions/call") {
+          return {
+            domain: "built_in_browser",
+            action: "captureScreenshot",
+            result: {
+              dataUrl: `data:image/png;base64,${image.toString("base64")}`,
+              width: 2,
+              height: 3,
+            },
+          };
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+
+    try {
+      const result = await withEnvAsync(
+        {
+          ADE_RUNTIME_SOCKET_PATH: runtimeSocketPath,
+          ADE_RPC_SOCKET_PATH: desktopSocketPath,
+          ADE_RPC_URL: undefined,
+          ADE_PROJECT_ROOT: projectRoot,
+          ADE_WORKSPACE_ROOT: projectRoot,
+          ADE_DEFAULT_ROLE: "agent",
+        },
+        () => runCli(["--socket", "browser", "screenshot", "--tab", "t1", "--out", outPath, "--text"]),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain(outPath);
+      expect(fs.readFileSync(outPath)).toEqual(image);
+
+      // Text mode without --out saves a private temp file instead of writing to
+      // the caller's cwd.
+      const textResult = await withEnvAsync(
+        {
+          ADE_RUNTIME_SOCKET_PATH: runtimeSocketPath,
+          ADE_RPC_SOCKET_PATH: desktopSocketPath,
+          ADE_RPC_URL: undefined,
+          ADE_PROJECT_ROOT: projectRoot,
+          ADE_WORKSPACE_ROOT: projectRoot,
+          ADE_DEFAULT_ROLE: "agent",
+        },
+        () => runCli(["--socket", "browser", "screenshot", "--tab", "t1", "--text"]),
+      );
+      expect(textResult.exitCode).toBe(0);
+      const savedMatch = /saved\s+(\S+)/.exec(textResult.output);
+      expect(savedMatch).toBeTruthy();
+      const tempPath = savedMatch![1]!;
+      try {
+        expect(fs.readFileSync(tempPath)).toEqual(image);
+      } finally {
+        fs.rmSync(path.dirname(tempPath), { recursive: true, force: true });
+      }
+    } finally {
+      stopDesktop?.();
+      stopRuntime?.();
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+        // Unix sockets can outlive the server handle on macOS.
+      }
+    }
+  });
+
   it("filters the typed chat model inventory by provider", () => {
     const executePlan = expectExecutePlan(buildCliPlan([
       "chat",
@@ -6124,7 +6378,9 @@ describe("ADE CLI", () => {
         waitFor: "terminal",
         summary: { phase: "idle", cliSession: { status: "completed" } },
       });
-      expect(actions).toEqual(["getSessionSummary", "getTurnStatus"]);
+      // This brain has no `chat.waitFor`, so the CLI polls; a CLI child has no
+      // chat summary and answers through its turn status.
+      expect(actions).toContain("getTurnStatus");
     } finally {
       stop?.();
       fs.rmSync(root, { recursive: true, force: true });
@@ -6443,6 +6699,22 @@ describe("ADE CLI", () => {
     });
     expect(plan.exitCodeFromResult?.({ ok: true, sessionId: "chat-10" })).toBe(0);
     expect(plan.exitCodeFromResult?.({ ok: false, reason: "no_alternate_account" })).toBe(1);
+  });
+
+  it.each([
+    [["chat", "switch-account", "chat-9", "--account", "work"]],
+    [["chat", "switch-account", "--account", "work", "chat-9"]],
+  ])("builds chat switch-account as chat.switchAccount whatever the argument order (%j)", (argv) => {
+    const plan = buildCliPlan(argv);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(inferFormatter(plan)).toBe("chat-switch-account");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "chat", action: "switchAccount", args: { sessionId: "chat-9", instanceId: "work" } },
+    });
+    expect(plan.exitCodeFromResult?.({ ok: true, instanceId: "work" })).toBe(0);
+    expect(plan.exitCodeFromResult?.({ ok: false, reason: "busy", message: "Wait for this turn to finish." })).toBe(1);
   });
 
   it("formats chat continue-on-account as the new chat, or the host's refusal", () => {
@@ -6807,6 +7079,7 @@ describe("ADE CLI", () => {
       params: {
         action: "create",
         args: {
+          personalProfile: "assistant",
           provider: "codex",
           model: "openai/gpt-5.5",
           modelId: "openai/gpt-5.5",
@@ -7022,6 +7295,57 @@ describe("ADE CLI", () => {
       "list",
       "--personal",
     ])).rejects.toThrow(/require the machine-owned ADE brain/);
+
+    // `--arg personalProfile=embedded` asks for the SDK-host surface instead
+    // of the assistant default a chat started from ADE's own CLI gets.
+    const embedded = expectExecutePlan(buildCliPlan([
+      "chat",
+      "create",
+      "--personal",
+      "--provider",
+      "codex",
+      "--model",
+      "openai/gpt-5.5",
+      "--arg",
+      "personalProfile=embedded",
+    ]));
+    expect(embedded.steps[0]).toMatchObject({
+      method: "personalChats.call",
+      params: { action: "create", args: { personalProfile: "embedded", provider: "codex" } },
+    });
+  });
+
+  it.each([
+    [["chat", "ask", "Which", "branch?"], "requestSessionAttention", { sessionId: "personal-env", message: "Which branch?" }],
+    [["chat", "note", "--note", "Drafting the email"], "setSessionStatusNote", { sessionId: "personal-env", note: "Drafting the email" }],
+    [["chat", "activity", "testing"], "setSessionActivity", { sessionId: "personal-env", value: "testing" }],
+    [["chat", "activity", "clear", "--session", "personal-2"], "setSessionActivity", { sessionId: "personal-2", value: null }],
+  ])("routes %j from inside a personal chat to its own row", (argv, action, args) => {
+    const previousScope = process.env.ADE_CHAT_SCOPE;
+    const previousChat = process.env.ADE_CHAT_SESSION_ID;
+    try {
+      process.env.ADE_CHAT_SESSION_ID = "personal-env";
+      process.env.ADE_CHAT_SCOPE = "personal";
+      const plan = expectExecutePlan(buildCliPlan(argv));
+      expect(plan.machineOnly).toBe(true);
+      expect(plan.steps).toEqual([{
+        key: "result",
+        method: "personalChats.call",
+        params: { action, args },
+      }]);
+      // A personal chat's report must never register its scratch folder as a project.
+      expect(shouldAutoRegisterProjectForPlan(plan)).toBe(false);
+
+      // The same command from a project chat keeps reporting to the project.
+      delete process.env.ADE_CHAT_SCOPE;
+      const projectPlan = buildCliPlan(argv);
+      expect(JSON.stringify(projectPlan)).not.toContain("personalChats.call");
+    } finally {
+      if (previousScope === undefined) delete process.env.ADE_CHAT_SCOPE;
+      else process.env.ADE_CHAT_SCOPE = previousScope;
+      if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previousChat;
+    }
   });
 
   posixIt("executes personal chat commands over the machine socket without project registration", async () => {
@@ -7862,6 +8186,118 @@ describe("ADE CLI", () => {
     }
   });
 
+  posixIt("signs in from another device while the browser sign-in on this machine is still pending", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-login-both-"));
+    const socketPath = path.join(root, "ade.sock");
+    // A stand-in for the OS opener, so the browser handoff succeeds and no
+    // real browser opens.
+    const binDir = path.join(root, "bin");
+    fs.mkdirSync(binDir);
+    for (const opener of ["open", "xdg-open"]) {
+      fs.writeFileSync(path.join(binDir, opener), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    }
+    const authorizeUrl = "https://accounts.example/authorize";
+    const verificationUri = "https://directory.example/device";
+    const requests: Array<{ method: string; params?: any }> = [];
+    const answer = (action: string, result: unknown) => ({ domain: "account", action, result, statusHints: {} });
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath,
+      createHandler: () => (async (request: any) => {
+        requests.push({ method: request.method, params: request.params });
+        if (request.method === "ade/initialize") {
+          return {
+            runtimeInfo: {
+              version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+              buildHash: null,
+              defaultRole: "cto",
+              packageChannel: null,
+              projectRoot: null,
+              pid: process.pid,
+            },
+          };
+        }
+        if (request.method === "account.call") {
+          const action = request.params?.action;
+          if (action === "status") {
+            return answer(action, { signedIn: false, userId: null, email: null, name: null, expiresAt: null, source: null });
+          }
+          if (action === "startLogin") {
+            return answer(action, {
+              sessionId: "loopback-1",
+              authorizeUrl,
+              expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            });
+          }
+          if (action === "startDeviceLogin") {
+            return answer(action, {
+              sessionId: "device-1",
+              userCode: "ABCD-EFGH",
+              verificationUri,
+              verificationUriComplete: `${verificationUri}?user_code=ABCD-EFGH`,
+              expiresAt: new Date(Date.now() + 60_000).toISOString(),
+              intervalSec: 0.01,
+            });
+          }
+          // Nobody uses the browser on this machine.
+          if (action === "pollLogin") return answer(action, { status: "pending", message: null });
+          if (action === "pollDeviceLogin") {
+            return answer(action, {
+              status: "signed_in",
+              authStatus: { signedIn: true, email: "person@example.com", source: "device" },
+            });
+          }
+          if (action === "cancelLogin") return answer(action, { signedIn: true });
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+    const envKeys = [
+      "ADE_ACCOUNT_TOKEN",
+      "DISPLAY",
+      "PATH",
+      "SSH_CLIENT",
+      "SSH_CONNECTION",
+      "SSH_TTY",
+      "WAYLAND_DISPLAY",
+    ] as const;
+    const previousEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      delete process.env.ADE_ACCOUNT_TOKEN;
+      process.env.DISPLAY = ":0";
+      process.env.PATH = binDir;
+      delete process.env.SSH_CLIENT;
+      delete process.env.SSH_CONNECTION;
+      delete process.env.SSH_TTY;
+      delete process.env.WAYLAND_DISPLAY;
+
+      const result = await runCli(["--socket", socketPath, "login", "--max-wait", "5", "--text"]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain("person@example.com");
+      // Both ways in were offered by the one command.
+      const printed = stderrWrite.mock.calls.flat().join("");
+      expect(printed).toContain(authorizeUrl);
+      expect(printed).toContain(verificationUri);
+      expect(printed).toContain("ABCD-EFGH");
+      // The listener on this machine is closed, so the browser tab that is
+      // still open here cannot finish a second sign-in.
+      const cancelled = requests
+        .filter((request) => request.method === "account.call" && request.params?.action === "cancelLogin")
+        .map((request) => request.params?.args?.sessionId);
+      expect(cancelled).toEqual(["loopback-1"]);
+    } finally {
+      stderrWrite.mockRestore();
+      for (const [key, value] of previousEnv) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      stop?.();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   posixIt("advises starting the machine brain when a personal chat connection fails", async () => {
     const socketPath = path.join(
       fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-personal-chat-missing-")),
@@ -8023,6 +8459,38 @@ describe("ADE CLI", () => {
           codexSandbox: "danger-full-access",
         },
       },
+    });
+  });
+
+  // The move form keeps --machine (it names the destination), so the session
+  // must resolve the same whichever side of the flag it is written on.
+  it.each([
+    ["session first", ["chat-1", "--machine", "Mac mini"]],
+    ["machine first", ["--machine", "Mac mini", "chat-1"]],
+    ["inline machine", ["--machine=Mac mini", "chat-1"]],
+    // A prompt that reads like a flag is text, not --cancel.
+    ["prompt that looks like a flag", ["chat-1", "--machine", "Mac mini", "--prompt", "--cancel"]],
+    ["handoff note that looks like a flag", ["chat-1", "--machine", "Mac mini", "--handoff-note", "--cancel"]],
+    ["prompt that names a setting flag", ["chat-1", "--machine", "Mac mini", "--prompt", "--fork"]],
+  ])("builds a move to another machine with the %s", (_label, head) => {
+    const move = expectExecutePlan(buildCliPlan([
+      "chat",
+      "handoff",
+      ...head,
+      "--model",
+      "anthropic/claude-haiku-4-5",
+      "--when-turn-ends",
+    ]));
+    expect(move.label).toBe("chat handoff to another machine");
+    const args = (move.steps[0]?.params as { arguments: { action: string; args: Record<string, unknown> } }).arguments;
+    expect(args.action).toBe("startCrossMachineHandoff");
+    expect(args.args).toMatchObject({
+      sourceSessionId: "chat-1",
+      machine: "Mac mini",
+      targetModelId: "anthropic/claude-haiku-4-5",
+      whenTurnEnds: true,
+      // The default mode, whatever the free text says.
+      mode: "brief",
     });
   });
 
@@ -8363,6 +8831,305 @@ describe("ADE CLI", () => {
     );
   });
 
+  it("builds typed ade drafts commands", () => {
+    const textOptions = {
+      projectRoot: null,
+      workspaceRoot: null,
+      role: "agent" as const,
+      headless: false,
+      requireSocket: false,
+      socketPath: null,
+      pretty: false,
+      text: true,
+      json: false,
+      timeoutMs: 1000,
+    };
+    const entries = [
+      {
+        id: "draft-1",
+        text: "Standup digest",
+        status: "scheduled",
+        kind: "scheduled",
+        scheduledAt: "2026-07-23T13:00:00.000Z",
+        targetKind: "existing",
+        targetSessionId: "chat-9",
+        deliveryPolicy: "wait",
+      },
+      {
+        id: "draft-2",
+        text: "tonight's migration",
+        status: "blocked",
+        kind: "scheduled",
+        targetKind: "existing",
+        targetSessionId: "chat-gone",
+        lastError: "target chat deleted",
+      },
+      {
+        id: "draft-3",
+        text: "refactor the sync layer",
+        status: "draft",
+        kind: "draft",
+        createdAt: new Date(Date.now() - 120_000).toISOString(),
+      },
+    ];
+
+    const list = expectExecutePlan(buildCliPlan(["drafts", "list"]));
+    expect(list.label).toBe("drafts list");
+    expect(list.formatter).toBe("drafts-list");
+    expect(list.steps[0]?.params).toMatchObject({
+      arguments: { domain: "chat", action: "listDrafts", args: {} },
+    });
+    expect(list.shapeResult?.({ result: { domain: "chat", action: "listDrafts", result: entries } }))
+      .toEqual(entries);
+    expect(list.tableText?.(entries)).toMatch(/status[\s\S]*scheduled[\s\S]*needs you[\s\S]*draft/);
+    expect(formatOutput(entries, textOptions, list.formatter)).toMatch(
+      /scheduled[\s\S]*→ chat chat-9[\s\S]*"Standup digest"[\s\S]*needs you[\s\S]*target chat deleted[\s\S]*"tonight's migration"[\s\S]*draft[\s\S]*"refactor the sync layer"/,
+    );
+
+    const scheduled = expectExecutePlan(buildCliPlan(["drafts", "list", "--scheduled"]));
+    expect(scheduled.shapeResult?.({ result: { domain: "chat", action: "listDrafts", result: entries } }))
+      .toEqual([entries[0]]);
+    expect(() => buildCliPlan(["drafts", "list", "--scheduled", "--needs-you"])).toThrow(
+      /not both/,
+    );
+    const needsYou = expectExecutePlan(buildCliPlan(["drafts", "list", "--needs-you"]));
+    expect(needsYou.shapeResult?.({ result: { domain: "chat", action: "listDrafts", result: entries } }))
+      .toEqual([entries[1]]);
+    const byMachine = expectExecutePlan(buildCliPlan(["drafts", "list", "--machine", "studio"]));
+    expect(byMachine.shapeResult?.({
+      result: {
+        domain: "chat",
+        action: "listDrafts",
+        result: [{ ...entries[0], targetMachineKey: "studio" }, entries[1]],
+      },
+    })).toEqual([{ ...entries[0], targetMachineKey: "studio" }]);
+
+    const create = expectExecutePlan(buildCliPlan([
+      "drafts",
+      "create",
+      "--prompt",
+      "Ship it",
+      "--image",
+      "./shot.png",
+      "--provider",
+      "codex",
+    ]));
+    expect(create.label).toBe("drafts create");
+    expect(create.formatter).toBe("drafts-entry");
+    expect(create.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "createDraft",
+        args: {
+          text: "Ship it",
+          attachments: [{ path: path.resolve("./shot.png"), type: "image" }],
+          provider: "codex",
+        },
+      },
+    });
+
+    const createScheduled = expectExecutePlan(buildCliPlan([
+      "drafts",
+      "create",
+      "--prompt",
+      "Ship it",
+      "--at",
+      "2999-07-23T01:05:00-04:00",
+      "--target",
+      "chat-9",
+    ]));
+    const createScheduleArgs = (createScheduled.steps[0]?.params as any).arguments.args.schedule;
+    expect(createScheduleArgs).toMatchObject({
+      scheduledAt: "2999-07-23T01:05:00-04:00",
+      targetKind: "existing",
+      targetSessionId: "chat-9",
+      deliveryPolicy: "wait",
+    });
+
+    expect(() => buildCliPlan([
+      "drafts",
+      "create",
+      "--prompt",
+      "Ship it",
+      "--at",
+      "2999-07-23T01:05:00-04:00",
+    ])).toThrow(/explicit target/);
+
+    const schedule = expectExecutePlan(buildCliPlan([
+      "drafts",
+      "schedule",
+      "draft-1",
+      "--in",
+      "90m",
+      "--target",
+      "chat-9",
+    ]));
+    expect(schedule.label).toBe("drafts schedule");
+    const scheduleArgs = (schedule.steps[0]?.params as any).arguments.args;
+    expect(scheduleArgs.id).toBe("draft-1");
+    const fireAt = Date.parse(scheduleArgs.schedule.scheduledAt as string);
+    expect((scheduleArgs.schedule.scheduledAt as string).endsWith("Z")).toBe(true);
+    expect(fireAt).toBeGreaterThan(Date.now() + 89 * 60_000);
+    expect(fireAt).toBeLessThan(Date.now() + 91 * 60_000);
+    expect(scheduleArgs.schedule).toMatchObject({
+      targetKind: "existing",
+      targetSessionId: "chat-9",
+      deliveryPolicy: "wait",
+    });
+
+    const scheduleNewChat = expectExecutePlan(buildCliPlan([
+      "drafts",
+      "schedule",
+      "draft-1",
+      "--in",
+      "2h",
+      "--new-chat",
+      "--lane",
+      "lane-7",
+      "--provider",
+      "codex",
+      "--model",
+      "openai/gpt-5.6-sol",
+    ]));
+    expect((scheduleNewChat.steps[0]?.params as any).arguments.args.schedule).toMatchObject({
+      targetKind: "new",
+      targetLaneId: "lane-7",
+      provider: "codex",
+      model: "openai/gpt-5.6-sol",
+    });
+
+    expect(() => buildCliPlan([
+      "drafts",
+      "schedule",
+      "draft-1",
+      "--at",
+      "2999-07-23T01:05:00Z",
+      "--new-chat",
+      "--lane",
+      "lane-7",
+      "--provider",
+      "codex",
+    ])).toThrow(/needs --model/);
+    expect(() => buildCliPlan([
+      "drafts",
+      "schedule",
+      "draft-1",
+      "--in",
+      "90m",
+      "--target",
+      "chat-9",
+      "--new-chat",
+      "--lane",
+      "lane-7",
+    ])).toThrow(/Choose one target/);
+    expect(() => buildCliPlan([
+      "drafts",
+      "schedule",
+      "draft-1",
+      "--in",
+      "90m",
+      "--target",
+      "chat-9",
+      "--at",
+      "2999-07-23T01:05:00Z",
+    ])).toThrow(/not both/);
+    expect(() => buildCliPlan([
+      "drafts",
+      "schedule",
+      "draft-1",
+      "--at",
+      "2999-07-23 01:05",
+      "--target",
+      "chat-9",
+    ])).toThrow(/explicit offset or Z/);
+    expect(() => buildCliPlan([
+      "drafts",
+      "schedule",
+      "draft-1",
+      "--in",
+      "90m",
+      "--if-late",
+      "grace",
+      "--target",
+      "chat-9",
+    ])).toThrow(/needs --grace/);
+
+    const updateText = expectExecutePlan(buildCliPlan(["drafts", "update", "draft-1", "--prompt", "better text"]));
+    expect(updateText.steps[0]?.params).toMatchObject({
+      arguments: { action: "updateDraft", args: { id: "draft-1", text: "better text" } },
+    });
+    const unschedule = expectExecutePlan(buildCliPlan(["drafts", "update", "draft-1", "--unschedule"]));
+    expect(unschedule.steps[0]?.params).toMatchObject({
+      arguments: { action: "updateDraft", args: { id: "draft-1", unschedule: true } },
+    });
+    expect(() => buildCliPlan(["drafts", "update", "draft-1"])).toThrow(/needs --prompt/);
+    expect(() => buildCliPlan(["drafts", "update", "draft-1", "--unschedule", "--in", "30m"])).toThrow(
+      /not both/,
+    );
+
+    // Retiming reads the existing row first, then carries its target into the update.
+    const retime = expectExecutePlan(buildCliPlan(["drafts", "update", "draft-1", "--in", "30m"]));
+    expect(retime.steps[0]?.params).toMatchObject({
+      arguments: { action: "listDrafts" },
+    });
+    const retimeStep = retime.steps[1]?.params;
+    expect(typeof retimeStep).toBe("function");
+    // The key is read off the first step rather than written again here. The
+    // executor publishes a step's result under that step's OWN key after its
+    // params run, so a plan whose two steps disagree about the name fails with
+    // "No draft <id> on this machine" — and a test that spells the key itself
+    // passes under either wiring.
+    const listedKey = retime.steps[0]?.key as string;
+    expect(listedKey).toBeTruthy();
+    const retimeParams = (retimeStep as (values: any) => any)({
+      [listedKey]: { domain: "chat", action: "listDrafts", result: [entries[0]] },
+    });
+    expect(retimeParams.arguments.args).toMatchObject({
+      id: "draft-1",
+      schedule: { targetKind: "existing", targetSessionId: "chat-9", deliveryPolicy: "wait" },
+    });
+    expect(() => (retimeStep as (values: any) => any)({
+      [listedKey]: { domain: "chat", action: "listDrafts", result: [] },
+    })).toThrow(/No draft draft-1/);
+
+    const del = expectExecutePlan(buildCliPlan(["drafts", "delete", "draft-1"]));
+    expect(del.label).toBe("drafts delete");
+    expect(del.steps[0]?.params).toMatchObject({
+      arguments: { action: "deleteDraft", args: { id: "draft-1" } },
+    });
+    expect(del.shapeResult?.({ result: true })).toEqual({ id: "draft-1", deleted: true });
+    expect(del.shapeResult?.({ result: false })).toEqual({ id: "draft-1", deleted: false });
+    expect(formatOutput({ id: "draft-1", deleted: true }, textOptions, del.formatter)).toMatch(
+      /Deleted draft draft-1/,
+    );
+
+    const now = expectExecutePlan(buildCliPlan(["drafts", "now", "draft-1"]));
+    expect(now.label).toBe("drafts now");
+    expect(now.steps[0]?.params).toMatchObject({
+      arguments: { action: "sendDraftNow", args: { id: "draft-1" } },
+    });
+    expect(now.shapeResult?.({ result: { ok: true } })).toEqual({ id: "draft-1", ok: true });
+    expect(now.shapeResult?.({ result: { ok: false, error: "no such chat" } })).toEqual({
+      id: "draft-1",
+      ok: false,
+      error: "no such chat",
+    });
+    expect(formatOutput({ id: "draft-1", ok: false, error: "no such chat" }, textOptions, now.formatter))
+      .toMatch(/Could not deliver draft draft-1 — no such chat/);
+
+    const show = expectExecutePlan(buildCliPlan(["drafts", "show", "draft-2"]));
+    expect(show.label).toBe("drafts show");
+    expect(show.formatter).toBe("drafts-show");
+    expect(show.shapeResult?.({ result: { domain: "chat", action: "listDrafts", result: entries } }))
+      .toEqual(entries[1]);
+    expect(() => show.shapeResult?.({ result: { domain: "chat", action: "listDrafts", result: [] } }))
+      .toThrow(/No draft draft-2/);
+    expect(formatOutput(entries[0], textOptions, show.formatter)).toMatch(/ADE draft draft-1[\s\S]*Standup digest/);
+
+    expect(() => buildCliPlan(["drafts", "frobnicate"])).toThrow(/Unknown drafts subcommand/);
+    expect(() => buildCliPlan(["drafts", "delete"])).toThrow(/a draft id is required/);
+  });
+
   it("rejects prototype-sensitive generic ADE action arg paths", () => {
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
 
@@ -8636,6 +9403,7 @@ describe("ADE CLI", () => {
         socketPath: null,
         pretty: true,
         text: true,
+        json: false,
         timeoutMs: 1000,
       },
       "doctor",
@@ -8837,6 +9605,7 @@ describe("ADE CLI", () => {
         socketPath: null,
         pretty: false,
         text: true,
+        json: false,
         timeoutMs: 1000,
       },
       "lane-detail",
@@ -8893,8 +9662,10 @@ describe("ADE CLI", () => {
     )
       return;
 
-    expect(screenshot.preferHeadless).toBe(true);
-    expect(capture.preferHeadless).toBe(true);
+    // The lane display lives in the running brain, so the default path does
+    // not force an in-process runtime; only --real-screen still prefers one.
+    expect(screenshot.preferHeadless).toBeUndefined();
+    expect(capture.preferHeadless).toBeUndefined();
     expect(capture.steps[0]?.params).toMatchObject({
       name: "screenshot_environment",
       arguments: {
@@ -8908,8 +9679,20 @@ describe("ADE CLI", () => {
     });
     expect((screenshot.steps[0]?.params as any)?.arguments?.proof).toBe(true);
     expect((record.steps[0]?.params as any)?.arguments?.proof).toBe(true);
-    expect(record.preferHeadless).toBe(true);
+    expect((capture.steps[0]?.params as any)?.arguments?.realScreen).toBeUndefined();
+    expect((record.steps[0]?.params as any)?.arguments?.realScreen).toBeUndefined();
+    expect(record.preferHeadless).toBeUndefined();
     expect(list.preferHeadless).toBeUndefined();
+
+    for (const argv of [
+      ["proof", "capture", "--real-screen", "--caption", "Done"],
+      ["proof", "record", "--real-screen", "--seconds", "3"],
+    ]) {
+      const plan = buildCliPlan(argv);
+      if (plan.kind !== "execute") throw new Error("expected an execute plan");
+      expect((plan.steps[0]?.params as any)?.arguments).toMatchObject({ proof: true, realScreen: true });
+      expect(plan.preferHeadless).toBe(true);
+    }
   });
 
   it("maps proof attach to visual artifact ingestion", () => {
@@ -9108,6 +9891,25 @@ describe("ADE CLI", () => {
       expect(summarized.warnings).toEqual([warning]);
       const output = formatOutput(summarized, textOpts(), inferFormatter(plan));
       expect(output).toContain(`warning: ${warning}`);
+      expect(output.trimEnd().split("\n").at(-1)).toMatch(/^Attached 1 artifact/);
+    });
+
+    it("names the lane display a proof capture used", () => {
+      const plan = expectExecutePlan(buildCliPlan(["proof", "capture", "--caption", "roots check"]));
+      const summarized = summarizeExecution({
+        plan,
+        connection,
+        values: {
+          result: {
+            ...ingestResult,
+            capturedFrom: { kind: "mac_desktop", laneId: "lane-9", displayName: "ADE · lane-9", width: 1440, height: 900 },
+          },
+          verify: { artifacts: [{ id: "artifact-1" }] },
+        },
+      }) as Record<string, unknown>;
+      expect(summarized.capturedFrom).toBe("Mac Desktop display ADE · lane-9 (1440x900)");
+      const output = formatOutput(summarized, textOpts(), inferFormatter(plan));
+      expect(output).toContain("captured from: Mac Desktop display ADE · lane-9 (1440x900)");
       expect(output.trimEnd().split("\n").at(-1)).toMatch(/^Attached 1 artifact/);
     });
 
@@ -10100,6 +10902,44 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("uses the parent ADE project for a registered sibling Git worktree", () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-linked-roots-")));
+    const parent = path.join(root, "repository");
+    const worktree = path.join(root, "repo-worktrees", "feature-lane");
+    const nested = path.join(worktree, "apps", "ade-cli");
+    const admin = path.join(parent, ".git", "worktrees", "feature-lane");
+    const parentAde = path.join(parent, ".ade");
+    const DatabaseSync = createRequire(import.meta.url)("node:sqlite").DatabaseSync as new (file: string) => {
+      exec(sql: string): void;
+      prepare(sql: string): { run(...values: unknown[]): void };
+      close(): void;
+    };
+
+    try {
+      fs.mkdirSync(path.join(parent, ".git"), { recursive: true });
+      fs.mkdirSync(parentAde, { recursive: true });
+      fs.mkdirSync(admin, { recursive: true });
+      fs.mkdirSync(nested, { recursive: true });
+      fs.mkdirSync(path.join(worktree, ".ade"), { recursive: true });
+      fs.writeFileSync(path.join(worktree, ".git"), `gitdir: ${path.relative(worktree, admin)}\n`);
+      fs.writeFileSync(path.join(admin, "gitdir"), `${path.relative(admin, path.join(worktree, ".git"))}\n`);
+      fs.writeFileSync(path.join(worktree, ".ade", "ade.yaml"), "project: true\n");
+
+      const db = new DatabaseSync(path.join(parentAde, "ade.db"));
+      db.exec("create table lanes (worktree_path text, attached_root_path text, archived_at text)");
+      db.prepare("insert into lanes (worktree_path, attached_root_path, archived_at) values (?, null, null)")
+        .run(worktree);
+      db.close();
+
+      expect(findProjectRoots(nested)).toEqual({
+        projectRoot: parent,
+        workspaceRoot: worktree,
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 10 });
+    }
+  });
+
   it("defaults workspaceRoot to projectRoot when ADE_PROJECT_ROOT overrides discovery", () => {
     const prevProject = process.env.ADE_PROJECT_ROOT;
     const prevWorkspace = process.env.ADE_WORKSPACE_ROOT;
@@ -10306,6 +11146,34 @@ describe("ADE CLI", () => {
         closeLinearIssueOnMerge: true,
       },
     });
+  });
+
+  it("uploads the proof a PR text cites after the PR is made, and only then", () => {
+    const steps = (argv: string[]) => {
+      const plan = buildCliPlan(argv);
+      expect(plan.kind, "an executable plan").toBe("execute");
+      return plan.kind === "execute" ? plan.steps.map((step) => [step.key, Boolean(step.optional)]) : [];
+    };
+    const cited = "## Evidence\n![The list](ade-proof://pic-1)";
+    // The upload is optional on both commands: a PR that was made or a text
+    // that was replaced stays a success when GitHub refuses the pictures.
+    expect(steps(["prs", "create", "--lane", "lane-1", "--body", cited])).toEqual([
+      ["result", false],
+      ["proofList", true],
+      ["proofLink", true],
+    ]);
+    expect(steps(["prs", "body", "12", "--body", cited])).toEqual([
+      ["result", false],
+      ["proofList", true],
+      ["proofLink", true],
+    ]);
+    expect(steps(["prs", "create", "--lane", "lane-1", "--body", "No pictures here."])).toEqual([["result", false]]);
+    // The explicit command fails loudly when it cannot read the proof.
+    expect(steps(["proof", "publish", "--pr", "12", "--in-body"])).toEqual([["proofList", false], ["proofLink", true]]);
+    expect(() => buildCliPlan(["proof", "publish", "--pr", "12", "--in-body", "pic-1"])).toThrow(/takes no ids/);
+    // A missing flag must not replace the PR text with nothing; an explicit empty text may.
+    expect(() => buildCliPlan(["prs", "body", "12"])).toThrow(/needs --body/);
+    expect(steps(["prs", "body", "12", "--body", ""])).toEqual([["result", false]]);
   });
 
   it("summarizes PR create output with GitHub and ADE links", () => {
@@ -10928,11 +11796,13 @@ describe("ADE CLI", () => {
       },
     });
 
-    const setState = buildCliPlan(["linear", "set-state", "ENG-431", "state-done"]);
+    // A state id goes straight to updateIssueState; a state name is looked up first.
+    const stateId = "5f0c2a1e-3b4d-4c6e-8f9a-0b1c2d3e4f50";
+    const setState = buildCliPlan(["linear", "set-state", "ENG-431", stateId]);
     expect(setState.kind).toBe("execute");
     if (setState.kind !== "execute") return;
     expect(setState.steps[0]?.params).toMatchObject({
-      arguments: { action: "updateIssueState", argsList: ["ENG-431", "state-done"] },
+      arguments: { action: "updateIssueState", argsList: ["ENG-431", stateId] },
     });
 
     const assignNone = buildCliPlan(["linear", "assign", "ENG-431", "none"]);
@@ -11328,6 +12198,23 @@ describe("ADE CLI", () => {
           spawnKind: "subagent",
         },
       });
+      const args = (plan.steps[0]?.params as { arguments: Record<string, unknown> }).arguments;
+      expect(args).not.toHaveProperty("permissionMode");
+
+      const explicitMode = expectExecutePlan(buildCliPlan([
+        "shell",
+        "start-cli",
+        "codex",
+        "--lane",
+        "lane-1",
+        "--type",
+        "subagent",
+        "--permission-mode",
+        "plan",
+      ]));
+      expect(
+        (explicitMode.steps[0]?.params as { arguments: Record<string, unknown> }).arguments.permissionMode,
+      ).toBe("plan");
     });
   });
 
@@ -11799,27 +12686,27 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("automations create accepts require-on-trigger lane mode without a target lane", () => {
-    const plan = buildCliPlan([
-      "automations",
-      "create",
-      "--text",
-      "id: r1\n",
-      "--lane-mode",
-      "require-on-trigger",
-    ]);
-    expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") return;
-    expect(plan.steps[0]?.params).toMatchObject({
-      arguments: {
-        args: {
-          draft: {
-            execution: { laneMode: "require-on-trigger" },
-          },
-        },
-      },
-    });
-  });
+  it.each(["require-on-trigger", "pr-branch"])(
+    "automations create switches a saved reuse rule to %s and drops its fixed lane",
+    (laneMode) => {
+      const plan = buildCliPlan([
+        "automations",
+        "create",
+        "--text",
+        "id: r1\nexecution:\n  kind: agent-session\n  laneMode: reuse\n  targetLaneId: lane-old\n",
+        "--lane-mode",
+        laneMode,
+      ]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      const execution = (plan.steps[0]?.params as { arguments: { args: { draft: { execution: Record<string, unknown> } } } })
+        .arguments.args.draft.execution;
+      expect(execution.laneMode).toBe(laneMode);
+      expect(execution.kind).toBe("agent-session");
+      // Validation rejects a fixed lane next to these modes, so it must go.
+      expect(execution).not.toHaveProperty("targetLaneId");
+    },
+  );
 
   it("automations create rejects --lane with --lane-mode require-on-trigger", () => {
     expect(() =>
@@ -12579,6 +13466,7 @@ describe("ADE CLI", () => {
   it("tool claim commands require an explicit or ADE-provided lane", () => {
     const previousLane = process.env.ADE_LANE_ID;
     const previousChat = process.env.ADE_CHAT_SESSION_ID;
+    const previousScope = process.env.ADE_CHAT_SCOPE;
     try {
       delete process.env.ADE_LANE_ID;
       delete process.env.ADE_CHAT_SESSION_ID;
@@ -12587,11 +13475,22 @@ describe("ADE CLI", () => {
       expect(() => buildCliPlan(["app-control", "claim"])).toThrow(/requires --lane/);
       expect(() => buildCliPlan(["browser", "claim"])).toThrow(/requires --lane/);
 
+      // A personal chat has no lane: its browser claim goes to the personal
+      // tab collection. Only the browser is personal-capable.
+      process.env.ADE_CHAT_SCOPE = "personal";
+      const personalClaim = expectExecutePlan(buildCliPlan(["browser", "claim", "--tab", "tab-7"]));
+      expect(JSON.stringify(personalClaim.steps)).toContain("\"tabId\":\"tab-7\"");
+      expect(JSON.stringify(personalClaim.steps)).not.toContain("laneId");
+      expect(() => buildCliPlan(["ios-sim", "claim"])).toThrow(/requires --lane/);
+      delete process.env.ADE_CHAT_SCOPE;
+
       process.env.ADE_LANE_ID = "lane-env-1";
       expect(buildCliPlan(["ios-sim", "claim"]).kind).toBe("execute");
       expect(buildCliPlan(["app-control", "claim"]).kind).toBe("execute");
       expect(buildCliPlan(["browser", "claim"]).kind).toBe("execute");
     } finally {
+      if (previousScope === undefined) delete process.env.ADE_CHAT_SCOPE;
+      else process.env.ADE_CHAT_SCOPE = previousScope;
       if (previousLane === undefined) delete process.env.ADE_LANE_ID;
       else process.env.ADE_LANE_ID = previousLane;
       if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
@@ -13558,9 +14457,11 @@ describe("ADE CLI", () => {
       "AAA-BBB",
     ]);
     expect(attached).toMatchObject({
+      domain: "ios_simulator",
       action: "deviceAttach",
       args: { simulator: "AAA-BBB" },
     });
+    expect(() => iosSimActionArgs(["apple", "device-attach"])).toThrow(/requires --simulator/);
 
     const listed = iosSimActionArgs(["apple", "device-list", "--installed"]);
     expect(listed).toMatchObject({
@@ -13584,6 +14485,20 @@ describe("ADE CLI", () => {
     expect(startedOwned).toMatchObject({ action: "deviceStart" });
     expect((startedOwned as { args: Record<string, unknown> }).args).not.toHaveProperty("udid");
     expect(() => buildCliPlan(["apple", "start", "--udid", "A", "--create", "B"])).toThrow(/not both/);
+
+    const cleanup = iosSimActionArgs(["apple", "device-cleanup", "--power-off-idle", "--lane", "lane-a"]);
+    expect(cleanup).toMatchObject({
+      action: "deviceCleanup",
+      args: { laneId: "lane-a", powerOffIdle: true },
+    });
+
+    const tests = iosSimActionArgs([
+      "apple", "test", "--scheme", "ADE", "--only", "ADETests/SyncTests", "--only", "ADETests/AuthTests",
+    ]);
+    expect(tests).toMatchObject({
+      action: "runTests",
+      args: { scheme: "ADE", onlyTesting: ["ADETests/SyncTests", "ADETests/AuthTests"] },
+    });
 
     const deleted = iosSimActionArgs(["apple", "device-delete", "--force"]);
     expect(deleted).toMatchObject({
@@ -13632,7 +14547,7 @@ describe("ADE CLI", () => {
     ]);
     expect(recordStartKeepIdle).toMatchObject({
       action: "recordStart",
-      args: { keepIdle: true, maxSeconds: 1200 },
+      args: { plain: true, maxSeconds: 1200 },
     });
     expect(() => buildCliPlan(["apple", "record-start", "--max-seconds", "0"])).toThrow(/greater than 0/);
     expect(() => buildCliPlan(["apple", "record-start", "--max-seconds", "soon"])).toThrow(/must be a number/);
@@ -13793,6 +14708,26 @@ describe("ADE CLI", () => {
         args: { command: "pnpm dev" },
       },
     });
+  });
+
+  it("app-control launch resolves a relative --cwd from the shell's own directory", () => {
+    const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-app-control-cwd-"));
+    fs.mkdirSync(path.join(shellDir, "counter-app"));
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(shellDir);
+    try {
+      const argsOf = (argv: string[]) => {
+        const plan = buildCliPlan(argv);
+        if (plan.kind !== "execute") throw new Error("expected an execute plan");
+        return (plan.steps[0]?.params as { arguments: { args: Record<string, unknown> } }).arguments.args;
+      };
+      expect(argsOf(["app-control", "launch", "--command", "npm start", "--cwd", "counter-app"]).cwd)
+        .toBe(path.join(shellDir, "counter-app"));
+      // A folder that is not here is left for the runtime to resolve.
+      expect(argsOf(["app-control", "launch", "--command", "npm start", "--cwd", "apps/web"]).cwd).toBe("apps/web");
+    } finally {
+      cwdSpy.mockRestore();
+      fs.rmSync(shellDir, { recursive: true, force: true });
+    }
   });
 
   it("app-control launch, connect, and claim carry the agent lane claim", () => {
@@ -14098,6 +15033,17 @@ describe("ADE CLI", () => {
       },
     });
 
+    const rightClick = buildCliPlan(["app-control", "right-click", "--text-match", "Row"]);
+    expect(rightClick.kind).toBe("execute");
+    if (rightClick.kind !== "execute") return;
+    expect(rightClick.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "agentClick",
+        args: { text: "Row", button: "right" },
+      },
+    });
+
     const hover = buildCliPlan(["app-control", "hover", "--test-id", "row-3"]);
     expect(hover.kind).toBe("execute");
     if (hover.kind !== "execute") return;
@@ -14202,7 +15148,7 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["app-control", "wait"])).toThrow(/requires --selector/);
   });
 
-  it("app-control proof observes and ingests under the ade-app-control backend", () => {
+  it("app-control proof files the still through app_control.captureProof", () => {
     const plan = buildCliPlan([
       "app-control",
       "proof",
@@ -14211,39 +15157,12 @@ describe("ADE CLI", () => {
     ]);
     expect(plan.kind).toBe("execute");
     if (plan.kind !== "execute") return;
-    expect(plan.steps).toHaveLength(2);
+    expect(plan.proofFiling).toEqual({ command: "app-control proof", verify: true });
     expect(plan.steps[0]?.params).toMatchObject({
       arguments: {
         domain: "app_control",
-        action: "observe",
-        args: { includeDom: false },
-      },
-    });
-    const ingest = plan.steps[1];
-    expect(ingest?.method).toBe("ade/actions/call");
-    const params = typeof ingest?.params === "function"
-      ? ingest.params({
-          observation: {
-            domain: "app_control",
-            action: "observe",
-            result: { filePath: "/repo/.ade/cache/app-control-observations/s/obs-1.png" },
-          },
-        })
-      : null;
-    expect(params).toMatchObject({
-      name: "ingest_computer_use_artifacts",
-      arguments: {
-        backendStyle: "manual",
-        backendName: "ade-app-control",
-        toolName: "app-control proof",
-        inputs: [
-          {
-            kind: "screenshot",
-            title: "Settings saved",
-            description: "Settings saved",
-            path: "/repo/.ade/cache/app-control-observations/s/obs-1.png",
-          },
-        ],
+        action: "captureProof",
+        args: { caption: "Settings saved" },
       },
     });
   });
@@ -14312,14 +15231,14 @@ describe("ADE CLI", () => {
     ADE_LANE_ID: undefined,
     ADE_CHAT_SESSION_ID: undefined,
   }, () => {
-    const firstStepArgs = (argv: string[]): Record<string, unknown> => {
+    const firstStepArgs = (argv: string[], domain = "built_in_browser"): Record<string, unknown> => {
       const plan = buildCliPlan(argv);
       expect(plan.kind).toBe("execute");
       if (plan.kind !== "execute") throw new Error("expected execute plan");
       const params = plan.steps[0]?.params as
         | { arguments?: { domain?: string; action?: string; args?: Record<string, unknown> } }
         | undefined;
-      expect(params?.arguments?.domain).toBe("built_in_browser");
+      expect(params?.arguments?.domain).toBe(domain);
       return {
         action: params?.arguments?.action,
         ...(params?.arguments?.args ?? {}),
@@ -14443,12 +15362,20 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["browser", "record", "pause", "--tab", "tab-1"]))
       .toThrow(/Unknown browser record command/);
 
-    // Scope is never an argument here: `scopeBuiltInBrowserAdeActionArgs` drops
-    // any caller `laneId` and the desktop bridge substitutes the capability's
-    // lane, so the command deliberately sends no target of its own.
-    expect(firstStepArgs(["browser", "dev-servers"])).toEqual({ action: "getDevServers" });
+    // No chat runs its own page JavaScript: every spelling an agent reaches
+    // for is a usage error that points at snapshot + actions, not an unknown
+    // runtime action.
+    for (const sub of ["eval", "evaluate", "exec", "js"]) {
+      expect(() => buildCliPlan(["browser", sub, "--tab", "tab-1", "document.title"]))
+        .toThrow(/does not run page JavaScript[\s\S]*browser snapshot/);
+    }
+
+    // Dev servers are the runtime's list, answered with no desktop attached.
+    // Scope is never an argument: the daemon pins an agent to its own lane,
+    // so the command deliberately sends no target of its own.
+    expect(firstStepArgs(["browser", "dev-servers"], "work_tools")).toEqual({ action: "listDevServers" });
     for (const alias of ["dev-server", "devservers", "servers", "localhost"]) {
-      expect(firstStepArgs(["browser", alias])).toMatchObject({ action: "getDevServers" });
+      expect(firstStepArgs(["browser", alias], "work_tools")).toMatchObject({ action: "listDevServers" });
     }
   }));
 
@@ -14766,6 +15693,18 @@ describe("ADE CLI", () => {
         args: { tabId: "tab-9", preset: "ipad" },
       },
     });
+
+    // Without --tab, emulate the tab the open drove. An agent's open stays in
+    // the background, so the active tab is somebody else's.
+    const untargeted = buildCliPlan(["browser", "open", "localhost:5173", "--device", "ipad"]);
+    if (untargeted.kind !== "execute") throw new Error("expected an execute plan");
+    const untargetedParams = untargeted.steps[1]?.params as (values: Record<string, unknown>) => {
+      arguments: { args: Record<string, unknown> };
+    };
+    expect(untargetedParams({ result: { targetTabId: "tab-new", activeTabId: "tab-human" } }).arguments.args)
+      .toMatchObject({ tabId: "tab-new", preset: "ipad" });
+    expect(untargetedParams({ result: { activeTabId: "tab-human" } }).arguments.args)
+      .toMatchObject({ tabId: "tab-human" });
   }));
 
   // One row per flag-to-arg mapping the browser subcommands own. The subcommand
@@ -14773,6 +15712,11 @@ describe("ADE CLI", () => {
   // flag lands in which daemon arg, and the defaults a bare flag implies.
   it.each<[string[], string, Record<string, unknown>]>([
     [["open", "localhost:5173", "--new-tab"], "navigate", { url: "localhost:5173", newTab: true, openPanel: true }],
+    [["open", "localhost:3000/login", "--isolated"], "navigate", { url: "localhost:3000/login", isolated: true }],
+    [["open", "localhost:3000/login", "--profile", "viewer"], "navigate", { url: "localhost:3000/login", profile: "viewer" }],
+    // A value flag ahead of the subcommand: `viewer` must not be read as one.
+    [["--profile", "viewer", "open", "localhost:3000/login"], "navigate", { url: "localhost:3000/login", profile: "viewer" }],
+    [["new-tab", "localhost:3000/login", "--profile", "owner"], "createTab", { url: "localhost:3000/login", profile: "owner" }],
     [["panel", "--url", "localhost:5173"], "showPanel", { url: "localhost:5173" }],
     [["authorize", "--tab", "tab-1", "--lease-ttl-ms", "4500"], "requestOriginAccess", { tabId: "tab-1", leaseTtlMs: 4500 }],
     [["open", "https://example.com", "--tab", "tab-1"], "navigate", { url: "https://example.com", tabId: "tab-1", openPanel: true }],
@@ -14802,6 +15746,10 @@ describe("ADE CLI", () => {
     [["type", "--tab", "tab-1", "hello"], "typeText", { tabId: "tab-1", text: "hello" }],
     [["press", "--tab", "tab-1", "--selector", "input[name=q]", "Enter"], "dispatchKey", { tabId: "tab-1", selector: "input[name=q]", key: "Enter" }],
     [["scroll", "--tab", "tab-1", "--dy", "480"], "scroll", { tabId: "tab-1", deltaX: 0, deltaY: 480 }],
+    [["scroll", "--tab", "tab-1", "--down", "800"], "scroll", { tabId: "tab-1", deltaX: 0, deltaY: 800 }],
+    [["scroll", "--tab", "tab-1", "--up", "300"], "scroll", { tabId: "tab-1", deltaX: 0, deltaY: -300 }],
+    [["text", "--tab", "tab-1", "--selector", "#content", "--offset", "20", "--max-chars", "500"], "readText", { tabId: "tab-1", selector: "#content", offset: 20, maxChars: 500 }],
+    [["read", "--tab", "tab-1", "--selector", "article", "--offset", "100", "--max-chars", "2000"], "readText", { tabId: "tab-1", selector: "article", offset: 100, maxChars: 2000 }],
     [["select", "--x", "120", "--y", "420", "--tab", "tab-1", "--no-screenshot"], "selectPoint", { tabId: "tab-1", x: 120, y: 420, includeScreenshot: false }],
   ])("browser %j maps its flags onto the %s action", (argv, action, args) => withEnv({
     ADE_LANE_ID: undefined,
@@ -14817,7 +15765,8 @@ describe("ADE CLI", () => {
     ADE_CHAT_SESSION_ID: undefined,
   }, () => {
     const plain = expectExecutePlan(buildCliPlan(["browser", "proof", "--tab", "tab-1", "--caption", "Verified"]));
-    expect(plain.steps).toHaveLength(2);
+    // observe → ingest → re-read through ade proof list.
+    expect(plain.steps).toHaveLength(3);
     expect(plain.steps[0]?.params).toMatchObject({
       arguments: { domain: "built_in_browser", action: "observe", args: { tabId: "tab-1", includeDom: false } },
     });
@@ -14834,14 +15783,22 @@ describe("ADE CLI", () => {
         ],
       },
     });
+    expect(plain.steps[2]).toMatchObject({
+      key: "verify",
+      params: { name: "list_computer_use_artifacts" },
+    });
 
     const proof = expectExecutePlan(buildCliPlan(["browser", "proof", "--tab", "tab-1", "--har", "--caption", "Checkout 500s"]));
-    // observe → exportHar → ingest, so both artifacts come from the same tab
-    // state and land under the same owners.
-    expect(proof.steps).toHaveLength(3);
+    // observe → exportHar → ingest → re-read, so both artifacts come from the
+    // same tab state and land under the same owners, then confirm they did.
+    expect(proof.steps).toHaveLength(4);
     expect(proof.steps[1]?.params).toMatchObject({
       name: "run_ade_action",
       arguments: { domain: "built_in_browser", action: "exportHar", args: { tabId: "tab-1" } },
+    });
+    expect(proof.steps[3]).toMatchObject({
+      key: "verify",
+      params: { name: "list_computer_use_artifacts" },
     });
     const ingest = proof.steps[2]?.params;
     if (typeof ingest !== "function") throw new Error("Expected an ingest params builder");
@@ -15097,12 +16054,17 @@ describe("ADE CLI", () => {
       ]);
       expect(plan.kind).toBe("execute");
       if (plan.kind !== "execute") return;
-      expect(plan.steps).toHaveLength(2);
+      // screenshot → ingest → re-read through ade proof list.
+      expect(plan.steps).toHaveLength(3);
       expect(plan.steps[0]).toMatchObject({
         key: "screenshot",
         params: {
           arguments: { domain: "ios_simulator", action: "screenshot" },
         },
+      });
+      expect(plan.steps[2]).toMatchObject({
+        key: "verify",
+        params: { name: "list_computer_use_artifacts" },
       });
       const ingest = plan.steps[1]?.params;
       expect(typeof ingest).toBe("function");
@@ -15388,6 +16350,8 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["usage", "stats", "--preset", "decade"])).toThrow(
       /--preset must be one of today, 7d, 30d, year, all/i,
     );
+    expect(() => buildCliPlan(["usage", "stats", "--by", "lane", "--limit", "abc"])).toThrow(/--limit must be a positive whole number/);
+    expect(() => buildCliPlan(["usage", "stats", "--by", "lane", "--limit", "0"])).toThrow(/--limit must be a positive whole number/);
     expect(() => buildCliPlan(["usage", "stats", "--since", "yesterday"])).toThrow(
       /--since must be an ISO timestamp/i,
     );
@@ -15434,6 +16398,38 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["usage", "turns", "--group-by", "lane"]))
       .toThrow("usage turns --group-by must be one of provider, provider_model, provider_account_model.");
     expect(() => buildCliPlan(["usage", "turns", "--recent", "500"])).toThrow(/--recent must be a number from 0 to 200/i);
+  });
+
+  it.each([
+    {
+      argv: ["usage", "prices", "set", "local-x", "--input", "1", "--output", "4"],
+      change: { model: "local-x", price: { input: 1, output: 4 } },
+    },
+    {
+      argv: ["usage", "prices", "set", "--input=1", "--output", "4", "--cache-read", "0.1", "local-x"],
+      change: { model: "local-x", price: { input: 1, output: 4, cacheRead: 0.1 } },
+    },
+    {
+      argv: ["usage", "prices", "set", "my-preview", "--map-to", "claude-opus-5-5"],
+      change: { model: "my-preview", mapTo: "claude-opus-5-5" },
+    },
+    { argv: ["usage", "prices", "set", "--unmap", "my-preview"], change: { model: "my-preview", mapTo: null } },
+    { argv: ["usage", "prices", "set", "local-x", "--automatic"], change: { model: "local-x", price: null } },
+  ])("usage prices set takes the model id wherever it sits among the flags: $argv", ({ argv, change }) => {
+    const plan = buildCliPlan(argv);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "usage", action: "setModelPriceOverride", args: change },
+    });
+  });
+
+  it("usage prices set refuses a change with no model or no rate", () => {
+    expect(() => buildCliPlan(["usage", "prices", "set", "--input", "1", "--output", "4"])).toThrow(/needs a model id/);
+    expect(() => buildCliPlan(["usage", "prices", "set", "local-x", "--input", "1"])).toThrow(/both --input and --output/);
+    expect(() => buildCliPlan(["usage", "prices", "set", "local-x"])).toThrow(/needs --input\/--output/);
   });
 
   it("usage budget get routes to the budget.getConfig action", () => {
@@ -15697,6 +16693,49 @@ describe("ADE CLI", () => {
     expect((summarized as any).visual).toContain(
       "\\- child (id: child) [feature]",
     );
+  });
+});
+
+describe("ade scene preview plan", () => {
+  it("rejects an unknown scene command", () => {
+    expect(() => buildCliPlan(["scene", "frobnicate"])).toThrow(/Unknown scene command/);
+  });
+
+  it("needs a file, or - for stdin", () => {
+    expect(() => buildCliPlan(["scene", "preview"])).toThrow(/needs a file/);
+  });
+
+  it("validates --theme and --width before it reads anything", () => {
+    expect(() => buildCliPlan(["scene", "preview", "/tmp/x.html", "--theme", "purple"]))
+      .toThrow(/--theme is dark or light/);
+    expect(() => buildCliPlan(["scene", "preview", "/tmp/x.html", "--width", "10"]))
+      .toThrow(/--width is a number/);
+    expect(() => buildCliPlan(["scene", "preview", "/tmp/x.html", "--width", "nope"]))
+      .toThrow(/--width is a number/);
+  });
+
+  /**
+   * `ade scene --theme light preview f` is a natural way to type the flags, so
+   * the value flags are consumed before the verb is read.
+   */
+  it("reads flags that come before the verb", () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ade-scene-")), "scene.html");
+    fs.writeFileSync(file, "<div>3</div>");
+    const plan = expectExecutePlan(
+      buildCliPlan(["scene", "--theme", "light", "--width", "980", "preview", file]),
+    );
+
+    expect(plan.label).toBe("scene preview");
+    expect(plan.formatter).toBe("scene-preview");
+    expect(plan.minTimeoutMs).toBe(60_000);
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]).toMatchObject({
+      method: "ade/actions/call",
+      params: {
+        name: "preview_scene",
+        arguments: { source: "<div>3</div>", theme: "light", width: 980 },
+      },
+    });
   });
 });
 
@@ -16597,5 +17636,55 @@ describe("findFlagName", () => {
 
   it("returns null when no spelling is written", () => {
     expect(findFlagName(["--provider", "codex"], ["--type", "--chat-parent"])).toBeNull();
+  });
+});
+
+describe("ade github issue writes", () => {
+  // GitHub numbers issues and pull requests from one sequence and `/issues`
+  // accepts both, so every issue write reads the number first and refuses a
+  // pull request before anything is sent.
+  const writeStep = (argv: string[]) => {
+    const plan = buildCliPlan(["github", "issue", ...argv, "--repo", "arul28/ADE"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") throw new Error("expected an execute plan");
+    const read = plan.steps.find((step) => step.key === "current");
+    const write = plan.steps.find((step) => step.key === "result");
+    expect(read, "the issue is read before the write").toBeTruthy();
+    expect(write).toBeTruthy();
+    return (current: Record<string, unknown>) => (typeof write!.params === "function"
+      ? write!.params({ current })
+      : write!.params) as { arguments: { action: string; args: Record<string, unknown> } };
+  };
+
+  it.each([
+    ["close", ["close", "12"], "updateIssue"],
+    ["edit", ["edit", "12", "--title", "New title"], "updateIssue"],
+    ["label", ["label", "12", "--add", "bug"], "updateIssue"],
+    ["comment", ["comment", "12", "Fixed in main"], "commentOnIssue"],
+  ])("%s refuses a pull request and writes to an issue", (_name, argv, action) => {
+    const send = writeStep(argv);
+    expect(() => send({ number: 12, pull_request: { url: "https://api.github.com/repos/arul28/ADE/pulls/12" } }))
+      .toThrow(/#12 is a pull request, not an issue/);
+    const params = send({ number: 12, labels: [], assignees: [] });
+    expect(params.arguments.action).toBe(action);
+    expect(params.arguments.args).toMatchObject({ owner: "arul28", name: "ADE", number: 12 });
+  });
+
+  it.each([
+    ["sub-issue", ["sub-issue", "12", "acme/app#10"]],
+    ["create --parent", ["create", "--title", "Child", "--parent", "acme/app#10"]],
+  ])("%s refuses an issue from another repository", (_name, argv) => {
+    const plan = buildCliPlan(["github", "issue", ...argv, "--repo", "arul28/ADE"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    const write = plan.steps.find((step) => step.key === "result");
+    expect(typeof write?.params).toBe("function");
+    expect(() => (write!.params as (values: Record<string, unknown>) => unknown)({}))
+      .toThrow(/is in acme\/app, but the issue is in arul28\/ADE/);
+  });
+
+  it("refuses a write when the issue cannot be read", () => {
+    const send = writeStep(["close", "12"]);
+    expect(() => send(null as unknown as Record<string, unknown>)).toThrow(/was not found, or ADE could not read it/);
   });
 });

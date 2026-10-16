@@ -5,13 +5,16 @@ import { cn } from "../../ui/cn";
 import { relativeTimeCompact } from "../../../lib/format";
 import { ToolLogo } from "../../terminals/ToolLogos";
 import { BranchIcon, LaneIcon } from "../../ui/vcsIcons";
-import { LinearMark } from "../linearBrand";
+import { LinearMark, LinearStateIcon } from "../linearBrand";
 import { getLaneAccent } from "../laneColorPalette";
-import { COLORS } from "../laneDesignTokens";
+import { COLORS, toneText, fgTint } from "../laneDesignTokens";
+import { useAppStore } from "../../../state/appStore";
 import type { LaneAgent } from "../laneAgents";
 import type { LaneTabPrTag } from "../lanePageModel";
 import { LaneSidebarPrChip } from "./LaneSidebarPrChip";
 import { LaneMacDesktopPeek } from "../LaneMacDesktopPeek";
+import { MachineChip } from "../../shared/MachineChip";
+import type { MachineChipModel } from "../../../state/laneMachineRouting";
 import {
   LANE_SIDEBAR_INDENT_PX,
   laneAgentToolType,
@@ -46,6 +49,22 @@ export type LaneSidebarRowProps = {
   parentHint?: string | null;
   /** Why the lane needs the user (PR failing, rebase broke…), or null. */
   needsYouReason?: string | null;
+  /**
+   * The machine chip, shown when the project has lanes on more than one
+   * machine. Null keeps the single-machine row unchanged.
+   */
+  machineChip?: MachineChipModel | null;
+  /**
+   * Set when the lane's machine cannot be reached ("<Machine> is offline").
+   * The row is dimmed, says why on hover, and offers no menu or drag.
+   */
+  disabledReason?: string | null;
+  /**
+   * The lane lives on a machine other than the tab's. Its `lane.id` is then a
+   * row key, not a lane id, so nothing here may treat it as one outside the
+   * page's own callbacks.
+   */
+  foreign?: boolean;
   onSelect: (laneId: string, event: React.MouseEvent) => void;
   onContextMenu: (laneId: string, event: React.MouseEvent) => void;
   onOpenPr: (pr: LaneTabPrTag) => void;
@@ -64,7 +83,7 @@ function IndentGuides({ indentLevel }: { indentLevel: number }) {
           className="pointer-events-none absolute inset-y-0 w-px"
           style={{
             left: ROW_PAD_X + 5 + index * LANE_SIDEBAR_INDENT_PX,
-            background: "color-mix(in srgb, var(--color-fg) 10%, transparent)",
+            background: fgTint(10),
           }}
         />
       ))}
@@ -127,11 +146,16 @@ function AgentCluster({
         </span>
       ) : null}
       {/* Same status marks as the Work list: a filled amber dot when it is
-          your move, the dashed "working" circle otherwise. */}
+          your move, the dashed "working" circle otherwise. The spin sits on an
+          HTML wrapper, not the SVG: Chromium repaints an animated SVG every
+          frame on the main thread. 180 steps over 3 s is a 2° turn 60 times a
+          second, where a smooth spin ticks at the display's rate. */}
       {attention ? (
         <span aria-hidden className="inline-block h-[7px] w-[7px] shrink-0 rounded-full" style={{ background: COLORS.warning }} />
       ) : (
-        <CircleDashed size={12} weight="bold" aria-hidden className="shrink-0 text-sky-400 motion-safe:animate-[spin_3s_linear_infinite]" />
+        <span aria-hidden className="inline-flex shrink-0 motion-safe:animate-[spin_3s_steps(180)_infinite]">
+          <CircleDashed size={12} weight="bold" className="text-sky-400" />
+        </span>
       )}
     </span>
   );
@@ -141,7 +165,11 @@ function RebaseHint({
   lane,
   rebaseSuggestion,
   autoRebaseStatus,
-}: Pick<LaneSidebarRowProps, "lane" | "rebaseSuggestion" | "autoRebaseStatus">) {
+  foreign = false,
+}: Pick<LaneSidebarRowProps, "lane" | "rebaseSuggestion" | "autoRebaseStatus" | "foreign">) {
+  // While this machine's lane status is unconfirmed (a read is out, or
+  // failed), the behind count shows quietly rather than as current.
+  const statusStale = useAppStore((s) => s.laneStatusStale) && !foreign;
   const broken = autoRebaseStatus?.state === "rebaseConflict" || autoRebaseStatus?.state === "rebaseFailed";
   if (broken) {
     return (
@@ -157,9 +185,10 @@ function RebaseHint({
   const base = rebaseSuggestion.baseLabel?.trim() || laneBranchLabel(lane.baseRef) || "base";
   return (
     <span
-      className="inline-flex shrink-0 items-center text-[10.5px] tabular-nums"
+      className={cn("inline-flex shrink-0 items-center text-[10.5px] tabular-nums transition-opacity duration-150", statusStale && "opacity-50")}
       title={`Needs rebase: ${behind} commit${behind === 1 ? "" : "s"} behind ${base}`}
       style={{ color: COLORS.warning }}
+      data-stale={statusStale || undefined}
     >
       <ArrowDown size={10} weight="bold" />
       {behind}
@@ -197,12 +226,16 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
     creating,
     parentHint = null,
     needsYouReason = null,
+    machineChip = null,
+    disabledReason = null,
+    foreign = false,
     onSelect,
     onContextMenu,
     onOpenPr,
     onOpenAgent,
   } = props;
   const deleting = deleteStatusLabel != null;
+  const unreachable = disabledReason != null;
   const branch = laneBranchLabel(lane.branchRef);
   const lastActivityAt = laneLastActivityAt(lane, agents);
   const devicesOpen = lane.devicesOpen ?? [];
@@ -213,15 +246,25 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
     <div
       role="option"
       aria-selected={selected}
-      aria-disabled={deleting || undefined}
+      aria-disabled={deleting || unreachable || undefined}
       data-lane-id={lane.id}
+      data-machine-id={machineChip?.machineId}
+      title={disabledReason ?? undefined}
       data-testid="lane-sidebar-row"
       data-tour={selected && lane.laneType !== "primary" && !deleting ? "lanes.laneTab" : undefined}
       tabIndex={-1}
       // Dragging a row out of ADE drops an "Open in ADE" link into chat apps.
-      draggable={!deleting}
+      // A foreign row's id is a row key; an ade:// link built from it would
+      // name no lane, so those rows are not draggable.
+      draggable={!deleting && !foreign}
       onDragStart={(event) => {
-        if (deleting) return;
+        // Shift-click is range-select, not a deeplink drag. Starting a drag on
+        // the same gesture can swallow the click, which made Shift-select feel
+        // broken on rows that are draggable.
+        if (deleting || foreign || event.shiftKey) {
+          event.preventDefault();
+          return;
+        }
         const url = `ade://lane/${encodeURIComponent(lane.id)}`;
         const title = (lane.name || "ADE lane")
           .replace(/&/g, "&amp;")
@@ -243,6 +286,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
             ? "bg-fg/[0.05] ring-1 ring-inset ring-accent/35"
             : "hover:bg-fg/[0.045]",
         deleting && "cursor-not-allowed opacity-55",
+        !deleting && unreachable && "opacity-45",
         pulsing && "ade-lane-row-pulse",
       )}
       style={{
@@ -255,17 +299,17 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
       }}
       onContextMenu={(event) => {
         event.preventDefault();
-        if (deleting) return;
+        if (deleting || unreachable) return;
         onContextMenu(lane.id, event);
       }}
     >
       <IndentGuides indentLevel={indentLevel} />
-      <LaneMacDesktopPeek laneId={lane.id} />
+      {foreign ? null : <LaneMacDesktopPeek laneId={lane.id} />}
 
       <div className="flex h-4 min-w-0 items-center gap-1.5">
         <span
           className="flex min-w-0 flex-1 items-center gap-1.5 text-[12px] font-semibold leading-4"
-          style={{ color: accent }}
+          style={{ color: toneText(accent) }}
           title={depth > indentLevel ? `${lane.name} (stack level ${depth + 1})` : lane.name}
         >
           <LaneIcon size={12} />
@@ -312,15 +356,8 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
               <span className="min-w-0 truncate">{branch}</span>
             </span>
             <span className="min-w-0 flex-1" />
-            <RebaseHint lane={lane} rebaseSuggestion={rebaseSuggestion} autoRebaseStatus={autoRebaseStatus} />
-            {lane.linearIssue ? (
-              <span
-                className="inline-flex shrink-0 opacity-60"
-                title={`${lane.linearIssue.identifier} · ${lane.linearIssue.title}`}
-              >
-                <LinearMark size={10} />
-              </span>
-            ) : null}
+            <RebaseHint lane={lane} rebaseSuggestion={rebaseSuggestion} autoRebaseStatus={autoRebaseStatus} foreign={foreign} />
+            {lane.linearIssue ? <LaneLinearChip issue={lane.linearIssue} /> : null}
             {devicesOpen.length > 0 ? (
               <span
                 className="inline-flex shrink-0 items-center gap-0.5 text-[10px] tabular-nums"
@@ -331,6 +368,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
               </span>
             ) : null}
             {prs && prs.length > 0 ? <LaneSidebarPrChip prs={prs} onOpenPr={onOpenPr} /> : null}
+            {machineChip ? <MachineChip machine={machineChip} subject="This lane" /> : null}
           </>
         )}
       </div>
@@ -354,5 +392,33 @@ export function LaneSidebarCreatingRow({ name }: { name: string }) {
       </div>
       <div className="h-4 text-[11px] leading-4 text-muted-fg/70">Creating…</div>
     </div>
+  );
+}
+
+/** A change someone else made in Linear that the lane owner should notice. */
+const LINEAR_ALERT_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+
+function LaneLinearChip({ issue }: { issue: NonNullable<LaneSummary["linearIssue"]> }) {
+  const change = issue.remoteChange ?? null;
+  const recent = change ? Date.now() - Date.parse(change.at) < LINEAR_ALERT_WINDOW_MS : false;
+  const alert = recent && (change?.kind === "moved_back" || change?.kind === "canceled");
+  const changeLine = change && recent
+    ? `\n${change.by ?? "Someone"} ${change.kind === "assigned" ? `assigned it to ${change.to}` : `moved it ${change.from ? `from ${change.from} ` : ""}to ${change.to}`} · ${relativeTimeCompact(change.at)}`
+    : "";
+  return (
+    <span
+      className={cn("relative inline-flex shrink-0 items-center gap-0.5", alert ? "opacity-100" : "opacity-70")}
+      title={`${issue.identifier} · ${issue.title}\n${issue.stateName} in Linear${changeLine}`}
+      data-testid="lane-sidebar-linear-chip"
+    >
+      <LinearMark size={10} />
+      <LinearStateIcon stateType={issue.stateType} size={10} />
+      {alert ? (
+        <span
+          aria-label="Changed in Linear"
+          className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-[color:var(--color-warning)]"
+        />
+      ) : null}
+    </span>
   );
 }

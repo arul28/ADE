@@ -6,12 +6,63 @@ import AVKit
 let workDateFormatter = ISO8601DateFormatter()
 private let workRootBottomTabBarScrollMargin: CGFloat = 24
 
+/// The chats to prefetch: the first `topCount` chat rows in display order,
+/// plus every chat whose turn is running.
+func workChatPrefetchSessionIds(
+  _ sessions: [TerminalSessionSummary],
+  topCount: Int = 6
+) -> [String] {
+  var ids: [String] = []
+  var seen = Set<String>()
+  for session in sessions where isChatSession(session) {
+    let live = normalizedWorkChatSessionStatus(session: session, summary: nil) == "active"
+    guard ids.count < topCount || live else { continue }
+    if seen.insert(session.id).inserted { ids.append(session.id) }
+  }
+  return ids
+}
+
 /// Keeps the Work view state attached to the active project+host scope and
 /// writes it back as it changes.
 ///
 /// Packaged as one `ViewModifier` rather than four inline `.onChange`s plus a
-/// `.task`: `WorkRootScreen.body` is a long enough chain that adding five more
-/// modifiers to it exceeds the Swift type-checker's budget and fails the build.
+/// `.task`: `WorkRootListScreen.body` is a long enough chain that adding five
+/// more modifiers to it exceeds the Swift type-checker's budget and fails the
+/// build.
+/// Bookkeeping the list keeps across renders that must never invalidate it
+/// (a reference, so writes are not state changes).
+final class WorkRootBookkeeping {
+  /// Last set handed to `warmChatThreads`, so the prefetch fires only when the
+  /// set of chats worth warming changes.
+  var lastPrefetchSessionIds: [String] = []
+  /// Per-lane fingerprint of the session rows at the last chat-summary
+  /// refresh, and when every lane was last refreshed. A CRDT tick refreshes
+  /// only the lanes whose rows changed; a full sweep still runs every
+  /// `workChatSummaryFullSweepInterval`.
+  var summaryLaneSignatures: [String: Int] = [:]
+  var lastFullChatSummarySweep = Date.distantPast
+  /// Which lanes came back out of the Working shelf, handed from one
+  /// presentation build to the next so returned lanes keep floating.
+  var laneReturnState = WorkLaneReturnState.empty
+}
+
+/// Mirrors `terminalBufferRevision` into the list only while a search is
+/// typed. Terminal output streams constantly and the list only cares about it
+/// when output is being searched; outside that the handler returns without a
+/// state write, so streaming output never wakes the list.
+private struct WorkSearchOutputRevisionModifier: ViewModifier {
+  let publisher: Published<Int>.Publisher
+  let isSearching: Bool
+  @Binding var revision: Int
+
+  func body(content: Content) -> some View {
+    content.onReceive(publisher) { next in
+      guard isSearching, revision != next else { return }
+      revision = next
+    }
+  }
+}
+
 private struct WorkViewStateScopeModifier: ViewModifier {
   let hostIdentity: String?
   let filterPanelOpen: Bool
@@ -70,65 +121,262 @@ func workPendingChatCreationMatchesProject(
 struct WorkSessionRoute: Hashable {
   let openId: UUID = UUID()
   let sessionId: String
+  /// Set for a row from another machine: the chat opens through that
+  /// machine's roster connection.
+  var remoteChat: WorkChatCrossProjectContext? = nil
   var openingPrompt: String? = nil
   var openingPromptDispatchHandled = false
   var openingDeliveryState: String? = nil
   var openingAttachments: [AgentChatFileRef] = []
 }
 
-struct WorkDraftChatSession {
-  let summary: AgentChatSessionSummary
-  let initialMessage: String?
-}
-
+/// What re-runs the presentation rebuild. Scalars only: the list's own rows
+/// are represented by `projectionDataRevision`, which bumps whenever any of the
+/// five row sources changes, so no body evaluation compares whole arrays.
 struct WorkRootSessionPresentationTaskKey: Equatable {
-  let sessions: [TerminalSessionSummary]
-  let chatSummaries: [String: AgentChatSessionSummary]
-  let lanes: [LaneSummary]
-  let pullRequests: [PullRequestListItem]
-  let githubPrs: [GitHubPrListItem]
-  let optimisticSessions: [String: TerminalSessionSummary]
-  let pendingChatCreations: [PendingChatCreation]
+  let projectionDataRevision: Int
   let selectedLaneId: String
   let selectedStatus: WorkSessionStatusFilter
   let searchText: String
   let searchOutputRevision: Int?
   let archivedSessionIdsStorage: String
   let sessionOrganizationRaw: String
-  /// The machine-wide roster is a faster projection than CRDT replication.
-  /// Key the rebuild on its monotonic revision instead of comparing the full
-  /// all-project payload during every unrelated SyncService publication.
-  let activeRosterRevision: Int
-  let activeProjectId: String?
+  let machineFilterStorage: String
+  /// Everything the rebuild reads off `SyncService` that can change it: the
+  /// active roster revision, launches, pending creations, GitHub PRs, lane
+  /// deletions. Already narrowed and compared once by `WorkRootScreen`.
+  let sync: WorkRootSyncInputs
   let loadedProjectionProjectId: String?
-  let pendingLaneDeletionIds: Set<String>
   /// Bumped when the soonest snooze deadline lapses so the cached groups
   /// re-derive. Snooze expiry has no event to key on — it is pure clock math —
   /// so without this the row stays parked in the Snoozed tail until some
   /// unrelated change happens to rebuild the presentation.
   let snoozeEpoch: Int
   let pinnedLaneIdsStorage: String
-  /// Pending chat launches render as rows before their session replicates.
-  let chatLaunchRevision: Int
+  let foldBusyLanes: Bool
 }
 
+/// The slice of `SyncService` the Work list renders from, read once per
+/// publish by `WorkRootScreen` and compared before anything else runs.
+///
+/// `SyncService` publishes ~15 times a second while a chat streams. The list
+/// used to observe it whole, so its body — and the ~35-argument row builders
+/// under it — re-ran on every one of those, including while it sat hidden
+/// behind an open chat. Now the list re-renders only when a value in here
+/// changes. While the list is not on screen (another tab, or a chat pushed on
+/// top) only the fields a pushed destination or a deeplink needs are filled
+/// in; everything that exists purely to draw rows stays at its zero value, so
+/// row-only churn cannot wake a hidden list at all.
+struct WorkRootSyncInputs: Equatable {
+  // Always tracked.
+  var listVisible = false
+  var isLive = false
+  var isAttached = false
+  var hostUnreachable = false
+  var activeProjectId: String?
+  var activeProjectRootPath: String?
+  var activeProjectHostIdentity: String?
+  var workSessionNavigationRequestId: String?
+  var workLaneNavigationRequestId: String?
+  // Tracked only while the list is visible.
+  var suppressHydrationNotices = false
+  var workStatus = SyncDomainStatus.disconnected
+  var workProjectionRevision: Int?
+  var rosterRevision = 0
+  var chatLaunchRevision = 0
+  var pendingChatCreations: [PendingChatCreation] = []
+  var laneGithubPrItems: [GitHubPrListItem] = []
+  var pendingLaneDeletionIds: Set<String> = []
+  var projectIconDataUrl: String?
+  var showsLinear = false
+  var showsCursorCloud = false
+  var showsGitHubIssues = false
+  var laneColorAvailable = false
+  var laneManageAvailable = false
+  var lifecycleAvailable = false
+  var snoozeAvailable = false
+  var spawnKindUpdateAvailable = false
+  var deleteSessionAvailable = false
+  var generateNamesAvailable = false
+  /// Session-menu parity with desktop: Set tag, Restart agent, Hand off ▸.
+  /// The focused host's answer only — it re-renders the list when its
+  /// capabilities change. Each row asks the brain that owns its chat
+  /// (`sessionListRow`), since a chat on another machine or project may differ.
+  var chatTagAvailable = false
+  var restartAgentAvailable = false
+  var localHandoffAvailable = false
+  var crossMachineHandoffAvailable = false
+  var autoHandoffAvailable = false
+  /// Other machines' checkouts of the focused repository (their chats join
+  /// the list). Tracked only while the list is visible.
+  var remoteMachineRepos: [WorkRemoteMachineRepo] = []
+  /// The Machine filter's choices: the focused machine, then the machines in
+  /// `remoteMachineRepos`. Tracked only while the list is visible.
+  var machineFilterOptions: [WorkMachineFilterOption] = []
+
+  init() {}
+
+  @MainActor
+  init(_ sync: SyncService, fleet: MachineFleet? = nil, listVisible: Bool) {
+    self.listVisible = listVisible
+    isAttached = sync.isAttached
+    isLive = isAttached && sync.projectHostIsLive
+    #if DEBUG
+    if WorkRootPreviewFixture.active?.forcesLive == true { isLive = true }
+    #endif
+    hostUnreachable = sync.connectionState.isHostUnreachable
+    activeProjectId = sync.activeProjectId
+    activeProjectRootPath = sync.activeProjectRootPath
+    activeProjectHostIdentity = sync.activeProjectHostIdentity
+    workSessionNavigationRequestId = sync.requestedWorkSessionNavigation?.id
+    workLaneNavigationRequestId = sync.requestedWorkLaneNavigation?.id
+    guard listVisible else { return }
+    suppressHydrationNotices = sync.shouldSuppressDomainHydrationNotices
+    workStatus = sync.status(for: .work)
+    workProjectionRevision = sync.workProjectionRevision
+    let activeProject = sync.activeProject
+    rosterRevision = sync.rosterRevision(for: activeProject)
+    chatLaunchRevision = sync.chatLaunchRevision
+    pendingChatCreations = sync.pendingChatCreations
+    laneGithubPrItems = sync.laneGithubPrItems
+    pendingLaneDeletionIds = sync.pendingLaneDeletionIds
+    projectIconDataUrl = activeProject?.iconDataUrl
+    showsLinear = sync.activeProjectId != nil
+    showsCursorCloud = sync.activeProjectId != nil
+      && sync.cursorCloudConnected
+      && sync.supportsRemoteAction("ai.cursorCloudFleet")
+    showsGitHubIssues = sync.activeProjectId.map { sync.githubIssuesMenuProjectIds.contains($0) } ?? false
+    laneColorAvailable = sync.canInvokeRemoteAction("lanes.updateAppearance")
+    laneManageAvailable = sync.canInvokeRemoteAction("lanes.rename")
+    lifecycleAvailable = sync.supportsSessionLifecycleActions
+    snoozeAvailable = sync.supportsSessionSnoozeActions
+    spawnKindUpdateAvailable = sync.supportsSpawnKindUpdate
+    deleteSessionAvailable = sync.supportsWorkSessionDeletion
+    generateNamesAvailable = sync.canInvokeRemoteAction("chat.regenerateSessionMetadata")
+    chatTagAvailable = sync.canInvokeRemoteAction("chat.updateSession")
+    restartAgentAvailable = sync.canInvokeRemoteAction("chat.restartSession")
+    localHandoffAvailable = sync.canInvokeRemoteAction("chat.handoff")
+    crossMachineHandoffAvailable = sync.canInvokeRemoteAction("chat.getCrossMachineHandoffOptions")
+      && sync.canInvokeRemoteAction("chat.startCrossMachineHandoff")
+    autoHandoffAvailable = sync.autoHandoffRulesAvailable && sync.canInvokeRemoteAction("automations.saveDraft")
+    // Only machines the user keeps connected; a disconnected one stays off.
+    if let fleet, case let connected = fleet.machines.filter(\.isPinned), !connected.isEmpty, let activeProject {
+      let identity = workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName)
+        ?? workRepoIdentity(originUrl: sync.rosterProject(for: activeProject)?.repoOriginUrl)
+      remoteMachineRepos = workRemoteMachineRepos(
+        machines: connected,
+        identity: identity,
+        folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName)
+      )
+    }
+    machineFilterOptions = workMachineFilterOptions(
+      primaryName: sync.focusedMachineDisplayName,
+      primaryIsLive: isLive,
+      remote: remoteMachineRepos,
+      isLive: { fleet?.isLive($0) ?? false }
+    )
+    #if DEBUG
+    // The fixture has no machine to probe Cursor credentials on; show the entry
+    // so the overflow menu can be screenshotted whole.
+    if WorkRootPreviewFixture.active != nil { showsCursorCloud = true }
+    // Nor any other machine; add one so the filter panel's Machine row shows.
+    if WorkRootPreviewFixture.active != nil, machineFilterOptions.count == 1 {
+      machineFilterOptions.append(WorkMachineFilterOption(id: "preview-studio", name: "Mac Studio", isLive: true))
+    }
+    #endif
+  }
+}
+
+/// The Work tab. A thin shell whose only job is to turn `SyncService`'s
+/// firehose into `WorkRootSyncInputs` and hand it to the real list, which is
+/// `.equatable()` on exactly those inputs. This body re-runs on every publish;
+/// it reads a couple of dozen scalars and builds one struct, and the list
+/// behind it does nothing unless the struct changed.
+///
+/// It also owns the navigation path, so "is the list on screen" (tab active and
+/// nothing pushed) is known here, where the inputs are narrowed.
 struct WorkRootScreen: View {
+  @EnvironmentObject private var syncService: SyncService
+  @EnvironmentObject private var machineFleet: MachineFleet
+  @EnvironmentObject private var dictationController: DictationController
+  var isTabActive = true
+  @State private var path = NavigationPath()
+
+  init(isTabActive: Bool = true) {
+    self.isTabActive = isTabActive
+  }
+
+  var body: some View {
+    WorkRootListScreen(
+      syncService: syncService,
+      dictationController: dictationController,
+      isTabActive: isTabActive,
+      inputs: WorkRootSyncInputs(syncService, fleet: machineFleet, listVisible: isTabActive && path.isEmpty),
+      path: $path
+    )
+    .equatable()
+  }
+}
+
+struct WorkRootListScreen: View, Equatable {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
-  @EnvironmentObject var syncService: SyncService
+  /// Deliberately NOT observed: every value the body draws from arrives in
+  /// `inputs`. Imperative code (actions, reloads) reads it directly.
+  let syncService: SyncService
   /// App-level dictation singleton. Re-injected into pushed composer
   /// destinations below since `navigationDestination` builds outside the view
   /// tree and does not inherit environment objects.
-  @EnvironmentObject var dictationController: DictationController
+  let dictationController: DictationController
   @Namespace var sessionTransitionNamespace
-  var isTabActive = true
+  let isTabActive: Bool
+  let inputs: WorkRootSyncInputs
+  @Binding var path: NavigationPath
 
-  @State var sessions: [TerminalSessionSummary] = []
-  @State var chatSummaries: [String: AgentChatSessionSummary] = [:]
-  @State var lanes: [LaneSummary] = []
+  init(
+    syncService: SyncService,
+    dictationController: DictationController,
+    isTabActive: Bool,
+    inputs: WorkRootSyncInputs,
+    path: Binding<NavigationPath>
+  ) {
+    self.syncService = syncService
+    self.dictationController = dictationController
+    self.isTabActive = isTabActive
+    self.inputs = inputs
+    self._path = path
+  }
+
+  static func == (lhs: WorkRootListScreen, rhs: WorkRootListScreen) -> Bool {
+    lhs.isTabActive == rhs.isTabActive
+      && lhs.inputs == rhs.inputs
+      && lhs.syncService === rhs.syncService
+      && lhs.dictationController === rhs.dictationController
+  }
+
+  // The five row sources. Each write bumps `projectionDataRevision`, which is
+  // what the presentation rebuild keys on instead of the arrays themselves.
+  @State var sessions: [TerminalSessionSummary] = [] {
+    didSet { projectionDataRevision &+= 1 }
+  }
+  @State var chatSummaries: [String: AgentChatSessionSummary] = [:] {
+    didSet { projectionDataRevision &+= 1 }
+  }
+  @State var lanes: [LaneSummary] = [] {
+    didSet { projectionDataRevision &+= 1 }
+  }
   /// ADE-mapped PRs (synced `pull_requests` table) used to tag each session's
   /// lane with its PR status next to the lane name. Combined with
   /// `syncService.laneGithubPrItems` for PRs opened outside ADE.
-  @State var pullRequests: [PullRequestListItem] = []
+  @State var pullRequests: [PullRequestListItem] = [] {
+    didSet { projectionDataRevision &+= 1 }
+  }
+  @State var projectionDataRevision = 0
+  /// Terminal output revision, mirrored only while a search is typed (output
+  /// is searchable). Terminal output streams constantly; nothing else here
+  /// cares about it.
+  @State var searchOutputRevision = 0
+  /// Bookkeeping that must never invalidate the body.
+  @State var bookkeeping = WorkRootBookkeeping()
   @State var sessionPresentation = WorkRootSessionPresentation.empty
   @State var sessionPresentationRebuildTask: Task<Void, Never>?
   @State var sessionPresentationRebuildGeneration = 0
@@ -137,7 +385,6 @@ struct WorkRootScreen: View {
   @State var snoozeRegroupTask: Task<Void, Never>?
   @State var snoozeEpoch = 0
   @State var errorMessage: String?
-  @State var path = NavigationPath()
   // Scoped per project+host through `WorkViewStateStore` rather than held in
   // flat global `@AppStorage`, so switching projects or machines restores that
   // scope's view instead of carrying the previous one over.
@@ -147,7 +394,20 @@ struct WorkRootScreen: View {
   @State var renameTarget: TerminalSessionSummary?
   @State var renameText = ""
   @State var stopRuntimeTarget: TerminalSessionSummary?
-  @State var optimisticSessions: [String: TerminalSessionSummary] = [:]
+  /// Session-menu sheets and prompts added for desktop parity.
+  @State var tagTarget: TerminalSessionSummary?
+  @State var tagText = ""
+  @State var restartStopTurnTarget: TerminalSessionSummary?
+  @State var localHandoffSubject: WorkSessionHandoffSubject?
+  @State var autoHandoffSubject: WorkSessionHandoffSubject?
+  @State var crossMachineHandoffTarget: WorkCrossMachineHandoffTarget?
+  /// Auto-handoff rule ids scoped to each chat, read once per list load so the
+  /// menu can say "Edit auto handoff…" / "Remove auto handoff" without
+  /// waiting on the host when it opens. Absent key = unknown.
+  @State var autoHandoffRuleIdsBySession: [String: [String]] = [:]
+  @State var optimisticSessions: [String: TerminalSessionSummary] = [:] {
+    didSet { projectionDataRevision &+= 1 }
+  }
   @State var refreshFeedbackToken = 0
   @State var selectedSessionTransitionId: String?
   @State var isSelecting: Bool = false
@@ -175,7 +435,10 @@ struct WorkRootScreen: View {
   /// writes here, so pinning stays a Lanes-tab gesture with one owner.
   @AppStorage("ade.lanes.pinnedIds") private var pinnedLaneIdsStorage: String = ""
   @State var sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
+  /// By-lane "Fold busy lanes", scoped per project+host like the grouping.
+  @State var foldBusyLanes = false
   @State var collapsedSectionIdsStorage = ""
+  @State var machineFilterStorage = ""
   /// The project+host scope the five view-state properties above currently hold.
   @State private var workViewStateScopeKey: String?
   /// True while a lane deeplink is framing the view. Its filter reset is shown
@@ -188,7 +451,6 @@ struct WorkRootScreen: View {
   /// resets for grouping or collapsed sections.
   @State var workViewStateBeforeDeeplink: WorkProjectViewState?
   @State var filterPanelOpen = false
-  @State var addLaneSheetPresented = false
   /// Lane the row menu's "Manage lane" is opening, plus the sibling snapshots
   /// the Lanes tab's manage sheet needs to resolve parents and colour reuse.
   /// Both are transient: fetched when the item is tapped, cleared on dismiss.
@@ -216,7 +478,9 @@ struct WorkRootScreen: View {
       laneFilter: selectedLaneId,
       statusFilter: selectedStatusRawValue,
       organization: sessionOrganizationRaw,
-      collapsedSectionIds: collapsedSectionIdsStorage
+      collapsedSectionIds: collapsedSectionIdsStorage,
+      machineFilter: machineFilterStorage,
+      foldBusyLanes: foldBusyLanes
     )
   }
 
@@ -235,6 +499,8 @@ struct WorkRootScreen: View {
     selectedStatusRawValue = restored.statusFilter
     sessionOrganizationRaw = restored.organization
     collapsedSectionIdsStorage = restored.collapsedSectionIds
+    machineFilterStorage = restored.machineFilter
+    foldBusyLanes = restored.foldBusyLanes
   }
 
   func persistWorkViewState() {
@@ -245,7 +511,9 @@ struct WorkRootScreen: View {
         laneFilter: selectedLaneId,
         statusFilter: selectedStatusRawValue,
         organization: sessionOrganizationRaw,
-        collapsedSectionIds: collapsedSectionIdsStorage
+        collapsedSectionIds: collapsedSectionIdsStorage,
+        machineFilter: machineFilterStorage,
+        foldBusyLanes: foldBusyLanes
       ),
       scope: scope
     )
@@ -264,6 +532,8 @@ struct WorkRootScreen: View {
     selectedStatusRawValue = restored.statusFilter
     sessionOrganizationRaw = restored.organization
     collapsedSectionIdsStorage = restored.collapsedSectionIds
+    machineFilterStorage = restored.machineFilter
+    foldBusyLanes = restored.foldBusyLanes
     workViewStateDeeplinkActive = false
     workViewStateBeforeDeeplink = nil
   }
@@ -272,8 +542,14 @@ struct WorkRootScreen: View {
     syncService.status(for: .work)
   }
 
+  /// Read fresh rather than from `inputs`: action code checks it after awaits,
+  /// when a captured `inputs` could be stale. The body's dependency on it is
+  /// carried by `inputs.isLive`.
   var isLive: Bool {
-    syncService.connectionState == .connected && syncService.projectHostIsLive
+    #if DEBUG
+    if WorkRootPreviewFixture.active?.forcesLive == true { return true }
+    #endif
+    return syncService.connectionState == .connected && syncService.projectHostIsLive
   }
 
   var isLoadingSkeleton: Bool {
@@ -330,6 +606,7 @@ struct WorkRootScreen: View {
   var hasActiveFilters: Bool {
     selectedStatus != .all
       || selectedLaneId != "all"
+      || !machineFilterStorage.isEmpty
       || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
@@ -354,6 +631,16 @@ struct WorkRootScreen: View {
     )
   }
 
+  var foldBusyLanesBinding: Binding<Bool> {
+    Binding(
+      get: { foldBusyLanes },
+      set: {
+        restoreWorkViewStateAfterDeeplink()
+        foldBusyLanes = $0
+      }
+    )
+  }
+
   var selectedStatusBinding: Binding<WorkSessionStatusFilter> {
     Binding(
       get: { selectedStatus },
@@ -370,6 +657,16 @@ struct WorkRootScreen: View {
       set: {
         restoreWorkViewStateAfterDeeplink()
         searchText = $0
+      }
+    )
+  }
+
+  var machineFilterBinding: Binding<String> {
+    Binding(
+      get: { machineFilterStorage },
+      set: {
+        restoreWorkViewStateAfterDeeplink()
+        machineFilterStorage = $0
       }
     )
   }
@@ -451,13 +748,39 @@ struct WorkRootScreen: View {
     }
   }
 
-  func presentAddLaneSheet() {
-    guard isLive else { return }
-    addLaneSheetPresented = true
-  }
-
   var sessionGroups: [WorkSessionGroup] {
     sessionPresentation.sessionGroups
+  }
+
+  var workFiltersSection: some View {
+    WorkFiltersSection(
+      searchText: searchTextBinding,
+      selectedLaneId: selectedLaneBinding,
+      selectedStatus: selectedStatusBinding,
+      organization: sessionOrganizationBinding,
+      foldBusyLanes: foldBusyLanesBinding,
+      filterOpen: filterPanelOpen,
+      activeFilterCount: workActiveFilterCount,
+      machineFilter: machineFilterBinding,
+      machineOptions: inputs.machineFilterOptions,
+      lanes: workOrderedLanes,
+      onClear: clearWorkFilters
+    )
+  }
+
+  /// The groups on screen: lanes filed under the Working shelf render only
+  /// while that shelf is expanded.
+  var visibleSessionGroups: [WorkSessionGroup] {
+    let groups = sessionGroups
+    guard let shelf = groups.first(where: { $0.id == workWorkingSectionId }),
+          workGroupIsCollapsed(shelf) else { return groups }
+    return groups.filter { !$0.inWorkingShelf }
+  }
+
+  /// The first shelf (Working, else Snoozed or Settled) draws the quiet zone's
+  /// one rule, so all three sit together below it, as on desktop.
+  var quietZoneStartGroupId: String? {
+    sessionGroups.first(where: \.isShelf)?.id
   }
 
   /// Lanes the user has pinned, read from the Lanes tab's store.
@@ -483,51 +806,63 @@ struct WorkRootScreen: View {
   var sessionPresentationTaskKey: WorkRootSessionPresentationTaskKey? {
     guard isWorkRootActive else { return nil }
     return WorkRootSessionPresentationTaskKey(
-      sessions: sessions,
-      chatSummaries: chatSummaries,
-      lanes: lanes,
-      pullRequests: pullRequests,
-      githubPrs: syncService.laneGithubPrItems,
-      optimisticSessions: optimisticSessions,
-      pendingChatCreations: syncService.pendingChatCreations,
+      projectionDataRevision: projectionDataRevision,
       selectedLaneId: selectedLaneId,
       selectedStatus: selectedStatus,
       searchText: searchText,
-      searchOutputRevision: searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : syncService.terminalBufferRevision,
+      searchOutputRevision: workSearchIsActive ? searchOutputRevision : nil,
       archivedSessionIdsStorage: archivedSessionIdsStorage,
       sessionOrganizationRaw: sessionOrganizationRaw,
-      activeRosterRevision: syncService.rosterRevision(for: syncService.activeProject),
-      activeProjectId: syncService.activeProjectId,
+      machineFilterStorage: machineFilterStorage,
+      sync: inputs,
       loadedProjectionProjectId: loadedProjectionProjectId,
-      pendingLaneDeletionIds: syncService.pendingLaneDeletionIds,
       snoozeEpoch: snoozeEpoch,
       pinnedLaneIdsStorage: pinnedLaneIdsStorage,
-      chatLaunchRevision: syncService.chatLaunchRevision
+      foldBusyLanes: foldBusyLanes
     )
   }
 
+  var workSearchIsActive: Bool {
+    !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
   var workProjectionReloadKey: Int? {
-    isWorkRootActive ? syncService.workProjectionRevision : nil
+    isWorkRootActive ? inputs.workProjectionRevision : nil
   }
 
   var workSessionNavigationRequestKey: String? {
-    syncService.requestedWorkSessionNavigation?.id
+    inputs.workSessionNavigationRequestId
   }
 
   var workLaneNavigationRequestKey: String? {
-    syncService.requestedWorkLaneNavigation?.id
+    inputs.workLaneNavigationRequestId
   }
 
   var body: some View {
+    let _ = ScrollDiagnostics.shared.count(.workListBody)
     NavigationStack(path: $path) {
       ScrollViewReader { proxy in
         workList(proxy: proxy)
+          .onScrollPhaseChange { _, phase in
+            if phase.isScrolling {
+              ScrollDiagnostics.shared.scrollBegan("work-list")
+            } else {
+              ScrollDiagnostics.shared.scrollEnded("work-list")
+            }
+          }
+          .onAppear {
+            ScrollDiagnostics.shared.enter(.workList)
+          }
+          .onDisappear {
+            ScrollDiagnostics.shared.scrollEnded("work-list")
+            ScrollDiagnostics.shared.leave(.workList)
+          }
       }
     }
   }
 
   private func workList(proxy: ScrollViewProxy) -> some View {
-    List {
+    let list = List {
         if isLoadingSkeleton && sessions.isEmpty && optimisticSessions.isEmpty {
           ForEach(0..<3, id: \.self) { _ in
             ADECardSkeleton(rows: 3)
@@ -540,9 +875,9 @@ struct WorkRootScreen: View {
           // unreachable; the root toolbar connection button is the single
           // source of truth for connection state. Genuine mid-sync failures
           // while connected still show below via `errorMessage`.
-          if !syncService.connectionState.isHostUnreachable,
-            !syncService.shouldSuppressDomainHydrationNotices,
-            let hydrationNotice = workStatus.inlineHydrationFailureNotice(for: .work)
+          if !inputs.hostUnreachable,
+            !inputs.suppressHydrationNotices,
+            let hydrationNotice = inputs.workStatus.inlineHydrationFailureNotice(for: .work)
           {
             ADEInstructionErrorCard(
               notice: hydrationNotice,
@@ -552,25 +887,19 @@ struct WorkRootScreen: View {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           }
-          WorkFiltersSection(
-            searchText: searchTextBinding,
-            selectedLaneId: selectedLaneBinding,
-            selectedStatus: selectedStatusBinding,
-            organization: sessionOrganizationBinding,
-            filterOpen: $filterPanelOpen,
-            lanes: workOrderedLanes,
-            isLive: isLive,
-            onClear: clearWorkFilters,
-            onNewChat: pushNewChatRoute,
-            onAddLane: presentAddLaneSheet
-          )
-          .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 8, trailing: 16))
-          .listRowBackground(Color.clear)
-          .listRowSeparator(.hidden)
+          // Search and the filter button live in the header; the open panel
+          // floats over the list (below), so it opens wherever the list is
+          // scrolled. Only the Clear affordance for active filters sits here.
+          if hasActiveFilters && !filterPanelOpen {
+            workFiltersSection
+              .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+              .listRowBackground(Color.clear)
+              .listRowSeparator(.hidden)
+          }
 
           if let errorMessage,
-            workStatus.phase == .ready,
-            !syncService.connectionState.isHostUnreachable
+            inputs.workStatus.phase == .ready,
+            !inputs.hostUnreachable
           {
             ADENoticeCard(
               title: "Work view error",
@@ -587,27 +916,36 @@ struct WorkRootScreen: View {
 
           if displaySessions.isEmpty {
             ADEEmptyStateView(
-              symbol: isLive ? "bubble.left.and.bubble.right" : "terminal",
+              symbol: inputs.isLive ? "bubble.left.and.bubble.right" : "terminal",
               title: workSessionEmptyStateTitle(status: selectedStatus, searchText: searchText, hasFilters: hasActiveFilters),
               message: workSessionEmptyStateMessage(
                 status: selectedStatus,
                 searchText: searchText,
                 hasFilters: hasActiveFilters,
-                isLive: isLive
+                isLive: inputs.isLive
               )
             ) {
-              Button("New chat") {
-                pushNewChatRoute()
+              if hasActiveFilters {
+                // The rows exist; a filter hides them. Offer the way back.
+                Button("Clear filters") {
+                  withAnimation(.snappy(duration: 0.18)) { clearWorkFilters() }
+                }
+                .buttonStyle(.glass)
+                .tint(ADEColor.accent)
+              } else {
+                Button("New chat") {
+                  pushNewChatRoute()
+                }
+                .buttonStyle(.glassProminent)
+                .tint(ADEColor.accent)
+                .disabled(!inputs.isLive)
               }
-              .buttonStyle(.glassProminent)
-              .tint(ADEColor.accent)
-              .disabled(!isLive)
             }
             .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 16, trailing: 16))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           } else {
-            ForEach(sessionGroups) { group in
+            ForEach(visibleSessionGroups) { group in
               workSessionGroupSection(group)
             }
           }
@@ -618,40 +956,48 @@ struct WorkRootScreen: View {
       .scrollContentBackground(.hidden)
       .scrollDismissesKeyboard(.interactively)
       .contentMargins(.bottom, workRootBottomTabBarScrollMargin, for: .scrollContent)
+      // The header sits in a safe-area inset directly above; the list's own
+      // top margin would double the gap under it.
+      .contentMargins(.top, 0, for: .scrollContent)
       .adeScreenBackground()
       .adeNavigationGlass()
       .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar(.hidden, for: .navigationBar)
-      .safeAreaInset(edge: .top, spacing: 0) {
-        ADERootTopBar(
-          title: isSelecting ? "\(selectedSessionIds.count) selected" : "Work",
-          showsSettings: !isSelecting
-        ) {
-          if isSelecting {
-            Button("Cancel") {
-              exitSelectionMode()
-            }
-            .accessibilityLabel("Cancel selection")
-          } else {
-            // No attention rollup lives here. A tappable count pill used to sit
-            // left of the Linear button and a flat chip repeated the very same
-            // count above the list, so amber — which means "your move" and
-            // nothing else — was spent three times on one screen and the per-row
-            // badge stopped registering. The jump-to-attention affordance already
-            // exists: the bell opens the Activity drawer, which bands needs-you
-            // first with per-session navigation. Do not reintroduce a
-            // replacement here, and do not re-derive the counts that fed it.
-            //
-            // Real-Linear-logo button, immediately left of the bell; gated on the
-            // active project's Linear connection.
-            LinearPaneToolbarButton()
-            // Cursor Cloud fleet button, immediately left of the Linear one;
-            // gated on an active project plus the host advertising the fleet
-            // commands; the pane resolves connection state itself.
-            CursorCloudPaneToolbarButton()
+      .overlay(alignment: .top) {
+        if filterPanelOpen {
+          ZStack(alignment: .top) {
+            // Tapping outside the panel closes it, like a desktop dropdown.
+            Color.black.opacity(0.001)
+              .ignoresSafeArea()
+              .onTapGesture {
+                withAnimation(.snappy(duration: 0.18)) { filterPanelOpen = false }
+              }
+            workFiltersSection
+              .padding(.horizontal, 12)
+              .padding(.top, 4)
           }
+          .transition(.opacity.combined(with: .move(edge: .top)))
         }
+      }
+      .animation(.snappy(duration: 0.18), value: filterPanelOpen)
+      .safeAreaInset(edge: .top, spacing: 0) {
+        // One row: project / back, title, search with the filter chip inside it,
+        // then new chat and the overflow menu. No attention rollup lives here —
+        // amber means "your move" and the per-row badge owns it; the Activity
+        // drawer is one tap away in the overflow menu, which carries its dot.
+        WorkRootHeader(
+          projectIconDataUrl: inputs.projectIconDataUrl,
+          searchText: searchTextBinding,
+          filterOpen: $filterPanelOpen,
+          activeFilterCount: workActiveFilterCount,
+          isLive: inputs.isLive,
+          showsLinear: inputs.showsLinear,
+          showsCursorCloud: inputs.showsCursorCloud,
+          showsGitHubIssues: inputs.showsGitHubIssues,
+          selectionCount: isSelecting ? selectedSessionIds.count : nil,
+          actions: workHeaderActions
+        )
       }
       .safeAreaInset(edge: .bottom, spacing: 0) {
         if isSelecting {
@@ -671,19 +1017,15 @@ struct WorkRootScreen: View {
           .transition(.move(edge: .bottom).combined(with: .opacity))
         }
       }
-      .onChange(of: mergedSessions.map(\.id)) { _, newIds in
-        let visible = Set(newIds)
-        let pruned = selectedSessionIds.intersection(visible)
-        if pruned.count != selectedSessionIds.count {
-          selectedSessionIds = pruned
-          if pruned.isEmpty && isSelecting {
-            withAnimation(.snappy) { isSelecting = false }
-          }
-        }
-      }
       .onChange(of: path.count) { _, newCount in
-        if newCount == 0, selectedSessionTransitionId != nil {
+        if newCount == 0, let leftSessionId = selectedSessionTransitionId {
+          // Leaving a chat is what marks it seen (desktop stamps the same
+          // moment): everything it showed, including output that landed while
+          // the user was reading, no longer holds its lane out of the shelf.
+          WorkSeenStore.stamp([leftSessionId])
           selectedSessionTransitionId = nil
+          // The stamp lives outside the rebuild key, so re-derive the folds now.
+          scheduleSessionPresentationRebuild()
         }
         if newCount == 0 {
           syncService.clearOpenWorkSessionRoute()
@@ -691,18 +1033,6 @@ struct WorkRootScreen: View {
       }
       .sheet(item: $bulkExportShare) { share in
         WorkActivityViewController(items: share.items)
-      }
-      .sheet(isPresented: $addLaneSheetPresented) {
-        AddLaneSheet(
-          primaryLane: lanes.first(where: { $0.laneType == "primary" }),
-          lanes: lanes,
-          onLaneCreated: { createdLaneId in
-            addLaneSheetPresented = false
-            restoreWorkViewStateAfterDeeplink()
-            selectedLaneId = createdLaneId
-            await reload(refreshRemote: true)
-          }
-        )
       }
       .sheet(item: $manageLaneTarget) { snapshot in
         LaneManageSheet(
@@ -744,12 +1074,17 @@ struct WorkRootScreen: View {
         await refreshFromPullGesture()
       }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
-      .onChange(of: syncService.activeProjectId) { _, projectId in
+      .onChange(of: inputs.activeProjectId) { _, projectId in
         applyWorkViewStateScope()
         resetWorkProjectionForProjectChange(projectId)
       }
+      .modifier(WorkSearchOutputRevisionModifier(
+        publisher: syncService.$terminalBufferRevision,
+        isSearching: isWorkRootActive && workSearchIsActive,
+        revision: $searchOutputRevision
+      ))
       .modifier(WorkViewStateScopeModifier(
-        hostIdentity: syncService.activeProjectHostIdentity,
+        hostIdentity: inputs.activeProjectHostIdentity,
         filterPanelOpen: filterPanelOpen,
         signature: currentWorkViewState,
         applyScope: applyWorkViewStateScope,
@@ -759,9 +1094,10 @@ struct WorkRootScreen: View {
       // Keep both integration entry points honest when the active project or
       // paired host changes. Cursor is stricter than Linear here: its toolbar
       // button is rendered only after this host-owned credential probe passes.
-      .task(id: "\(syncService.activeProjectId ?? ""):\(syncService.activeProjectHostIdentity ?? ""):\(syncService.isAttached)") {
+      .task(id: "\(inputs.activeProjectId ?? ""):\(inputs.activeProjectHostIdentity ?? ""):\(inputs.isAttached)") {
         await syncService.refreshLinearConnection()
         await syncService.refreshCursorCloudConnection()
+        GitHubIssuesMenuAvailability.shared.refresh(sync: syncService, projectId: inputs.activeProjectId)
       }
       .task(id: workProjectionReloadKey) {
         guard let revision = workProjectionReloadKey else { return }
@@ -801,7 +1137,7 @@ struct WorkRootScreen: View {
       }
       .onAppear {
         guard isTabActive else { return }
-        if syncService.requestedWorkLaneNavigation != nil {
+        if inputs.workLaneNavigationRequestId != nil {
           Task { await handleRequestedWorkLaneNavigation(proxy: proxy) }
         }
       }
@@ -814,9 +1150,14 @@ struct WorkRootScreen: View {
           Task { await handleRequestedWorkSessionNavigation() }
         }
       }
-      .onChange(of: syncService.requestedWorkLaneNavigation?.id) { _, requestId in
+      .onChange(of: inputs.workLaneNavigationRequestId) { _, requestId in
         guard isTabActive, requestId != nil else { return }
         Task { await handleRequestedWorkLaneNavigation(proxy: proxy) }
+      }
+      // The transcript draws lane and chat chips from these lists, so a lane
+      // id an agent prints shows the lane's name, colour and live state.
+      .onChange(of: projectionDataRevision, initial: true) { _, _ in
+        WorkThreadEntityDirectory.shared.record(lanes: lanes, sessions: sessions)
       }
       .navigationDestination(for: WorkSessionRoute.self) { route in
         let routeTransitionNamespace = route.openingPrompt == nil && selectedSessionTransitionId == route.sessionId
@@ -835,15 +1176,16 @@ struct WorkRootScreen: View {
           initialOpeningDeliveryState: route.openingDeliveryState,
           initialOpeningAttachments: route.openingAttachments,
           initialSession: initialSession,
-          initialChatSummary: chatSummaries[route.sessionId],
-          initialTranscript: nil,
+          initialChatSummary: chatSummaries[route.sessionId]
+            ?? workRemoteMachineRosterChat(sessionId: route.sessionId, in: inputs.remoteMachineRepos)?.rosterChatSummary,
           transitionNamespace: routeTransitionNamespace,
-          isLive: isLive,
+          isLive: inputs.isLive,
           navigationChrome: .pushedDetail,
           // `sessionPresentationTaskKey` goes nil once a screen is pushed off the
           // root, so `workOrderedLanes` stops refreshing here — fall back to the
           // live `lanes` when the presentation-derived order isn't available.
-          lanes: workOrderedLanes.isEmpty ? lanes : workOrderedLanes
+          lanes: workOrderedLanes.isEmpty ? lanes : workOrderedLanes,
+          crossProjectContext: route.remoteChat
         )
         .equatable()
         }
@@ -855,8 +1197,8 @@ struct WorkRootScreen: View {
         WorkNewChatScreen(
           lanes: workOrderedLanes.isEmpty ? lanes : workOrderedLanes,
           preferredLaneId: route.preferredLaneId,
-          activeProjectId: syncService.activeProjectId,
-          activeProjectRootPath: syncService.activeProjectRootPath,
+          activeProjectId: inputs.activeProjectId,
+          activeProjectRootPath: inputs.activeProjectRootPath,
           onStarted: { summary, opener, openerDispatchHandled, openerDeliveryState, openerAttachments in
             let sessionId = summary.sessionId
             let trimmed = opener.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -938,6 +1280,7 @@ struct WorkRootScreen: View {
       } message: {
         Text("Give this session a clearer title for search, pinning, and activity tracking.")
       }
+    return sessionMenuPresentations(list)
       .alert("Stop runtime?", isPresented: stopRuntimePresentedBinding, presenting: stopRuntimeTarget) { session in
         Button("Cancel", role: .cancel) {
           stopRuntimeTarget = nil
@@ -947,6 +1290,62 @@ struct WorkRootScreen: View {
         }
       } message: { session in
         Text("ADE will stop the running process. The saved session stays available unless you delete it.")
+      }
+  }
+
+  /// The session menu's own alerts and sheets (tag, restart, the three
+  /// handoff sheets and the auto-handoff rule refresh). Kept out of
+  /// `workList`'s modifier chain: with them inline, Swift could not
+  /// type-check that expression in reasonable time (CI test-ios).
+  private func sessionMenuPresentations<Content: View>(_ content: Content) -> some View {
+    content
+      .alert("Set tag", isPresented: Binding(
+        get: { tagTarget != nil },
+        set: { if !$0 { tagTarget = nil } }
+      )) {
+        TextField("Tag (empty clears)", text: $tagText)
+        Button("Cancel", role: .cancel) { tagTarget = nil }
+        Button("Save") {
+          let target = tagTarget
+          let tag = tagText
+          tagTarget = nil
+          if let target { submitTag(target, tag: tag) }
+        }
+      } message: {
+        Text("Tags the Claude session so you can find it in Claude's own session list.")
+      }
+      .alert("Stop the turn and restart?", isPresented: Binding(
+        get: { restartStopTurnTarget != nil },
+        set: { if !$0 { restartStopTurnTarget = nil } }
+      ), presenting: restartStopTurnTarget) { session in
+        Button("Cancel", role: .cancel) { restartStopTurnTarget = nil }
+        Button("Stop and restart", role: .destructive) {
+          restartStopTurnTarget = nil
+          restartAgentSession(session, stopFirst: true)
+        }
+      } message: { _ in
+        Text("The agent is mid-turn. Restarting stops this turn and any background jobs it started. The conversation is kept.")
+      }
+      .sheet(item: $localHandoffSubject) { subject in
+        WorkLocalHandoffSheet(subject: subject)
+          .environmentObject(syncService)
+      }
+      .sheet(item: $autoHandoffSubject) { subject in
+        WorkAutoHandoffSheet(
+          subject: subject,
+          lanes: lanes,
+          onChanged: { rules in autoHandoffRuleIdsBySession[subject.sessionId] = rules.map(\.id) }
+        )
+        .environmentObject(syncService)
+      }
+      .sheet(item: $crossMachineHandoffTarget) { target in
+        WorkCrossMachineHandoffSheet(target: target)
+          .environmentObject(syncService)
+      }
+      // Once per project (and when the host starts advertising the rules): the
+      // menu only needs "does this chat have rules", and the editor re-reads.
+      .task(id: "\(inputs.autoHandoffAvailable)|\(inputs.activeProjectId ?? "")|\(sessions.count)") {
+        await refreshAutoHandoffRuleIds()
       }
   }
 
@@ -990,8 +1389,8 @@ struct WorkRootScreen: View {
   /// manage row at all rather than one that fails on tap.
   var workLaneMenuActions: WorkSessionLaneMenuActions {
     WorkSessionLaneMenuActions(
-      colorAvailable: syncService.canInvokeRemoteAction("lanes.updateAppearance"),
-      manageAvailable: syncService.canInvokeRemoteAction("lanes.rename"),
+      colorAvailable: inputs.laneColorAvailable,
+      manageAvailable: inputs.laneManageAvailable,
       onStartChat: startChatInLane,
       onToggleWorkPin: toggleWorkPin,
       isWorkPinned: { workPinnedLaneIds.contains($0.id) },
@@ -1015,9 +1414,10 @@ struct WorkRootScreen: View {
     // the gap to the neighbouring lane, and it gives the group an `.id` for the
     // lane deeplink to scroll to even when there is no header view to carry one.
     if group.isHeaderless {
+      let rows = workTopLevelSessions(in: group)
       Section {
-        ForEach(workTopLevelSessions(in: group)) { session in
-          workSessionRows(session, showsLaneIdentity: true)
+        ForEach(rows) { session in
+          workSessionRows(session, showsLaneIdentity: true, showsDivider: session.id != rows.last?.id)
         }
       }
       .id(group.id)
@@ -1031,7 +1431,7 @@ struct WorkRootScreen: View {
   /// these scrolled away, which is what made a long lane lose its name.
   @ViewBuilder
   private func workSessionGroupSectionWithHeader(_ group: WorkSessionGroup) -> some View {
-    let isLaneDeleting = group.laneId.map(syncService.pendingLaneDeletionIds.contains) ?? false
+    let isLaneDeleting = group.laneId.map(inputs.pendingLaneDeletionIds.contains) ?? false
     let collapsed = workGroupIsCollapsed(group)
     // Real lane sections get the accent rail; status/time headers span multiple
     // lanes, so a single lane color would be a lie there.
@@ -1054,7 +1454,8 @@ struct WorkRootScreen: View {
       // Collapsed means an empty section body, never a hidden section: the
       // header has to stay on screen or there is no way back into the group.
       if !collapsed {
-        ForEach(workTopLevelSessions(in: group)) { session in
+        let rows = workTopLevelSessions(in: group)
+        ForEach(rows) { session in
           // An expanded quiet lane holds only settled rows: the full card's
           // preview line and meta row are about work in flight, of which there is
           // none here.
@@ -1072,7 +1473,8 @@ struct WorkRootScreen: View {
             session,
             compact: group.isQuiet && group.laneId != nil,
             showsLaneIdentity: group.laneId == nil,
-            railColor: railColor
+            railColor: railColor,
+            showsDivider: session.id != rows.last?.id
           )
         }
       }
@@ -1097,7 +1499,8 @@ struct WorkRootScreen: View {
         // lane record to read it from.
         laneStatus: group.isOrphaned ? nil : group.laneId.flatMap { laneById[$0]?.status },
         lane: group.isOrphaned ? nil : group.laneId.flatMap { laneById[$0] },
-        laneMenu: workLaneMenuActions
+        laneMenu: workLaneMenuActions,
+        startsQuietZone: group.id == quietZoneStartGroupId
       )
       .disabled(isLaneDeleting)
       .redacted(reason: isLaneDeleting ? .placeholder : [])
@@ -1123,8 +1526,10 @@ struct WorkRootScreen: View {
     _ session: TerminalSessionSummary,
     compact: Bool = false,
     showsLaneIdentity: Bool = true,
-    railColor: Color? = nil
+    railColor: Color? = nil,
+    showsDivider: Bool = false
   ) -> some View {
+    let nestedGroups = sessionPresentation.nestedGroupsByParentId[session.id] ?? []
     sessionListRow(
       session,
       compact: compact,
@@ -1133,10 +1538,12 @@ struct WorkRootScreen: View {
         ? sessionTransitionNamespace
         : nil
     )
-    // The 4pt vertical gap belongs INSIDE the cell, not in `listRowInsets`. With
-    // it in the insets the lane rail is chopped into one 4pt-gapped segment per
-    // row instead of reading as a single line down the lane. Do not move it back.
-    .padding(.vertical, 4)
+    // Rows are flush: no card, no inter-row inset. Their own vertical padding
+    // is the gap, a hairline marks the boundary, and zero `listRowInsets`
+    // keep the lane rail one unbroken line down the lane. The hairline goes
+    // under the subagent drawer instead when there is one, so the drawer
+    // reads as part of its parent.
+    .workRowHairline(showsDivider && nestedGroups.isEmpty)
     .workLaneAccentRail(railColor, gutter: Self.workLaneRailGutter)
     .id(session.id)
     .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
@@ -1144,28 +1551,47 @@ struct WorkRootScreen: View {
     .listRowSeparator(.hidden)
 
     nestedChildDrawer(
-      groups: sessionPresentation.nestedGroupsByParentId[session.id] ?? [],
-      railColor: railColor
+      groups: nestedGroups,
+      railColor: railColor,
+      showsDivider: showsDivider
     )
   }
 
-  /// Subagent drawer then shell drawer. Nested subagents sit under a parent
-  /// that already names the lane, so they drop lane identity; shells keep the
-  /// previous compact default.
+  /// A chat's drawers start COLLAPSED (`workIsNestedDrawerCollapsed`).
+  /// Collapsed drawers share one thin line of marks under the card; an opened
+  /// drawer renders its rows below that line. Subagents before shells. Nested
+  /// subagents sit under a parent that already names the lane, so they drop
+  /// lane identity; shells keep the previous compact default.
   @ViewBuilder
   private func nestedChildDrawer(
     groups: [WorkSessionChildGroup],
-    railColor: Color?
+    railColor: Color?,
+    showsDivider: Bool
   ) -> some View {
-    ForEach(groups) { group in
+    let collapsedIds = collapsedSectionIds
+    let collapsed = groups.filter {
+      workIsNestedDrawerCollapsed(sectionId: $0.collapsedSectionId, collapsedSectionIds: collapsedIds)
+    }
+    let open = groups.filter {
+      !workIsNestedDrawerCollapsed(sectionId: $0.collapsedSectionId, collapsedSectionIds: collapsedIds)
+    }
+    let leadingInset = Self.workChildShellIndent - 16 - (railColor == nil ? 0 : Self.workLaneRailGutter)
+    if !collapsed.isEmpty {
+      WorkNestedDrawerMarks(groups: collapsed) { group in
+        toggleNestedDrawer(group)
+      }
+      .padding(.leading, leadingInset)
+      .padding(.bottom, 4)
+      .workRowHairline(showsDivider && open.isEmpty)
+      .workLaneAccentRail(railColor, gutter: Self.workLaneRailGutter)
+      .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+      .listRowBackground(Color.clear)
+      .listRowSeparator(.hidden)
+    }
+    ForEach(open) { group in
       WorkNestedSessionSection(
         group: group,
-        collapsed: collapsedSectionIds.contains(group.collapsedSectionId),
-        onToggle: {
-          withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-            toggleCollapsed(group.collapsedSectionId)
-          }
-        }
+        onCollapse: { toggleNestedDrawer(group) }
       ) {
         ForEach(group.children) { child in
           sessionListRow(
@@ -1178,12 +1604,19 @@ struct WorkRootScreen: View {
           .id(child.id)
         }
       }
-      .padding(.leading, Self.workChildShellIndent - 16 - (railColor == nil ? 0 : Self.workLaneRailGutter))
+      .padding(.leading, leadingInset)
       .padding(.bottom, 6)
+      .workRowHairline(showsDivider && group.id == open.last?.id)
       .workLaneAccentRail(railColor, gutter: Self.workLaneRailGutter)
       .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
       .listRowBackground(Color.clear)
       .listRowSeparator(.hidden)
+    }
+  }
+
+  private func toggleNestedDrawer(_ group: WorkSessionChildGroup) {
+    withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+      toggleCollapsed(workNestedDrawerOpenMarker(sectionId: group.collapsedSectionId))
     }
   }
 
@@ -1217,7 +1650,8 @@ struct WorkRootScreen: View {
       compact: compact,
       nestedSubagent: nestedSubagent,
       showsLaneIdentity: showsLaneIdentity,
-      isLaneDeleting: syncService.pendingLaneDeletionIds.contains(session.laneId),
+      waitingOnSubagent: sessionPresentation.busySubagentParentIds.contains(session.id),
+      isLaneDeleting: inputs.pendingLaneDeletionIds.contains(session.laneId),
       selectedSessionId: $selectedSessionTransitionId,
       isSelecting: isSelecting,
       isChecked: selectedSessionIds.contains(session.id),
@@ -1232,8 +1666,8 @@ struct WorkRootScreen: View {
       onCopyDeepLink: copySessionDeepLink,
       onGoToLane: goToLane,
       onOpenPullRequest: openPullRequest,
-      lifecycleAvailable: syncService.supportsSessionLifecycleActions,
-      snoozeAvailable: syncService.supportsSessionSnoozeActions,
+      lifecycleAvailable: inputs.lifecycleAvailable,
+      snoozeAvailable: inputs.snoozeAvailable,
       onSettle: settleSession,
       onDismissAndSettle: dismissAndSettleSession,
       onUnsettle: unsettleSession,
@@ -1242,13 +1676,31 @@ struct WorkRootScreen: View {
       onWake: wakeSession,
       onDemoteToPeer: demoteSessionToPeer,
       onPromoteToSubagent: promoteSessionToSubagent,
-      spawnKindUpdateAvailable: syncService.supportsSpawnKindUpdate,
-      deleteSessionAvailable: syncService.supportsWorkSessionDeletion,
+      spawnKindUpdateAvailable: inputs.spawnKindUpdateAvailable,
+      deleteSessionAvailable: inputs.deleteSessionAvailable,
       onDeleteSession: deleteWorkSession,
-      onOpenInWeb: openSessionInWeb,
       laneMenu: workLaneMenuActions,
-      generateNamesAvailable: syncService.canInvokeRemoteAction("chat.regenerateSessionMetadata"),
-      onGenerateNames: generateSessionNames
+      generateNamesAvailable: inputs.generateNamesAvailable,
+      onGenerateNames: generateSessionNames,
+      // Per chat: a chat on another machine (or in another project) is served
+      // by that brain, so each item asks the host that owns THIS chat.
+      tagAvailable: syncService.canInvokeChatRemoteAction("chat.updateSession", sessionId: session.id),
+      onSetTag: beginSetTag,
+      restartAvailable: syncService.canInvokeChatRemoteAction("chat.restartSession", sessionId: session.id),
+      onRestartAgent: { session in restartAgentSession(session, stopFirst: false) },
+      localHandoffAvailable: syncService.canInvokeChatRemoteAction("chat.handoff", sessionId: session.id),
+      crossMachineHandoffAvailable: syncService.crossMachineHandoffAvailable(sessionId: session.id),
+      crossMachineCancelAvailable: syncService.crossMachineHandoffActionAvailable(
+        "chat.cancelCrossMachineHandoff",
+        sessionId: session.id
+      ),
+      crossMachineRetryAvailable: syncService.crossMachineHandoffActionAvailable(
+        "chat.retryCrossMachineHandoff",
+        sessionId: session.id
+      ),
+      autoHandoffAvailable: syncService.autoHandoffRulesAvailable(sessionId: session.id),
+      autoHandoffRuleCount: autoHandoffRuleIdsBySession[session.id]?.count,
+      onHandoff: handleSessionHandoff
     )
   }
 
@@ -1275,15 +1727,58 @@ struct WorkRootScreen: View {
     )
   }
 
+  /// Lane and status filters count; search does not (it is visible in the
+  /// field itself). Drives the filter chip's active state inside the field.
+  var workActiveFilterCount: Int {
+    (selectedStatus != .all ? 1 : 0)
+      + (selectedLaneId != "all" ? 1 : 0)
+      + workParseMachineFilter(machineFilterStorage).count
+  }
+
+  var workHeaderActions: WorkRootHeaderActions {
+    WorkRootHeaderActions(
+      onBackToHub: { syncService.showProjectHub() },
+      onNewChat: pushNewChatRoute,
+      onCancelSelection: exitSelectionMode,
+      onOpenActivity: { syncService.attentionDrawerPresented = true },
+      onOpenLinear: {
+        syncService.linearPaneAttachSessionId = nil
+        syncService.linearPanePresented = true
+      },
+      onOpenCursorCloud: { syncService.cursorCloudPanePresented = true },
+      onOpenGitHubIssues: { syncService.githubIssuesPanePresented = true },
+      onOpenSettings: { syncService.settingsPresented = true }
+    )
+  }
+
   func clearWorkFilters() {
     restoreWorkViewStateAfterDeeplink()
     searchText = ""
     selectedLaneId = "all"
     selectedStatus = .all
+    machineFilterStorage = ""
   }
 }
 
 private extension View {
+  /// Hairline at the bottom of a flush row, between siblings of one group.
+  /// The last row of a group has none: section spacing and the next header
+  /// already mark that boundary.
+  @ViewBuilder
+  func workRowHairline(_ visible: Bool) -> some View {
+    if visible {
+      overlay(alignment: .bottom) {
+        Rectangle()
+          .fill(ADEColor.glassBorder)
+          .frame(height: 0.5)
+          .padding(.leading, 4)
+          .accessibilityHidden(true)
+      }
+    } else {
+      self
+    }
+  }
+
   /// Indents a session cell into a lane section and draws the lane's accent as a
   /// 1pt rail in the gutter that indent opens up. Desktop's equivalent is `pl-2`
   /// on the row container plus a rail at `left-1` (`SessionListPane.tsx`).

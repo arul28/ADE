@@ -124,8 +124,9 @@ describe("AiFeaturesSection", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText(/Scheduled work is unavailable: scheduler offline/)).toBeTruthy();
-    expect(screen.queryByText("No active durable jobs.")).toBeNull();
+    expect(await screen.findByText("Scheduled work is unavailable")).toBeTruthy();
+    expect(screen.getByText("scheduler offline")).toBeTruthy();
+    expect(screen.queryByText("Nothing scheduled")).toBeNull();
   });
 
   it("does not enable the pause toggle when project configuration fails to load", async () => {
@@ -138,7 +139,10 @@ describe("AiFeaturesSection", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText(/Couldn't load AI features/)).toBeTruthy();
-    expect(screen.queryByText("Pause all scheduled work")).toBeNull();
+    expect(await screen.findByText(/Couldn't load the configuration/)).toBeTruthy();
+    // The row stays visible so the user can see why the switch is inert; the
+    // switch itself must not be operable.
+    const toggle = screen.getByRole("switch", { name: "Pause all scheduled work" });
+    expect((toggle as HTMLButtonElement).disabled).toBe(true);
   });
 });

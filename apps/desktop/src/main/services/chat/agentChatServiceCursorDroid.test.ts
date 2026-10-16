@@ -20,6 +20,7 @@ import {
   writePersistedChatState,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+import { QUESTION_DECLINED_MODEL_MESSAGE } from "../../../shared/pendingInputAnswers";
 
 describe("createAgentChatService", () => {
   it("returns a failed Cursor Task transcript by call id when no agent id exists", async () => {
@@ -335,7 +336,13 @@ describe("createAgentChatService", () => {
     expect(streamedText).toContain("Publishing a short demo plan.");
   });
 
-  it("uses Cursor SDK private question control blocks for ADE pending input", async () => {
+  // The reply to a Cursor control question is a whole new turn. An answer or a
+  // decline starts one; a cancel (Escape, or a settle) must not.
+  it.each([
+    { name: "an answer", response: { decision: "accept" as const, answers: { scope: ["UI flow"] }, responseText: "UI flow" }, followup: "UI flow" },
+    { name: "a decline", response: { decision: "decline" as const }, followup: QUESTION_DECLINED_MODEL_MESSAGE },
+    { name: "a cancel", response: { decision: "cancel" as const }, followup: null },
+  ])("uses Cursor SDK private question control blocks for ADE pending input: $name", async ({ response, followup }) => {
     process.env.CURSOR_API_KEY = "cursor-test-key";
     const events: AgentChatEventEnvelope[] = [];
     const { service } = createService({
@@ -387,23 +394,21 @@ describe("createAgentChatService", () => {
     await service.respondToInput({
       sessionId: session.id,
       itemId: questionEvent.event.itemId,
-      decision: "accept",
-      answers: { scope: ["UI flow"] },
-      responseText: "UI flow",
+      ...response,
     });
 
     for (let attempt = 0; attempt < 100; attempt += 1) {
       if (mockState.cursorSdkSendCalls.length > sendCallCountBeforeAnswer) break;
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    expect(mockState.cursorSdkSendCalls.length).toBeGreaterThan(sendCallCountBeforeAnswer);
-    expect(mockState.cursorSdkSendCalls.at(-1)?.promptText).toEqual(
-      expect.stringContaining("The user answered the Cursor planning question"),
-    );
-    expect(events.some((event) =>
-      event.event.type === "user_message"
-      && event.event.text.includes("The user answered the Cursor planning question")
-    )).toBe(false);
+    if (followup === null) {
+      expect(mockState.cursorSdkSendCalls.length).toBe(sendCallCountBeforeAnswer);
+      return;
+    }
+    expect(mockState.cursorSdkSendCalls.length).toBe(sendCallCountBeforeAnswer + 1);
+    expect(mockState.cursorSdkSendCalls.at(-1)?.promptText).toContain(followup);
+    // The follow-up is model-only: it never shows as something the user typed.
+    expect(events.some((event) => event.event.type === "user_message" && event.event.text.includes(followup))).toBe(false);
   });
 
   it("keeps Cursor SDK approvals live when preview persistence fails", async () => {
@@ -503,6 +508,80 @@ describe("createAgentChatService", () => {
     }
   });
 
+  it("retires a Cursor SDK approval card when its hook stops waiting", async () => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, logger } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      cursorModeId: "agent",
+    });
+
+    const releaseGate = parkCursorSend();
+    const pendingTurn = service.sendMessage({
+      sessionId: session.id,
+      text: "Run a command that needs approval.",
+    }, { awaitDispatch: true });
+
+    try {
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBe(1);
+      });
+
+      const hookResponse = mockState.cursorSdkPooled.bridge.onHookRequest({
+        id: "cursor-hook-abandoned",
+        toolName: "shell",
+        title: "Run shell command",
+        summary: "Run git status",
+        cwd: tmpRoot,
+        raw: { command: "git status --short" },
+        toolInput: { command: "git status --short" },
+        risk: "shell",
+      });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "cursor-hook-abandoned",
+      );
+      expect(service.listPendingInputs({ sessionId: session.id }).requests).toHaveLength(1);
+
+      // The gate script gave up (or Cursor killed it) before ADE answered, so
+      // the card must be retired instead of left pending with no possible reply.
+      mockState.cursorSdkPooled.bridge.onHookAbandoned("cursor-hook-abandoned");
+
+      expect(service.listPendingInputs({ sessionId: session.id }).requests).toEqual([]);
+      await expect(hookResponse).resolves.toEqual(expect.objectContaining({ permission: "deny" }));
+      expect(events).toContainEqual(expect.objectContaining({
+        event: expect.objectContaining({
+          type: "pending_input_resolved",
+          itemId: "cursor-hook-abandoned",
+          resolution: "cancelled",
+        }),
+      }));
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_chat.cursor_permission_hook_abandoned",
+        expect.objectContaining({
+          sessionId: session.id,
+          itemId: "cursor-hook-abandoned",
+          toolName: "shell",
+        }),
+      );
+    } finally {
+      releaseGate();
+      await pendingTurn;
+    }
+  });
+
   it("exits Cursor SDK plan mode through ADE plan approval control blocks", async () => {
     process.env.CURSOR_API_KEY = "cursor-test-key";
     const events: AgentChatEventEnvelope[] = [];
@@ -515,6 +594,7 @@ describe("createAgentChatService", () => {
       provider: "cursor",
       model: "composer-2",
       modelId: "cursor/composer-2",
+      permissionMode: "plan",
       cursorModeId: "plan",
     });
 
@@ -556,6 +636,9 @@ describe("createAgentChatService", () => {
     });
     await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
       cursorModeId: "agent",
+      interactionMode: "default",
+      permissionMode: "default",
+      opencodePermissionMode: "edit",
     });
   });
 

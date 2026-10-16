@@ -10,10 +10,35 @@ import {
   writePersistedChatState,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
+import { PROJECT_SECRET_VALUE_QUESTION_ID } from "../../../shared/projectSecretRequest";
+import {
+  LIVE_QUESTION_DECLINED_MODEL_MESSAGE,
+  QUESTION_DECLINED_MODEL_MESSAGE,
+} from "../../../shared/pendingInputAnswers";
 
 describe("createAgentChatService", () => {
   describe("pending input", () => {
-    it("bridges Claude AskUserQuestion through ADE's question UI", async () => {
+    // The answer Claude receives is what it acts on: picks verbatim, a typed
+    // reply marked as the user talking back, and a decline as "stop and ask",
+    // never as licence to pick for them.
+    it.each([
+      {
+        name: "picks",
+        response: { decision: "accept" as const, answers: { question_1: "Keep both, improve summary", question_2: "Yes, pin while active" } },
+        typedQuestion: null,
+      },
+      {
+        name: "a typed reply instead of a pick",
+        response: { decision: "accept" as const, answers: { question_1: "eli5 please", question_2: "Yes, pin while active" } },
+        typedQuestion: "What should we do about the two task list views?",
+      },
+      {
+        name: "a decline",
+        response: { decision: "decline" as const },
+        typedQuestion: null,
+      },
+    ])("bridges Claude AskUserQuestion through ADE's question UI: $name", async ({ response, typedQuestion }) => {
       const events: AgentChatEventEnvelope[] = [];
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
       const send = vi.fn().mockResolvedValue(undefined);
@@ -140,24 +165,32 @@ describe("createAgentChatService", () => {
       await service.respondToInput({
         sessionId: session.id,
         itemId: approvalEvent.event.itemId,
-        decision: "accept",
-        answers: {
-          question_1: "Keep both, improve summary",
-          question_2: "Yes, pin while active",
-        },
+        ...response,
       });
 
       await sendPromise;
 
-      expect(permissionResult).toMatchObject({
-        behavior: "allow",
-        updatedInput: {
-          answers: {
-            "What should we do about the two task list views?": "Keep both, improve summary",
-            "Should the inline task list pin while tasks are active?": "Yes, pin while active",
-          },
-        },
-      });
+      if (response.decision === "decline") {
+        expect(permissionResult).toEqual({ behavior: "deny", message: QUESTION_DECLINED_MODEL_MESSAGE });
+      } else {
+        const sent = (permissionResult as unknown as { behavior: string; updatedInput: { answers: Record<string, string> } });
+        expect(sent.behavior).toBe("allow");
+        expect(sent.updatedInput.answers["Should the inline task list pin while tasks are active?"]).toBe("Yes, pin while active");
+        const first = sent.updatedInput.answers["What should we do about the two task list views?"];
+        if (typedQuestion) {
+          expect(first).toContain("eli5 please");
+          expect(first).not.toBe("eli5 please");
+        } else {
+          expect(first).toBe("Keep both, improve summary");
+        }
+      }
+      // What the model is told never becomes the user's recorded answer.
+      const resolved = events.find((event) => event.event.type === "pending_input_resolved");
+      expect(resolved, "pending_input_resolved emitted").toBeTruthy();
+      const recordedAnswers = (resolved?.event as { answers?: Record<string, string | string[]> }).answers ?? {};
+      const userSent = new Set<string>("answers" in response && response.answers ? Object.values(response.answers) : []);
+      expect(Object.values(recordedAnswers).flat().every((value) => userSent.has(value))).toBe(true);
+      expect(JSON.stringify(resolved?.event)).not.toContain(QUESTION_DECLINED_MODEL_MESSAGE);
     });
 
     it("keeps standalone ask_user declines explicit without emitting a fake cleanup tool_result", async () => {
@@ -209,6 +242,55 @@ describe("createAgentChatService", () => {
       const result = await requestPromise;
       expect(result.decision).toBe("decline");
       expect(events.filter((event) => event.event.type === "tool_result")).toHaveLength(0);
+    });
+
+    it("saves a requested project secret before the card closes, keeps it open when the save fails, and never records the value", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const stored = new Map<string, string>();
+      let failNextSave = true;
+      const projectSecrets = {
+        list: () => ({ secrets: [...stored.keys()].map((name) => ({ name })) }) as never,
+        set: ({ name, value }: { name: string; value: string }) => {
+          if (failNextSave) {
+            failNextSave = false;
+            throw new Error("the secrets store is locked");
+          }
+          stored.set(name, value);
+          return { name } as never;
+        },
+      };
+
+      const resultPromise = requestProjectSecretFromUser(
+        { requestChatInput: service.requestChatInput, projectSecrets },
+        { chatSessionId: session.id, name: "STRIPE_KEY", reason: "Verifies Stripe deliveries" },
+      );
+      const card = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request",
+      );
+      const answer = {
+        sessionId: session.id,
+        itemId: card.event.itemId,
+        decision: "accept" as const,
+        answers: { [PROJECT_SECRET_VALUE_QUESTION_ID]: ["  whsec_kept_exactly  "] },
+      };
+
+      // The first save fails: the answer is refused and the card stays open.
+      await expect(service.respondToInput(answer)).rejects.toThrow(/could not save STRIPE_KEY/);
+      expect(stored.has("STRIPE_KEY")).toBe(false);
+      expect(events.some((event) => event.event.type === "pending_input_resolved")).toBe(false);
+
+      // Answering again saves the value untrimmed and resolves the request.
+      await service.respondToInput(answer);
+      await expect(resultPromise).resolves.toEqual({ name: "STRIPE_KEY", saved: true, replaced: false });
+      expect(stored.get("STRIPE_KEY")).toBe("  whsec_kept_exactly  ");
+      expect(JSON.stringify(events)).not.toContain("whsec_kept_exactly");
     });
 
     it("replaces blank question text with the body rather than publishing an empty prompt", async () => {
@@ -586,7 +668,14 @@ describe("createAgentChatService", () => {
       expect(Object.keys(resolved.answers ?? {})).toEqual(["plan_focus"]);
     });
 
-    it("responds to native Codex requestUserInput declines with empty answers instead of interrupting the turn", async () => {
+    // A blocking question is told to stop and ask in plain text; a live one
+    // (isBlocking: false) never paused the turn, so it is told to keep working.
+    // Neither interrupts the turn, and an empty map (which reads as "no
+    // preference") is never sent.
+    it.each([
+      { name: "blocking", isBlocking: undefined, expected: QUESTION_DECLINED_MODEL_MESSAGE, decision: "cancel" as const },
+      { name: "live", isBlocking: false, expected: LIVE_QUESTION_DECLINED_MODEL_MESSAGE, decision: "decline" as const },
+    ])("answers a declined $name Codex requestUserInput without interrupting the turn", async ({ isBlocking, expected, decision }) => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -614,6 +703,7 @@ describe("createAgentChatService", () => {
           itemId: "codex-question-1",
           threadId: "thread-1",
           turnId: "turn-1",
+          ...(isBlocking === false ? { isBlocking: false } : {}),
           questions: [
             {
               id: "plan_focus",
@@ -641,7 +731,7 @@ describe("createAgentChatService", () => {
       await service.respondToInput({
         sessionId: session.id,
         itemId: approvalEvent.event.itemId,
-        decision: "cancel",
+        decision,
       });
 
       expect(
@@ -649,12 +739,13 @@ describe("createAgentChatService", () => {
       ).toBe(false);
       expect(
         mockState.codexRequestPayloads.find((payload) => payload.id === "native-request-1"),
-      ).toMatchObject({
+      ).toEqual({
         id: "native-request-1",
         result: {
-          answers: {},
+          answers: { plan_focus: { answers: [expected] } },
         },
       });
+      expect((await service.getSessionSummary(session.id))?.awaitingInput).toBeUndefined();
     });
 
     it("keeps Codex isBlocking:false as live steering instead of awaiting you", async () => {

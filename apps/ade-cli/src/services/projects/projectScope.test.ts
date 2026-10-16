@@ -4,7 +4,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { markActiveHostProjectOpen } from "./projectCatalog";
 import { ProjectRegistry } from "./projectRegistry";
-import { FAILED_SCOPE_BACKOFF_MAX_MS, ProjectScopeRegistry } from "./projectScope";
+import { FAILED_SCOPE_BACKOFF_MAX_MS, ProjectScopeRegistry, SyncHostRoleBlockedError } from "./projectScope";
 
 const createAdeRuntimeMock = vi.fn();
 
@@ -660,6 +660,147 @@ describe("ProjectScopeRegistry", () => {
     await scopeRegistry.disposeAll();
   });
 
+  it("refuses a required-host switch to a project that follows another machine before deactivating the current host", async () => {
+    const { registry, first, second } = createRegistry();
+    const blocker = {
+      reason: "saved_connection" as const,
+      host: "192.168.1.240",
+      port: 8787,
+    };
+    const firstSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+      getHostBlocker: vi.fn(() => null),
+    };
+    const secondSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+      getHostBlocker: vi.fn(() => blocker),
+    };
+    createAdeRuntimeMock
+      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: firstSyncService })
+      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: secondSyncService });
+    const scopeRegistry = new ProjectScopeRegistry(registry, {
+      syncRuntime: {
+        enabled: true,
+        hostStartupEnabled: true,
+        hostDiscoveryEnabled: true,
+        forceHostRole: false,
+        runtimeKind: "daemon",
+      },
+    });
+
+    await scopeRegistry.switchSyncHost(first.projectId);
+    firstSyncService.setHostDiscoveryEnabled.mockClear();
+    firstSyncService.setHostStartupEnabled.mockClear();
+
+    const failure = await scopeRegistry.switchSyncHost(second.projectId, {
+      deactivatePreviousHost: true,
+      requireHostRole: true,
+    }).catch((error: unknown) => error);
+
+    // The client gets a refusal naming the machine it would follow, and the
+    // previous host keeps its lease: deactivation is checked but never run.
+    expect(failure).toBeInstanceOf(SyncHostRoleBlockedError);
+    expect(String((failure as Error).message)).toContain("192.168.1.240");
+    expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(first.projectId);
+    expect(firstSyncService.setHostDiscoveryEnabled).not.toHaveBeenCalledWith(false);
+    expect(firstSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(false);
+    expect(secondSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(true);
+
+    await scopeRegistry.disposeAll();
+  });
+
+  it("completes a required-host switch when the target does not follow another machine", async () => {
+    const { registry, first, second } = createRegistry();
+    const firstSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+      getHostBlocker: vi.fn(() => null),
+    };
+    const secondSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+      getHostBlocker: vi.fn(() => null),
+    };
+    createAdeRuntimeMock
+      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: firstSyncService })
+      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: secondSyncService });
+    const scopeRegistry = new ProjectScopeRegistry(registry, {
+      syncRuntime: {
+        enabled: true,
+        hostStartupEnabled: true,
+        hostDiscoveryEnabled: true,
+        forceHostRole: false,
+        runtimeKind: "daemon",
+      },
+    });
+
+    await scopeRegistry.switchSyncHost(first.projectId);
+    firstSyncService.setHostDiscoveryEnabled.mockClear();
+    firstSyncService.setHostStartupEnabled.mockClear();
+
+    const switched = await scopeRegistry.switchSyncHost(second.projectId, {
+      deactivatePreviousHost: true,
+      requireHostRole: true,
+    });
+
+    expect(switched?.registryProjectId).toBe(second.projectId);
+    expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(second.projectId);
+    expect(firstSyncService.setHostDiscoveryEnabled).toHaveBeenCalledWith(false);
+    expect(firstSyncService.setHostStartupEnabled).toHaveBeenCalledWith(false);
+    expect(secondSyncService.setHostStartupEnabled).toHaveBeenCalledWith(true);
+
+    await scopeRegistry.disposeAll();
+  });
+
+  it("still switches to a following project when the host role is not required", async () => {
+    const { registry, first, second } = createRegistry();
+    const firstSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+      getHostBlocker: vi.fn(() => null),
+    };
+    const secondSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+      getHostBlocker: vi.fn(() => ({ reason: "saved_connection" as const, host: "remote.invalid", port: 1 })),
+    };
+    createAdeRuntimeMock
+      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: firstSyncService })
+      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: secondSyncService });
+    const scopeRegistry = new ProjectScopeRegistry(registry, {
+      syncRuntime: {
+        enabled: true,
+        hostStartupEnabled: true,
+        hostDiscoveryEnabled: true,
+        forceHostRole: false,
+        runtimeKind: "daemon",
+      },
+    });
+
+    await scopeRegistry.switchSyncHost(first.projectId);
+    firstSyncService.setHostDiscoveryEnabled.mockClear();
+    firstSyncService.setHostStartupEnabled.mockClear();
+
+    // Brain startup deliberately omits requireHostRole: it must keep the
+    // previous behavior of adopting whatever project it was told to host.
+    const switched = await scopeRegistry.switchSyncHost(second.projectId);
+
+    expect(switched?.registryProjectId).toBe(second.projectId);
+    expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(second.projectId);
+    expect(firstSyncService.setHostStartupEnabled).toHaveBeenCalledWith(false);
+    expect(secondSyncService.setHostStartupEnabled).toHaveBeenCalledWith(true);
+
+    await scopeRegistry.disposeAll();
+  });
+
   it("promotes an existing warm project when selecting the default sync host", async () => {
     const { registry, first, second } = createRegistry();
     const firstSyncService = {
@@ -704,6 +845,43 @@ describe("ProjectScopeRegistry", () => {
     expect(secondSyncService.setHostDiscoveryEnabled).toHaveBeenCalledWith(true);
     expect(secondSyncService.setHostStartupEnabled).toHaveBeenCalledWith(true);
     expect(secondSyncService.initialize).toHaveBeenCalled();
+
+    await scopeRegistry.disposeAll();
+  });
+});
+
+describe("ProjectScopeRegistry stream release", () => {
+  it("releases viewers on every booted project when a sync socket closes", async () => {
+    createAdeRuntimeMock.mockReset();
+    const { registry, first, second } = createRegistry();
+    const releases: Array<ReturnType<typeof vi.fn>> = [];
+    let releaseSocket: ((connectionId: string) => void) | undefined;
+    createAdeRuntimeMock.mockImplementation(async (args: {
+      projectRoot: string;
+      syncRuntime?: { remoteCommandExecutor?: { releaseStreamConnection?: (connectionId: string) => void } };
+    }) => {
+      releaseSocket = args.syncRuntime?.remoteCommandExecutor?.releaseStreamConnection;
+      const releaseStreamConnection = vi.fn();
+      releases.push(releaseStreamConnection);
+      return {
+        dispose: vi.fn(),
+        syncService: { releaseStreamConnection },
+        projectRoot: args.projectRoot,
+      };
+    });
+    const scopeRegistry = new ProjectScopeRegistry(registry, {
+      syncRuntime: { enabled: true },
+    });
+
+    await scopeRegistry.get(first.projectId);
+    await scopeRegistry.get(second.projectId);
+    expect(releaseSocket).toBeTypeOf("function");
+    releaseSocket!("conn-9");
+    await vi.waitFor(() => {
+      expect(releases).toHaveLength(2);
+      expect(releases[0]).toHaveBeenCalledWith("conn-9");
+      expect(releases[1]).toHaveBeenCalledWith("conn-9");
+    });
 
     await scopeRegistry.disposeAll();
   });

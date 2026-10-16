@@ -122,8 +122,10 @@ const methods = {
     await requireThread(key).thread.send(text, attachments ? { attachments } : {});
     return { ok: true };
   },
-  "thread.steer": async ({ key, text }) => {
-    await requireThread(key).thread.steer(text);
+  // Attachments ride along on a steer too (`@ade-dev/sdk` >= 0.3); an older SDK
+  // ignores the second argument.
+  "thread.steer": async ({ key, text, attachments }) => {
+    await requireThread(key).thread.steer(text, attachments ? { attachments } : {});
     return { ok: true };
   },
   "thread.interrupt": async ({ key }) => {

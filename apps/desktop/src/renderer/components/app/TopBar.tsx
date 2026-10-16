@@ -5,23 +5,40 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { createPortal } from "react-dom";
 import {
+  AppWindow,
+  ArrowLineRight,
   ArrowSquareOut,
-  CaretDown,
   ChatCircleDots,
+  Globe,
   CircleNotch,
-  DesktopTower,
+  DownloadSimple,
   Folder,
   FolderOpen,
+  GearSix,
   Plus,
   Plugs,
+  TextT,
   Trash,
   UploadSimple,
   WarningCircle,
   X,
+  XSquare,
+  type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
-import { Dialog as AppDialog } from "../ui/dialog/Dialog";
+import {
+  ContextMenu,
+  type ContextMenuEntry,
+  type ContextMenuState,
+} from "../ui/ContextMenu";
+import { CloneLocallyDialog, type CloneLocallyTarget } from "../projects/CloneLocallyDialog";
+import { cloneTargetFor, projectMenuSections } from "../projects/projectMenuEntries";
+import { ProjectIconDialog, type ProjectIconDialogTarget } from "../projects/ProjectIconDialog";
+import {
+  getProjectIconFromCache,
+  setProjectIconCache,
+  subscribeProjectIcon,
+} from "../../lib/projectIconCache";
 
 import { useAppStore } from "../../state/appStore";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
@@ -30,10 +47,9 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { rememberProjectOriginSummaries } from "../lanes/laneMachines";
 import { resetAppZoom, zoomAppIn, zoomAppOut } from "../../lib/appZoom";
-import { consumeAppMenuCommand } from "../../lib/appMenuCommands";
+import { consumeAppMenuCommand, installFindKeyBridge } from "../../lib/appMenuCommands";
 import { consumeAppZoomCommand } from "../../lib/appZoomCommands";
 import { cn } from "../ui/cn";
-import { Banner } from "../ui/notice/Banner";
 import {
   readStoredProjectRoute,
   removeStoredProjectRoute,
@@ -43,22 +59,30 @@ import {
   PROJECT_SIDEBAR_TOGGLE_KEYBINDING,
   projectSidebarShortcutLabel,
 } from "./projectSidebar/projectSidebarTabs";
+import { closeMusicTab, MusicTabContent } from "../music/MusicTabContent";
 import {
   activeMachineForGroup,
   groupProjectTabs,
-  isMultiMachine,
+  recentProjectLocationKey,
+  remoteBindingFromRecent,
+  resolveProjectTabFallback,
+  tabOrderKey,
   type ProjectTabGroup,
   type ProjectTabMachine,
 } from "./projectTabGrouping";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
+import { PROJECT_TAB_KEY_ATTR } from "./useProjectTabDrag";
+import { pressActivation } from "../../lib/pressActivation";
+import { useProjectTabLifecycle } from "./useProjectTabLifecycle";
+import { usePreferLocalCheckout } from "./usePreferLocalCheckout";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { isMac } from "../../lib/platform";
 import type {
   ProjectIcon,
-  OpenProjectBinding,
+  RemoteOpenProjectBinding,
   RecentProjectSummary,
+  GitHubStatus,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionState,
   RemoteRuntimeTarget,
@@ -66,10 +90,13 @@ import type {
   AppResourceUsageSnapshot,
 } from "../../../shared/types";
 import { AutoUpdateControl } from "./AutoUpdateControl";
+import { AccountBalanceIndicator } from "./AccountBalanceIndicator";
 import { ChannelBadge } from "./ChannelBadge";
 import { HeaderSheet } from "./HeaderSheet";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
-import { CursorCloudQuickViewButton } from "./CursorCloudQuickViewButton";
+import { GitHubIssuesButton } from "../issues/GitHubIssuesButton";
+import { JiraIssuesButton } from "../issues/JiraIssuesButton";
+import { CloudAgentsQuickViewButton } from "./cloudAgents/CloudAgentsQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import {
@@ -78,6 +105,7 @@ import {
 } from "../../lib/connectionsPanel";
 import { HeaderActivityControl } from "../activity/HeaderActivityControl";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
+import { useUsageHeaderPreferences } from "../usage/usageHeaderPreferences";
 import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
 import { ShellNavTab } from "./ShellNavTab";
@@ -87,6 +115,8 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { AccountAvatar } from "../account/AccountAvatar";
+import { useAccountStatus } from "../../lib/account";
 
 // Hosted-client only: kept out of the desktop bundle's critical path, and out
 // of the desktop bundle's dependency graph for the sync client entirely.
@@ -96,17 +126,6 @@ const WebConnectionsChip = React.lazy(() =>
   })),
 );
 
-const ADE_PROJECT_TAB_ROOT_MIME = "application/x-ade-project-root";
-const ADE_PROJECT_TAB_WINDOW_MIME = "application/x-ade-window-id";
-const ADE_PROJECT_TAB_DROP_HANDLED_PREFIX =
-  "ade.projectTabDropHandled.v1:";
-const ADE_PROJECT_TAB_DROP_HANDLED_TTL_MS = 5_000;
-
-// Bounded LRU so we don't accumulate icons for every project ever opened in
-// long-lived sessions. 24 entries keeps the working set hot for typical usage
-// (current project + a few recents in the tab list) without unbounded growth.
-const PROJECT_ICON_CACHE_MAX = 24;
-const projectIconCache = new Map<string, ProjectIcon>();
 const RECENT_PROJECTS_CACHE_TTL_MS = 2_500;
 const PHONE_SYNC_STARTUP_DELAY_MS = 5_000;
 const RESOURCE_PRESSURE_SAMPLE_MS = 2_000;
@@ -117,47 +136,6 @@ let recentProjectsInFlight: Promise<RecentProjectSummary[]> | null = null;
 let recentProjectsCacheSource:
   | (() => Promise<RecentProjectSummary[]>)
   | null = null;
-type RemoteProjectTab = Extract<OpenProjectBinding, { kind: "remote" }>;
-
-function projectTabDropMarkerKey(
-  sourceWindowId: number | null,
-  rootPath: string,
-): string {
-  return `${ADE_PROJECT_TAB_DROP_HANDLED_PREFIX}${sourceWindowId ?? "unknown"}:${encodeURIComponent(rootPath)}`;
-}
-
-function markProjectTabDropHandled(
-  sourceWindowId: number | null,
-  rootPath: string,
-): void {
-  try {
-    window.localStorage.setItem(
-      projectTabDropMarkerKey(sourceWindowId, rootPath),
-      String(Date.now()),
-    );
-  } catch {
-    // localStorage may be unavailable in tests or hardened browser contexts.
-  }
-}
-
-function consumeRecentProjectTabDropHandled(
-  sourceWindowId: number | null,
-  rootPath: string,
-): boolean {
-  const key = projectTabDropMarkerKey(sourceWindowId, rootPath);
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (raw == null) return false;
-    window.localStorage.removeItem(key);
-    const timestamp = Number(raw);
-    return (
-      Number.isFinite(timestamp) &&
-      Date.now() - timestamp < ADE_PROJECT_TAB_DROP_HANDLED_TTL_MS
-    );
-  } catch {
-    return false;
-  }
-}
 
 function rememberRecentProjects(rows: RecentProjectSummary[]): void {
   recentProjectsCache = { rows, fetchedAtMs: Date.now() };
@@ -193,26 +171,6 @@ function listRecentProjectsCached(options?: {
     });
   return recentProjectsInFlight;
 }
-function getProjectIconFromCache(rootPath: string): ProjectIcon | undefined {
-  const cached = projectIconCache.get(rootPath);
-  if (cached === undefined) return undefined;
-  // Touch on read to mark as most-recently-used.
-  projectIconCache.delete(rootPath);
-  projectIconCache.set(rootPath, cached);
-  return cached;
-}
-function setProjectIconCache(rootPath: string, icon: ProjectIcon): void {
-  if (projectIconCache.has(rootPath)) {
-    projectIconCache.delete(rootPath);
-  } else if (projectIconCache.size >= PROJECT_ICON_CACHE_MAX) {
-    // Map iteration order is insertion order, so the first key is the LRU.
-    const oldestKey = projectIconCache.keys().next().value;
-    if (oldestKey !== undefined) {
-      projectIconCache.delete(oldestKey);
-    }
-  }
-  projectIconCache.set(rootPath, icon);
-}
 function isSyncConnected(snapshot: SyncRoleSnapshot | null): boolean {
   if (!snapshot) return false;
   if (snapshot.client.state === "error") return false;
@@ -226,6 +184,38 @@ function connectedWebClients(snapshot: SyncRoleSnapshot | null) {
   if (!snapshot) return [];
   if (snapshot.client.state === "error") return [];
   return snapshot.connectedPeers.filter((peer) => peer.deviceType === "browser");
+}
+
+function HeaderAccountAvatar() {
+  const { status } = useAccountStatus();
+  const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
+
+  useEffect(() => {
+    if (!status.signedIn || status.imageUrl) {
+      setGithubStatus(null);
+      return;
+    }
+    let cancelled = false;
+    const apply = (next: GitHubStatus) => {
+      if (cancelled) return;
+      setGithubStatus(next);
+    };
+    void window.ade.github?.getStatus?.().then(apply).catch(() => {});
+    const unsubscribe = window.ade.github?.onStatusChanged?.(apply);
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [status.imageUrl, status.signedIn]);
+
+  return (
+    <AccountAvatar
+      status={status}
+      githubLogin={githubStatus?.userLogin ?? null}
+      githubConnected={Boolean(githubStatus?.connected)}
+      size={15}
+    />
+  );
 }
 
 function isWebSyncConnected(snapshot: SyncRoleSnapshot | null): boolean {
@@ -255,6 +245,28 @@ function useHeaderStatusCompactLayout(): boolean {
   return compact;
 }
 
+/** Everything `ResourcePressureIndicator` draws from a sample; null when it is hidden. */
+function resourcePressureView(usage: AppResourceUsageSnapshot | null) {
+  const level = appResourcePressureLevel(usage);
+  if (level === 0) return null;
+  return {
+    level,
+    description: resourcePressureDescription(usage),
+    attributes: {
+      "data-ade-resource-pressure-level": level,
+      "data-ade-resource-pressure-active-ptys": usage?.activePtyCount ?? 0,
+      "data-ade-resource-pressure-pty-processes": usage?.ptyProcessCount ?? 0,
+      "data-ade-resource-pressure-pty-cpu": usage?.ptyCpuPercent ?? "",
+      "data-ade-resource-pressure-pty-memory-mb": usage?.ptyMemoryMB ?? "",
+      "data-ade-resource-pressure-sample-status": usage?.processSample?.status ?? "",
+    },
+  };
+}
+
+function resourcePressureIndicatorKey(usage: AppResourceUsageSnapshot | null): string {
+  return JSON.stringify(resourcePressureView(usage));
+}
+
 function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | null {
   const [usage, setUsage] = useState<AppResourceUsageSnapshot | null>(null);
 
@@ -271,7 +283,13 @@ function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | 
       const version = ++requestVersion;
       void getAppResourceUsageCoalesced()
         .then((snapshot) => {
-          if (!cancelled && version === requestVersion) setUsage(snapshot);
+          if (cancelled || version !== requestVersion) return;
+          // Every sample is a new object with fresh CPU numbers. Keep the old
+          // one unless the indicator would draw something different: a new
+          // object re-renders the whole top bar every 2 s.
+          setUsage((previous) => (
+            resourcePressureIndicatorKey(previous) === resourcePressureIndicatorKey(snapshot) ? previous : snapshot
+          ));
         })
     };
 
@@ -294,11 +312,11 @@ function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | 
 }
 
 function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot | null }) {
-  const level = appResourcePressureLevel(usage);
-  if (level === 0) return null;
+  const view = resourcePressureView(usage);
+  if (!view) return null;
+  const { level, description } = view;
   const color =
     level >= 4 ? "#F87171" : level === 3 ? "#FB7185" : level === 2 ? "#FB923C" : "#FBBF24";
-  const description = resourcePressureDescription(usage);
   return (
     <SmartTooltip
       forceEnabled
@@ -314,12 +332,7 @@ function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot 
         role="status"
         aria-label={`ADE resource pressure level ${level}`}
         title={description}
-        data-ade-resource-pressure-level={level}
-        data-ade-resource-pressure-active-ptys={usage?.activePtyCount ?? 0}
-        data-ade-resource-pressure-pty-processes={usage?.ptyProcessCount ?? 0}
-        data-ade-resource-pressure-pty-cpu={usage?.ptyCpuPercent ?? ""}
-        data-ade-resource-pressure-pty-memory-mb={usage?.ptyMemoryMB ?? ""}
-        data-ade-resource-pressure-sample-status={usage?.processSample?.status ?? ""}
+        {...view.attributes}
         className={cn(
           "ade-shell-control inline-flex h-[24px] w-[24px] shrink-0 items-center justify-center rounded-md",
           "border transition-[background-color,color,border-color,box-shadow] duration-150",
@@ -342,7 +355,7 @@ function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot 
 }
 
 const HEADER_STATUS_MENU_ROW_CLASS =
-  "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-white/[0.06] hover:text-fg/90";
+  "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-fg/[0.06] hover:text-fg/90";
 
 function ShellConnectionChip({
   label,
@@ -351,6 +364,7 @@ function ShellConnectionChip({
   title,
   ariaExpanded,
   onClick,
+  trailing,
   layout = "chip",
 }: {
   label: string;
@@ -359,6 +373,7 @@ function ShellConnectionChip({
   title: string;
   ariaExpanded?: boolean;
   onClick: () => void;
+  trailing?: React.ReactNode;
   layout?: "chip" | "menu-row";
 }) {
   return (
@@ -390,6 +405,7 @@ function ShellConnectionChip({
         )}
         aria-hidden
       />
+      {trailing}
     </button>
   );
 }
@@ -475,7 +491,7 @@ function HeaderStatusMenu({
           maxHeight: "calc(100vh - 80px)",
           overflowY: "auto",
         } : undefined}
-        surfaceClassName="min-w-[220px] overflow-hidden rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"
+        surfaceClassName="min-w-[220px] overflow-hidden rounded-xl border border-fg/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"
         onClose={close}
       >
         <div role="menu" aria-label="Connections and usage">
@@ -486,149 +502,75 @@ function HeaderStatusMenu({
   );
 }
 
-/**
- * The machine dimension of a repo tab.
- *
- * A group renders exactly one tab, so every machine in it other than the active
- * one would be unreachable without this menu — that is the whole reason it
- * exists, and why it also offers the way to add a machine to the group.
- */
-function MachineSwitcherMenu({
-  anchor,
-  group,
-  machineStatus,
-  onSelect,
-  onConnectAnother,
-  onClose,
-}: {
-  anchor: { left: number; top: number };
-  group: ProjectTabGroup;
-  machineStatus: (machine: ProjectTabMachine) => string | null;
-  onSelect: (machine: ProjectTabMachine) => void;
-  onConnectAnother: () => void;
-  onClose: () => void;
-}) {
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    menuRef.current?.querySelector<HTMLElement>('[role^="menuitem"]')?.focus();
-  }, []);
-  useEffect(() => {
-    const onPointerDown = (event: MouseEvent) => {
-      if (menuRef.current?.contains(event.target as Node)) return;
-      onClose();
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-        return;
-      }
-      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-      const items = Array.from(
-        menuRef.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]') ?? [],
-      );
-      if (items.length === 0) return;
-      event.preventDefault();
-      const current = items.indexOf(document.activeElement as HTMLElement);
-      const delta = event.key === "ArrowDown" ? 1 : -1;
-      items[(current + delta + items.length) % items.length]?.focus();
-    };
-    window.addEventListener("mousedown", onPointerDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onPointerDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
-
-  return createPortal(
-    <ViewportOverlayHost layer="tabMenu">
-      <div
-        ref={menuRef}
-        role="menu"
-        aria-label={`Machines for ${group.displayName}`}
-        className="absolute min-w-[220px] overflow-hidden rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"
-        style={
-          {
-            left: anchor.left,
-            top: anchor.top,
-            pointerEvents: "auto",
-            WebkitAppRegion: "no-drag",
-          } as React.CSSProperties
-        }
-      >
-        {group.machines.map((machine) => {
-          const isActive = machine.bindingKey === group.activeBindingKey;
-          const status = machineStatus(machine);
-          return (
-            <button
-              key={machine.bindingKey}
-              type="button"
-              role="menuitemradio"
-              aria-checked={isActive}
-              className={cn(
-                "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px]",
-                "hover:bg-white/8",
-                isActive && "bg-white/6 font-semibold",
-              )}
-              onClick={() => {
-                onClose();
-                onSelect(machine);
-              }}
-            >
-              <span className="min-w-0 flex-1 truncate">{machine.machineName}</span>
-              {status ? (
-                <span className="shrink-0 text-[10px] opacity-60">{status}</span>
-              ) : null}
-            </button>
-          );
-        })}
-        <div className="my-1 h-px bg-white/8" />
-        <button
-          type="button"
-          role="menuitem"
-          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] opacity-80 hover:bg-white/8 hover:opacity-100"
-          onClick={() => {
-            onClose();
-            onConnectAnother();
-          }}
-        >
-          <Plus size={11} weight="regular" className="shrink-0" />
-          <span className="truncate">Connect another machine…</span>
-        </button>
-      </div>
-    </ViewportOverlayHost>,
-    document.body,
-  );
-}
-
-function projectIconErrorMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  const cleaned = raw
-    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
-    .replace(/^Error:\s*/i, "")
-    .trim();
-  return cleaned || "Failed to update project icon.";
-}
-
 function fallbackProjectName(rootPath: string): string {
   return rootPath.split(/[\\/]/).filter(Boolean).pop() ?? rootPath;
 }
 
-function confirmProjectTabRemoval(projectName: string): Promise<boolean> {
-  const label = projectName.trim() || "this project";
-  return confirmDialog({
-    title: `Close "${label}" project tab?`,
-    message: "This does not remove it from Recent Projects or delete any files on disk.",
-    confirmLabel: "Close",
-  });
+
+
+/** An accent call-to-action in the header, such as Publish or Clone locally. */
+function HeaderActionPill({
+  icon: Icon,
+  label,
+  ariaLabel,
+  tooltip,
+  disabled = false,
+  onClick,
+}: {
+  icon: PhosphorIcon;
+  label: string;
+  ariaLabel?: string;
+  tooltip: { label: string; description: string };
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <SmartTooltip
+      content={tooltip}
+      wrapperStyle={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+    >
+      <button
+        type="button"
+        aria-label={ariaLabel ?? label}
+        onClick={onClick}
+        disabled={disabled}
+        className="shrink-0 inline-flex items-center gap-1.5 rounded-md px-2 py-1 transition-colors duration-150"
+        style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 10,
+          fontWeight: 600,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          color: "var(--color-accent)",
+          background:
+            "color-mix(in srgb, var(--color-accent) 18%, transparent)",
+          border:
+            "1px solid color-mix(in srgb, var(--color-accent) 36%, transparent)",
+          borderRadius: 6,
+          cursor: disabled ? "not-allowed" : "pointer",
+          opacity: disabled ? 0.55 : 1,
+        }}
+      >
+        <Icon size={11} weight="bold" />
+        {label}
+      </button>
+    </SmartTooltip>
+  );
 }
+
+const REMOTE_TAB_STATUS_LABEL: Record<RemoteRuntimeConnectionState, string> = {
+  connected: "Connected",
+  connecting: "Reconnecting",
+  parked: "Parked",
+  idle: "Disconnected",
+  error: "Disconnected",
+};
 
 function ProjectTabIcon({
   rootPath,
   isCurrent,
   animate,
   disabled,
-  readOnly = false,
   iconDataUrlOverride,
   onAccentColorChange,
 }: {
@@ -636,12 +578,11 @@ function ProjectTabIcon({
   isCurrent: boolean;
   animate: boolean;
   disabled: boolean;
-  readOnly?: boolean;
   /**
-   * When defined, the caller owns this tab's icon (remote tabs, whose files
-   * live on another machine). A non-empty data URL is rendered directly; null
-   * falls back to the folder glyph. Either way the local resolveIcon path is
-   * skipped, since it can only read the local filesystem.
+   * When defined, the caller owns this tab's icon (a project on another
+   * machine, whose icon the host resolves). A non-empty data URL is rendered
+   * directly; null falls back to the folder glyph. Either way the local
+   * resolveIcon path is skipped, since it can only read the local filesystem.
    */
   iconDataUrlOverride?: string | null;
   onAccentColorChange?: (rootPath: string, color: string | null) => void;
@@ -650,13 +591,7 @@ function ProjectTabIcon({
     disabled ? null : (getProjectIconFromCache(rootPath) ?? null),
   );
   const [failed, setFailed] = useState(false);
-  const [iconDialogOpen, setIconDialogOpen] = useState(false);
-  const [choosing, setChoosing] = useState(false);
-  const [removing, setRemoving] = useState(false);
-  const [iconError, setIconError] = useState<string | null>(null);
 
-  // Remote tabs supply their icon via the override (resolved on the host), so
-  // the local resolveIcon path is bypassed entirely.
   const managedIcon = iconDataUrlOverride !== undefined;
   const overrideIcon: ProjectIcon | null = iconDataUrlOverride
     ? { dataUrl: iconDataUrlOverride, sourcePath: null, mimeType: null }
@@ -664,9 +599,15 @@ function ProjectTabIcon({
   const displayIcon: ProjectIcon | null = managedIcon ? overrideIcon : icon;
 
   useEffect(() => {
+    if (managedIcon || disabled) return;
+    return subscribeProjectIcon(rootPath, () => {
+      setFailed(false);
+      setIcon(getProjectIconFromCache(rootPath) ?? null);
+    });
+  }, [disabled, managedIcon, rootPath]);
+
+  useEffect(() => {
     setFailed(false);
-    // Caller-managed icons (remote tabs) never resolve against the local
-    // filesystem — the project lives on another machine.
     if (managedIcon) {
       setIcon(null);
       return;
@@ -709,7 +650,7 @@ function ProjectTabIcon({
 
   useEffect(() => {
     let cancelled = false;
-    const dataUrl = icon?.dataUrl;
+    const dataUrl = displayIcon?.dataUrl;
     if (!dataUrl || failed) {
       onAccentColorChange?.(rootPath, null);
       return () => {
@@ -726,212 +667,93 @@ function ProjectTabIcon({
     return () => {
       cancelled = true;
     };
-  }, [failed, icon?.dataUrl, onAccentColorChange, rootPath]);
-
-  const fallbackIcon = (
-    <Folder
-      size={14}
-      weight="regular"
-      className={cn(
-        "shrink-0 transition-opacity duration-150",
-        isCurrent ? "opacity-90" : "opacity-70",
-        animate && "animate-pulse",
-      )}
-    />
-  );
-
-  const iconNode =
-    !displayIcon?.dataUrl || failed ? (
-      fallbackIcon
-    ) : (
-      <img
-        src={displayIcon.dataUrl}
-        alt=""
-        className={cn(
-          "h-[14px] w-[14px] shrink-0 rounded-[3px] object-contain transition-opacity duration-150",
-          isCurrent ? "opacity-95" : "opacity-75",
-          animate && "animate-pulse",
-        )}
-        draggable={false}
-        onError={() => setFailed(true)}
-      />
-    );
-
-  const handleChooseIcon = useCallback(async () => {
-    if (disabled || choosing) return;
-    setChoosing(true);
-    setIconError(null);
-    try {
-      const nextIcon = await window.ade.project.chooseIcon(rootPath);
-      if (nextIcon) {
-        setProjectIconCache(rootPath, nextIcon);
-        setFailed(false);
-        setIcon(nextIcon);
-        if (nextIcon.dataUrl) {
-          setIconDialogOpen(false);
-        } else {
-          setIconError(
-            "ADE saved the path, but the image could not be rendered as a project icon.",
-          );
-        }
-      }
-    } catch (error) {
-      // Keep the current icon while surfacing why replacement failed.
-      setIconError(projectIconErrorMessage(error));
-    } finally {
-      setChoosing(false);
-    }
-  }, [choosing, disabled, rootPath]);
-
-  const handleRemoveIcon = useCallback(async () => {
-    if (disabled || removing) return;
-    setRemoving(true);
-    setIconError(null);
-    try {
-      const nextIcon = await window.ade.project.removeIcon(rootPath);
-      setProjectIconCache(rootPath, nextIcon);
-      setFailed(false);
-      setIcon(nextIcon);
-      setIconDialogOpen(false);
-    } catch (error) {
-      // Keep the current icon while surfacing why removal failed.
-      setIconError(projectIconErrorMessage(error));
-    } finally {
-      setRemoving(false);
-    }
-  }, [disabled, removing, rootPath]);
-
-  if (disabled) return iconNode;
-
-  if (readOnly) {
-    return (
-      <span
-        aria-label="Project icon"
-        title="Project icon"
-        className={cn(
-          "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] text-current",
-        )}
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={(event) => event.stopPropagation()}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        {iconNode}
-      </span>
-    );
-  }
+  }, [failed, displayIcon?.dataUrl, onAccentColorChange, rootPath]);
 
   return (
-    <>
-      <button
-        type="button"
-        aria-label="Project icon"
-        title="Project icon"
-        aria-haspopup="dialog"
-        aria-expanded={iconDialogOpen}
-        className={cn(
-          "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px]",
-          "text-current transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent/70",
-        )}
-        onClick={(event) => {
-          event.stopPropagation();
-          setIconDialogOpen(true);
-        }}
-        onKeyDown={(event) => event.stopPropagation()}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        {choosing || removing ? (
-          <CircleNotch
-            size={15}
-            weight="bold"
-            className="animate-spin opacity-80"
-          />
-        ) : (
-          iconNode
-        )}
-      </button>
-      <AppDialog
-        open={iconDialogOpen}
-        onOpenChange={(open) => {
-          setIconDialogOpen(open);
-          if (!open) setIconError(null);
-        }}
-        title="Project icon"
-        size="sm"
-        width={320}
-        tone="accent"
-        stopClickPropagation
-        actions={[
-          {
-            label: "Remove",
-            variant: "secondary",
-            busy: removing,
-            disabled: choosing || removing,
-            onClick: () => void handleRemoveIcon(),
-          },
-          {
-            label: "Replace",
-            variant: "solid",
-            busy: choosing,
-            disabled: choosing || removing,
-            onClick: () => void handleChooseIcon(),
-          },
-        ]}
-      >
-        <div className="flex items-center justify-center rounded-md border border-border bg-bg/60 p-5">
-          {icon?.dataUrl && !failed ? (
-            <img
-              src={icon.dataUrl}
-              alt=""
-              className="h-20 w-20 rounded-md object-contain"
-              draggable={false}
-            />
-          ) : (
-            <Folder size={52} className="text-muted-fg" />
+    <span
+      aria-hidden
+      className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] text-current"
+    >
+      {!displayIcon?.dataUrl || failed ? (
+        <Folder
+          size={14}
+          weight="regular"
+          className={cn(
+            "shrink-0 transition-opacity duration-150",
+            isCurrent ? "opacity-90" : "opacity-70",
+            animate && "animate-pulse",
           )}
-        </div>
-
-        {iconError ? (
-          <Banner
-            model={{ id: "project-icon-error", tone: "error", title: iconError }}
-            layout="inline"
-            style={{ marginTop: 12 }}
-          />
-        ) : null}
-      </AppDialog>
-    </>
+        />
+      ) : (
+        <img
+          src={displayIcon.dataUrl}
+          alt=""
+          className={cn(
+            "h-[14px] w-[14px] shrink-0 rounded-[3px] object-contain transition-opacity duration-150",
+            isCurrent ? "opacity-95" : "opacity-75",
+            animate && "animate-pulse",
+          )}
+          draggable={false}
+          onError={() => setFailed(true)}
+        />
+      )}
+    </span>
   );
 }
 
 export function TopBar({
   personalChatsRouteActive = false,
+  browserRouteActive = false,
+  musicRouteActive = false,
   accountRouteActive = false,
   hubRouteActive = false,
+  settingsRouteActive = false,
   onOpenActivityPane,
   onNavigate,
 }: {
   personalChatsRouteActive?: boolean;
+  /** The machine-level Browser tab (`/browser`) is in front. */
+  browserRouteActive?: boolean;
+  /** The machine-level Music tab (`/music`) is in front. */
+  musicRouteActive?: boolean;
   accountRouteActive?: boolean;
   hubRouteActive?: boolean;
+  /** The `#/settings` route is in front. Drives the standalone Settings tab. */
+  settingsRouteActive?: boolean;
   onNavigate?: (path: string, opts?: { replace?: boolean }) => void;
   /** Raises the shell's Activity pane over whatever tab is in front. */
   onOpenActivityPane?: () => void;
 } = {}) {
   const project = useAppStore((s) => s.project);
+  // A machine-level tab (Chats, Browser) is in front, not a project surface.
+  const machineRouteActive = personalChatsRouteActive || browserRouteActive || musicRouteActive;
   const theme = useAppStore((s) => s.theme);
+  const usageHeaderPreferences = useUsageHeaderPreferences();
   const hasProject = Boolean(project?.rootPath);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
-  const closeProject = useAppStore((s) => s.closeProject);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
   const openRepo = useAppStore((s) => s.openRepo);
   const isNewTabOpen = useAppStore((s) => s.isNewTabOpen);
   const openNewTab = useAppStore((s) => s.openNewTab);
   const cancelNewTab = useAppStore((s) => s.cancelNewTab);
+  // Settings with no project open — the new-project screen's own Settings
+  // entry. It gets a tab of its own, the way a new tab does, so the header
+  // always says which surface is in front.
+  const standaloneSettingsOpen = useAppStore((s) => s.standaloneSettingsOpen);
+  const setStandaloneSettingsOpen = useAppStore((s) => s.setStandaloneSettingsOpen);
+  const isSettingsTabOpen = settingsRouteActive && !hasProject && standaloneSettingsOpen;
   const personalChatsTabOpen = useAppStore((s) => s.personalChatsTabOpen);
   const closePersonalChatsTab = useAppStore((s) => s.closePersonalChatsTab);
+  const browserTabOpen = useAppStore((s) => s.browserTabOpen);
+  const setBrowserTabOpen = useAppStore((s) => s.setBrowserTabOpen);
+  const musicTabOpen = useAppStore((s) => s.musicTabOpen);
+  const setMusicTabOpen = useAppStore((s) => s.setMusicTabOpen);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  // Which open tabs have a loaded project: only those switch at once.
+  const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>(
     [],
@@ -969,9 +791,15 @@ export function TopBar({
   const setOpenRemoteProjectTabs = useAppStore(
     (s) => s.setOpenRemoteProjectTabs,
   );
-  const evictProjectState = useAppStore((s) => s.evictProjectState);
   const openProjectTabRootsRef = useRef(openProjectTabRoots);
   const openRemoteProjectTabsRef = useRef(openRemoteProjectTabs);
+  // Tab groups and the connection snapshot are both derived later in the
+  // component; the removal handler reads them through refs so it can stay a
+  // stable callback with empty deps.
+  const tabGroupsRef = useRef<ProjectTabGroup[]>([]);
+  const remoteSnapshotRef = useRef<RemoteRuntimeConnectionSnapshot | null>(
+    null,
+  );
   // A logical repo tab remembers its chosen checkout even while another repo
   // is active. This is deliberately per TopBar/window instance: opening a
   // local counterpart must not make an inactive remote tab fall back to the
@@ -979,8 +807,8 @@ export function TopBar({
   const [preferredBindingKeyByGroup, setPreferredBindingKeyByGroup] = useState<
     Record<string, string>
   >({});
-  const [dragIdx, setDragIdx] = useState<number | null>(null);
-  const [dropIdx, setDropIdx] = useState<number | null>(null);
+  /** The user's tab order, as binding keys, across every kind of tab. */
+  const [tabOrder, setTabOrder] = useState<string[]>([]);
   const [windowId, setWindowId] = useState<number | null>(null);
   const [windowSessionRestored, setWindowSessionRestored] = useState(false);
   const connectionsPanelRef = useRef<HTMLDivElement | null>(null);
@@ -997,7 +825,6 @@ export function TopBar({
     setConnectionsTab(tab);
     setConnectionsOpen(true);
   }, [webMode]);
-  const dragCounterRef = useRef(0);
   const isProjectBusy = projectTransition != null || relocatingPath != null;
   const remoteBinding =
     projectBinding?.kind === "remote" ? projectBinding : null;
@@ -1016,7 +843,7 @@ export function TopBar({
     showWelcome !== true &&
     isNewTabOpen !== true &&
     Boolean(project?.rootPath) &&
-    !personalChatsRouteActive &&
+    !machineRouteActive &&
     !accountRouteActive &&
     !hubRouteActive;
   const keybindings = useAppStore((s) => s.keybindings);
@@ -1059,8 +886,11 @@ export function TopBar({
   }, [openProjectTabRoots]);
 
   useEffect(() => {
+    // The first paint has an empty tab list. Sending it before the window
+    // session is read would replace the tabs the main process restored.
+    if (!windowSessionRestored) return;
     window.ade.app.setWindowProjectTabs(openProjectTabRoots).catch(() => {});
-  }, [openProjectTabRoots]);
+  }, [openProjectTabRoots, windowSessionRestored]);
 
   useEffect(() => {
     if (!windowSessionRestored) return;
@@ -1104,7 +934,10 @@ export function TopBar({
    */
   useEffect(() => {
     const onMenuCommand = window.ade?.app?.onMenuCommand;
-    if (typeof onMenuCommand !== "function") return;
+    if (typeof onMenuCommand !== "function") {
+      // No native menu (the web client): ⌘F arrives as a keydown.
+      return installFindKeyBridge();
+    }
     return onMenuCommand((command) => {
       if (consumeAppMenuCommand(command)) return;
       if (command === "close-tab") {
@@ -1244,25 +1077,14 @@ export function TopBar({
   }, [openRemoteProjectTabs, remoteSnapshot]);
 
   const activeTabBindingKey = remoteBinding?.key ?? project?.rootPath ?? null;
-  const knownRemoteProjectTabs = useMemo<RemoteProjectTab[]>(() => {
-    const byKey = new Map<string, RemoteProjectTab>();
-    const add = (binding: RemoteProjectTab) => {
+  const knownRemoteProjectTabs = useMemo<RemoteOpenProjectBinding[]>(() => {
+    const byKey = new Map<string, RemoteOpenProjectBinding>();
+    const add = (binding: RemoteOpenProjectBinding) => {
       byKey.set(binding.key, binding);
     };
     for (const recent of recentProjects) {
-      if (recent.kind !== "remote" || !recent.remote) continue;
-      add({
-        kind: "remote",
-        key: remoteProjectBindingKey(recent.remote.targetId, recent.remote.projectId),
-        targetId: recent.remote.targetId,
-        runtimeName: recent.remote.runtimeName,
-        hostname: recent.remote.hostname,
-        projectId: recent.remote.projectId,
-        rootPath: recent.rootPath,
-        displayName: recent.displayName,
-        gitOriginUrl: recent.gitOriginUrl ?? recent.remote.gitOriginUrl ?? null,
-        iconDataUrl: recent.remote.iconDataUrl ?? null,
-      });
+      const binding = remoteBindingFromRecent(recent);
+      if (binding) add(binding);
     }
     for (const connection of remoteSnapshot?.connections ?? []) {
       for (const remoteProject of connection.projects ?? []) {
@@ -1284,7 +1106,8 @@ export function TopBar({
   }, [recentProjects, remoteSnapshot]);
 
   // One tab per repository. Local and remote checkouts of the same repo collapse
-  // into a single group whose machines are switchable from the tab's menu.
+  // into a single group. The tab is the repo: its machines are not picked here,
+  // every tab shows all of them (see docs/plans/unified-machines.md).
   const tabGroups = useMemo(
     () =>
       groupProjectTabs({
@@ -1295,6 +1118,7 @@ export function TopBar({
         remoteOriginByKey,
         activeBindingKey: activeTabBindingKey,
         preferredBindingKeyByGroup,
+        order: tabOrder,
       }),
     [
       activeTabBindingKey,
@@ -1304,8 +1128,17 @@ export function TopBar({
       preferredBindingKeyByGroup,
       projectTabs,
       remoteOriginByKey,
+      tabOrder,
     ],
   );
+
+  useEffect(() => {
+    tabGroupsRef.current = tabGroups;
+  }, [tabGroups]);
+
+  useEffect(() => {
+    remoteSnapshotRef.current = remoteSnapshot;
+  }, [remoteSnapshot]);
 
   useEffect(() => {
     if (!activeTabBindingKey) return;
@@ -1318,38 +1151,21 @@ export function TopBar({
         : { ...current, [activeGroup.id]: activeTabBindingKey });
   }, [activeTabBindingKey, tabGroups]);
 
-  const [machineMenu, setMachineMenu] = useState<{
-    groupId: string;
-    left: number;
-    top: number;
-  } | null>(null);
-  const closeMachineMenu = useCallback(() => setMachineMenu(null), []);
-  const openMachineMenuGroup = useMemo(
-    () =>
-      machineMenu
-        ? (tabGroups.find((group) => group.id === machineMenu.groupId) ?? null)
-        : null,
-    [machineMenu, tabGroups],
-  );
-  const machineStatusLabel = useCallback(
-    (machine: ProjectTabMachine): string | null => {
-      if (!machine.isLocal) {
-        const binding = machine.binding?.kind === "remote"
-          ? machine.binding
-          : openRemoteProjectTabs.find((entry) => entry.key === machine.bindingKey);
-        const state = binding ? remoteConnectionState(binding.targetId) : "idle";
-        if (state === "connecting") return "Reconnecting";
-        if (state === "parked") return "Parked";
-        if (state !== "connected") return "Offline";
-      }
-      const laneCount = machine.laneCount;
-      if (typeof laneCount === "number" && laneCount > 0) {
-        return `${laneCount} lane${laneCount === 1 ? "" : "s"}`;
-      }
-      return null;
-    },
-    [openRemoteProjectTabs, remoteConnectionState],
-  );
+  usePreferLocalCheckout({
+    enabled: !webMode
+      && windowSessionRestored
+      && !machineRouteActive
+      && !isProjectBusy
+      && !isNewTabOpen,
+    remoteBinding,
+    remoteOrigin: remoteBinding
+      ? (remoteOriginByKey[remoteBinding.key] ?? remoteBinding.gitOriginUrl ?? null)
+      : null,
+    openLocalTabs: projectTabs,
+    knownLocalTabs: localRecentProjects,
+    setOpenRemoteProjectTabs,
+    setTabOrder,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -1360,7 +1176,7 @@ export function TopBar({
         setWindowId(session.windowId);
         if (session.openProjectBindings?.length) {
           const restoredRemoteBindings = session.openProjectBindings.filter(
-            (entry): entry is RemoteProjectTab => entry.kind === "remote",
+            (entry): entry is RemoteOpenProjectBinding => entry.kind === "remote",
           );
           if (restoredRemoteBindings.length > 0) {
             setOpenRemoteProjectTabs((current) => {
@@ -1370,16 +1186,17 @@ export function TopBar({
             });
           }
         }
-        if (session.openProjectTabs.length > 0) {
+        // Restore every local tab root, loaded or not: an idle project's
+        // context may be released while its tab stays open. Hosted web sends
+        // only the loaded list.
+        const restored = session.openProjectTabRoots
+          ?? session.openProjectTabs.map((entry) => entry.rootPath);
+        if (restored.length > 0) {
           for (const tabProject of session.openProjectTabs) {
             useAppStore.getState().rememberProjectInfo(tabProject);
           }
-          // Merge, don't replace. The main-process snapshot
-          // (projectsForWindowTabs) drops any tab root whose context was
-          // evicted while idle, so a remount could otherwise lose a local tab
-          // that the renderer still has. Restored roots come first; keep any
-          // extra local roots the renderer already knows about.
-          const restored = session.openProjectTabs.map((entry) => entry.rootPath);
+          // Merge, don't replace: keep any extra local roots the renderer
+          // already knows about after the restored ones.
           setOpenProjectTabRoots((prev) => {
             const merged = [...restored];
             for (const root of prev) {
@@ -1577,8 +1394,8 @@ export function TopBar({
   const handleOpenNew = useCallback(() => {
     if (isProjectBusy) return;
     openNewTab();
-    if (personalChatsRouteActive || accountRouteActive || hubRouteActive) onNavigate?.("/work");
-  }, [accountRouteActive, hubRouteActive, isProjectBusy, onNavigate, openNewTab, personalChatsRouteActive]);
+    if (machineRouteActive || accountRouteActive || hubRouteActive) onNavigate?.("/work");
+  }, [accountRouteActive, hubRouteActive, isProjectBusy, onNavigate, openNewTab, machineRouteActive]);
   // The batch launcher's model picker needs a way out of its empty Harnesses
   // tab. It routes through the same `onNavigate` the shell supplies, so a top
   // bar rendered without a router (tests) simply has no CTA.
@@ -1607,7 +1424,7 @@ export function TopBar({
   // route-cache effect writes that same value back instead of stamping /work
   // over the project's remembered position.
   const leaveMachineRoute = useCallback(() => {
-    if (!personalChatsRouteActive && !accountRouteActive && !hubRouteActive) return;
+    if (!machineRouteActive && !accountRouteActive && !hubRouteActive) return;
     const currentBindingKey = remoteBinding
       ? remoteBinding.key
       : project?.rootPath
@@ -1615,11 +1432,11 @@ export function TopBar({
         : null;
     const route = (currentBindingKey ? readStoredProjectRoute(currentBindingKey) : null) ?? "/work";
     onNavigate?.(route, { replace: true });
-  }, [accountRouteActive, hubRouteActive, onNavigate, personalChatsRouteActive, project?.rootPath, remoteBinding]);
+  }, [accountRouteActive, hubRouteActive, onNavigate, machineRouteActive, project?.rootPath, remoteBinding]);
 
   // Resolves when the switch has settled, so a caller that has to reconcile tab
-  // state afterwards (the machine switcher, below) runs against the new binding
-  // rather than racing the in-flight transition.
+  // state afterwards runs against the new binding rather than racing the
+  // in-flight transition.
   const handleSwitchProject = useCallback(
     (rootPath: string, opts?: { skipWorktreeGate?: boolean }): Promise<void> => {
       if (isProjectBusy) return Promise.resolve();
@@ -1646,7 +1463,7 @@ export function TopBar({
   );
 
   const handleSwitchRemoteProject = useCallback(
-    (binding: RemoteProjectTab): Promise<void> => {
+    (binding: RemoteOpenProjectBinding): Promise<void> => {
       if (isProjectBusy) return Promise.resolve();
       leaveMachineRoute();
       if (remoteBinding?.key === binding.key && !hubRouteActive) {
@@ -1665,172 +1482,43 @@ export function TopBar({
     ],
   );
 
-  // Only the active machine of a group gets a tab, so this is the only way to
-  // reach the others. Both branches go through the existing switch paths.
-  const handleSelectGroupMachine = useCallback(
-    (machine: ProjectTabMachine) => {
-      const group = tabGroups.find((candidate) =>
-        candidate.machines.some((entry) => entry.bindingKey === machine.bindingKey));
-      if (group) {
-        setPreferredBindingKeyByGroup((current) => ({
-          ...current,
-          [group.id]: machine.bindingKey,
-        }));
-      }
-      // Switching a tab's machine REBINDS THIS TAB — it is not a request to open
-      // a second one. Both switch paths only ever ADD the destination to the
-      // open-tab lists, and `groupProjectTabs` deliberately refuses to merge two
-      // OPEN checkouts that share an origin, so leaving the outgoing checkout
-      // open split the group in two and pushed a second tab onto the end of the
-      // strip. Releasing the machine we just left keeps the group — and the tab
-      // — singular. Platform-neutral: nothing here branches on the OS.
-      const outgoing = group?.machines.find(
-        (entry) => entry.bindingKey === activeTabBindingKey,
-      ) ?? null;
-      const releaseOutgoing = () => {
-        if (!outgoing || outgoing.bindingKey === machine.bindingKey) return;
-        if (outgoing.isLocal) {
-          setOpenProjectTabRoots((prev) =>
-            prev.filter((rootPath) => rootPath !== outgoing.rootPath));
-        } else {
-          setOpenRemoteProjectTabs((prev) =>
-            prev.filter((entry) => entry.key !== outgoing.bindingKey));
-        }
-      };
-      if (machine.isLocal) {
-        // The gate exists to catch opening an unknown path that turns out to be
-        // a linked worktree. A machine in this group is a checkout the tab has
-        // already been bound to, so re-gating it on the way back would prompt
-        // about a decision the user already made.
-        void handleSwitchProject(machine.rootPath, { skipWorktreeGate: true })
-          .then(releaseOutgoing);
-        return;
-      }
-      const binding = machine.binding?.kind === "remote"
-        ? machine.binding
-        : openRemoteProjectTabsRef.current.find(
-          (entry) => entry.key === machine.bindingKey,
-        );
-      if (binding) void handleSwitchRemoteProject(binding).then(releaseOutgoing);
-    },
-    [
-      activeTabBindingKey,
-      handleSwitchProject,
-      handleSwitchRemoteProject,
-      setOpenProjectTabRoots,
-      setOpenRemoteProjectTabs,
-      tabGroups,
-    ],
-  );
-
-  const handleRemoveTab = useCallback(
-    (rootPath: string) => {
-      void (async () => {
-        const target = projectTabs.find((entry) => entry.rootPath === rootPath);
-        const fallbackName = fallbackProjectName(rootPath);
-        const confirmed = await confirmProjectTabRemoval(
-          target?.displayName ?? fallbackName,
-        );
-        if (!confirmed) return;
-
-        const shouldClose = await checkForActiveWorkloads(rootPath);
-        if (!shouldClose) return;
-
-        const latestTabRoots = openProjectTabRootsRef.current;
-        const currentIndex = latestTabRoots.indexOf(rootPath);
-        if (currentIndex === -1) return;
-        const nextTabRoots = latestTabRoots.filter(
-          (entry) => entry !== rootPath,
-        );
-        openProjectTabRootsRef.current = nextTabRoots;
-        setOpenProjectTabRoots((prev) =>
-          prev.includes(rootPath) ? prev.filter((entry) => entry !== rootPath) : prev,
-        );
-
-        const latestState = useAppStore.getState();
-        const latestProjectRoot = latestState.project?.rootPath ?? null;
-        const latestRemoteBinding =
-          latestState.projectBinding?.kind === "remote"
-            ? latestState.projectBinding
-            : null;
-        const latestRemoteTabs = openRemoteProjectTabsRef.current;
-        if (!latestRemoteBinding && latestProjectRoot === rootPath) {
-          const nextRoot =
-            nextTabRoots[currentIndex] ??
-            nextTabRoots[currentIndex - 1] ??
-            null;
-          if (nextRoot) {
-            latestState.switchProjectToPath(nextRoot).catch(() => {});
-          } else if (latestRemoteTabs[0]) {
-            latestState.switchRemoteProject(
-              latestRemoteTabs[0].targetId,
-              latestRemoteTabs[0].projectId,
-            ).catch(() => {});
-          } else {
-            latestState.closeProject().catch(() => {});
-          }
-        }
-      })().catch(() => {});
-    },
-    [
-      checkForActiveWorkloads,
-      projectTabs,
-    ],
-  );
-
-  const handleCloseRemoteTab = useCallback((binding: RemoteProjectTab) => {
-    if (isProjectBusy) return;
-    const closedIndex = openRemoteProjectTabs.findIndex(
-      (entry) => entry.key === binding.key,
-    );
-    const nextRemoteTabs = openRemoteProjectTabs.filter(
-      (entry) => entry.key !== binding.key,
-    );
-    const finishClose = () => {
-      setOpenRemoteProjectTabs((prev) =>
-        prev.filter((entry) => entry.key !== binding.key),
-      );
-      // Explicit tab close is a deliberate "forget this surface": drop the view
-      // state and the remembered route as well. Disconnects take the narrower
-      // `evictProjectDataCaches` path in `confirmAndCloseRemoteTargetTabs` so
-      // reconnecting can restore the chat that was open.
-      evictProjectState(binding.key);
-      removeStoredProjectRoute(binding.key);
-    };
-    if (remoteBinding?.key !== binding.key) {
-      finishClose();
-      return;
-    }
-
-    const nextRemoteTab =
-      nextRemoteTabs[closedIndex] ?? nextRemoteTabs[closedIndex - 1] ?? null;
-    if (nextRemoteTab) {
-      void switchRemoteProject(
-        nextRemoteTab.targetId,
-        nextRemoteTab.projectId,
-      ).then(finishClose).catch(() => {});
-      return;
-    }
-
-    const nextLocalRoot =
-      openProjectTabRoots[openProjectTabRoots.length - 1] ?? null;
-    if (nextLocalRoot) {
-      void switchProjectToPath(nextLocalRoot).then(finishClose).catch(() => {});
-    } else {
-      void closeProject()
-        .then(() => removeStoredProjectRoute(binding.key))
-        .catch(() => {});
-    }
-  }, [
-    closeProject,
-    evictProjectState,
+  // The switch that the last press or click of a project tab started. A drag
+  // that takes the tab out of this window waits for it before it closes the
+  // tab here.
+  const tabSwitchRef = useRef<Promise<void> | null>(null);
+  const {
+    closeTabGroups,
+    handleRemoveTab,
+    handleCloseRemoteTab,
+    handleClonedLocally,
+    handleMoveTabToNewWindow,
+    tabStripRef,
+    projectTabDrag,
+  } = useProjectTabLifecycle({
+    tabGroupsRef,
+    openProjectTabRootsRef,
+    openRemoteProjectTabsRef,
+    setTabOrder,
+    checkForActiveWorkloads,
     isProjectBusy,
-    openProjectTabRoots,
-    openRemoteProjectTabs,
-    remoteBinding?.key,
-    switchProjectToPath,
-    switchRemoteProject,
-  ]);
+    tabSwitchRef,
+  });
+
+  // A project tab comes to the front on the press, as a browser tab does, so a
+  // drag of a background tab also shows its project. Only from the plain
+  // state, a project in front and nothing in transition: from a machine,
+  // account or hub page, a new tab or the Settings tab a switch does more than
+  // change the project, and those keep the click. So does a tab whose switch
+  // is not immediate (another machine's project, or a project that is not
+  // loaded): that switch is a transition, and a transition stops a tear-off.
+  const tabSwitchesOnPress =
+    !isProjectBusy
+    && !machineRouteActive
+    && !accountRouteActive
+    && !hubRouteActive
+    && !isNewTabOpen
+    && !isSettingsTabOpen
+    && (remoteBinding != null || project?.rootPath != null);
 
   const confirmAndCloseRemoteTargetTabs = useCallback(
     async (
@@ -1843,25 +1531,59 @@ export function TopBar({
       );
       const targetName = target.name || target.hostname;
       const affectedCount = affectedTabs.length;
-      const affectedProjectLines =
-        affectedTabs.length > 0
-          ? affectedTabs.map((entry) => `- ${entry.displayName}`).join("\n")
-          : "";
-      const verb = action === "remove" ? "Removing" : "Disconnecting";
+      // A project is not closed by removing one machine: it moves to another
+      // checkout of the same repo when one exists (see
+      // resolveProjectTabFallback). Only a repo that lives nowhere else closes.
+      const connectedTargetIds = new Set(
+        (remoteSnapshotRef.current?.connections ?? [])
+          .filter((connection) => connection.state === "connected")
+          .map((connection) => connection.target.id),
+      );
+      const openRemoteBindingKeys = openRemoteProjectTabsRef.current.map(
+        (entry) => entry.key,
+      );
+      const plans = affectedTabs.map((tab) => ({
+        tab,
+        fallback: resolveProjectTabFallback({
+          bindingKey: tab.key,
+          groups: tabGroupsRef.current,
+          openLocalRoots: openProjectTabRootsRef.current,
+          openRemoteBindingKeys,
+          connectedTargetIds,
+          excludeTargetId: target.id,
+        }),
+      }));
+      const stayingTabs = plans.filter((plan) => plan.fallback);
+      const closingTabs = plans.filter((plan) => !plan.fallback);
       const reconnectCopy = action === "remove"
         ? "Add the machine again to reconnect."
         : "ADE will not reconnect to this machine until you connect again.";
-      const message =
-        affectedCount > 0
-          ? [
-              `${affectedCount} open project tab${affectedCount === 1 ? "" : "s"} use this remote connection:`,
-              affectedProjectLines,
-              "",
-              `${verb} will close those project tabs. ${reconnectCopy}`,
-            ].join("\n")
-          : action === "remove"
+      const message = (() => {
+        if (affectedCount === 0) {
+          return action === "remove"
             ? "Removing this machine will delete its saved SSH details."
             : "Disconnecting will stop this remote connection. ADE will not reconnect to this machine until you connect again.";
+        }
+        const lines: string[] = [];
+        if (stayingTabs.length > 0) {
+          const plural = stayingTabs.length === 1 ? "" : "s";
+          lines.push(
+            `${stayingTabs.length} open project tab${plural} also exist${stayingTabs.length === 1 ? "s" : ""} elsewhere:`,
+            stayingTabs.map((plan) => `- ${plan.tab.displayName}`).join("\n"),
+            "",
+            `${stayingTabs.length === 1 ? "It stays" : "They stay"} open. ${action === "remove" ? "Removing" : "Disconnecting"} ${targetName} only removes its work from inside ${stayingTabs.length === 1 ? "it" : "them"}.`,
+          );
+        }
+        if (closingTabs.length > 0) {
+          if (lines.length > 0) lines.push("");
+          lines.push(
+            `${closingTabs.length} open project tab${closingTabs.length === 1 ? "" : "s"} exist only on ${targetName} and will close:`,
+            closingTabs.map((plan) => `- ${plan.tab.displayName}`).join("\n"),
+          );
+        }
+        lines.push("", reconnectCopy);
+        return lines.join("\n");
+      })();
 
       const confirmed = await confirmDialog({
         title: action === "remove"
@@ -1875,9 +1597,31 @@ export function TopBar({
       if (affectedTabs.length === 0) return true;
 
       const affectedKeys = new Set(affectedTabs.map((entry) => entry.key));
-      const nextRemoteTabs = latestRemoteTabs.filter(
-        (entry) => !affectedKeys.has(entry.key),
-      );
+      const fallbackRemoteBindings = stayingTabs
+        .map((plan) =>
+          plan.fallback?.kind === "remote" ? plan.fallback.binding : null,
+        )
+        .filter(
+          (binding): binding is RemoteOpenProjectBinding =>
+            binding !== null && !affectedKeys.has(binding.key),
+        );
+      const fallbackLocalRoots = stayingTabs
+        .map((plan) =>
+          plan.fallback?.kind === "local" ? plan.fallback.rootPath : null,
+        )
+        .filter((rootPath): rootPath is string => rootPath !== null);
+      const nextRemoteTabs = (() => {
+        const byKey = new Map<string, RemoteOpenProjectBinding>();
+        for (const entry of latestRemoteTabs) {
+          if (!affectedKeys.has(entry.key)) byKey.set(entry.key, entry);
+        }
+        // Keep a surviving repo tab alive by opening the checkout it falls back
+        // to. A fallback that is already open is a no-op here.
+        for (const binding of fallbackRemoteBindings) {
+          byKey.set(binding.key, binding);
+        }
+        return [...byKey.values()];
+      })();
       // A disconnect is temporary: the machine can come back, so keep the view
       // state (which chat/tile was open) and the remembered route, and only drop
       // the data snapshots that could be stale against a remote that changed
@@ -1894,6 +1638,15 @@ export function TopBar({
       const finishAffectedTabClose = () => {
         openRemoteProjectTabsRef.current = nextRemoteTabs;
         setOpenRemoteProjectTabs(nextRemoteTabs);
+        if (fallbackLocalRoots.length > 0) {
+          setOpenProjectTabRoots((prev) => {
+            const next = [...prev];
+            for (const rootPath of fallbackLocalRoots) {
+              if (!next.includes(rootPath)) next.push(rootPath);
+            }
+            return next;
+          });
+        }
         for (const binding of affectedTabs) {
           evictForAction(binding.key);
         }
@@ -1909,33 +1662,49 @@ export function TopBar({
         return true;
       }
 
+      // The active project is one of the tabs losing its machine. Move it to
+      // another checkout of the same repo before the binding goes away; only
+      // when the repo lives nowhere else do we fall back to another tab, and
+      // finally close.
+      const activePlan =
+        plans.find((plan) => plan.tab.key === latestRemoteBinding.key) ?? null;
       try {
-        const nextRemoteTab = nextRemoteTabs[0] ?? null;
-        if (nextRemoteTab) {
+        if (activePlan?.fallback?.kind === "local") {
+          await latestState.switchProjectToPath(activePlan.fallback.rootPath);
+        } else if (activePlan?.fallback?.kind === "remote") {
           await latestState.switchRemoteProject(
-            nextRemoteTab.targetId,
-            nextRemoteTab.projectId,
+            activePlan.fallback.binding.targetId,
+            activePlan.fallback.binding.projectId,
           );
         } else {
-          const nextLocalRoot =
-            openProjectTabRootsRef.current[
-              openProjectTabRootsRef.current.length - 1
-            ] ?? null;
-          if (nextLocalRoot) {
-            await latestState.switchProjectToPath(nextLocalRoot);
+          const nextRemoteTab = nextRemoteTabs[0] ?? null;
+          if (nextRemoteTab) {
+            await latestState.switchRemoteProject(
+              nextRemoteTab.targetId,
+              nextRemoteTab.projectId,
+            );
           } else {
-            // No project tab left to fall back to. A disconnect must still keep
-            // the view state (which chat/tile was open) and the route memory so
-            // reconnecting lands where the user left off; a remove drops both.
-            await latestState.closeProject({
-              preserveRemoteViewState: action === "disconnect",
-            });
-            if (action === "remove") {
-              for (const binding of affectedTabs) {
-                removeStoredProjectRoute(binding.key);
+            const nextLocalRoot =
+              openProjectTabRootsRef.current[
+                openProjectTabRootsRef.current.length - 1
+              ] ?? null;
+            if (nextLocalRoot) {
+              await latestState.switchProjectToPath(nextLocalRoot);
+            } else {
+              // No project tab left to fall back to. A disconnect must still
+              // keep the view state (which chat/tile was open) and the route
+              // memory so reconnecting lands where the user left off; a remove
+              // drops both.
+              await latestState.closeProject({
+                preserveRemoteViewState: action === "disconnect",
+              });
+              if (action === "remove") {
+                for (const binding of affectedTabs) {
+                  removeStoredProjectRoute(binding.key);
+                }
               }
+              return true;
             }
-            return true;
           }
         }
       } catch {
@@ -1944,7 +1713,10 @@ export function TopBar({
       finishAffectedTabClose();
       return true;
     },
-    [],
+    [
+      setOpenProjectTabRoots,
+      setOpenRemoteProjectTabs,
+    ],
   );
 
   const handleRemoteTargetDisconnectRequested = useCallback(
@@ -1979,169 +1751,173 @@ export function TopBar({
     [openRepo],
   );
 
-  const handleDragStart = useCallback(
-    (e: React.DragEvent, idx: number, rootPath: string) => {
-      setDragIdx(idx);
-      dragCounterRef.current = 0;
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", String(idx));
-      e.dataTransfer.setData(ADE_PROJECT_TAB_ROOT_MIME, rootPath);
-      if (windowId != null) {
-        e.dataTransfer.setData(ADE_PROJECT_TAB_WINDOW_MIME, String(windowId));
-      }
+  const [tabMenu, setTabMenu] = useState<(NonNullable<ContextMenuState> & { groupId: string }) | null>(null);
+  const closeTabMenu = useCallback(() => setTabMenu(null), []);
+  const [iconDialogTarget, setIconDialogTarget] = useState<ProjectIconDialogTarget | null>(null);
+  const closeIconDialog = useCallback(() => setIconDialogTarget(null), []);
+  const [cloneLocallyTarget, setCloneLocallyTarget] = useState<CloneLocallyTarget | null>(null);
+
+  /** The host's latest icon per project, so a changed icon shows at once. */
+  const hostIconByKey = useMemo(() => {
+    const byKey = new Map<string, string | null>();
+    for (const binding of knownRemoteProjectTabs) byKey.set(binding.key, binding.iconDataUrl ?? null);
+    return byKey;
+  }, [knownRemoteProjectTabs]);
+
+  const cloneTargetForGroup = useCallback(
+    (group: ProjectTabGroup): CloneLocallyTarget | null => {
+      const binding = group.machines[0]?.binding;
+      return cloneTargetFor({
+        binding,
+        hasLocalCheckout: group.machines.some((machine) => machine.isLocal),
+        gitOriginUrl: binding?.kind === "remote"
+          ? (remoteOriginByKey[binding.key] ?? binding.gitOriginUrl)
+          : null,
+      });
     },
-    [windowId],
+    [remoteOriginByKey],
   );
 
-  const handleDragOver = useCallback((e: React.DragEvent, idx: number) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    setDropIdx(idx);
-  }, []);
+  const activeCloneTarget = useMemo(() => {
+    if (!remoteBinding) return null;
+    const group = tabGroups.find((entry) =>
+      entry.machines.some((machine) => machine.bindingKey === remoteBinding.key),
+    );
+    return group ? cloneTargetForGroup(group) : null;
+  }, [cloneTargetForGroup, remoteBinding, tabGroups]);
 
-  const handleDragLeave = useCallback(() => {
-    setDropIdx(null);
-  }, []);
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent, targetIdx: number) => {
-      if (
-        dragIdx === null &&
-        Array.from(e.dataTransfer.types).includes(ADE_PROJECT_TAB_ROOT_MIME)
-      ) {
-        return;
+  const recentForMachine = useCallback(
+    (machine: ProjectTabMachine): RecentProjectSummary | null => {
+      const binding = machine.binding;
+      if (binding?.kind === "remote") {
+        return recentProjects.find(
+          (entry) =>
+            entry.kind === "remote"
+            && entry.remote?.targetId === binding.targetId
+            && entry.remote?.projectId === binding.projectId,
+        ) ?? null;
       }
-      e.preventDefault();
-      e.stopPropagation();
-      setDropIdx(null);
-      if (dragIdx === null || dragIdx === targetIdx) {
-        setDragIdx(null);
-        return;
-      }
-      const items = [...openProjectTabRoots];
-      const [moved] = items.splice(dragIdx, 1);
-      items.splice(targetIdx, 0, moved);
-      setOpenProjectTabRoots(items);
-      setDragIdx(null);
+      return recentProjects.find(
+        (entry) => entry.kind !== "remote" && entry.rootPath === machine.rootPath,
+      ) ?? null;
     },
-    [dragIdx, openProjectTabRoots],
+    [recentProjects],
   );
 
-  const handleProjectTabDrop = useCallback(
-    (e: React.DragEvent) => {
-      const rootPath = e.dataTransfer.getData(ADE_PROJECT_TAB_ROOT_MIME);
-      if (!rootPath) return;
-      e.preventDefault();
-      setDropIdx(null);
-      setDragIdx(null);
-
-      const sourceWindowIdRaw = e.dataTransfer.getData(
-        ADE_PROJECT_TAB_WINDOW_MIME,
-      );
-      const parsedSourceWindowId = sourceWindowIdRaw
-        ? Number(sourceWindowIdRaw)
-        : null;
-      const sourceWindowId =
-        parsedSourceWindowId != null && Number.isFinite(parsedSourceWindowId)
-          ? parsedSourceWindowId
-          : null;
-      if (sourceWindowId != null && sourceWindowId === windowId) return;
-
-      markProjectTabDropHandled(sourceWindowId, rootPath);
-
-      if (project?.rootPath === rootPath) {
-        if (sourceWindowId != null) {
-          window.ade.app.closeWindow(sourceWindowId).catch(() => {});
-        }
-        return;
-      }
-      switchProjectToPath(rootPath, { skipWorktreeGate: true }).catch(() => {});
-    },
-    [project?.rootPath, switchProjectToPath, windowId],
-  );
-
-  const handleProjectTabDragOver = useCallback((e: React.DragEvent) => {
-    if (!Array.from(e.dataTransfer.types).includes(ADE_PROJECT_TAB_ROOT_MIME))
-      return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-  }, []);
-
-  const handleDragEnd = useCallback(
-    (e: React.DragEvent, rootPath?: string) => {
-      const draggedOutside =
-        rootPath &&
-        (e.clientX < 0 ||
-          e.clientY < 0 ||
-          e.clientX > window.innerWidth ||
-          e.clientY > window.innerHeight);
-      const droppedOnAdeTarget =
-        e.dataTransfer.dropEffect && e.dataTransfer.dropEffect !== "none";
-      const sourceWindowIdRaw = e.dataTransfer.getData(
-        ADE_PROJECT_TAB_WINDOW_MIME,
-      );
-      const parsedSourceWindowId = sourceWindowIdRaw
-        ? Number(sourceWindowIdRaw)
-        : null;
-      const sourceWindowId =
-        parsedSourceWindowId != null && Number.isFinite(parsedSourceWindowId)
-          ? parsedSourceWindowId
-          : null;
-      const handledByAdeDropTarget =
-        rootPath && droppedOnAdeTarget
-          ? consumeRecentProjectTabDropHandled(sourceWindowId, rootPath)
-          : false;
-      setDragIdx(null);
-      setDropIdx(null);
-      if (!draggedOutside || handledByAdeDropTarget || !rootPath) return;
-
-      void (async () => {
-        try {
-          await window.ade.app.openProjectInNewWindow(rootPath);
-        } catch {
-          return;
-        }
-
-        // Detach skips the confirmation + active workload checks intentionally:
-        // the user already committed to detaching by dragging the tab out, and
-        // the work is moving to a new window rather than terminating. Only remove
-        // the source tab after the destination window has a bound project.
-        const latestTabRoots = openProjectTabRootsRef.current;
-        const currentIndex = latestTabRoots.indexOf(rootPath);
-        if (currentIndex === -1) return;
-        const nextTabRoots = latestTabRoots.filter(
-          (entry) => entry !== rootPath,
-        );
-        openProjectTabRootsRef.current = nextTabRoots;
-        setOpenProjectTabRoots((prev) =>
-          prev.includes(rootPath) ? prev.filter((entry) => entry !== rootPath) : prev,
-        );
-
-        const latestState = useAppStore.getState();
-        const latestProjectRoot = latestState.project?.rootPath ?? null;
-        const latestRemoteBinding =
-          latestState.projectBinding?.kind === "remote"
-            ? latestState.projectBinding
-            : null;
-        const latestRemoteTabs = openRemoteProjectTabsRef.current;
-        if (!latestRemoteBinding && latestProjectRoot === rootPath) {
-          const nextRoot =
-            nextTabRoots[currentIndex] ?? nextTabRoots[currentIndex - 1] ?? null;
-          if (nextRoot) {
-            await latestState.switchProjectToPath(nextRoot).catch(() => {});
-          } else if (latestRemoteTabs[0]) {
-            await latestState.switchRemoteProject(
-              latestRemoteTabs[0].targetId,
-              latestRemoteTabs[0].projectId,
-            ).catch(() => {});
-          } else {
-            await latestState.closeProject().catch(() => {});
+  const tabMenuEntries = useMemo((): ContextMenuEntry[] => {
+    if (!tabMenu) return [];
+    const index = tabGroups.findIndex((group) => group.id === tabMenu.groupId);
+    const group = index === -1 ? null : tabGroups[index]!;
+    const machine = group ? activeMachineForGroup(group) : null;
+    if (!group || !machine) return [];
+    const binding = machine.binding ?? null;
+    const recent = recentForMachine(machine);
+    const sections = projectMenuSections(
+      {
+        rootPath: machine.rootPath,
+        displayName: machine.displayName,
+        binding,
+        available: !(machine.isLocal && !machine.exists),
+        pinned: recent ? Boolean(recent.pinned) : null,
+        hostIconDataUrl: binding?.kind === "remote" ? (hostIconByKey.get(binding.key) ?? null) : null,
+        cloneTarget: cloneTargetForGroup(group),
+      },
+      { webMode },
+      {
+        onChangeIcon: setIconDialogTarget,
+        onClone: setCloneLocallyTarget,
+        onTogglePin: () => {
+          if (!recent) return;
+          void window.ade.project
+            .setRecentPinned(recentProjectLocationKey(recent), !recent.pinned)
+            .then((rows) => {
+              rememberRecentProjects(rows);
+              setRecentProjects(rows);
+            })
+            .catch(() => {});
+        },
+      },
+    );
+    const otherIds = tabGroups.filter((entry) => entry.id !== group.id).map((entry) => entry.id);
+    const rightIds = tabGroups.slice(index + 1).map((entry) => entry.id);
+    // Closing a tab on this machine asks first and checks for running work;
+    // a project on another machine keeps running there, so it closes at once.
+    const closeOptions = machine.isLocal
+      ? { confirm: true, checkWorkloads: true, forgetState: true }
+      : { confirm: false, checkWorkloads: false, forgetState: true };
+    const closeMany = (ids: string[]) =>
+      void closeTabGroups(ids, { confirm: true, checkWorkloads: true, forgetState: true });
+    const entries: Array<ContextMenuEntry | null> = [
+      !webMode && tabGroups.length > 1
+        ? {
+            kind: "item",
+            key: "new-window",
+            label: "Move to new window",
+            icon: AppWindow,
+            disabled: isProjectBusy,
+            onSelect: () => handleMoveTabToNewWindow(group),
           }
-        }
-      })();
-    },
-    [],
-  );
+        : null,
+      ...sections.open,
+      { kind: "separator", key: "sep-project" },
+      ...sections.project,
+      { kind: "separator", key: "sep-copy" },
+      ...sections.copy,
+      {
+        kind: "item",
+        key: "copy-name",
+        label: "Copy name",
+        icon: TextT,
+        onSelect: () => void window.ade.app.writeClipboardText(machine.displayName).catch(() => {}),
+      },
+      { kind: "separator", key: "sep-close" },
+      {
+        kind: "item",
+        key: "close",
+        label: "Close tab",
+        icon: X,
+        disabled: isProjectBusy,
+        onSelect: () => void closeTabGroups([group.id], closeOptions),
+      },
+      otherIds.length > 0
+        ? {
+            kind: "item",
+            key: "close-others",
+            label: "Close other tabs",
+            icon: XSquare,
+            disabled: isProjectBusy,
+            onSelect: () => closeMany(otherIds),
+          }
+        : null,
+      rightIds.length > 0
+        ? {
+            kind: "item",
+            key: "close-right",
+            label: "Close tabs to the right",
+            icon: ArrowLineRight,
+            disabled: isProjectBusy,
+            onSelect: () => closeMany(rightIds),
+          }
+        : null,
+    ];
+    return entries.filter((entry): entry is ContextMenuEntry => entry != null);
+  }, [
+    closeTabGroups,
+    cloneTargetForGroup,
+    handleMoveTabToNewWindow,
+    hostIconByKey,
+    isProjectBusy,
+    recentForMachine,
+    tabGroups,
+    tabMenu,
+    webMode,
+  ]);
+
+  const openTabMenu = useCallback((event: React.MouseEvent, groupId: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setTabMenu({ x: event.clientX, y: event.clientY, groupId });
+  }, []);
 
   const handleProjectAccentColorChange = useCallback(
     (rootPath: string, color: string | null) => {
@@ -2155,74 +1931,88 @@ export function TopBar({
 
   const anyConnectionActive = remoteConnected || syncConnected || webConnected;
 
-  const renderHeaderStatusControls = useCallback(
-    (options?: { menuLayout?: boolean; onActivate?: () => void }) => {
-      const menuLayout = options?.menuLayout === true;
-      const wrapActivate = (handler: () => void) => () => {
-        handler();
-        options?.onActivate?.();
-      };
+  const renderDesktopIntegrationControls = () => (
+    <>
+      <CloudAgentsQuickViewButton provider="devin" showTrigger={projectSurfaceVisible} />
+      <CloudAgentsQuickViewButton provider="cursor" showTrigger={projectSurfaceVisible} />
+      <LinearQuickViewButton
+        onOpenHarnessSettings={openHarnessSettings}
+        showTrigger={projectSurfaceVisible}
+      />
+      <GitHubIssuesButton showTrigger={projectSurfaceVisible} />
+      <JiraIssuesButton showTrigger={projectSurfaceVisible} />
+    </>
+  );
 
-      // On the hosted client the machine IS the connection: the chip names it,
-      // and its popover is where machines are managed now that the Hub is gone.
-      const connectionsChip = webMode ? (
-        <React.Suspense fallback={null}>
-          <WebConnectionsChip />
-        </React.Suspense>
-      ) : (
+  const renderDesktopUsageControl = () => usageHeaderPreferences.showInHeader
+    ? <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
+    : null;
+
+  const renderWebConnectionsControl = () => (
+    <React.Suspense fallback={null}>
+      <WebConnectionsChip />
+    </React.Suspense>
+  );
+
+  const renderDesktopConnectionsControl = () => webMode
+    ? renderWebConnectionsControl()
+    : (
+      <ShellConnectionChip
+        label="Connections"
+        connected={anyConnectionActive}
+        title="Machines, mobile, and web clients"
+        ariaExpanded={connectionsOpen}
+        onClick={() => (connectionsOpen ? closeConnections() : openConnections("machines"))}
+        icon={<Plugs size={12} weight="regular" className="shrink-0 opacity-85" />}
+        trailing={<HeaderAccountAvatar />}
+      />
+    );
+
+  const renderCompactStatusMenu = (onActivate: () => void) => (
+    <div className="flex flex-col gap-0.5">
+      <CloudAgentsQuickViewButton
+        provider="devin"
+        variant="menu-row"
+        onMenuActivate={onActivate}
+        showTrigger={projectSurfaceVisible}
+      />
+      <CloudAgentsQuickViewButton
+        provider="cursor"
+        variant="menu-row"
+        onMenuActivate={onActivate}
+        showTrigger={projectSurfaceVisible}
+      />
+      <LinearQuickViewButton
+        variant="menu-row"
+        onMenuActivate={onActivate}
+        onOpenHarnessSettings={openHarnessSettings}
+        showTrigger={projectSurfaceVisible}
+      />
+      <GitHubIssuesButton variant="menu-row" onMenuActivate={onActivate} showTrigger={projectSurfaceVisible} />
+      <JiraIssuesButton variant="menu-row" onMenuActivate={onActivate} showTrigger={projectSurfaceVisible} />
+      {usageHeaderPreferences.showInHeader ? (
+        <HeaderUsageControl
+          variant="menu-row"
+          onMenuActivate={onActivate}
+          deferInitialRead={Boolean(remoteBinding)}
+        />
+      ) : null}
+      {webMode ? renderWebConnectionsControl() : (
         <ShellConnectionChip
-          layout={menuLayout ? "menu-row" : "chip"}
+          layout="menu-row"
           label="Connections"
           connected={anyConnectionActive}
           title="Machines, mobile, and web clients"
           ariaExpanded={connectionsOpen}
-          onClick={
-            menuLayout
-              ? wrapActivate(() => openConnections("machines"))
-              : () => (connectionsOpen ? closeConnections() : openConnections("machines"))
-          }
-          icon={(
-            <Plugs
-              size={12}
-              weight="regular"
-              className="shrink-0 opacity-85"
-            />
-          )}
+          onClick={() => {
+            openConnections("machines");
+            onActivate();
+          }}
+          icon={<Plugs size={12} weight="regular" className="shrink-0 opacity-85" />}
+          trailing={<HeaderAccountAvatar />}
         />
-      );
-
-      if (menuLayout) {
-        return (
-          <div className="flex flex-col gap-0.5">
-            <CursorCloudQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} />
-            <LinearQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} onOpenHarnessSettings={openHarnessSettings} />
-            <HeaderUsageControl
-              variant="menu-row"
-              onMenuActivate={options?.onActivate}
-              deferInitialRead={Boolean(remoteBinding)}
-            />
-            {connectionsChip}
-          </div>
-        );
-      }
-
-      return (
-        <>
-          <CursorCloudQuickViewButton />
-          <LinearQuickViewButton onOpenHarnessSettings={openHarnessSettings} />
-          {connectionsChip}
-          <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
-        </>
-      );
-    },
-    [
-      anyConnectionActive,
-      closeConnections,
-      connectionsOpen,
-      openConnections,
-      remoteBinding,
-      webMode,
-    ],
+      )}
+    </div>
   );
 
   const transitionTargetName = projectTransition?.rootPath
@@ -2282,60 +2072,19 @@ export function TopBar({
 
       {/* Project tabs — the container stays draggable, only interactive elements opt out */}
       <div
+        ref={tabStripRef}
         className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scrollbar-none"
-        onDragOver={handleProjectTabDragOver}
-        onDrop={handleProjectTabDrop}
       >
         {tabGroups.length > 0 ||
         isNewTabOpen ||
-        personalChatsTabOpen ? (
+        isSettingsTabOpen ||
+        personalChatsTabOpen ||
+        browserTabOpen ||
+        musicTabOpen ? (
           <>
             {tabGroups.map((group) => {
               const machine = activeMachineForGroup(group);
               if (!machine) return null;
-              const multiMachine = isMultiMachine(group);
-              const machineMenuOpen = machineMenu?.groupId === group.id;
-              // The machine is a dimension inside the repo's tab, so it only
-              // earns inline space when it is ambiguous: more than one machine
-              // in the group, or a checkout that is not on This computer.
-              const machineLabel =
-                multiMachine || !machine.isLocal ? (
-                  <span
-                    className="max-w-[84px] shrink-0 truncate text-[10px] font-normal opacity-70"
-                    title={machine.machineName}
-                  >
-                    {machine.machineName}
-                  </span>
-                ) : null;
-              const machineCaret = (
-                <button
-                  type="button"
-                  className="ade-shell-control inline-flex h-4 w-4 shrink-0 items-center justify-center text-current"
-                  data-variant="ghost"
-                  aria-haspopup="menu"
-                  aria-expanded={machineMenuOpen}
-                  aria-label={`Machines for ${group.displayName}`}
-                  title={`Machines for ${group.displayName}`}
-                  onMouseDown={(event) => event.stopPropagation()}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    const rect = event.currentTarget.getBoundingClientRect();
-                    setMachineMenu((current) =>
-                      current?.groupId === group.id
-                        ? null
-                        : {
-                            groupId: group.id,
-                            left: rect.left,
-                            top: rect.bottom + 6,
-                          },
-                    );
-                  }}
-                  onKeyDown={(event) => event.stopPropagation()}
-                >
-                  <CaretDown size={10} weight="bold" />
-                </button>
-              );
-
               if (!machine.isLocal) {
                 const remoteTab =
                   openRemoteProjectTabs.find(
@@ -2345,43 +2094,44 @@ export function TopBar({
                 if (!remoteTab) return null;
                 const isCurrentRemote = remoteBinding?.key === remoteTab.key;
                 const remoteTabState = remoteConnectionState(remoteTab.targetId);
-                const remoteTabConnected = remoteTabState === "connected";
                 const remoteTabConnecting = remoteTabState === "connecting";
-                const remoteTabParked = remoteTabState === "parked";
                 const remoteTabDisconnected =
                   remoteTabState === "error" || remoteTabState === "idle";
-                const remoteTabStatusLabel = remoteTabConnected
-                  ? "Connected"
-                  : remoteTabConnecting
-                    ? "Reconnecting"
-                    : remoteTabParked
-                      ? "Parked"
-                      : "Disconnected";
+                const remoteTabStatusLabel = REMOTE_TAB_STATUS_LABEL[remoteTabState];
+                const remoteTabKey = tabOrderKey(group);
                 return (
                   <div
                     key={group.id}
                     role="button"
                     tabIndex={0}
-                    data-state={isCurrentRemote && !personalChatsRouteActive && !hubRouteActive ? "active" : undefined}
+                    {...{ [PROJECT_TAB_KEY_ATTR]: remoteTabKey }}
+                    onPointerDown={(event) => {
+                      if (!isProjectBusy) projectTabDrag.onTabPointerDown(event, remoteTabKey);
+                    }}
+                    onContextMenu={(event) => openTabMenu(event, group.id)}
+                    data-state={isCurrentRemote && !machineRouteActive && !hubRouteActive ? "active" : undefined}
                     data-remote-state={remoteTabState}
                     aria-current={isCurrentRemote ? "true" : undefined}
+                    // A project tab looks the same wherever its checkout
+                    // lives. The machine is in the tooltip; only a connection
+                    // problem, which stops the tab from loading, is marked.
                     className={cn(
-                      "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 shrink-0 items-center gap-1.5 px-2.5",
-                      "font-semibold transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
-                      "cursor-pointer border",
-                      remoteTabConnected
-                        ? "border-[color-mix(in_srgb,var(--color-warning)_40%,transparent)]"
-                        : remoteTabConnecting
-                          ? "border-amber-400/60"
-                          : remoteTabParked
-                            ? "border-sky-400/50"
-                          : "border-red-400/60",
+                      "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[180px] shrink-0 items-center gap-1.5 px-2.5",
+                      "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
+                      "cursor-pointer",
+                      isCurrentRemote && "font-semibold",
                     )}
                     style={
-                      { WebkitAppRegion: "no-drag" } as React.CSSProperties
+                      {
+                        WebkitAppRegion: "no-drag",
+                        ...projectTabDrag.tabDragStyle(remoteTabKey),
+                      } as React.CSSProperties
                     }
                     title={`${remoteTab.runtimeName}: ${remoteTab.rootPath} (${remoteTabStatusLabel})`}
-                    onClick={() => handleSwitchRemoteProject(remoteTab)}
+                    onClick={() => {
+                      if (projectTabDrag.isDragClick()) return;
+                      handleSwitchRemoteProject(remoteTab);
+                    }}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
@@ -2394,26 +2144,19 @@ export function TopBar({
                       isCurrent={isCurrentRemote}
                       animate={false}
                       disabled={false}
-                      readOnly={true}
-                      iconDataUrlOverride={remoteTab.iconDataUrl ?? null}
+                      iconDataUrlOverride={
+                        hostIconByKey.get(remoteTab.key) ?? remoteTab.iconDataUrl ?? null
+                      }
                     />
                     <span className="min-w-0 flex-1 truncate text-center text-[12px]">
                       {remoteTab.displayName}
                     </span>
-                    {machineLabel}
                     {remoteTabConnecting ? (
                       <CircleNotch
                         size={11}
                         weight="bold"
                         className="shrink-0 animate-spin text-amber-300"
                         aria-label={`Reconnecting: ${remoteTab.runtimeName}`}
-                      />
-                    ) : remoteTabParked ? (
-                      <DesktopTower
-                        size={11}
-                        weight="duotone"
-                        className="shrink-0 text-sky-300"
-                        aria-label={`Parked: ${remoteTab.runtimeName}`}
                       />
                     ) : remoteTabDisconnected ? (
                       <WarningCircle
@@ -2422,15 +2165,7 @@ export function TopBar({
                         className="shrink-0 text-red-300"
                         aria-label={`Disconnected: ${remoteTab.runtimeName}`}
                       />
-                    ) : (
-                      <DesktopTower
-                        size={11}
-                        weight="duotone"
-                        className="shrink-0 text-[var(--color-warning)]"
-                        aria-label={`Machine: ${remoteTab.runtimeName}`}
-                      />
-                    )}
-                    {machineCaret}
+                    ) : null}
                     <button
                       type="button"
                       className={cn(
@@ -2443,7 +2178,7 @@ export function TopBar({
                         e.stopPropagation();
                         handleCloseRemoteTab(remoteTab);
                       }}
-                      title="Close remote project"
+                      title="Close project"
                     >
                       <X size={13} weight="regular" />
                     </button>
@@ -2465,8 +2200,8 @@ export function TopBar({
                 projectTransition.rootPath === rp.rootPath;
               const isClosingTarget =
                 projectTransition?.kind === "closing" && isCurrent;
-              const isDragging = dragIdx === idx;
-              const isDropTarget = dropIdx === idx && dragIdx !== idx;
+              const localTabKey = tabOrderKey(group);
+              const canDragTab = !isMissing && !isRelocating && !isProjectBusy;
               const projectAccentColor =
                 projectAccentColors[rp.rootPath] ?? null;
               const projectTabStyle = {
@@ -2480,8 +2215,12 @@ export function TopBar({
               else if (isMissing) projectTabState = "missing";
               // While the Chats machine tab is the foreground surface, the
               // bound project tab stays rendered but must not also read active.
-              else if (isCurrent && !personalChatsRouteActive && !hubRouteActive) projectTabState = "active";
+              else if (isCurrent && !machineRouteActive && !hubRouteActive) projectTabState = "active";
               const indicator = terminalAttention?.indicator;
+              const localTabPress = pressActivation(() => {
+                if (projectTabDrag.isDragClick()) return;
+                if (!isMissing) tabSwitchRef.current = handleSwitchProject(rp.rootPath);
+              }, tabSwitchesOnPress && canDragTab && !isCurrent && projectInfoByRoot[rp.rootPath] != null);
               return (
                 <div
                   key={group.id}
@@ -2497,27 +2236,23 @@ export function TopBar({
                   aria-disabled={
                     isRelocating || isProjectBusy ? true : undefined
                   }
-                  draggable={!isMissing && !isRelocating && !isProjectBusy}
-                  onDragStart={(e) => handleDragStart(e, idx, rp.rootPath)}
-                  onDragOver={(e) => handleDragOver(e, idx)}
-                  onDragLeave={handleDragLeave}
-                  onDrop={(e) => handleDrop(e, idx)}
-                  onDragEnd={(e) => handleDragEnd(e, rp.rootPath)}
+                  {...{ [PROJECT_TAB_KEY_ATTR]: localTabKey }}
+                  onPointerDown={(event) => {
+                    if (canDragTab) projectTabDrag.onTabPointerDown(event, localTabKey);
+                    localTabPress.onPointerDown(event);
+                  }}
+                  onContextMenu={(event) => openTabMenu(event, group.id)}
                   className={cn(
-                    "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 shrink-0 items-center gap-1.5 px-2.5",
+                    "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[180px] shrink-0 items-center gap-1.5 px-2.5",
                     "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
                     !isMissing && "cursor-pointer",
                     isCurrent && "font-semibold",
                     isRelocating && "pointer-events-none opacity-80",
                     (isSwitchTarget || isClosingTarget) &&
                       "pointer-events-none opacity-80",
-                    isDragging && "opacity-40",
-                    isDropTarget && "ring-1 ring-accent/50",
                   )}
-                  style={projectTabStyle}
-                  onClick={() => {
-                    if (!isMissing) handleSwitchProject(rp.rootPath);
-                  }}
+                  style={{ ...projectTabStyle, ...projectTabDrag.tabDragStyle(localTabKey) }}
+                  onClick={localTabPress.onClick}
                   onKeyDown={(event) => {
                     if (isMissing) return;
                     if (event.key === "Enter" || event.key === " ") {
@@ -2564,8 +2299,6 @@ export function TopBar({
                   >
                     {rp.displayName}
                   </span>
-                  {machineLabel}
-                  {machineCaret}
                   {isMissing ? (
                     <span className="inline-flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">
                       <button
@@ -2624,16 +2357,6 @@ export function TopBar({
                 </div>
               );
             })}
-            {openMachineMenuGroup && machineMenu ? (
-              <MachineSwitcherMenu
-                anchor={{ left: machineMenu.left, top: machineMenu.top }}
-                group={openMachineMenuGroup}
-                machineStatus={machineStatusLabel}
-                onSelect={handleSelectGroupMachine}
-                onConnectAnother={() => openConnections("machines")}
-                onClose={closeMachineMenu}
-              />
-            ) : null}
             {personalChatsTabOpen ? (
               <ShellNavTab
                 active={personalChatsRouteActive}
@@ -2653,19 +2376,81 @@ export function TopBar({
                 <span className="min-w-0 flex-1 truncate text-center text-[12px]">Chats</span>
               </ShellNavTab>
             ) : null}
+            {browserTabOpen ? (
+              <ShellNavTab
+                active={browserRouteActive}
+                label="Browser"
+                onActivate={() => {
+                  if (!browserRouteActive) onNavigate?.("/browser");
+                }}
+                onClose={() => {
+                  setBrowserTabOpen(false);
+                  if (browserRouteActive) {
+                    onNavigate?.("/work", { replace: true });
+                  }
+                }}
+                closeTitle="Close browser"
+              >
+                <Globe size={15} weight="duotone" className="shrink-0 text-accent" />
+                <span className="min-w-0 flex-1 truncate text-center text-[12px]">Browser</span>
+              </ShellNavTab>
+            ) : null}
+            {musicTabOpen ? (
+              <ShellNavTab
+                active={musicRouteActive}
+                label="Music"
+                className="relative max-w-[220px]"
+                onActivate={() => {
+                  if (!musicRouteActive) onNavigate?.("/music");
+                }}
+                onClose={() => {
+                  // The tab is the player: closing it turns the music off.
+                  closeMusicTab();
+                  setMusicTabOpen(false);
+                  if (musicRouteActive) {
+                    onNavigate?.("/work", { replace: true });
+                  }
+                }}
+                closeTitle="Close Music"
+              >
+                <MusicTabContent active={musicRouteActive} />
+              </ShellNavTab>
+            ) : null}
+            {isSettingsTabOpen && (
+              <ShellNavTab
+                active
+                label="Settings"
+                // Its own content is already in front; activating closes nothing.
+                onActivate={() => {}}
+                onClose={() => {
+                  setStandaloneSettingsOpen(false);
+                  onNavigate?.("/work", { replace: true });
+                }}
+                closeTitle="Close settings"
+              >
+                <GearSix size={15} weight="duotone" className="shrink-0 text-accent" />
+                <span className="min-w-0 flex-1 truncate text-center text-[12px]">Settings</span>
+              </ShellNavTab>
+            )}
             {isNewTabOpen && (
               <ShellNavTab
-                active={!personalChatsRouteActive}
+                active={!machineRouteActive && !isSettingsTabOpen}
                 label="New Tab"
                 onActivate={() => {
-                  if (personalChatsRouteActive) onNavigate?.("/work");
+                  if (machineRouteActive) onNavigate?.("/work");
                 }}
                 onClose={() => {
                   if (isProjectBusy) return;
                   cancelNewTab();
-                  if (!hasProject && personalChatsTabOpen) {
-                    onNavigate?.("/chats");
-                  }
+                  // With no project, fall back to the first machine tab still open.
+                  const machineTabRoute = hasProject
+                    ? null
+                    : ([
+                      [personalChatsTabOpen, "/chats"],
+                      [browserTabOpen, "/browser"],
+                      [musicTabOpen, "/music"],
+                    ] as const).find(([open]) => open)?.[1];
+                  if (machineTabRoute) onNavigate?.(machineTabRoute);
                 }}
                 closeTitle="Close new tab"
                 closeDisabled={isProjectBusy}
@@ -2746,45 +2531,9 @@ export function TopBar({
         ) : null}
       </div>
 
-      {showPublishPill ? (
-        <SmartTooltip
-          content={{
-            label: "Publish to GitHub",
-            description:
-              "Create a GitHub repository for this project and push the current branch.",
-          }}
-          wrapperStyle={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-        >
-          <button
-            type="button"
-            aria-label="Publish to GitHub"
-            onClick={() => setPublishOpen(true)}
-            disabled={isProjectBusy}
-            className="shrink-0 inline-flex items-center gap-1.5 rounded-md px-2 py-1 transition-colors duration-150"
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 10,
-              fontWeight: 600,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              color: "var(--color-accent)",
-              background:
-                "color-mix(in srgb, var(--color-accent) 18%, transparent)",
-              border:
-                "1px solid color-mix(in srgb, var(--color-accent) 36%, transparent)",
-              borderRadius: 6,
-              cursor: isProjectBusy ? "not-allowed" : "pointer",
-              opacity: isProjectBusy ? 0.55 : 1,
-            }}
-          >
-            <UploadSimple size={11} weight="bold" />
-            Publish
-          </button>
-        </SmartTooltip>
-      ) : null}
-
       {projectTransitionLabel ? (
         <div
+          aria-live="polite"
           className={cn(
             "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
             "text-[11px] font-medium",
@@ -2793,13 +2542,40 @@ export function TopBar({
           title={projectTransitionLabel}
         >
           <CircleNotch size={12} weight="bold" className="animate-spin" />
-          <span className="max-w-[240px] truncate">
-            {projectTransitionLabel}
-          </span>
+          <span className="max-w-[240px] truncate">{projectTransitionLabel}</span>
         </div>
       ) : null}
 
-      {/* Trailing controls: activity · status · updates.
+      {/* Cloning is to this machine, which the web client has no notion of. */}
+      {!webMode && activeCloneTarget && !isProjectBusy ? (
+        <HeaderActionPill
+          icon={DownloadSimple}
+          label="Clone locally"
+          tooltip={{
+            label: "Clone locally",
+            description: `${activeCloneTarget.displayName} runs on ${activeCloneTarget.machineName}. Clone it to this machine to work on it here too.`,
+          }}
+          onClick={() => setCloneLocallyTarget(activeCloneTarget)}
+        />
+      ) : null}
+
+      {showPublishPill ? (
+        <HeaderActionPill
+          icon={UploadSimple}
+          label="Publish"
+          ariaLabel="Publish to GitHub"
+          tooltip={{
+            label: "Publish to GitHub",
+            description:
+              "Create a GitHub repository for this project and push the current branch.",
+          }}
+          disabled={isProjectBusy}
+          onClick={() => setPublishOpen(true)}
+        />
+      ) : null}
+
+      {/* Trailing controls follow the user's visual priority: update and
+          diagnostics first, then provider controls, activity, and connections.
           The group must be able to shrink: the header reserves room for the
           native window controls (macOS traffic lights at the start, Windows
           caption buttons at the end) with padding, and a shrink-0 group would
@@ -2807,18 +2583,55 @@ export function TopBar({
           them, so it clips instead. Feedback, help, and zoom live in the
           settings sidebar. */}
       <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-        {/* Account-wide Activity — the one place every machine's work surfaces,
-            reachable from every tab and project without a nav detour. */}
-        <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
+        {!webMode ? <AutoUpdateControl /> : null}
+        {!webMode ? <AccountBalanceIndicator /> : null}
+        <ResourcePressureIndicator usage={resourceUsage} />
+        <StoragePressureIndicator enabled={workspaceProjectOpen} />
 
         {/* App-global voice capture — visible from any tab while recording. */}
         <GlobalVoiceCaptureIndicator />
 
-        <ResourcePressureIndicator usage={resourceUsage} />
-        <StoragePressureIndicator enabled={workspaceProjectOpen} />
 
         <div className="hidden md:flex items-center gap-1.5">
-          {renderHeaderStatusControls()}
+          {renderDesktopIntegrationControls()}
+          {renderDesktopUsageControl()}
+        </div>
+
+        {/* Account-wide Activity — the one place every machine's work surfaces,
+            reachable from every tab and project without a nav detour. */}
+        <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
+
+        {/* App settings with no project surface in front (welcome page, new
+            tab, Chats). A project's own sidebar carries Settings otherwise. */}
+        {!webMode && !projectSurfaceVisible && !isSettingsTabOpen ? (
+          <SmartTooltip
+            forceEnabled
+            side="bottom"
+            content={{ label: "Settings", description: "App preferences" }}
+            wrapperStyle={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          >
+            <button
+              type="button"
+              className="ade-shell-control inline-flex h-[24px] w-[24px] shrink-0 items-center justify-center rounded-md"
+              data-variant="ghost"
+              data-tour="project.settings"
+              aria-label="Settings"
+              style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+              onClick={() => {
+                // Leave the new-tab state first: it is what holds the welcome
+                // page in front, so a bare navigate would leave Settings behind it.
+                cancelNewTab();
+                setStandaloneSettingsOpen(true);
+                onNavigate?.("/settings");
+              }}
+            >
+              <GearSix size={14} weight="regular" />
+            </button>
+          </SmartTooltip>
+        ) : null}
+
+        <div className="hidden md:flex items-center gap-1.5">
+          {renderDesktopConnectionsControl()}
         </div>
 
         <HeaderStatusMenu
@@ -2826,10 +2639,8 @@ export function TopBar({
           syncConnected={syncConnected || (!webMode && webConnected)}
           showSyncControl={showSyncControl}
         >
-          {(closeMenu) => renderHeaderStatusControls({ menuLayout: true, onActivate: closeMenu })}
+          {renderCompactStatusMenu}
         </HeaderStatusMenu>
-
-        {!webMode ? <AutoUpdateControl /> : null}
       </div>
 
       {/* Overlay panels & modals — kept outside the gap-6 wrapper so they
@@ -2850,6 +2661,20 @@ export function TopBar({
         />
       </HeaderSheet>
 
+      <ContextMenu
+        menu={tabMenu}
+        entries={tabMenuEntries}
+        onClose={closeTabMenu}
+        label="Project tab"
+      />
+      <ProjectIconDialog target={iconDialogTarget} onClose={closeIconDialog} />
+      <CloneLocallyDialog
+        target={cloneLocallyTarget}
+        onClose={() => setCloneLocallyTarget(null)}
+        onCloned={(result) => {
+          if (cloneLocallyTarget) void handleClonedLocally(result.rootPath, cloneLocallyTarget.remoteKey);
+        }}
+      />
       <PublishToGitHubDialog
         open={publishOpen}
         onOpenChange={setPublishOpen}

@@ -32,6 +32,7 @@ const ACP_EXECUTABLE_ENV_KEYS: Record<AcpChatProvider, readonly string[]> = {
   kimi: ["KIMI_EXECUTABLE", "KIMI_CODE_EXECUTABLE"],
   grok: ["GROK_EXECUTABLE", "XAI_GROK_EXECUTABLE"],
   copilot: ["COPILOT_EXECUTABLE", "GITHUB_COPILOT_EXECUTABLE"],
+  devin: ["DEVIN_EXECUTABLE", "DEVIN_CLI_EXECUTABLE"],
 };
 
 /** The command name each provider installs. */
@@ -40,6 +41,7 @@ const ACP_EXECUTABLE_COMMANDS: Record<AcpChatProvider, string> = {
   kimi: "kimi",
   grok: "grok",
   copilot: "copilot",
+  devin: "devin",
 };
 
 function findAcpAuthPath(provider: AcpChatProvider, auth?: DetectedAuth[]): string | null {

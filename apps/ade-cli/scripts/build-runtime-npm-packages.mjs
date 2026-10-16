@@ -142,6 +142,78 @@ export function parseArgs(argv) {
  */
 export const EXCEPTION_FILE_NAME = "RUNTIME-EMBEDDING-EXCEPTION.md";
 
+/**
+ * The signing kit a macOS platform package carries: the entitlements ADE signs
+ * its own runtime with, and the list of every Mach-O file an embedder must sign.
+ *
+ * An embedder used to find both by trial. The entitlements are the subtle part:
+ * the runtime needs `allow-jit` and nothing else, and the app's own inherit
+ * entitlements (which electron-builder would apply) usually carry
+ * `allow-unsigned-executable-memory` too. The manifest removes the Mach-O walk
+ * from every host's build script, and it lists the launcher last because
+ * codesign seals a directory's contents: sign the inner files first.
+ */
+export const SIGNING_DIR_NAME = "signing";
+export const SIGNING_ENTITLEMENTS_FILE = "entitlements.runtime.plist";
+export const SIGNING_MANIFEST_FILE = "manifest.json";
+
+const MACHO_MAGIC = new Set([
+  "feedface",
+  "feedfacf",
+  "cefaedfe",
+  "cffaedfe",
+  "cafebabe",
+  "bebafeca",
+  "cafebabf",
+  "bfbafeca",
+]);
+
+function isMachOFile(filePath) {
+  const handle = fs.openSync(filePath, "r");
+  try {
+    const head = Buffer.alloc(4);
+    if (fs.readSync(handle, head, 0, 4, 0) < 4) return false;
+    return MACHO_MAGIC.has(head.toString("hex"));
+  } finally {
+    fs.closeSync(handle);
+  }
+}
+
+/**
+ * The signing manifest for one finished macOS package directory.
+ *
+ * Paths are relative to the package root, in the order they must be signed:
+ * every Mach-O under `native/` (no entitlements), then `bin/ade` with the
+ * runtime entitlements. Sorted, so two builds of one release write one file.
+ */
+export function buildSigningManifest(packageDir) {
+  const nativeMachO = listFilesRelative(packageDir)
+    .filter((file) => file.startsWith("native/"))
+    .filter((file) => isMachOFile(path.join(packageDir, file)))
+    .sort();
+  return {
+    schemaVersion: 1,
+    entitlements: `${SIGNING_DIR_NAME}/${SIGNING_ENTITLEMENTS_FILE}`,
+    sign: [
+      ...nativeMachO.map((file) => ({ path: file, entitlements: false })),
+      { path: "bin/ade", entitlements: true },
+    ],
+  };
+}
+
+function writeSigningKit(packageDir) {
+  const signingDir = path.join(packageDir, SIGNING_DIR_NAME);
+  fs.mkdirSync(signingDir, { recursive: true });
+  fs.copyFileSync(
+    path.join(repoRoot, "apps", "ade-cli", "build", "entitlements.mac.plist"),
+    path.join(signingDir, SIGNING_ENTITLEMENTS_FILE),
+  );
+  fs.writeFileSync(
+    path.join(signingDir, SIGNING_MANIFEST_FILE),
+    `${JSON.stringify(buildSigningManifest(packageDir), null, 2)}\n`,
+  );
+}
+
 /** The two license documents every runtime package ships, read from the repo root. */
 export function readLicenseFiles() {
   return {
@@ -186,7 +258,14 @@ export function runtimePackageManifest({ target, os: osName, cpu, version }) {
     cpu: [cpu],
     // No `exports` map: `@ade-dev/sdk` resolves this package by
     // `require.resolve("<name>/package.json")`, which an exports map would gate.
-    files: ["bin", "native", "LICENSE", EXCEPTION_FILE_NAME, "README.md"],
+    files: [
+      "bin",
+      "native",
+      ...(osName === "darwin" ? [SIGNING_DIR_NAME] : []),
+      "LICENSE",
+      EXCEPTION_FILE_NAME,
+      "README.md",
+    ],
     keywords: ["ade", "runtime", target],
   };
 }
@@ -252,7 +331,10 @@ platform packages as \`optionalDependencies\`, so npm installs exactly the one
 that matches the machine.
 
 If you ship this inside a signed application, sign the binary and every Mach-O
-file under \`native/\` with your own identity. See the SDK bundling guide:
+file under \`native/\` with your own identity.${target.startsWith("darwin-") ? `
+On macOS, \`signing/manifest.json\` lists every file to sign, in order, and
+\`signing/entitlements.runtime.plist\` holds the only entitlement the binary
+needs (\`com.apple.security.cs.allow-jit\`).` : ""} See the SDK bundling guide:
 https://www.ade-app.dev/docs/sdk/bundling
 
 ## License
@@ -516,6 +598,20 @@ export function verifyPackedRuntimeFiles({ packageDir, runPack = defaultPackRunn
         `the first \`ade code\` invocation.`,
     );
   }
+  if (targetEntry.os === "darwin") {
+    for (const required of [
+      `${SIGNING_DIR_NAME}/${SIGNING_ENTITLEMENTS_FILE}`,
+      `${SIGNING_DIR_NAME}/${SIGNING_MANIFEST_FILE}`,
+    ]) {
+      if (!packed.has(required)) {
+        throw new Error(
+          `${packageDir}: the packed tarball is missing ${required}. A macOS embedder signs the ` +
+            `runtime from this kit; without it they are back to finding the Mach-O files and the ` +
+            `allow-jit-only entitlement by trial.`,
+        );
+      }
+    }
+  }
   for (const required of ["LICENSE", EXCEPTION_FILE_NAME, "README.md", "package.json"]) {
     if (!packed.has(required)) {
       throw new Error(
@@ -615,6 +711,7 @@ export function buildRuntimePackage({
   fs.writeFileSync(path.join(packageDir, "LICENSE"), license);
   fs.writeFileSync(path.join(packageDir, EXCEPTION_FILE_NAME), exception);
   fs.writeFileSync(path.join(packageDir, "README.md"), runtimePackageReadme(target));
+  if (entry.os === "darwin") writeSigningKit(packageDir);
   // Last, because it reads the finished directory including its manifest.
   verifyPackedRuntimeFiles({ packageDir, ...(runPack ? { runPack } : {}) });
   return packageDir;

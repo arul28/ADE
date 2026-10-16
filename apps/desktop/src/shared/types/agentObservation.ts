@@ -47,6 +47,54 @@ export type AgentDomSnapshot = {
   scroll: { x: number; y: number };
   elementCount: number;
   elements: AgentElementSnapshot[];
+  /**
+   * A short key for the element that had keyboard focus when the snapshot was
+   * taken (tag, role, id, name, label), or null when nothing did. Absent from
+   * a snapshot an older collector wrote. Read only by the action-effect check.
+   */
+  focusKey?: string | null;
+  /** A hash of the page's visible text; the action-effect check compares it. */
+  textKey?: string;
+};
+
+/**
+ * Did an acting command visibly change anything?
+ *
+ * Every computer-use surface (browser, App Control, Mac Desktop, Apple
+ * device) answers with this, so an agent learns the same two facts from every
+ * action: which element it hit, and whether the screen changed after it.
+ */
+export type ComputerUseActionEffect = {
+  /** "observed": the screen/DOM visibly changed after the action. "unconfirmed": the input was sent, but nothing ADE can see changed. "not_checked": this action/surface did not compare (say why in `reason`). "waiting_for_approval": the action started a navigation that is held until the user allows this agent to use the ADE browser. */
+  status: "observed" | "unconfirmed" | "not_checked" | "waiting_for_approval";
+  /** One short plain-English sentence, e.g. "the focused element changed", "the URL changed", "3 elements changed", "nothing on screen changed". */
+  reason: string;
+  /**
+   * What to try next when the effect is not `observed`, so an agent climbs to
+   * the right input method instead of repeating the one that did nothing.
+   * Absent when the surface has no advice.
+   */
+  next?: ComputerUseActionNextStep | null;
+};
+
+/**
+ * One recommended next step after an action ADE could not confirm.
+ *
+ * - `observe`: look again (or `wait` for a label); do not change method. The
+ *   action probably applied, or something else must happen first.
+ * - `background_input`: retry as a pointer event delivered to the app alone
+ *   (a Mac Desktop point click with no `--real`). It moves no pointer and
+ *   needs no approval.
+ * - `real_input`: retry with real pointer/keyboard events (`--real`).
+ * - `lease`: real input is the fix, but this chat must ask the user for it.
+ * - `browser`: the target is a web page; drive it in the ADE browser.
+ */
+export type ComputerUseActionNextStep = {
+  method: "observe" | "background_input" | "real_input" | "lease" | "browser";
+  /** One short sentence: why this method. */
+  reason: string;
+  /** A command the agent can run as is, when ADE can build one. */
+  command?: string | null;
 };
 
 /**

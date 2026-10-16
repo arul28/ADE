@@ -17,6 +17,8 @@ import {
 } from "./builtInBrowserService";
 import { createDevServerRegistry } from "../devServers/devServerRegistry";
 import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
+import { narrowPageHint } from "./builtInBrowserRecordingViewport";
+import type { BuiltInBrowserTabRecorder } from "./builtInBrowserRecording";
 
 const fakes = vi.hoisted(() => {
   type DebuggerHandler = (...args: unknown[]) => void;
@@ -155,6 +157,7 @@ const fakes = vi.hoisted(() => {
     setAudioMuted = (muted: boolean): void => {
       this.audioMutedCalls.push(muted);
     };
+    isAudioMuted = (): boolean => this.audioMutedCalls.at(-1) ?? false;
     setUserAgent = (userAgent: string): void => {
       this.userAgentCalls.push(userAgent);
     };
@@ -254,6 +257,8 @@ const fakes = vi.hoisted(() => {
       get: () => Promise<Array<{ domain?: string; expirationDate?: number }>>;
     };
     flushStorageData: () => void;
+    clearStorageData: () => Promise<void>;
+    clearCache: () => Promise<void>;
     getCacheSize: () => Promise<number>;
     webRequest: {
       onBeforeSendHeaders: (handler: unknown) => void;
@@ -271,6 +276,8 @@ const fakes = vi.hoisted(() => {
   const getCookies = vi.fn(async (): Promise<Array<{ domain?: string; expirationDate?: number }>> => []);
   const getCacheSize = vi.fn(async (): Promise<number> => 0);
   const flushStorageData = vi.fn((): void => undefined);
+  /** Electron's storage wipe, recorded per partition so a test can hold it open. */
+  const clearStorageData = vi.fn(async (_partition: string): Promise<void> => undefined);
   const sessionsByPartition = new Map<string, FakeSession>();
   const sessionForPartition = (partition: string): FakeSession => {
     const existing = sessionsByPartition.get(partition);
@@ -281,6 +288,8 @@ const fakes = vi.hoisted(() => {
         get: getCookies,
       },
       flushStorageData,
+      clearStorageData: () => clearStorageData(partition),
+      clearCache: async () => undefined,
       getCacheSize,
       webRequest: {
         onBeforeSendHeaders: (handler: unknown) => {
@@ -367,6 +376,7 @@ const fakes = vi.hoisted(() => {
     webContentsInstances,
     webContentsViewInstances,
     partitionCalls,
+    clearStorageData,
     openExternal: vi.fn(async (_url: string) => undefined),
     screen: fakeScreen,
     beforeSendHeadersHandlers,
@@ -623,6 +633,32 @@ type ServiceBrowserWindow = Parameters<
 >[0];
 
 /**
+ * A recorder that does nothing but satisfy the session's contract, so a
+ * recording can be started without Electron or a capture page. The factory
+ * seam the tests inject is `createTabRecorder`; the recording module calls it
+ * once, at the moment it is about to negotiate the stream.
+ */
+function fakeTabRecorder(): BuiltInBrowserTabRecorder {
+  return {
+    format: "webm",
+    mimeType: "video/webm",
+    start: async (): Promise<void> => undefined,
+    stop: async () => ({ filePath: "/tmp/ade-recording.webm", frameCount: 1, manifestPath: null }),
+    abort: (): void => undefined,
+  };
+}
+
+/**
+ * Let every promise already queued run. A recording's viewport move and an
+ * emulation re-apply both settle through chained promises with no timer, so a
+ * macrotask boundary (not a wall-clock sleep) is what makes their result
+ * observable.
+ */
+async function settlePromises(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+/**
  * A service wired for project-scoped routing, plus the two registries it reads.
  *
  * Six tests built this by hand, each repeating the same `as unknown as
@@ -682,6 +718,8 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     fakes.getCacheSize.mockReset();
     fakes.getCacheSize.mockResolvedValue(0);
     fakes.flushStorageData.mockClear();
+    fakes.clearStorageData.mockReset();
+    fakes.clearStorageData.mockResolvedValue(undefined);
     fakes.openExternal.mockClear();
     fakes.appGetPath.mockClear();
     fakes.appIsReady.mockReset();
@@ -838,51 +876,175 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   });
 
   it("keeps owned tabs alive while hidden and mutes them until visible", async () => {
+    vi.useFakeTimers();
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    const panel = { x: 12, y: 24, width: 640, height: 360 };
+    try {
+      service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+      await service.createTab({ url: "https://example.test", activate: true });
+      const view = fakes.webContentsViewInstances.at(-1)!;
+      expect(service.getStatus().tabs).toHaveLength(1);
+      expect(win.contentView.children).toHaveLength(0);
+      expect(view.webContents.isAudioMuted()).toBe(true);
+
+      await service.setBounds({ ...panel, visible: true });
+      expect(win.contentView.children).toEqual([view]);
+      expect(view.webContents.isAudioMuted()).toBe(false);
+      // The pane stops at this size; that is the size the page keeps.
+      await vi.advanceTimersByTimeAsync(300);
+      service.handTabToChat({ tabId: service.getStatus().activeTabId!, chatSessionId: "chat-1" });
+
+      await service.setBounds({ ...panel, width: 0, height: 0, visible: false });
+      expect(win.contentView.children).toEqual([view]);
+      expect(view.webContents.isAudioMuted()).toBe(true);
+      // An owned tab keeps the person's layout; only a recording pins 1280×800.
+      expect(service.getStatus().tabs[0]!.agentViewport).toBeNull();
+      const parked = view.boundsCalls.at(-1)!;
+      expect(parked).toMatchObject({ width: panel.width, height: panel.height });
+      expect(parked.x).toBeGreaterThanOrEqual(win.getContentBounds().width);
+      expect(parked.y).toBeGreaterThanOrEqual(win.getContentBounds().height);
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(win.contentView.children).toEqual([view]);
+      expect(view.webContents.isAudioMuted()).toBe(true);
+      // The expiry sweep runs just after the sixty-second grace ends.
+      await vi.advanceTimersByTimeAsync(101);
+      expect(win.contentView.children).toHaveLength(0);
+      expect(service.getStatus().tabs).toHaveLength(1);
+      expect(view.webContents.isAudioMuted()).toBe(true);
+
+      await service.setBounds({ ...panel, visible: true });
+      expect(win.contentView.children).toEqual([view]);
+      expect(view.webContents.isAudioMuted()).toBe(false);
+    } finally {
+      service.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the same view attached when the panel returns within the parking grace", async () => {
+    vi.useFakeTimers();
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    const panel = { x: 12, y: 24, width: 640, height: 360 };
+    try {
+      service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+      await service.createTab({ url: "https://example.test", activate: true });
+      await service.setBounds({ ...panel, visible: true });
+      const view = fakes.webContentsViewInstances.at(-1)!;
+      const adds = win.addChildViewCalls.length;
+      const removes = win.removeChildViewCalls.length;
+
+      await service.setBounds({ ...panel, width: 0, height: 0, visible: false });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await service.setBounds({ ...panel, visible: true });
+      expect(win.contentView.children).toEqual([view]);
+      expect(win.addChildViewCalls).toHaveLength(adds);
+      expect(win.removeChildViewCalls).toHaveLength(removes);
+      expect(view.boundsCalls.at(-1)).toEqual(panel);
+      expect(view.webContents.isAudioMuted()).toBe(false);
+
+      // An old expiry timer must not remove the view after it returns.
+      await vi.advanceTimersByTimeAsync(30_100);
+      expect(win.contentView.children).toEqual([view]);
+      expect(win.addChildViewCalls).toHaveLength(adds);
+      expect(win.removeChildViewCalls).toHaveLength(removes);
+    } finally {
+      service.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a tab that started playing while heard audible when hidden, until it navigates", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     const win = fakeBrowserWindow();
     service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    const show = (visible: boolean) => service.setBounds({ x: 0, y: 0, width: 640, height: 360, visible });
 
+    await service.createTab({ url: "https://music.example.test", activate: true });
+    const player = fakes.webContentsInstances[0]!;
+    await show(true);
+    expect(player.isAudioMuted()).toBe(false);
+    player.emit("media-started-playing");
+
+    // Leaving the Browser tab does not cut the song off.
+    await show(false);
+    expect(player.isAudioMuted()).toBe(false);
+
+    // Going to another page ends that: the hidden tab is quiet again.
+    player.emit("did-navigate", {}, "https://example.test/next");
+    expect(player.isAudioMuted()).toBe(true);
+  });
+
+  it("never lets a tab that started playing while muted keep sound when hidden", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    const show = (visible: boolean) => service.setBounds({ x: 0, y: 0, width: 640, height: 360, visible });
+
+    // A tab an agent drives while nobody watches is parked and muted.
+    await service.createTab({ url: "https://autoplay.example.test", activate: true });
+    const parked = fakes.webContentsInstances[0]!;
+    expect(parked.isAudioMuted()).toBe(true);
+    parked.emit("media-started-playing");
+
+    await show(true);
+    expect(parked.isAudioMuted()).toBe(false);
+    await show(false);
+    expect(parked.isAudioMuted()).toBe(true);
+  });
+
+  it("lets go of a hidden tab's parked view when an agent action on it fails", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
     await service.createTab({ url: "https://example.test", activate: true });
-    expect(service.getStatus().tabs).toHaveLength(1);
+    const tabId = service.getStatus().activeTabId ?? "";
     expect(win.contentView.children).toHaveLength(0);
-    const wc = fakes.webContentsInstances[0];
-    expect(wc?.audioMutedCalls.at(-1)).toBe(true);
 
-    await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: true });
-    expect(service.getStatus().tabs).toHaveLength(1);
-    expect(win.contentView.children).toHaveLength(1);
-    expect(wc?.audioMutedCalls.at(-1)).toBe(false);
+    let parkedDuringAction = -1;
+    fakes.setSendCommand(async (method) => {
+      if (method !== "Input.dispatchMouseEvent") return {};
+      parkedDuringAction = win.contentView.children.length;
+      throw new Error("Target closed");
+    });
+    await expect(service.click({ tabId, x: 10, y: 10, observe: false })).rejects.toThrow(/Target closed/);
 
-    await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: false });
-    expect(service.getStatus().tabs).toHaveLength(1);
+    // The action held the view parked while it ran, and gave it back on the throw.
+    expect(parkedDuringAction).toBe(1);
     expect(win.contentView.children).toHaveLength(0);
-    expect(wc?.audioMutedCalls.at(-1)).toBe(true);
   });
 
   it("parks a previewed tab's view instead of detaching it when the panel hides", async () => {
-    // The corner card's whole premise. A WebContentsView that has been removed
-    // from the window has no compositor surface, so `capturePage()` comes back
-    // empty and the preview stream emits nothing at all — the card sat on its
-    // blank placeholder while cheerfully reporting "Live". A watched tab
-    // therefore stays attached, parked outside the window's content rect.
+    vi.useFakeTimers();
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     const win = fakeBrowserWindow();
-    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+    try {
+      service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+      await service.createTab({ url: "https://example.test", activate: true });
+      await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: true });
+      await vi.advanceTimersByTimeAsync(300);
+      const view = fakes.webContentsViewInstances.at(-1)!;
+      const tabId = service.getStatus().activeTabId!;
+      service.startPreviewStream({ tabId });
+      await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: false });
+      expect(win.contentView.children).toEqual([view]);
+      expect(view.webContents.isAudioMuted()).toBe(true);
 
-    await service.createTab({ url: "https://example.test", activate: true });
-    await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: true });
-    expect(win.contentView.children).toHaveLength(1);
-    const tabId = service.getStatus().activeTabId;
-    expect(tabId).toBeTruthy();
-
-    service.startPreviewStream({ tabId });
-    await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: false });
-    expect(win.contentView.children).toHaveLength(1);
-
-    // Last watcher out: the view goes back to being detached, so a hidden panel
-    // nobody is previewing costs nothing.
-    service.stopPreviewStream({ tabId });
-    expect(win.contentView.children).toHaveLength(0);
+      // The last watcher leaves, but the attended surface keeps its grace.
+      service.stopPreviewStream({ tabId });
+      expect(win.contentView.children).toEqual([view]);
+      expect(view.boundsCalls.at(-1)).toMatchObject({ width: 640, height: 360 });
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(win.contentView.children).toEqual([view]);
+      expect(view.webContents.isAudioMuted()).toBe(true);
+      await vi.advanceTimersByTimeAsync(101);
+      expect(win.contentView.children).toHaveLength(0);
+      expect(view.webContents.isAudioMuted()).toBe(true);
+    } finally {
+      service.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it("warms a never-attended view against the window before parking it off screen", async () => {
@@ -973,6 +1135,178 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     service.dispose();
   });
 
+  it("warms a shown view again when it is parked at a different size", async () => {
+    // A view parked wholly off the window keeps the layout it last had on it.
+    // Shown in a 300px pane and then parked in the 960x600 box, the page stayed
+    // a 300px strip inside that box unless the resize lands while the view
+    // still overlaps the window by a pixel.
+    vi.useFakeTimers();
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    win.setVisibleOnScreen(true);
+    win.setContentBounds({ x: 0, y: 0, width: 1280, height: 720 });
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    try {
+      service.attachToWindow(win as unknown as ServiceBrowserWindow);
+      await service.createTab({ url: "https://example.test", activate: true });
+      const view = fakes.webContentsViewInstances.at(-1)!;
+      const tabId = service.getStatus().activeTabId!;
+      await service.setBounds({ x: 12, y: 24, width: 300, height: 660, visible: true });
+      service.startPreviewStream({ tabId });
+
+      await service.setBounds({ x: 12, y: 24, width: 0, height: 0, visible: false });
+      const warming = view.boundsCalls.at(-1)!;
+      expect(warming).toMatchObject({ x: 1279, y: 719 });
+      expect(warming).toMatchObject({
+        width: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
+        height: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
+      });
+
+      vi.advanceTimersByTime(BUILT_IN_BROWSER_PREVIEW_WARM_MS + 5);
+      const parked = view.boundsCalls.at(-1)!;
+      expect(parked.x).toBe(1280 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN);
+      expect(parked.width).toBe(BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH);
+
+      // Same size from here on: a later pass re-parks without warming again.
+      const calls = view.boundsCalls.length;
+      vi.advanceTimersByTime(BUILT_IN_BROWSER_PREVIEW_WARM_MS * 4);
+      expect(view.boundsCalls.slice(calls).every((rect) => rect.x > 1280)).toBe(true);
+      service.stopPreviewStream({ tabId });
+    } finally {
+      service.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("parks a tab with a device preset at the device's size, not the default box", async () => {
+    // The device is drawn pinned to the view's top-left at its own size, so a
+    // larger park box frames it with blank space, and that blank space is
+    // every frame the corner card shows.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+    await service.createTab({ url: "https://example.test", activate: true });
+    const view = fakes.webContentsViewInstances.at(-1)!;
+    const tabId = service.getStatus().activeTabId!;
+    service.startPreviewStream({ tabId });
+    expect(view.boundsCalls.at(-1)).toMatchObject({
+      width: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
+      height: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
+    });
+
+    await service.setEmulation({ tabId, width: 390, height: 844, mobile: true });
+    expect(view.boundsCalls.at(-1)).toMatchObject({ width: 390, height: 844 });
+    expect(view.boundsCalls.at(-1)!.x).toBeGreaterThanOrEqual(1280);
+
+    // Clearing the preset gives the tab the ordinary park box back.
+    await service.setEmulation({ tabId, preset: "off" });
+    expect(view.boundsCalls.at(-1)).toMatchObject({
+      width: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
+      height: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
+    });
+    service.stopPreviewStream({ tabId });
+    service.dispose();
+  });
+
+  it("lays a recording's tab out on the fixed viewport before its first frame", async () => {
+    // The recorder is negotiated only after `prepareRecordingViewport` has
+    // settled, so what it reads here is the layout of the very first frame:
+    // without the fix the page is still the pane's size and relayouts to
+    // 1280×800 part-way through the video.
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rec-viewport-"));
+    const win = fakeBrowserWindow();
+    let capturedAtNegotiation: { width: number; height: number } | null = null;
+    let factoryCalls = 0;
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      getProjectRootForWindow: () => projectRoot,
+      createTabRecorder: async () => {
+        factoryCalls += 1;
+        capturedAtNegotiation = service.getStatus({ projectRoot }).tabs[0]?.agentViewport ?? null;
+        return fakeTabRecorder();
+      },
+    });
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+    await service.createTab({ projectRoot, url: "https://example.test", activate: true });
+    try {
+      await service.startRecording({ projectRoot });
+      expect(factoryCalls).toBe(1);
+      expect(capturedAtNegotiation).toEqual({ width: 1280, height: 800 });
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("leaves a tab on the pane's layout when a recording fails to start", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rec-start-fail-"));
+    const win = fakeBrowserWindow();
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      getProjectRootForWindow: () => projectRoot,
+      createTabRecorder: async () => {
+        throw new Error("recorder creation failed");
+      },
+    });
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+    await service.createTab({ projectRoot, url: "https://example.test", activate: true });
+    try {
+      await expect(service.startRecording({ projectRoot })).rejects.toThrow(/recorder/i);
+      const tab = service.getStatus({ projectRoot }).tabs[0]!;
+      // The start flag is cleared and the viewport reconciled back: a failed
+      // start must not leave the tab pinned to 1280×800.
+      expect(tab.recording).toBeNull();
+      expect(tab.agentViewport).toBeNull();
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("keeps a hidden emulated tab at the device's full size, not the pane's shrunk fit", async () => {
+    // A pane closing reports the smallest fit (0). Read as a real fit, that
+    // would shrink the parked box to a sliver and every preview frame with it;
+    // a hidden tab is parked at the device's own size, scale 1.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const win = fakeBrowserWindow();
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    service.attachToWindow(win as unknown as ServiceBrowserWindow);
+    await service.createTab({ url: "https://example.test", activate: true });
+    const view = fakes.webContentsViewInstances.at(-1)!;
+    const tabId = service.getStatus().activeTabId!;
+
+    await service.setBounds({ x: 0, y: 0, width: 640, height: 360, visible: true, scale: 1 });
+    await service.setEmulation({ tabId, width: 390, height: 844, mobile: true });
+    service.startPreviewStream({ tabId });
+    // Hide it, so it is parked with a surface to preview until the pane returns.
+    await service.setBounds({ x: 0, y: 0, width: 0, height: 0, visible: false, scale: 0 });
+    await settlePromises();
+
+    expect(view.boundsCalls.at(-1)).toMatchObject({ width: 390, height: 844 });
+    service.stopPreviewStream({ tabId });
+    service.dispose();
+  });
+
+  it("reports a failed main-frame load on the tab until it loads again", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "http://127.0.0.1:47899/", activate: true });
+    const wc = fakes.webContentsInstances.at(-1)!;
+    expect(service.getStatus().tabs[0]!.loadError).toBeNull();
+
+    wc.emit("did-fail-load", {}, -102, "ERR_CONNECTION_REFUSED", "http://127.0.0.1:47899/", true);
+    expect(service.getStatus().tabs[0]!.loadError).toEqual({
+      code: -102,
+      description: "ERR_CONNECTION_REFUSED",
+      url: "http://127.0.0.1:47899/",
+    });
+
+    // A subframe failing, or a load the page itself aborted (-3), is not the page failing.
+    wc.emit("did-start-loading");
+    wc.emit("did-fail-load", {}, -102, "ERR_CONNECTION_REFUSED", "http://ads.example.test/", false);
+    wc.emit("did-fail-load", {}, -3, "ERR_ABORTED", "http://127.0.0.1:47899/", true);
+    expect(service.getStatus().tabs[0]!.loadError).toBeNull();
+    service.dispose();
+  });
+
   it("does not warm — or claim a surface — while the window is off screen", async () => {
     // A minimised or hidden window has no surface to lend. Marking the tab
     // surfaced on that evidence is how the black card comes back: nothing
@@ -1043,22 +1377,6 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     }
 
     service.dispose();
-  });
-
-  it("does not warm a view the panel has already shown", async () => {
-    // A view that has been on screen already has the surface, and warming it
-    // again would flash a pixel of the page for no reason on every tool switch.
-    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
-    const { service, view, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
-    const parked = view.boundsCalls.at(-1)!;
-    expect(parked).toMatchObject({
-      x: 1280 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
-      y: 720 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
-      width: 640,
-      height: 360,
-    });
-
-    service.stopPreviewStream({ tabId });
   });
 
   it("tags a capture that has no surface to photograph instead of throwing a bare error", async () => {
@@ -1166,9 +1484,15 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
    * A helper for the parking tests: a service with one tab that has been shown
    * in the panel at `panel`, then hidden with a live preview watcher.
    */
+  /**
+   * A tab the panel showed at each of `panels` in turn, then hid. Every size
+   * but the last settles (the pane stopped there); the last one is passed
+   * through on the way to closed, as a closing pane's frames are.
+   */
   const parkedTabFixture = async (
     collectorArg: ReturnType<typeof captureStatusEvents>,
     panel: { width: number; height: number } | null,
+    unsettled: { width: number; height: number } | null = null,
   ) => {
     const service = createBuiltInBrowserService({ onEvent: collectorArg.onEvent });
     const win = fakeBrowserWindow();
@@ -1176,7 +1500,16 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     await service.createTab({ url: "https://example.test", activate: true });
     const view = fakes.webContentsViewInstances.at(-1)!;
     if (panel) {
-      await service.setBounds({ x: 12, y: 24, width: panel.width, height: panel.height, visible: true });
+      vi.useFakeTimers();
+      try {
+        await service.setBounds({ x: 12, y: 24, width: panel.width, height: panel.height, visible: true });
+        await vi.advanceTimersByTimeAsync(300);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+    if (unsettled) {
+      await service.setBounds({ x: 12, y: 24, width: unsettled.width, height: unsettled.height, visible: true });
     }
     const tabId = service.getStatus().activeTabId!;
     service.startPreviewStream({ tabId });
@@ -1291,25 +1624,34 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     for (const service of services) service.dispose();
   });
 
-  it("does not touch window focus on the ordering the product actually drives", async () => {
-    // The corner card only previews the tool you are NOT looking at, so the
-    // panel always hides FIRST and the stream starts after — there is no
-    // attended tab to take the keyboard from. `parkedTabFixture` drives the
-    // opposite order deliberately, to exercise the branch; this pins the real
-    // one, which must never call `focus()` at all.
+  it.each([
+    ["a focused window with an attended page", true, true, 1],
+    ["a background window with an attended page", false, true, 0],
+    ["a focused window with no attended page", true, false, 0],
+  ] as const)("returns keyboard focus only from an attended page in %s", async (_label, focused, attended, focusCalls) => {
+    vi.useFakeTimers();
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     const win = fakeBrowserWindow();
-    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
-    await service.createTab({ url: "https://example.test", activate: true });
-    await service.setBounds({ x: 12, y: 24, width: 480, height: 640, visible: true });
-    const tabId = service.getStatus().activeTabId!;
+    try {
+      win.setFocused(focused);
+      service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
+      await service.createTab({ url: "https://example.test", activate: true });
+      if (attended) await service.setBounds({ x: 12, y: 24, width: 480, height: 640, visible: true });
+      const tabId = service.getStatus().activeTabId!;
 
-    await service.setBounds({ x: 12, y: 24, width: 0, height: 0, visible: false });
-    service.startPreviewStream({ tabId });
-
-    expect(win.webContents.focusCalls).toBe(0);
-    service.stopPreviewStream({ tabId });
-    service.dispose();
+      // The product hides the panel before the preview card subscribes.
+      await service.setBounds({ x: 12, y: 24, width: 0, height: 0, visible: false });
+      expect(win.webContents.focusCalls).toBe(focusCalls);
+      service.startPreviewStream({ tabId });
+      expect(win.webContents.focusCalls).toBe(focusCalls);
+      service.stopPreviewStream({ tabId });
+      await vi.advanceTimersByTimeAsync(60_100);
+      expect(win.contentView.children).toHaveLength(0);
+      expect(win.webContents.focusCalls).toBe(focusCalls);
+    } finally {
+      service.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it("hands the keyboard back to the window exactly once when an attended tab is parked", async () => {
@@ -1317,7 +1659,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     // two operations that used to release the page's keyboard focus. Reachable
     // only in the window between the panel hiding and the card's stop landing —
     // kept because the guard has to hold if a second `startPreviewStream`
-    // caller (mobile, CLI, Mosaic) is ever added.
+    // caller (mobile, CLI) is ever added.
     const { service, win, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
     expect(win.webContents.focusCalls).toBe(1);
 
@@ -1381,24 +1723,25 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     service.dispose();
   });
 
-  it("keeps the size the panel last showed a parked tab at", async () => {
-    // Parking used to floor every hidden tab at 960x600, firing a real window
-    // resize inside the page each way round.
-    const { service, view, tabId } = await parkedTabFixture(collector, { width: 1100, height: 700 });
-    expect(view.boundsCalls.at(-1)).toMatchObject({ width: 1100, height: 700 });
+  it.each([
+    // Parking never resizes the page: it keeps the size the pane stopped at,
+    // however narrow, so closing and reopening the pane fires no `resize`.
+    { name: "a wide pane", panel: { width: 1100, height: 700 }, unsettled: null, parked: { width: 1100, height: 700 } },
+    { name: "a narrow pane", panel: { width: 480, height: 640 }, unsettled: null, parked: { width: 480, height: 640 } },
+    // A closing pane passes through slivers; the last one must not stick.
+    { name: "a pane that closed through a sliver", panel: { width: 1100, height: 700 }, unsettled: { width: 57, height: 696 }, parked: { width: 1100, height: 700 } },
+    // No rect to reuse, and a zero-sized view captures nothing.
+    { name: "a tab the pane never showed", panel: null, unsettled: null, parked: { width: 960, height: 600 } },
+  ])("parks $name at the size the pane settled at", async ({ panel, unsettled, parked }) => {
+    fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
+    const { service, view, tabId } = await parkedTabFixture(collector, panel, unsettled);
+    expect(view.boundsCalls.at(-1)).toMatchObject({
+      x: 1280 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+      y: 720 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+      ...parked,
+    });
     service.stopPreviewStream({ tabId });
-
-    // The case that matters: the Work pane is clamped to 26-55% of the window,
-    // so EVERY realistic pane is narrower than the 960px floor. Flooring here
-    // is what fired a real `window` resize inside the page each way round.
-    const narrow = await parkedTabFixture(collector, { width: 480, height: 640 });
-    expect(narrow.view.boundsCalls.at(-1)).toMatchObject({ width: 480, height: 640 });
-    narrow.service.stopPreviewStream({ tabId: narrow.tabId });
-
-    // A tab the panel never showed has no rect to reuse, so the floor applies.
-    const fresh = await parkedTabFixture(collector, null);
-    expect(fresh.view.boundsCalls.at(-1)).toMatchObject({ width: 960, height: 600 });
-    fresh.service.stopPreviewStream({ tabId: fresh.tabId });
+    service.dispose();
   });
 
   it("does not sweep every view for an unpaired preview stop", async () => {
@@ -1568,6 +1911,15 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
         chatSessionId: "chat-1",
       }, browserWin);
       await firstService.createTab({ url: "https://console.aws.amazon.com/", activate: true }, browserWin);
+      // An isolated sign-in lives only in memory; restoring its URL would
+      // reopen it in the user's own profile, so it is never saved.
+      await firstService.createTab({
+        url: "https://app.test/login",
+        activate: false,
+        profile: "viewer",
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+      }, browserWin);
       await firstService.flushStorage();
       firstService.dispose();
 
@@ -2008,6 +2360,44 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(service.getStatusForProjectScope(null)?.tabs).toHaveLength(1);
   });
 
+  it("hosts an unbound project in the caller window without claiming it is already attached", async () => {
+    const projectRootByWindow = new Map<number, string>();
+    const fallback = vi.fn(() => null);
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+      getWindowForProjectRoot: () => null,
+      getFallbackWindowForProjectRoot: fallback,
+    });
+    const win = fakeBrowserWindow();
+    const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
+    projectRootByWindow.set(win.id, "/Users/ade/project-current-tab");
+
+    expect(service.hasWindowForProjectScope("/Users/ade/project-unbound")).toBe(false);
+    await service.createTab({
+      projectRoot: "/Users/ade/project-unbound",
+      url: "https://unbound.example.test",
+      activate: true,
+    }, browserWin);
+    await service.setBounds({
+      projectRoot: "/Users/ade/project-unbound",
+      x: 12,
+      y: 24,
+      width: 640,
+      height: 360,
+      visible: true,
+    }, browserWin);
+
+    expect(win.contentView.children).toHaveLength(1);
+    expect(service.getStatus({ projectRoot: "/Users/ade/project-unbound" }, browserWin)).toMatchObject({
+      attached: true,
+      collectionProjectRoot: "/Users/ade/project-unbound",
+      url: "https://unbound.example.test/",
+    });
+    expect(service.hasWindowForProjectScope("/Users/ade/project-unbound")).toBe(true);
+    expect(fallback).not.toHaveBeenCalled();
+  });
+
   it("does not materialize a project's browser collection to answer a status poll", async () => {
     // The Work-tools mirror polls this on a timer, once per project, for a phone
     // that may not be looking. Constructing the collection here would restore
@@ -2264,6 +2654,27 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" })).toMatchObject({
       attached: false,
       visible: false,
+    });
+  });
+
+  it("keeps a background project status read from detaching the visible collection", async () => {
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin } = scoped.openWindow("/Users/ade/project-alpha");
+
+    service.attachToWindow(browserWin);
+    await service.createTab({ url: "https://alpha.example.test", activate: true }, browserWin);
+    await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: true }, browserWin);
+
+    const beta = service.getStatus({ projectRoot: "/Users/ade/project-beta" }, browserWin);
+    const alpha = service.getStatus(browserWin);
+
+    expect(beta.collectionProjectRoot).toBe("/Users/ade/project-beta");
+    expect(alpha).toMatchObject({
+      collectionProjectRoot: "/Users/ade/project-alpha",
+      url: "https://alpha.example.test/",
+      attached: true,
+      visible: true,
     });
   });
 
@@ -2690,14 +3101,38 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     });
   });
 
-  it("blocks agent-triggered high-risk popups until the origin is human-approved", async () => {
-    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+  /**
+   * A service in "Chats I approve" whose open prompts are answered with
+   * whatever `answer.next` holds when they appear.
+   */
+  function createChatApprovingService() {
+    const answer: { next: "chat" | "block" } = { next: "chat" };
+    const asked: string[] = [];
+    let service: ReturnType<typeof createBuiltInBrowserService> | null = null;
+    service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      agentAccessInitialMode: "chats",
+      onAgentAccessChange: (snapshot) => {
+        for (const prompt of snapshot.prompts) {
+          if (asked.includes(prompt.id)) continue;
+          asked.push(prompt.id);
+          const reply = answer.next;
+          queueMicrotask(() => service?.answerAgentAccessPrompt(prompt.id, reply));
+        }
+      },
+    });
+    return { service, answer, asked };
+  }
+
+  it("blocks agent-triggered popups once the chat is no longer allowed", async () => {
+    const { service } = createChatApprovingService();
     await service.createTab({
       url: "https://example.test",
       activate: true,
       laneId: "lane-1",
       chatSessionId: "chat-1",
     });
+    service.revokeAgentAccess({ kind: "chat", chatSessionId: "chat-1" });
 
     const response = fakes.webContentsInstances[0]?.openWindow(
       "https://accounts.google.com/gsi/select",
@@ -2706,13 +3141,12 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(response?.action).toBe("deny");
     expect(collector.events.at(-1)).toMatchObject({
       type: "error",
-      message: expect.stringContaining("Navigate to that origin explicitly"),
+      message: expect.stringContaining("has not allowed this agent to use the ADE browser"),
     });
   });
 
-  it("requires chat-scoped human approval before agent navigation uses a high-risk origin", async () => {
-    fakes.permissionPrompt.mockResolvedValue({ response: 0, checkboxChecked: false });
-    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+  it("asks once per chat before an agent navigates, and keeps the tab leased to it", async () => {
+    const { service, asked } = createChatApprovingService();
 
     await service.navigate({
       url: "https://github.com/settings/tokens",
@@ -2721,22 +3155,43 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       chatSessionId: "chat-1",
     });
     const tabId = service.getStatus().activeTabId ?? "";
-    expect(fakes.permissionPrompt).toHaveBeenCalledTimes(1);
+    expect(asked).toHaveLength(1);
     expect(service.getStatus({ tabId, laneId: "lane-1", chatSessionId: "chat-1" }).url)
       .toBe("https://github.com/settings/tokens");
     expect(() => service.getStatus({ tabId, laneId: "lane-2", chatSessionId: "chat-2" }))
       .toThrow(/leased by chat chat-1/);
   });
 
-  it("blocks a high-risk redirect triggered by an agent page action", async () => {
-    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+  it("moves a tab lease to the receiving chat or drops it for a new chat", async () => {
+    const { service } = createChatApprovingService();
+    await service.navigate({
+      url: "https://attach.test",
+      activate: true,
+      newTab: true,
+      laneId: "lane-1",
+      chatSessionId: "chat-old",
+    });
+    const tabId = service.getStatus().activeTabId ?? "";
+
+    service.handTabToChat({ tabId, laneId: "lane-2", chatSessionId: "chat-new" });
+    expect(service.getStatus()).toMatchObject({
+      activeTabId: tabId,
+      ownerLaneId: "lane-2",
+      ownerChatSessionId: "chat-new",
+    });
+
+    service.handTabToChat({ tabId, chatSessionId: null });
+    expect(service.getStatus().ownerChatSessionId).toBeNull();
+  });
+
+  it("holds and then blocks an agent-triggered redirect once the chat is no longer allowed", async () => {
+    const { service, answer, asked } = createChatApprovingService();
     await service.createTab({
       url: "http://localhost:5173",
       activate: true,
       laneId: "lane-1",
       chatSessionId: "chat-1",
     });
-    fakes.permissionPrompt.mockResolvedValue({ response: 1, checkboxChecked: false });
     const tabId = service.getStatus().activeTabId ?? "";
     await service.click({
       tabId,
@@ -2746,13 +3201,15 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       chatSessionId: "chat-1",
       observe: false,
     });
+    service.revokeAgentAccess({ kind: "chat", chatSessionId: "chat-1" });
+    answer.next = "block";
 
     const wc = fakes.webContentsInstances[0];
     const loadCountBeforeRedirect = wc?.loadURLCalls.length ?? 0;
     const redirectEvent = { preventDefault: vi.fn() };
     wc?.emit("will-redirect", redirectEvent, "https://console.aws.amazon.com/");
     expect(redirectEvent.preventDefault).toHaveBeenCalledTimes(1);
-    await vi.waitFor(() => expect(fakes.permissionPrompt).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(asked).toHaveLength(2));
     expect(wc?.getURL()).toBe("http://localhost:5173/");
     expect(wc?.loadURLCalls).toHaveLength(loadCountBeforeRedirect);
     await vi.waitFor(() => expect(collector.events.at(-1)).toMatchObject({
@@ -2761,18 +3218,17 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     }));
   });
 
-  it("keeps delayed agent redirects behind the human approval boundary", async () => {
+  it("keeps delayed agent redirects and popups behind the approval boundary", async () => {
     const realDateNow = Date.now.bind(Date);
     let dateNow: { mockRestore(): void } | null = null;
     try {
-      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      const { service, answer, asked } = createChatApprovingService();
       await service.createTab({
         url: "http://localhost:5173",
         activate: true,
         laneId: "lane-1",
         chatSessionId: "chat-1",
       });
-      fakes.permissionPrompt.mockResolvedValue({ response: 1, checkboxChecked: false });
       const tabId = service.getStatus().activeTabId ?? "";
       await service.click({
         tabId,
@@ -2782,8 +3238,12 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
         chatSessionId: "chat-1",
         observe: false,
       });
+      service.revokeAgentAccess({ kind: "chat", chatSessionId: "chat-1" });
+      answer.next = "block";
       dateNow = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + 60_000);
 
+      expect(fakes.webContentsInstances[0]?.openWindow("https://accounts.google.com/gsi/select")?.action)
+        .toBe("deny");
       const redirectEvent = { preventDefault: vi.fn() };
       fakes.webContentsInstances[0]?.emit(
         "will-redirect",
@@ -2792,39 +3252,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       );
 
       expect(redirectEvent.preventDefault).toHaveBeenCalledTimes(1);
-      await vi.waitFor(() => expect(fakes.permissionPrompt).toHaveBeenCalledTimes(1));
-    } finally {
-      dateNow?.mockRestore();
-    }
-  });
-
-  it("keeps delayed agent popups behind the human approval boundary", async () => {
-    const realDateNow = Date.now.bind(Date);
-    let dateNow: { mockRestore(): void } | null = null;
-    try {
-      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
-      await service.createTab({
-        url: "http://localhost:5173",
-        activate: true,
-        laneId: "lane-1",
-        chatSessionId: "chat-1",
-      });
-      const tabId = service.getStatus().activeTabId ?? "";
-      await service.click({
-        tabId,
-        x: 10,
-        y: 20,
-        laneId: "lane-1",
-        chatSessionId: "chat-1",
-        observe: false,
-      });
-      dateNow = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + 60_000);
-
-      const response = fakes.webContentsInstances[0]?.openWindow(
-        "https://accounts.google.com/gsi/select",
-      );
-
-      expect(response?.action).toBe("deny");
+      await vi.waitFor(() => expect(asked).toHaveLength(2));
     } finally {
       dateNow?.mockRestore();
     }
@@ -3216,6 +3644,125 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(status.ownerChatSessionId).toBe("chat-3");
   });
 
+  describe("isolated sign-ins", () => {
+    /** The partition the most recently created tab view was given. */
+    const newestPartition = (): string | undefined => (
+      fakes.webContentsViewInstances.at(-1)?.webPreferences as { partition?: string } | undefined
+    )?.partition;
+    const chat = (chatSessionId: string) => ({ laneId: "lane-1", chatSessionId });
+
+    it("gives each chat and profile its own in-memory sign-in, apart from the user's", async () => {
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      const open = async (input: Record<string, unknown>) => {
+        const status = await service.navigate({ url: "https://app.test/login", newTab: true, ...input });
+        return { tabId: status.targetTabId, partition: newestPartition() };
+      };
+
+      const shared = await open({});
+      const viewer = await open({ profile: "viewer", ...chat("chat-1") });
+      const viewerAgain = await open({ profile: "viewer", ...chat("chat-1") });
+      const owner = await open({ profile: "owner", ...chat("chat-1") });
+      const otherChatViewer = await open({ profile: "viewer", ...chat("chat-2") });
+      const unnamed = await open({ isolated: true, ...chat("chat-1") });
+
+      expect(shared.partition).toBe("persist:ade-browser");
+      const isolated = [viewer, owner, otherChatViewer, unnamed].map((entry) => entry.partition);
+      expect(isolated.every((partition) => partition && !partition.startsWith("persist:"))).toBe(true);
+      expect(new Set(isolated).size).toBe(4);
+      expect(viewerAgain.partition).toBe(viewer.partition);
+      const profileOf = (tabId: string | null | undefined) => (
+        service.getStatus().tabs.find((tab) => tab.id === tabId)?.isolatedProfile ?? null
+      );
+      expect([shared, viewer, owner, otherChatViewer, unnamed].map((entry) => profileOf(entry.tabId)))
+        .toEqual([null, "viewer", "owner", "viewer", "default"]);
+    });
+
+    it("reuses only a tab in the sign-in the open asked for", async () => {
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      const reuse = (input: Record<string, unknown>) => service.navigate({
+        url: "https://app.test/",
+        reuseOwnedTab: true,
+        ...chat("chat-1"),
+        ...input,
+      });
+
+      const viewer = await reuse({ profile: "viewer" });
+      const shared = await reuse({});
+      expect(shared.targetTabCreated).toBe(true);
+      expect(shared.targetTabId).not.toBe(viewer.targetTabId);
+
+      const viewerAgain = await reuse({ profile: "viewer" });
+      expect(viewerAgain).toMatchObject({ targetTabId: viewer.targetTabId, targetTabCreated: false });
+      const sharedAgain = await reuse({});
+      expect(sharedAgain).toMatchObject({ targetTabId: shared.targetTabId, targetTabCreated: false });
+
+      await expect(service.navigate({
+        url: "https://app.test/",
+        tabId: shared.targetTabId,
+        profile: "viewer",
+        ...chat("chat-1"),
+      })).rejects.toThrow(/not in the isolated profile "viewer"/);
+      expect(service.getStatus().tabs).toHaveLength(2);
+    });
+
+    it.each([
+      ["a space", "bad name"],
+      ["a path", "../viewer"],
+      ["41 characters", "a".repeat(41)],
+      ["punctuation", "viewer!"],
+    ])("refuses a profile name with %s before opening anything", async (_label, profile) => {
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      await expect(service.createTab({ url: "https://app.test/", profile, ...chat("chat-1") }))
+        .rejects.toThrow(/profile name/);
+      await expect(service.navigate({ url: "https://app.test/", profile, ...chat("chat-1") }))
+        .rejects.toThrow(/profile name/);
+      expect(service.getStatus().tabs).toHaveLength(0);
+      expect(fakes.webContentsViewInstances).toHaveLength(0);
+    });
+
+    it("wipes a sign-in when its last tab closes, and a new tab waits for the wipe", async () => {
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      const first = await service.navigate({ url: "https://app.test/", newTab: true, profile: "viewer", ...chat("chat-1") });
+      const partition = newestPartition();
+      const second = await service.navigate({ url: "https://app.test/", newTab: true, profile: "viewer", ...chat("chat-1") });
+
+      await service.closeTab({ tabId: first.targetTabId ?? "" });
+      expect(fakes.clearStorageData).not.toHaveBeenCalled();
+
+      const wipe = createDeferred<void>();
+      fakes.clearStorageData.mockReturnValueOnce(wipe.promise);
+      await service.closeTab({ tabId: second.targetTabId ?? "" });
+      expect(fakes.clearStorageData).toHaveBeenCalledWith(partition);
+
+      const viewsBefore = fakes.webContentsViewInstances.length;
+      let reopened = false;
+      const reopen = service
+        .navigate({ url: "https://app.test/", newTab: true, profile: "viewer", ...chat("chat-1") })
+        .then((status) => { reopened = true; return status; });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(reopened).toBe(false);
+      expect(fakes.webContentsViewInstances).toHaveLength(viewsBefore);
+
+      wipe.resolve();
+      await reopen;
+      expect(newestPartition()).toBe(partition);
+    });
+
+    it("opens a popup in its opener's sign-in", async () => {
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      await service.navigate({ url: "https://app.test/", newTab: true, profile: "viewer", ...chat("chat-1") });
+      const partition = newestPartition();
+      const opener = fakes.webContentsInstances.at(-1);
+
+      const response = opener?.openWindow("https://app.test/share");
+      expect(response?.action).toBe("allow");
+      response?.createWindow?.({});
+
+      expect(newestPartition()).toBe(partition);
+      expect(service.getStatus().tabs.at(-1)?.isolatedProfile).toBe("viewer");
+    });
+  });
+
   it("reuses the current chat's owned tab for agent browser opens", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
 
@@ -3425,12 +3972,12 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
         observation = await service.observe({ keepCount: 3 }, browserWin);
       }
 
-      expect(fs.existsSync(observation.filePath)).toBe(true);
+      expect(fs.existsSync(observation.filePath!)).toBe(true);
       expect(observation.relativePath).toMatch(/^\.ade\/cache\/browser-observations\//);
       expect(observation.cleanup.keepCount).toBe(3);
       expect(observation.cleanup.keptCount).toBe(3);
       expect(observation.cleanup.deletedCount).toBe(1);
-      const observationDir = path.dirname(observation.filePath);
+      const observationDir = path.dirname(observation.filePath!);
       expect(fs.readdirSync(observationDir).filter((entry) => entry.endsWith(".png"))).toHaveLength(3);
       expect(fs.readdirSync(observationDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(3);
     } finally {
@@ -3470,7 +4017,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
       const observation = result.observation;
       expect(observation).not.toBeNull();
-      expect(observation?.filePath.startsWith(path.join(userDataPath, "browser-observations", "personal")))
+      expect(observation?.filePath?.startsWith(path.join(userDataPath, "browser-observations", "personal")))
         .toBe(true);
       expect(observation?.relativePath).toMatch(/^personal\//);
       expect(fs.existsSync(observation?.filePath ?? "")).toBe(true);
@@ -3617,7 +4164,21 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
       const observation = await service.observe({ tabId, maxElements: 5, includeElementMap: true }, browserWin);
       await service.click({ tabId, selector: "button#save", observe: false }, browserWin);
-      await service.click({ tabId, handle: observation.dom?.elements[0]?.handle ?? "", observe: false }, browserWin);
+      const byHandle = await service.click(
+        { tabId, handle: observation.dom?.elements[0]?.handle ?? "", observe: false },
+        browserWin,
+      );
+      // The answer names the element the locate found, under the caller's handle.
+      expect(byHandle.resolved).toMatchObject({
+        selector: "button#save",
+        label: "Save",
+        handle: observation.dom?.elements[0]?.handle,
+      });
+      expect(byHandle.effect.status).toBe("not_checked");
+      // With an observation after the click, the locate's snapshot is the
+      // "before"; this fake page never changes, so the click is unconfirmed.
+      const observed = await service.click({ tabId, selector: "button#save", waitAfterMs: 0 }, browserWin);
+      expect(observed.effect).toEqual({ status: "unconfirmed", reason: "nothing on screen changed" });
       await expect(service.click({
         tabId,
         handle: "obs-x/../../outside:e:1",
@@ -3936,6 +4497,42 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       expect(service.getStatus(browserWin).activeTabId).toBe(tabId);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a personal tab attached while dispatching input without a source window", async () => {
+    const win = fakeBrowserWindow();
+    const browserWin = win as unknown as ServiceBrowserWindow;
+    const inputSurfaceCounts: number[] = [];
+    fakes.setSendCommand(async (method) => {
+      if (method === "Input.dispatchMouseEvent") inputSurfaceCounts.push(win.contentView.children.length);
+      return {};
+    });
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      getFallbackWindowForPersonalCollection: () => browserWin,
+    });
+    try {
+      await service.createTab({
+        tabCollection: "personal",
+        url: "https://personal-input.test",
+        activate: true,
+      });
+      const tabId = service.getStatus({ tabCollection: "personal" }).activeTabId ?? "";
+      expect(win.contentView.children).toHaveLength(0);
+
+      const result = await service.scroll({
+        tabCollection: "personal",
+        tabId,
+        deltaY: 400,
+        observe: false,
+      });
+
+      expect(result.trace).toMatchObject({ action: "scroll", status: "ok" });
+      expect(inputSurfaceCounts).toEqual([1]);
+      expect(win.contentView.children).toHaveLength(0);
+    } finally {
+      service.dispose();
     }
   });
 
@@ -4307,6 +4904,48 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       tabId: service.getStatus().activeTabId,
     });
   });
+
+  it("answers a navigation whose page never finishes loading after 20 seconds, well inside the IPC timeout", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://first.test", activate: true });
+    const wc = fakes.webContentsInstances[0];
+    expect(wc, "browser tab webContents exists").toBeTruthy();
+    // A dev server that accepts the connection and never answers.
+    wc.loadURL = vi.fn(() => new Promise<void>(() => {}));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let settled = false;
+      const navigation = service.navigate({ url: "https://hangs.test" }).finally(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(19_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(navigation).resolves.toMatchObject({ activeTabId: service.getStatus().activeTabId });
+      expect(wc.loadURL).toHaveBeenCalledWith("https://hangs.test/");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["a load superseded by a redirect or a newer navigation", "ERR_ABORTED (-3) loading 'https://x.test/'", true],
+    ["a load that failed (the tab records the error)", "ERR_NAME_NOT_RESOLVED (-105) loading 'https://x.test/'", true],
+    ["a broken call such as a destroyed tab", "Object has been destroyed", false],
+  ])("navigate answers instead of throwing for %s", async (_label, message, resolves) => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://first.test", activate: true });
+    const wc = fakes.webContentsInstances[0];
+    expect(wc, "browser tab webContents exists").toBeTruthy();
+    wc.loadURL = vi.fn(async () => {
+      throw new Error(message);
+    });
+
+    const navigation = service.navigate({ url: "https://x.test" });
+    if (resolves) await expect(navigation).resolves.toMatchObject({ activeTabId: service.getStatus().activeTabId });
+    else await expect(navigation).rejects.toThrow(message);
+    expect(wc.loadURL).toHaveBeenCalledWith("https://x.test/");
+  });
 });
 
 describe("createBuiltInBrowserService — switchTab and navigate inspect/selection invariants", () => {
@@ -4637,5 +5276,39 @@ describe("BuiltInBrowserNoTabError", () => {
     expect(isBuiltInBrowserNoTabError(new Error("No browser tab is open"))).toBe(false);
     expect(isBuiltInBrowserNoTabError({ name: "BuiltInBrowserNoTabError", tabId: "t" })).toBe(false);
     expect(isBuiltInBrowserNoTabError(null)).toBe(false);
+  });
+
+  describe("narrow page note for agents", () => {
+    const shownAt = (width: number) => ({ x: 0, y: 0, width, height: 696 });
+    const tab = (over: Record<string, unknown> = {}) => ({
+      id: "tab-7",
+      emulation: null,
+      devToolsMode: null,
+      handoff: null,
+      recording: null,
+      lastPanelRect: shownAt(385),
+      ...over,
+    }) as unknown as Parameters<typeof narrowPageHint>[0];
+
+    it("tells the agent the page is the pane's width and how to get a desktop layout", () => {
+      const hint = narrowPageHint(tab(), 385);
+      expect(hint).toContain("385");
+      expect(hint).toContain("ade browser emulate --tab tab-7 --width");
+      expect(hint).toContain("ade browser emulate --tab tab-7 --off");
+    });
+
+    it.each([
+      { name: "a page at least 640 px wide", over: {}, pageWidth: 640 },
+      { name: "a device preset the agent chose", over: { emulation: { width: 390, height: 844 } }, pageWidth: 390 },
+      { name: "a recording on the fixed viewport", over: { recording: { startedAt: "now" } }, pageWidth: 385 },
+      { name: "a tab no pane ever showed", over: { lastPanelRect: null }, pageWidth: 385 },
+    ])("adds no note for $name", ({ over, pageWidth }) => {
+      expect(narrowPageHint(tab(over), pageWidth)).toBeNull();
+    });
+
+    it("falls back to the pane's settled width when the page width is unknown", () => {
+      expect(narrowPageHint(tab({ lastPanelRect: shownAt(500) }), null)).toContain("500");
+      expect(narrowPageHint(tab({ lastPanelRect: shownAt(900) }), null)).toBeNull();
+    });
   });
 });

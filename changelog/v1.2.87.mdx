@@ -1,0 +1,38 @@
+---
+title: "v1.2.87"
+description: "Release notes for ADE v1.2.87 - October 3, 2026"
+---
+
+ADE 1.2.87 adds in-app sign-in for provider accounts, forking a chat from any turn, a lane-aware Commits view, a bulk menu for selected chats, and smoother long chat threads.
+
+## Chat
+
+- Fork a chat from any turn. Subagents get a permission ceiling, machines get launch defaults, wakes are batched, and you can reorder the queue (#1441).
+- Long chat threads load older history in the background and scroll smoothly. The "load earlier" arrow is gone (#1442).
+- ADE slash commands expand for every provider and delivery path, including OpenCode and ACP agents (#1436).
+- The handoff dialog closes on success and defaults to the source chat's model and permissions (#1440).
+
+## Accounts
+
+- Sign in to Claude Code and Codex accounts inside ADE, with a redesigned Accounts panel and smarter load balancing (#1435).
+
+## Work and lanes
+
+- Right-click a multi-selection in the Work sidebar for a bulk menu: grid, snooze, settle, stop, and lane actions (#1439).
+- Lane ahead/behind is measured on this machine instead of showing a cached copy (#1433).
+
+## History
+
+- The Commits view is lane-aware, with a graph, paging, and links from Lanes (#1430).
+- Commit ownership, sync, and Primary colouring follow lanes correctly (#1434).
+- Opening straight onto History or CTO no longer shows an empty sidebar (#1437).
+
+## Agent tools
+
+- `ade app-control` launches ADE's dev app, targets list rows, caps proof file names, and adds right-click (#1432).
+- `ade mac-desktop` names the next input method to try when an action is unconfirmed (#1431).
+
+## iOS
+
+- Work rows follow live chat turn state without pull-to-refresh (#1443).
+- Codex startup diagnostics are compact, the new-chat pane fits the screen, and Custom harnesses appear in the model picker (#1438).

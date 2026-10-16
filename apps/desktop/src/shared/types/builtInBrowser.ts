@@ -3,9 +3,21 @@ import type {
   AgentDomSnapshot,
   AgentElementSnapshot,
   AgentFrame,
+  ComputerUseActionEffect,
 } from "./agentObservation";
+import { RECORDING_MAX_MS, type DemoArtifactMetadata } from "../demoVideo/demoContract";
 
 export type BuiltInBrowserProvider = "cdp";
+
+/**
+ * Windows: an ADE desktop app started as administrator makes its bridge pipe
+ * admit administrators only, so the background service (the plain user) is
+ * refused. One sentence for the brain's reason, the desktop's log and the
+ * app-wide banner.
+ */
+export const ELEVATED_DESKTOP_TITLE = "ADE is running as administrator";
+export const ELEVATED_DESKTOP_MESSAGE =
+  "The ADE background service cannot reach it, so agents cannot use the browser, record App Control, or make demo videos. Quit ADE and open it normally.";
 
 export type BuiltInBrowserFrame = AgentFrame;
 
@@ -45,13 +57,33 @@ export type BuiltInBrowserClaimArgs = BuiltInBrowserProjectScopeArgs & {
   leaseTtlMs?: number | null;
 };
 
-export type BuiltInBrowserNavigateArgs = BuiltInBrowserClaimArgs & {
+/**
+ * Open the tab in its own throwaway sign-in instead of the shared profile: an
+ * in-memory cookie jar and storage that nobody else's tabs see, wiped when the
+ * last tab using it closes and never restored after a restart. Use it to sign
+ * in as a test account without signing the user out. `profile` names the jar
+ * so several tabs of one chat can share it ("owner", "viewer"); it implies
+ * `isolated`. Without a name the chat gets one jar called "default".
+ */
+export type BuiltInBrowserIsolationArgs = {
+  isolated?: boolean;
+  profile?: string | null;
+};
+
+export type BuiltInBrowserNavigateArgs = BuiltInBrowserClaimArgs & BuiltInBrowserIsolationArgs & {
   url: string;
   tabId?: string | null;
   newTab?: boolean;
   activate?: boolean;
   reuseOwnedTab?: boolean;
   openPanel?: boolean;
+};
+
+export type BuiltInBrowserTabLoadError = {
+  /** Chromium's net error code, e.g. -102 for a refused connection. */
+  code: number;
+  description: string;
+  url: string | null;
 };
 
 export type BuiltInBrowserTab = {
@@ -65,6 +97,19 @@ export type BuiltInBrowserTab = {
    * title reads "New tab" rather than the empty document title.
    */
   isLaunchpad: boolean;
+  /**
+   * Why the current page failed to load (connection refused, DNS, timeout), or
+   * null. Chromium shows such a page as plain white, so the Work tab's floating
+   * preview hides while it is set. Cleared when the tab starts loading again.
+   * Absent on a main process that predates it, which reads as null.
+   */
+  loadError?: BuiltInBrowserTabLoadError | null;
+  /**
+   * The isolated profile this tab signs in with, or null for the shared
+   * profile. Fixed for the tab's life. Absent on a main process that predates
+   * isolated tabs, which reads as null.
+   */
+  isolatedProfile?: string | null;
   /**
    * Best favicon Chromium reported for the current document: the first http(s)
    * URL, or a `data:` icon under 32 KB. Cleared the moment the tab navigates to
@@ -88,6 +133,14 @@ export type BuiltInBrowserTab = {
   zoomFactor: number;
   devToolsOpen: boolean;
   emulation: BuiltInBrowserEmulationState | null;
+  /**
+   * The fixed page size a recording tab is laid out at
+   * (`BUILT_IN_BROWSER_RECORDING_VIEWPORT`), or null when the tab follows its box.
+   * The wire name predates recording-only use and stays for compatibility.
+   * The pane letterboxes it exactly like a device preset. Absent on a main
+   * process that predates it, which reads as null.
+   */
+  agentViewport?: { width: number; height: number } | null;
   networkLogging: boolean;
   recording: BuiltInBrowserRecordingStatus | null;
   /**
@@ -169,6 +222,106 @@ export type BuiltInBrowserHandoffWaitResult = {
  */
 export const BUILT_IN_BROWSER_HANDOFF_ACTIVE_CODE = "handoff_active";
 
+/**
+ * Error-message prefixes for an agent call that needs the human's OK to use the
+ * ADE browser. `pending`: the prompt is open and nobody has answered inside one
+ * call's budget; the same call run again joins the same prompt, so the CLI
+ * keeps re-running it for up to {@link BUILT_IN_BROWSER_APPROVAL_WAIT_MS}.
+ * `blocked`: the human pressed Block.
+ *
+ * Match these as substrings: an older desktop said `origin_approval_pending:`,
+ * which still contains `approval_pending:`, so a newer CLI keeps waiting on it.
+ */
+export const BUILT_IN_BROWSER_APPROVAL_PENDING_CODE = "approval_pending";
+export const BUILT_IN_BROWSER_APPROVAL_BLOCKED_CODE = "approval_blocked";
+/** How long one agent command waits in total for a human to answer the prompt. */
+export const BUILT_IN_BROWSER_APPROVAL_WAIT_MS = 2 * 60_000;
+/**
+ * How long ONE desktop call waits for the answer before it says "pending".
+ * Well under the daemon's 30 s bridge budget, so the bridge keeps its own
+ * liveness timeout and still never reports a timeout for a waiting human.
+ */
+export const BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS = 15_000;
+
+/**
+ * What an `approval_pending: …` message is waiting for, as a phrase that reads
+ * after "waiting for the user to" (e.g. "allow this chat to use the ADE
+ * browser"), or null for any other error.
+ */
+export function parseBuiltInBrowserApprovalPending(message: string): { waitingFor: string } | null {
+  const index = message.indexOf(`${BUILT_IN_BROWSER_APPROVAL_PENDING_CODE}:`);
+  if (index < 0) return null;
+  const tail = message.slice(index);
+  const current = /waiting for the user to (allow this (?:chat|lane) to use the ADE browser)/.exec(tail);
+  if (current) return { waitingFor: current[1]! };
+  // An older desktop's per-site prompt.
+  const legacy = /approve (\S+) in ADE/.exec(tail);
+  return { waitingFor: legacy ? `approve ${legacy[1]} in ADE` : "answer the ADE browser prompt" };
+}
+
+/**
+ * Who may drive the ADE browser without asking. Machine-wide: the browser's
+ * signed-in profile is one per ADE install, so the answer is too.
+ *
+ * - `all`: every agent in every lane. The default; nothing is ever asked.
+ * - `lanes`: agents in a lane the user allowed. Asked once per lane.
+ * - `chats`: chats the user allowed. Asked once per chat.
+ */
+export type BuiltInBrowserAgentAccessMode = "all" | "lanes" | "chats";
+export const BUILT_IN_BROWSER_AGENT_ACCESS_MODES: readonly BuiltInBrowserAgentAccessMode[] = ["all", "lanes", "chats"];
+export const BUILT_IN_BROWSER_AGENT_ACCESS_DEFAULT_MODE: BuiltInBrowserAgentAccessMode = "all";
+
+export function normalizeBuiltInBrowserAgentAccessMode(value: unknown): BuiltInBrowserAgentAccessMode {
+  return value === "lanes" || value === "chats" || value === "all"
+    ? value
+    : BUILT_IN_BROWSER_AGENT_ACCESS_DEFAULT_MODE;
+}
+
+/** A lane the user allowed. Keyed by project + lane; the names are for display. */
+export type BuiltInBrowserAgentLaneGrant = {
+  projectRoot: string | null;
+  laneId: string;
+  laneName: string | null;
+  grantedAt: string;
+};
+
+/** A chat the user allowed. The names are for display. */
+export type BuiltInBrowserAgentChatGrant = {
+  chatSessionId: string;
+  chatTitle: string | null;
+  laneName: string | null;
+  grantedAt: string;
+};
+
+/** One open "may this agent use the ADE browser?" question. */
+export type BuiltInBrowserAgentAccessPrompt = {
+  id: string;
+  chatSessionId: string | null;
+  chatTitle: string | null;
+  laneId: string | null;
+  laneName: string | null;
+  projectRoot: string | null;
+  /** The answers this caller can be given: a lane-less chat has no lane to allow, a chat-less shell no chat. */
+  canAllowLane: boolean;
+  canAllowChat: boolean;
+  requestedAt: string;
+};
+
+export type BuiltInBrowserAgentAccessAnswer = "all" | "lane" | "chat" | "block";
+
+export type BuiltInBrowserAgentAccessSnapshot = {
+  mode: BuiltInBrowserAgentAccessMode;
+  laneGrants: BuiltInBrowserAgentLaneGrant[];
+  chatGrants: BuiltInBrowserAgentChatGrant[];
+  /** Oldest first. The renderer shows the first. */
+  prompts: BuiltInBrowserAgentAccessPrompt[];
+};
+
+export type BuiltInBrowserAgentAccessRevokeArgs =
+  | { kind: "lane"; projectRoot: string | null; laneId: string }
+  | { kind: "chat"; chatSessionId: string }
+  | { kind: "all" };
+
 export type BuiltInBrowserSession = {
   id: string;
   tabId: string;
@@ -213,6 +366,14 @@ export type BuiltInBrowserStatus = {
    * "nobody is browsing" is the right reading of an absent field.
    */
   agentPresence?: BuiltInBrowserAgentPresence[];
+  /**
+   * The tab an `open`/`navigate` or `new-tab` call drove. Set only on those
+   * calls' answers: an agent's open does not take the human's focus, so the
+   * active tab is usually not the one it just opened.
+   */
+  targetTabId?: string | null;
+  /** True when that call created the tab rather than navigating an existing one. */
+  targetTabCreated?: boolean;
 };
 
 export type BuiltInBrowserPermissionDecision = {
@@ -301,7 +462,7 @@ export type BuiltInBrowserSessionsResult = {
   sessions: BuiltInBrowserSession[];
 };
 
-export type BuiltInBrowserCreateTabArgs = BuiltInBrowserClaimArgs & {
+export type BuiltInBrowserCreateTabArgs = BuiltInBrowserClaimArgs & BuiltInBrowserIsolationArgs & {
   url?: string | null;
   activate?: boolean;
   openPanel?: boolean;
@@ -325,6 +486,14 @@ export type BuiltInBrowserObservationArgs = BuiltInBrowserTabTargetArgs & {
   includeElementMap?: boolean;
   includeDiagnostics?: boolean;
   maxElements?: number | null;
+  /**
+   * Fail the observation when no screenshot can be captured. Off by default:
+   * an observation of a tab whose pixels are unavailable (host window
+   * minimised, no host window) still returns its DOM, with `filePath: null`
+   * and `screenshotUnavailable` naming why. Proof sets it, because proof
+   * without pixels is not proof.
+   */
+  requireScreenshot?: boolean;
 };
 
 export type BuiltInBrowserObservationCleanup = {
@@ -340,11 +509,19 @@ export type BuiltInBrowserObservation = {
   url: string | null;
   title: string | null;
   capturedAt: string;
-  width: number;
-  height: number;
-  mimeType: string;
-  filePath: string;
+  /** Null, with `filePath`/`mimeType`, when the screenshot was unavailable. */
+  width: number | null;
+  height: number | null;
+  mimeType: string | null;
+  filePath: string | null;
   relativePath: string | null;
+  /** Why there is no image, when there is none: "Browser screenshot is unavailable for tab …". */
+  screenshotUnavailable?: string;
+  /**
+   * For the agent, when the page is narrow because the person's pane is: why a
+   * site may be in its mobile layout, and the command for a desktop one.
+   */
+  narrowPageHint?: string;
   dataUrl?: string;
   dom?: BuiltInBrowserDomSnapshot | null;
   elementMap?: BuiltInBrowserObservationElementMap | null;
@@ -412,6 +589,13 @@ export type BuiltInBrowserAgentActionResult = {
   status: BuiltInBrowserStatus;
   trace: BuiltInBrowserActionTraceEntry | null;
   session: BuiltInBrowserSession | null;
+  /**
+   * The element the target resolved to, or null when the action went to a
+   * point or to whatever had focus. Read before the input was sent.
+   */
+  resolved: BuiltInBrowserElementSnapshot | null;
+  /** Whether anything visibly changed between the state before the input and the post-action observation. */
+  effect: ComputerUseActionEffect;
 };
 
 export type BuiltInBrowserElementSnapshot = AgentElementSnapshot;
@@ -722,12 +906,29 @@ export type DevServerRecord = {
   detectedAt: string;
 };
 
+/** One dev server per (lane, port): two lanes may serve the same port. */
+export function devServerKey(laneId: string | null | undefined, port: number): string {
+  return `${laneId ?? ""}:${port}`;
+}
+
 export type DevServersArgs = {
   laneId?: string | null;
 };
 
 export type DevServersResult = {
   servers: DevServerRecord[];
+};
+
+/**
+ * Published by the runtime that runs a lane's processes when one of its dev
+ * servers starts or stops. Every desktop on that project hears it, local or
+ * connected from another machine, so the Browser lights up wherever the user is.
+ */
+export const DEV_SERVER_EVENT = "dev_server_event" as const;
+
+export type DevServerEvent = {
+  kind: "detected" | "removed";
+  server: DevServerRecord;
 };
 
 /* ── Device emulation ─────────────────────────────────────────────────────── */
@@ -948,6 +1149,32 @@ export type BuiltInBrowserNetworkLogResult = {
   entries: BuiltInBrowserNetworkLogEntry[];
 };
 
+/**
+ * Read a tab's text the way a person reads it: the rendered text of the page's
+ * main content (or one element), in pages of `maxChars`. `observe` maps what an
+ * agent can click; this is what it can read.
+ */
+export type BuiltInBrowserReadTextArgs = BuiltInBrowserTabTargetArgs & {
+  /** CSS selector to read instead of the page's main content. */
+  selector?: string | null;
+  /** Characters to skip, to read on from an earlier result's `nextOffset`. */
+  offset?: number | null;
+  maxChars?: number | null;
+};
+
+export type BuiltInBrowserReadTextResult = {
+  tabId: string;
+  url: string | null;
+  title: string | null;
+  /** Where the text came from: the selector, the page's main/article region, or the whole body. */
+  source: "selector" | "main" | "body";
+  text: string;
+  offset: number;
+  totalChars: number;
+  /** Where the next page starts, or null when this one reached the end. */
+  nextOffset: number | null;
+};
+
 export type BuiltInBrowserExportHarArgs = BuiltInBrowserTabTargetArgs & {
   filter?: string | null;
   failedOnly?: boolean;
@@ -1033,7 +1260,7 @@ export type BuiltInBrowserRecordingFps = (typeof BUILT_IN_BROWSER_RECORDING_FPS_
  * finalizes — see `suspendAgentCaptureForHandoff`. Neither resumes; an agent
  * that wants more has to start a new recording.
  */
-export const BUILT_IN_BROWSER_MAX_RECORDING_MS = 5 * 60_000;
+export const BUILT_IN_BROWSER_MAX_RECORDING_MS = RECORDING_MAX_MS;
 
 /**
  * Query parameters whose value is a credential rather than a request detail.
@@ -1081,13 +1308,16 @@ export type BuiltInBrowserRecordingStatus = {
  * action-trace entry carrying the same value, so `ade browser trace` explains it
  * to the agent.
  */
-export type BuiltInBrowserRecordingEndedBy = "handoff" | "max_duration";
+/** `idle` and `disk` are the limits every recording shares (`demoRecordingGuard.ts`). */
+export type BuiltInBrowserRecordingEndedBy = "handoff" | "max_duration" | "idle" | "disk";
 
 export type BuiltInBrowserStartRecordingArgs = BuiltInBrowserTabTargetArgs & {
   /** 30 or 60; anything else is rejected. */
   fps?: number | null;
   /** Supplying a caption is what makes `stopRecording` file a proof entry. */
   caption?: string | null;
+  /** File the recording as it happened: no cuts, zoom or overlays. */
+  plain?: boolean | null;
 };
 
 export type BuiltInBrowserStartRecordingResult = {
@@ -1096,7 +1326,10 @@ export type BuiltInBrowserStartRecordingResult = {
   status: BuiltInBrowserStatus;
 };
 
-export type BuiltInBrowserStopRecordingArgs = BuiltInBrowserTabTargetArgs;
+export type BuiltInBrowserStopRecordingArgs = BuiltInBrowserTabTargetArgs & {
+  /** Overrides the start's `plain` for this recording. */
+  plain?: boolean | null;
+};
 
 export type BuiltInBrowserStopRecordingResult = {
   tabId: string;
@@ -1110,6 +1343,8 @@ export type BuiltInBrowserStopRecordingResult = {
   caption: string | null;
   /** Reserved for encoders that emit a sidecar manifest; `null` today. */
   manifestPath: string | null;
+  /** How the demo was made; the proof stores it at `metadata.demo`. Null for a file passed through as recorded. */
+  demo?: DemoArtifactMetadata | null;
   status: BuiltInBrowserStatus;
 };
 
@@ -1138,12 +1373,33 @@ export const BUILT_IN_BROWSER_PREVIEW_JPEG_QUALITY = 80;
  * The view has to stay attached and visible to keep a compositor surface (a
  * detached or hidden `WebContentsView` captures nothing at all), so it is parked
  * this far past the bottom-right corner of the union of every display, where no
- * window on any screen can reach it. The size floors only apply to a panel that
- * was never opened — a zero-sized view would capture an empty image.
+ * window on any screen can reach it. The size floors only apply to a tab the
+ * panel never showed — a zero-sized view would capture an empty image.
  */
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN = 64;
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH = 960;
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT = 600;
+/**
+ * A page narrower than this, because the person's pane is, gets a
+ * `narrowPageHint` on an agent's observation. The page keeps
+ * the size of the pane that showed it; the hint tells the agent how to ask
+ * for a desktop layout.
+ */
+export const BUILT_IN_BROWSER_NARROW_PAGE_WIDTH = 640;
+
+/**
+ * The page size of a tab that is being recorded.
+ *
+ * A page lays out at its native view's size, so a recording made in a narrow
+ * Work pane was a thin strip. While a tab records, its layout viewport is
+ * pinned here (the same CDP device-metrics override a device preset uses) and
+ * scaled to fit whatever box shows it; parked off screen, it is exactly this
+ * size at scale 1. Agent-owned tabs are not pinned: they lay out at the pane.
+ */
+export const BUILT_IN_BROWSER_RECORDING_VIEWPORT: { readonly width: number; readonly height: number } = {
+  width: 1280,
+  height: 800,
+};
 /**
  * How long a watched view is held overlapping the window before it is parked.
  *

@@ -2,6 +2,7 @@ import React from "react";
 import { cn } from "../ui/cn";
 import type { TimelineEvent } from "./timelineTypes";
 import { getStatusClasses } from "./eventTaxonomy";
+import { EventMachineChip, isEventMachineOffline } from "./EventMachineChip";
 import { relativeWhen, formatDurationMs } from "../../lib/format";
 
 type TimelineRowProps = {
@@ -32,10 +33,11 @@ export function TimelineRow({
       className={cn(
         "flex items-center w-full text-left transition-all group",
         "h-11 px-2 gap-2",
-        "border-b border-white/[0.04]",
-        selected && "bg-white/[0.05] border-l-[3px] border-l-[var(--color-accent)]",
-        !selected && "hover:bg-white/[0.03]",
+        "border-b border-fg/[0.04]",
+        selected && "bg-fg/[0.05] border-l-[3px] border-l-[var(--color-accent)]",
+        !selected && "hover:bg-fg/[0.03]",
         dimmed && "opacity-30",
+        !dimmed && isEventMachineOffline(event) && "opacity-50",
       )}
     >
       {/* Lane color indicator — bold bar */}
@@ -75,6 +77,7 @@ export function TimelineRow({
           {event.laneName}
         </span>
       )}
+      <EventMachineChip event={event} compact />
 
       {/* Status badge */}
       <span className={cn(

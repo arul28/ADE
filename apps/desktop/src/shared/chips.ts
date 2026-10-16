@@ -32,9 +32,12 @@
 //     `@lane:<id>` and `ade://lane/<id>` are both a `lane` chip; only the token
 //     differs. That is what lets one renderer serve every surface.
 
+import { parseBrowserTabMentions, type BrowserTabMentionTarget } from "./browserTabMention";
 import { formatChatMentionToken, parseChatMentions } from "./chatMentions";
 import { parseAttachmentTokens, type AttachmentLabelKind } from "./attachmentLabels";
 import { looksLikeAdeDeeplink, parseDeeplink, type DeeplinkTarget } from "./deeplinks";
+import { getModelById } from "./modelRegistry";
+import { modelMentionChipLabel, parseModelMentions, type ModelMention } from "./modelMentions";
 import { findSmartLinks, type SmartLinkPreview } from "./smartLinks";
 import type { ChatMentionKind } from "./types/chatMentions";
 
@@ -58,12 +61,20 @@ export type ChipKind =
   | "actions_run"
   | "linear_issue"
   | "web_page"
+  /** A model with a thinking level and a permission mode (`@model:<id>?…`). */
+  | "model"
+  /** A provider permission mode an agent named, e.g. `bypassPermissions`. */
+  | "permission"
+  /** A slash command or skill this chat can run, e.g. `/quality`. */
+  | "skill"
   /** An `ade://` URL this build cannot parse — a newer ADE minted it. */
   | "ade_link"
   /** An ADE account machine, from a `@mac:` mention. */
   | "machine"
   /** A chat attachment, from an `[Image #k]` / `[File #k: name]` token. */
-  | "attachment";
+  | "attachment"
+  /** A built-in browser tab the user attached to a message (`<ade-browser-tab …>`). */
+  | "browser_tab";
 
 /**
  * Where the chip came from, which is what a click needs in order to route.
@@ -75,12 +86,11 @@ export type ChipSource =
   | { origin: "path"; path: string }
   | { origin: "deeplink"; url: string; target: DeeplinkTarget }
   | { origin: "url"; url: string }
-  /**
-   * Positional: the k-th image (or file) of the message's own attachment list.
-   * Only the renderer holding that list can resolve it, so a surface without
-   * one draws the token as plain text.
-   */
-  | { origin: "attachment"; attachmentKind: AttachmentLabelKind; ordinal: number; name?: string };
+  | { origin: "attachment"; attachmentKind: AttachmentLabelKind; ordinal: number; name?: string }
+  | { origin: "model"; mention: ModelMention }
+  | { origin: "permission"; provider: string; value: string }
+  | { origin: "skill"; name: string }
+  | { origin: "browser_tab"; tabId: string; url: string | null };
 
 export type Chip = {
   kind: ChipKind;
@@ -122,9 +132,13 @@ export const CHIP_GLYPH: Record<ChipKind, string> = {
   actions_run: "⚙",
   linear_issue: "L",
   web_page: "↗",
+  model: "✦",
+  permission: "⛨",
+  skill: "/",
   ade_link: "A",
   machine: "▢",
   attachment: "▣",
+  browser_tab: "🌐",
 };
 
 export function chipGlyph(kind: ChipKind): string {
@@ -151,9 +165,13 @@ export const CHIP_GLYPH_ASCII: Record<ChipKind, string> = {
   actions_run: "r",
   linear_issue: "N",
   web_page: ">",
+  model: "M",
+  permission: "P",
+  skill: "/",
   ade_link: "A",
   machine: "M",
   attachment: "I",
+  browser_tab: "B",
 };
 
 export function chipGlyphAscii(kind: ChipKind): string {
@@ -211,12 +229,45 @@ export function chipFromMention(mentionKind: ChatMentionKind, id: string, label?
   };
 }
 
+/**
+ * A model chip. The label uses the registry's display name when this build
+ * knows the model, and the last segment of the id when it does not.
+ */
+export function chipFromModelMention(mention: ModelMention, token: string): Chip {
+  const displayName = getModelById(mention.modelId)?.displayName
+    ?? mention.modelId.split("/").pop()
+    ?? mention.modelId;
+  return {
+    kind: "model",
+    token,
+    label: modelMentionChipLabel(mention, displayName),
+    source: { origin: "model", mention },
+  };
+}
+
 function defaultMentionLabel(mentionKind: ChatMentionKind, id: string): string {
   if (mentionKind === "chat") return `Chat ${shortId(id)}`;
   if (mentionKind === "lane") return `Lane ${shortId(id)}`;
   if (mentionKind === "pr") return `PR ${shortId(id)}`;
   if (mentionKind === "machine") return `Machine ${shortId(id)}`;
   return `Terminal ${shortId(id)}`;
+}
+
+/** An attached browser tab. The label is the tab title, then its host. */
+export function chipFromBrowserTab(target: BrowserTabMentionTarget, token: string): Chip {
+  let host: string | null = null;
+  try {
+    host = target.url ? new URL(target.url).host || null : null;
+  } catch {
+    host = null;
+  }
+  return {
+    kind: "browser_tab",
+    token,
+    label: target.title?.trim() || host || target.url || "Browser tab",
+    detail: target.url,
+    source: { origin: "browser_tab", tabId: target.tabId, url: target.url },
+  };
 }
 
 /**
@@ -314,6 +365,8 @@ function smartLinkKindToChipKind(kind: SmartLinkPreview["kind"]): ChipKind {
     case "github_pr":
       return "pr";
     case "github_issue":
+      return "issue";
+    case "jira_issue":
       return "issue";
     case "github_repo":
       return "repo";
@@ -418,6 +471,11 @@ export function parseChips(text: string, limit = 24): ChipMatch[] {
     matches.push({ ...chip, start: mention.start, end: mention.end });
   }
 
+  for (const model of parseModelMentions(text)) {
+    const chip = chipFromModelMention(model, model.token);
+    matches.push({ ...chip, start: model.start, end: model.end });
+  }
+
   for (const link of findSmartLinks(text, limit)) {
     const chip = chipFromSmartLink(link);
     matches.push({ ...chip, start: link.start, end: link.end });
@@ -428,6 +486,11 @@ export function parseChips(text: string, limit = 24): ChipMatch[] {
   for (const token of parseAttachmentTokens(text)) {
     const chip = chipFromAttachmentToken(token.kind, token.ordinal, token.token, token.name);
     matches.push({ ...chip, start: token.start, end: token.end });
+  }
+  // An attached tab's block holds a URL and a title that would otherwise chip
+  // on their own; the block starts first, so the overlap pass below drops them.
+  for (const tab of parseBrowserTabMentions(text)) {
+    matches.push({ ...chipFromBrowserTab(tab, tab.token), start: tab.start, end: tab.end });
   }
 
   matches.sort((a, b) => a.start - b.start);

@@ -253,12 +253,15 @@ function validatePreflight() {
   requireFile("scripts/windows-install-setup.ps1", "Windows install setup script");
   requireFile("scripts/windows-uninstall-cleanup.ps1", "Windows uninstall cleanup script");
   requireFile("scripts/windows-firewall-rules.ps1", "Windows firewall rule script");
+  requireFile("scripts/windows-update-progress.ps1", "Windows update progress window");
   requireFile("build/installer.nsh", "Windows NSIS customization");
   // The capture helper is compiled on the release box by
   // `scripts/build-capture-helper-win.mjs`, so preflight can only assert the
   // SOURCE is present - the .exe does not exist yet at this point in dist:win.
   // The release-mode check below asserts the built binary actually shipped.
   requireFile("native/ADECaptureHelperWin/src/main.cpp", "Windows capture helper source");
+  requireFile("native/ADEDesktopDriverWin/src/main.cpp", "Windows Desktop driver source");
+  requireFile("scripts/build-windows-desktop-driver.mjs", "Windows Desktop driver build");
   requireFile("vendor/crsqlite/win32-x64/crsqlite.dll", "Windows cr-sqlite extension");
 
   assertRequiredBundledAdeCliFiles(resolveBundledAdeCliFiles({ allowMissingSources: true }));
@@ -269,17 +272,17 @@ function validatePreflight() {
     .find((entry) => entry?.to === "native");
   if (!captureHelperResource
     || !Array.isArray(captureHelperResource.filter)
-    || !captureHelperResource.filter.includes("ade-capture-helper.exe")) {
+    || !captureHelperResource.filter.includes("ade-capture-helper.exe")
+    || !captureHelperResource.filter.includes("ade-desktop-driver.exe")) {
     fail(
-      "package.json build.extraResources must ship resources/native -> native including ade-capture-helper.exe; "
-      + "without it the Windows package has no capture gesture.",
+      "package.json build.extraResources must ship the Windows capture helper and Desktop driver from resources/native -> native.",
     );
   }
   if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("vendor/crsqlite/**")) {
     fail("package.json build.asarUnpack must unpack vendor/crsqlite/**");
   }
-  if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("node_modules/opencode-ai/**")) {
-    fail("package.json build.asarUnpack must unpack node_modules/opencode-ai/** for the bundled OpenCode CLI");
+  if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("node_modules/@opencode/cli/**")) {
+    fail("package.json build.asarUnpack must unpack node_modules/@opencode/cli/** for the bundled OpenCode CLI");
   }
   // Codex, Claude Code and OpenCode native platform packages are fetched into
   // the machine tools cache at runtime. Unpacking one would ship it: nothing
@@ -578,10 +581,10 @@ async function validatePackageHygiene(resourcesPath) {
     path.join(unpackedPath, "node_modules", "node-pty", "third_party", "conpty", "1.23.251008001", "win10-arm64"),
     "node-pty Windows arm64 conpty payload in Windows x64 package",
   );
-  // `opencode-ai` still ships (the resolver and the ADE CLI both load the JS
-  // launcher), but the 107 MB Windows executable it carries in its own bin/ is
-  // pruned: OpenCode comes from the tools cache now.
-  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-ai", "bin", "opencode.exe"), "runtime-fetched OpenCode install shim");
+  // `@opencode/cli` still ships (the resolver and the ADE CLI both look for the
+  // launcher), but the native binary its postinstall copies into its own bin/
+  // is pruned: OpenCode comes from the tools cache now.
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "@opencode", "cli", "bin", "opencode.exe"), "runtime-fetched OpenCode install shim");
   // The JS entry points must survive the exclusions above.
   await assertRuntimeToolJsEntryPointsPresent({
     nodeModulesPath: path.join(unpackedPath, "node_modules"),
@@ -632,6 +635,9 @@ async function validatePackagedRuntime(appDir) {
   const smokeScriptPath = path.join(unpackedPath, "dist", "main", "packagedRuntimeSmoke.cjs");
   const crsqliteDllPath = path.join(unpackedPath, "vendor", "crsqlite", "win32-x64", "crsqlite.dll");
   const captureHelperExePath = path.join(resourcesPath, "native", "ade-capture-helper.exe");
+  const desktopDriverExePath = path.join(resourcesPath, "native", "ade-desktop-driver.exe");
+  const nowPlayingExePath = path.join(resourcesPath, "native", "ade-now-playing.exe");
+  const musicHostExePath = path.join(resourcesPath, "native", "ade-music-host", "ade-music-host.exe");
   const bundledAdeCliFiles = resolveBundledAdeCliFiles();
   assertRequiredBundledAdeCliFiles(bundledAdeCliFiles);
 
@@ -656,10 +662,29 @@ async function validatePackagedRuntime(appDir) {
   // release must never ship without the capture gesture by accident.
   if (isLocalWindowsTestBuild && process.env.ADE_SKIP_CAPTURE_HELPER_BUILD === "1") {
     console.warn(
-      "[validate-win-artifacts] Local test build without the capture helper (ADE_SKIP_CAPTURE_HELPER_BUILD=1): the capture gesture is unavailable.",
+      "[validate-win-artifacts] Local test build without native helpers (ADE_SKIP_CAPTURE_HELPER_BUILD=1): capture and Windows Desktop are unavailable.",
     );
   } else {
     await assertPathExists(captureHelperExePath, "packaged Windows capture helper");
+    await assertPathExists(desktopDriverExePath, "packaged Windows Desktop driver");
+  }
+  // The home page's Now Playing widget and the Music tab. Each build has its own
+  // skip switch, honored only by a local test build, like the helpers above.
+  if (isLocalWindowsTestBuild && process.env.ADE_SKIP_NOW_PLAYING_BUILD === "1") {
+    console.warn("[validate-win-artifacts] Local test build without the Now Playing helper (ADE_SKIP_NOW_PLAYING_BUILD=1).");
+  } else {
+    await assertPathExists(nowPlayingExePath, "packaged Windows Now Playing helper");
+  }
+  if (isLocalWindowsTestBuild && process.env.ADE_SKIP_MUSIC_HOST_BUILD === "1") {
+    console.warn("[validate-win-artifacts] Local test build without the music player host (ADE_SKIP_MUSIC_HOST_BUILD=1).");
+  } else {
+    await assertPathExists(musicHostExePath, "packaged Windows music player host");
+    // Apple Music's page and Spotify's, which the host loads with --page.
+    for (const page of ["page", "page-spotify"]) {
+      for (const pageFile of ["index.html", "player.js"]) {
+        await assertPathExists(path.join(path.dirname(musicHostExePath), page, pageFile), `packaged Windows music player ${page}/${pageFile}`);
+      }
+    }
   }
   assertPackagedTuiEsmShims(await fsp.readFile(adeCliTuiPath, "utf8"));
   if (isLocalWindowsTestBuild) {
@@ -762,6 +787,20 @@ async function validatePackagedRuntime(appDir) {
     env: { ...process.env },
   });
   assertAdeCliHelp(defaultHelp.stdout, "Bundled ADE CLI wrapper");
+
+  // Agents read the exit code. The wrapper once returned 0 for every command,
+  // so a failed one looked like a success.
+  const unknownCommand = await runCommand(adeCliBinPath, ["ade-validate-unknown-command"], {
+    cwd: resourcesPath,
+    env: { ...process.env },
+  }).then(() => null, (error) => error);
+  if (!unknownCommand) {
+    fail("Bundled ADE CLI wrapper returned exit code 0 for an unknown command.");
+  }
+  // The CLI exits 2 for an unknown command; a timeout or spawn error is not that.
+  if (!/Command failed \(2\)/.test(String(unknownCommand.message ?? unknownCommand))) {
+    fail(`Bundled ADE CLI wrapper did not return the CLI's exit code 2 for an unknown command: ${unknownCommand.message ?? unknownCommand}`);
+  }
 
   const tuiSmokeDir = await fsp.mkdtemp(path.join(os.tmpdir(), "ade-win-tui-smoke-"));
   try {
@@ -954,6 +993,21 @@ async function validateReleaseArtifacts() {
   const appIdentity = await validateAuthenticodeSignature(
     path.join(appDir, `${productName}.exe`),
     "packaged Windows app executable",
+    expectedIdentity,
+  );
+  await validateAuthenticodeSignature(
+    path.join(appDir, "resources", "native", "ade-desktop-driver.exe"),
+    "Windows Desktop driver",
+    expectedIdentity,
+  );
+  await validateAuthenticodeSignature(
+    path.join(appDir, "resources", "native", "ade-now-playing.exe"),
+    "Windows Now Playing helper",
+    expectedIdentity,
+  );
+  await validateAuthenticodeSignature(
+    path.join(appDir, "resources", "native", "ade-music-host", "ade-music-host.exe"),
+    "Windows music player host",
     expectedIdentity,
   );
   // Both artifacts are pinned to the same Subject above, but a Subject match

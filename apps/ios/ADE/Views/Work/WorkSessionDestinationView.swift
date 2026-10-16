@@ -7,18 +7,11 @@ enum WorkSessionNavigationChrome {
   case embedded
 }
 
-private enum WorkOlderHistoryPageResult {
-  case unsupported
-  case loaded(addedTimelineEntries: Bool)
-  case failed
-}
-
 extension WorkSessionNavigationChrome: Equatable {}
 
 let workSessionEdgeSwipeActivationWidth: CGFloat = 36
 let workSessionEdgeSwipeMinimumTranslation: CGFloat = 88
 let workSessionEdgeSwipePredictedTranslation: CGFloat = 140
-let workChatIdleLiveEventTailLimit = 48
 
 func workSessionShouldDismissForEdgeSwipe(
   startX: CGFloat,
@@ -62,10 +55,6 @@ func workChatCodexRecoveryAvailable(hostSupportsRecovery: Bool) -> Bool {
   hostSupportsRecovery
 }
 
-func workChatLiveObservationKey(sessionId: String, chatEventRevision: Int) -> String {
-  "\(sessionId)-\(chatEventRevision)"
-}
-
 func workChatShouldSteerActiveTurn(
   session: TerminalSessionSummary?,
   summary: AgentChatSessionSummary?
@@ -101,7 +90,8 @@ func workChatBlocksManualCompactSend(
 /// staged row.
 func workChatManualSteerDispatchModes(
   session: TerminalSessionSummary?,
-  summary: AgentChatSessionSummary?
+  summary: AgentChatSessionSummary?,
+  hostSupportsOpenCodeSteer: Bool
 ) -> [WorkActiveSendMode] {
   let provider = summary?.provider ?? workChatProviderFamilyFromToolType(session?.toolType)
   guard let provider else { return [] }
@@ -110,9 +100,24 @@ func workChatManualSteerDispatchModes(
     cursorRuntime: summary?.cursorRuntime ?? session?.cursorRuntime,
     cursorCloudAgentId: summary?.cursorCloudAgentId ?? session?.cursorCloudAgentId
   )
-  return WorkActiveSendCapability.forProvider(provider)
-    .withholdingInlineIfNeeded(runsInCloud: runsInCloud, provider: provider)
-    .atomicDispatchModes
+  return WorkActiveSendCapability.forSession(
+    provider: provider,
+    runsInCloud: runsInCloud,
+    hostSupportsOpenCodeSteer: hostSupportsOpenCodeSteer
+  ).atomicDispatchModes
+}
+
+/// iOS half of desktop `queuedSteersCanReorder`: ADE holds the staged queue
+/// (and can reorder it) for every provider except Codex, OpenCode and Muse,
+/// which keep their own.
+func workChatQueuedSteersCanReorder(
+  session: TerminalSessionSummary?,
+  summary: AgentChatSessionSummary?
+) -> Bool {
+  guard let provider = summary?.provider ?? workChatProviderFamilyFromToolType(session?.toolType) else {
+    return false
+  }
+  return provider != "codex" && provider != "opencode" && provider != "muse"
 }
 
 /// iOS half of desktop `cursorSessionRunsInCloud`.
@@ -188,38 +193,6 @@ func transcriptContainsResolvedSteer(_ transcript: [WorkChatEnvelope], steer: Wo
   return false
 }
 
-/// `fallbackTranscript` is a closure, not a value, because building it means
-/// re-parsing the whole fallback entry page (240-600 KB). The two status guards
-/// below reject every actively-streaming tick without ever reading it, so
-/// passing a built value did that work ~6-7x/s during a stream and threw the
-/// result away. Order matters here: the cheap checks must come first.
-func workChatShouldPreferFallbackTranscript(
-  fallbackTranscript: () -> [WorkChatEnvelope],
-  sessionStatus: String,
-  liveTranscript: [WorkChatEnvelope]
-) -> Bool {
-  guard sessionStatus != "active",
-        !workTranscriptIndicatesActiveTurn(liveTranscript)
-  else { return false }
-  let fallback = fallbackTranscript()
-  guard !fallback.isEmpty else { return false }
-  guard let liveTail = latestWorkTextEnvelope(in: liveTranscript) else { return true }
-  guard let fallbackTail = latestWorkTextEnvelope(in: fallback) else { return false }
-  return fallbackTail.timestamp >= liveTail.timestamp
-}
-
-private func latestWorkTextEnvelope(in transcript: [WorkChatEnvelope]) -> WorkChatEnvelope? {
-  for envelope in sortedWorkChatEnvelopes(transcript).reversed() {
-    switch envelope.event {
-    case .userMessage, .assistantText:
-      return envelope
-    default:
-      continue
-    }
-  }
-  return nil
-}
-
 func workChatTranscriptPreferenceStatus(
   sessionStatus: String,
   liveTurnActiveHint: Bool?
@@ -259,422 +232,6 @@ func workChatShouldStageAfterUnsupportedDispatchMode(liveRedirectOnly: Bool) -> 
   !liveRedirectOnly
 }
 
-func workTranscriptEntryIdentity(_ entry: AgentChatTranscriptEntry) -> String {
-  [
-    entry.messageId ?? "",
-    entry.itemId ?? "",
-    entry.timestamp,
-    entry.role,
-    entry.turnId ?? "",
-    entry.text
-  ].joined(separator: "\u{1F}")
-}
-
-private func workTranscriptEntryLegacyIdentity(_ entry: AgentChatTranscriptEntry) -> String {
-  [
-    entry.timestamp,
-    entry.role,
-    entry.turnId ?? "",
-    entry.text
-  ].joined(separator: "\u{1F}")
-}
-
-private func workTranscriptEntryLegacyFrame(_ entry: AgentChatTranscriptEntry) -> String {
-  [
-    entry.timestamp,
-    entry.role,
-    entry.turnId ?? ""
-  ].joined(separator: "\u{1F}")
-}
-
-private func workTranscriptEntryStableIdentity(_ entry: AgentChatTranscriptEntry) -> String? {
-  if let messageId = entry.messageId?.trimmingCharacters(in: .whitespacesAndNewlines), !messageId.isEmpty {
-    return "message:\(messageId)"
-  }
-  if let itemId = entry.itemId?.trimmingCharacters(in: .whitespacesAndNewlines), !itemId.isEmpty {
-    return "item:\(itemId)"
-  }
-  return nil
-}
-
-/// A refreshed transcript can gain host ids after its first page was cached.
-/// Stable host ids identify the physical row even when its text changes while
-/// a turn is streaming; id-less rows still use their legacy occurrence fields.
-/// Two genuinely different stable ids remain distinct even when they render
-/// identical text.
-private func workTranscriptEntriesRepresentSameOccurrence(
-  _ lhs: AgentChatTranscriptEntry,
-  _ rhs: AgentChatTranscriptEntry
-) -> Bool {
-  let lhsStableId = workTranscriptEntryStableIdentity(lhs)
-  let rhsStableId = workTranscriptEntryStableIdentity(rhs)
-  if let lhsStableId, let rhsStableId {
-    return lhsStableId == rhsStableId
-  }
-  return workTranscriptEntryLegacyIdentity(lhs) == workTranscriptEntryLegacyIdentity(rhs)
-}
-
-private func workTranscriptEntriesAreStableUpgrade(
-  _ lhs: AgentChatTranscriptEntry,
-  _ rhs: AgentChatTranscriptEntry,
-  uniqueIdlessFrameCount: Int
-) -> Bool {
-  guard workTranscriptEntryStableIdentity(lhs) == nil
-    || workTranscriptEntryStableIdentity(rhs) == nil
-  else { return false }
-  guard workTranscriptEntryStableIdentity(lhs) != nil
-    || workTranscriptEntryStableIdentity(rhs) != nil
-  else { return false }
-  return uniqueIdlessFrameCount == 1
-    && workTranscriptEntryLegacyFrame(lhs) == workTranscriptEntryLegacyFrame(rhs)
-}
-
-func mergeWorkTranscriptEntries(
-  older: [AgentChatTranscriptEntry],
-  newer: [AgentChatTranscriptEntry]
-) -> [AgentChatTranscriptEntry] {
-  var seenStableOccurrences = Set<String>()
-  var seenStableLegacyOccurrences = Set<String>()
-  var seenLegacyOnlyOccurrences = Set<String>()
-  var idlessIndicesByFrame: [String: [Int]] = [:]
-  var stableFrames = Set<String>()
-  var result: [AgentChatTranscriptEntry] = []
-  result.reserveCapacity(older.count + newer.count)
-  for entry in older + newer {
-    let legacyIdentity = workTranscriptEntryLegacyIdentity(entry)
-    if let stableIdentity = workTranscriptEntryStableIdentity(entry) {
-      guard !seenStableOccurrences.contains(stableIdentity) else { continue }
-      // A later refresh can add a stable id while also completing the text of
-      // a row that was cached without one. Match that upgrade by the physical
-      // transcript frame, not the mutable text, but only when the frame is
-      // unique; repeated id-less rows must never be collapsed accidentally.
-      let frame = workTranscriptEntryLegacyFrame(entry)
-      let matchingIdlessIndices = idlessIndicesByFrame[frame] ?? []
-      if matchingIdlessIndices.count == 1,
-         workTranscriptEntriesAreStableUpgrade(
-           result[matchingIdlessIndices[0]],
-           entry,
-           uniqueIdlessFrameCount: matchingIdlessIndices.count
-         ) {
-        result[matchingIdlessIndices[0]] = entry
-        idlessIndicesByFrame[frame] = nil
-        stableFrames.insert(frame)
-        seenStableOccurrences.insert(stableIdentity)
-        seenStableLegacyOccurrences.insert(legacyIdentity)
-        continue
-      }
-      // If the frame is repeated, retain every physical row and append the
-      // newly identified one instead of deleting an occurrence. For the
-      // ordinary same-text case with no stable upgrade target, preserve the
-      // existing id-less row rather than duplicating it.
-      let hasStableFrame = stableFrames.contains(frame)
-      if matchingIdlessIndices.isEmpty,
-         !hasStableFrame,
-         seenLegacyOnlyOccurrences.contains(legacyIdentity) {
-        continue
-      }
-      seenStableOccurrences.insert(stableIdentity)
-      seenStableLegacyOccurrences.insert(legacyIdentity)
-      result.append(entry)
-      stableFrames.insert(frame)
-    } else {
-      guard !seenLegacyOnlyOccurrences.contains(legacyIdentity),
-            !seenStableLegacyOccurrences.contains(legacyIdentity)
-      else { continue }
-      seenLegacyOnlyOccurrences.insert(legacyIdentity)
-      let frame = workTranscriptEntryLegacyFrame(entry)
-      idlessIndicesByFrame[frame, default: []].append(result.count)
-      result.append(entry)
-    }
-  }
-  return result
-}
-
-/// Merge a refreshed tail without collapsing repeated physical rows inside
-/// either page. Only the ordered suffix/prefix overlap is removed.
-func mergeWorkTranscriptPageOccurrences(
-  older: [AgentChatTranscriptEntry],
-  newer: [AgentChatTranscriptEntry]
-) -> [AgentChatTranscriptEntry] {
-  guard !older.isEmpty else { return newer }
-  guard !newer.isEmpty else { return older }
-  let maxOverlap = min(older.count, newer.count)
-  var idlessFrameCounts: [String: Int] = [:]
-  for entry in older where workTranscriptEntryStableIdentity(entry) == nil {
-    let frame = workTranscriptEntryLegacyFrame(entry)
-    idlessFrameCounts[frame, default: 0] += 1
-  }
-  var overlap = 0
-  if maxOverlap > 0 {
-    for candidate in stride(from: maxOverlap, through: 1, by: -1) {
-      let olderStart = older.count - candidate
-      var matches = true
-      for index in 0..<candidate {
-        let cached = older[olderStart + index]
-        let refreshed = newer[index]
-        let sameOccurrence = workTranscriptEntriesRepresentSameOccurrence(cached, refreshed)
-          || workTranscriptEntriesAreStableUpgrade(
-            cached,
-            refreshed,
-            uniqueIdlessFrameCount: idlessFrameCounts[workTranscriptEntryLegacyFrame(cached)] ?? 0
-          )
-        if !sameOccurrence {
-          matches = false
-          break
-        }
-      }
-      if matches {
-        overlap = candidate
-        break
-      }
-    }
-  }
-  guard overlap > 0 else { return older + newer }
-
-  // A page refresh can carry the completed payload for a row that was cached
-  // while it was still streaming. Replace stable-ID overlap entries and a
-  // unique id-less → stable upgrade. Id-less rows may represent repeated
-  // physical occurrences and must keep the payload/order already established
-  // by the older page when the frame is ambiguous.
-  var mergedOlder = older
-  for index in 0..<overlap {
-    let olderIndex = older.count - overlap + index
-    let cached = older[olderIndex]
-    let refreshed = newer[index]
-    if let cachedStableId = workTranscriptEntryStableIdentity(cached),
-       let refreshedStableId = workTranscriptEntryStableIdentity(refreshed),
-       cachedStableId == refreshedStableId {
-      mergedOlder[olderIndex] = refreshed
-      continue
-    }
-    let uniqueIdlessFrameCount = idlessFrameCounts[workTranscriptEntryLegacyFrame(cached)] ?? 0
-    if workTranscriptEntriesAreStableUpgrade(
-      cached,
-      refreshed,
-      uniqueIdlessFrameCount: uniqueIdlessFrameCount
-    ) {
-      mergedOlder[olderIndex] = refreshed
-    }
-  }
-  return mergedOlder + newer.dropFirst(overlap)
-}
-
-struct WorkLiveTranscriptCache {
-  private var sessionId: String?
-  private var eventCount = 0
-  private var headEvent: AgentChatEventEnvelope?
-  private var tailEvent: AgentChatEventEnvelope?
-  private var transcript: [WorkChatEnvelope] = []
-  private(set) var recentDeltaTranscript: [WorkChatEnvelope] = []
-  private(set) var recentTranscriptWasRebuilt = false
-
-  mutating func reset(sessionId: String? = nil) {
-    self.sessionId = sessionId
-    eventCount = 0
-    headEvent = nil
-    tailEvent = nil
-    transcript = []
-    recentDeltaTranscript = []
-    recentTranscriptWasRebuilt = false
-  }
-
-  mutating func compact(sessionId: String, events: [AgentChatEventEnvelope]) {
-    guard !events.isEmpty else {
-      reset(sessionId: sessionId)
-      return
-    }
-    self.sessionId = sessionId
-    eventCount = events.count
-    headEvent = events.first
-    tailEvent = events.last
-    transcript = makeWorkChatTranscript(from: events)
-    recentDeltaTranscript = []
-    recentTranscriptWasRebuilt = false
-  }
-
-  mutating func transcript(
-    for sessionId: String,
-    events: [AgentChatEventEnvelope]
-  ) -> [WorkChatEnvelope] {
-    guard !events.isEmpty else {
-      reset(sessionId: sessionId)
-      return []
-    }
-
-    if let appendedEvents = appendedEvents(sessionId: sessionId, events: events) {
-      if !appendedEvents.isEmpty {
-        let appendedTranscript = makeWorkChatTranscript(from: appendedEvents)
-        recentDeltaTranscript = appendedTranscript
-        recentTranscriptWasRebuilt = false
-        transcript = appendWorkChatTranscripts(base: transcript, live: appendedTranscript)
-      } else {
-        recentDeltaTranscript = []
-        recentTranscriptWasRebuilt = false
-      }
-    } else {
-      transcript = makeWorkChatTranscript(from: events)
-      // A rebase/replay rebuild is not a delta. Treating the rebuilt transcript
-      // as "recent" re-appends old assistant chunks into the visible message and
-      // creates repeated phrases during live streaming.
-      recentDeltaTranscript = []
-      recentTranscriptWasRebuilt = true
-    }
-
-    self.sessionId = sessionId
-    eventCount = events.count
-    headEvent = events.first
-    tailEvent = events.last
-    return transcript
-  }
-
-  /// Returns only events that arrived after the previously-rendered tail.
-  ///
-  /// The sync service keeps a capped ring. Once it reaches that cap, every new
-  /// event removes one item from the head while the count stays constant. The
-  /// old count/head check treated that ordinary slide as a full rebuild, which
-  /// replayed the entire raw event window through the streaming text merger on
-  /// every tick. Anchor on the previous tail instead: it remains immediately
-  /// before the true delta during a normal ring slide.
-  private func appendedEvents(
-    sessionId: String,
-    events: [AgentChatEventEnvelope]
-  ) -> [AgentChatEventEnvelope]? {
-    guard self.sessionId == sessionId else { return nil }
-
-    if eventCount == 0 {
-      return events
-    }
-
-    guard let tailEvent else { return nil }
-
-    if tailEvent == events.last {
-      return eventCount == events.count && headEvent == events.first ? [] : nil
-    }
-
-    // Streaming normally appends one event at a time. Walk backward across
-    // only the new sequence suffix, then validate the exact previous tail at
-    // the boundary. This keeps the hot path O(delta), not O(ring size).
-    if let tailSequence = tailEvent.sequence,
-       let latestSequence = events.last?.sequence,
-       latestSequence > tailSequence {
-      var appendStart = events.endIndex
-      while appendStart > events.startIndex {
-        let candidateIndex = events.index(before: appendStart)
-        guard let candidateSequence = events[candidateIndex].sequence,
-              candidateSequence > tailSequence
-        else { break }
-        appendStart = candidateIndex
-      }
-      if appendStart > events.startIndex {
-        let anchorIndex = events.index(before: appendStart)
-        if events[anchorIndex] == tailEvent {
-          return Array(events[appendStart...])
-        }
-      }
-    }
-
-    // Older hosts may omit sequence numbers. Exact tail identity still makes a
-    // capped ring slide safely incremental.
-    guard let tailIndex = events.lastIndex(of: tailEvent) else { return nil }
-    let appendStart = events.index(after: tailIndex)
-    return Array(events[appendStart...])
-  }
-}
-
-private struct WorkChatTranscriptPresentationCacheEntry {
-  var transcript: [WorkChatEnvelope]
-  var fallbackEntries: [AgentChatTranscriptEntry]
-  var olderTranscriptCursor: Int?
-  var transcriptCursorKind: String?
-  var olderChatEventHistoryCursor: Int?
-  var initialTranscriptTailHydrated: Bool
-  var storedAt: Date
-
-  var hasVisibleTranscript: Bool {
-    !transcript.isEmpty || !fallbackEntries.isEmpty
-  }
-}
-
-@MainActor
-private var workChatTranscriptPresentationCacheBySession: [String: WorkChatTranscriptPresentationCacheEntry] = [:]
-
-private let workChatTranscriptPresentationCacheLimit = 8
-private let workChatOpeningSnapshotRetryInterval: TimeInterval = 30
-
-func workChatTranscriptEntriesByIndexForRestoredPresentation(
-  fallbackEntries: [AgentChatTranscriptEntry],
-  cursorKind: String?
-) -> [Int: AgentChatTranscriptEntry] {
-  guard cursorKind == "byte" else { return [:] }
-  return Dictionary(
-    uniqueKeysWithValues: fallbackEntries.enumerated().map { ($0.offset, $0.element) }
-  )
-}
-
-func workChatShouldRequestOpeningSnapshot(
-  alreadySubscribed: Bool,
-  openingSnapshotRequestedAtUptime: TimeInterval?,
-  forceFreshTranscriptOnOpen: Bool,
-  initialTranscriptTailHydrated: Bool,
-  hasVisiblePresentation: Bool,
-  hasCachedEventHistory: Bool,
-  nowUptime: TimeInterval = ProcessInfo.processInfo.systemUptime,
-  retryInterval: TimeInterval = workChatOpeningSnapshotRetryInterval
-) -> Bool {
-  if !alreadySubscribed { return true }
-  if let openingSnapshotRequestedAtUptime,
-     nowUptime - openingSnapshotRequestedAtUptime < retryInterval {
-    return false
-  }
-  if forceFreshTranscriptOnOpen && !initialTranscriptTailHydrated { return true }
-  return !hasVisiblePresentation && !hasCachedEventHistory
-}
-
-/// Resolve the scroll-back cursor a chat event history snapshot implies.
-///
-/// `hasOlderHistory` is authoritative when the host sends it: it is derived
-/// from the tail READ (transcript/window truncation), not from envelope
-/// identity, so it survives a snapshot served entirely from the in-memory ring
-/// buffer. An explicit `false` therefore means there is genuinely nothing
-/// older, and the cursor must be retired even when a non-zero
-/// `tailStartOffset` tags along — otherwise the timeline offers a "load earlier
-/// messages" affordance that can only ever come back empty. Older hosts omit
-/// the field and keep the legacy offset-only rule.
-///
-/// Returns `nil` for "exhausted"; `updateOlderChatEventHistoryCursor` maps that
-/// onto its explicit `0` sentinel.
-func workChatSnapshotOlderHistoryCursor(
-  hasOlderHistory: Bool?,
-  tailStartOffset: Int?
-) -> Int? {
-  if hasOlderHistory == false { return nil }
-  guard let tailStartOffset, tailStartOffset > 0 else { return nil }
-  return tailStartOffset
-}
-
-func workChatOlderTranscriptPageAdvances(
-  beforeOffset: Int,
-  nextCursor: Int?
-) -> Bool {
-  guard beforeOffset > 0 else { return false }
-  guard let nextCursor else { return true }
-  return nextCursor >= 0 && nextCursor < beforeOffset
-}
-
-func workChatHasOlderTranscriptHistory(
-  chatEventCursor: Int?,
-  canonicalTranscriptCursor: Int?,
-  allowsCanonicalFallback: Bool,
-  liveEventWindowTruncated: Bool = false
-) -> Bool {
-  if (chatEventCursor ?? 0) > 0 { return true }
-  if allowsCanonicalFallback && (canonicalTranscriptCursor ?? 0) > 0 { return true }
-  // The local live-event window was cut while this chat sat idle. What is on
-  // screen is a tail, not the whole conversation, even though the text reads as
-  // continuous — offer the head slot rather than fake a complete thread.
-  return liveEventWindowTruncated
-}
-
 /// Whether a mounted chat destination owns a lane pull request at all.
 ///
 /// The CTO chat (and any other caller passing `showsLaneActions: false`) reuses
@@ -708,11 +265,9 @@ struct WorkSessionDestinationView: View {
   var initialOpeningAttachments: [AgentChatFileRef] = []
   let initialSession: TerminalSessionSummary?
   let initialChatSummary: AgentChatSessionSummary?
-  let initialTranscript: [WorkChatEnvelope]?
   let transitionNamespace: Namespace.ID?
   let isLive: Bool
   let navigationChrome: WorkSessionNavigationChrome
-  var forceFreshTranscriptOnOpen = false
   var showsLaneActions = true
   var navigationTitleOverride: String?
   /// Lanes forwarded to the chat composer for `@`-mention autocomplete.
@@ -750,11 +305,9 @@ struct WorkSessionDestinationView: View {
     initialOpeningAttachments: [AgentChatFileRef] = [],
     initialSession: TerminalSessionSummary?,
     initialChatSummary: AgentChatSessionSummary?,
-    initialTranscript: [WorkChatEnvelope]?,
     transitionNamespace: Namespace.ID?,
     isLive: Bool,
     navigationChrome: WorkSessionNavigationChrome,
-    forceFreshTranscriptOnOpen: Bool = false,
     showsLaneActions: Bool = true,
     navigationTitleOverride: String? = nil,
     lanes: [LaneSummary] = [],
@@ -763,6 +316,8 @@ struct WorkSessionDestinationView: View {
     compactComposer: Bool = false,
     liveRedirectOnlySends: Bool = false
   ) {
+    let initStart = CACurrentMediaTime()
+    defer { ScrollDiagnostics.shared.record(.destinationInit, since: initStart) }
     self.sessionId = sessionId
     self.initialOpeningPrompt = initialOpeningPrompt
     self.initialOpeningPromptDispatchHandled = initialOpeningPromptDispatchHandled
@@ -770,11 +325,9 @@ struct WorkSessionDestinationView: View {
     self.initialOpeningAttachments = initialOpeningAttachments
     self.initialSession = initialSession
     self.initialChatSummary = initialChatSummary
-    self.initialTranscript = initialTranscript
     self.transitionNamespace = transitionNamespace
     self.isLive = isLive
     self.navigationChrome = navigationChrome
-    self.forceFreshTranscriptOnOpen = forceFreshTranscriptOnOpen
     self.showsLaneActions = showsLaneActions
     self.navigationTitleOverride = navigationTitleOverride
     self.lanes = lanes
@@ -784,45 +337,37 @@ struct WorkSessionDestinationView: View {
     self.compactComposer = compactComposer
     self.liveRedirectOnlySends = liveRedirectOnlySends
 
-    let providedTranscript = initialTranscript ?? []
-    let cachedPresentation = forceFreshTranscriptOnOpen || !providedTranscript.isEmpty
-      ? nil
-      : workChatTranscriptPresentationCacheBySession[sessionId]
-    let seededTranscript = providedTranscript.isEmpty
-      ? (cachedPresentation?.transcript ?? [])
-      : providedTranscript
-    let seededFallbackEntries = seededTranscript.isEmpty
-      ? (cachedPresentation?.fallbackEntries ?? [])
-      : []
-
     _session = State(initialValue: initialSession)
     _chatSummary = State(initialValue: initialChatSummary)
     _lastKnownChatSummary = State(initialValue: initialChatSummary)
-    _transcript = State(initialValue: seededTranscript)
-    // This is a monotonic invalidation token, not a content hash. The old
-    // initializer scanned every assistant string before the first frame.
-    _transcriptRenderSignature = State(initialValue: 0)
-    _fallbackEntries = State(initialValue: seededFallbackEntries)
-    _fallbackEntriesRenderSignature = State(initialValue: workFallbackEntriesRenderSignature(seededFallbackEntries))
-    _transcriptEntriesByIndex = State(initialValue: workChatTranscriptEntriesByIndexForRestoredPresentation(
-      fallbackEntries: seededFallbackEntries,
-      cursorKind: cachedPresentation?.transcriptCursorKind
-    ))
-    _olderTranscriptCursor = State(initialValue: cachedPresentation?.olderTranscriptCursor)
-    _transcriptCursorKind = State(initialValue: cachedPresentation?.transcriptCursorKind)
-    _olderChatEventHistoryCursor = State(initialValue: cachedPresentation?.olderChatEventHistoryCursor)
-    _initialTranscriptTailHydrated = State(
-      initialValue: !providedTranscript.isEmpty
-        || cachedPresentation?.initialTranscriptTailHydrated == true
-    )
-    _openingTranscriptSnapshotRequestedAtUptime = State(initialValue: nil)
+    // The thread engine for this chat, synchronously: a warm chat's frame is
+    // already there for the first render, a cold one starts its disk load now.
+    // The scope is registered first so the key matches the one SyncService
+    // routes this chat's frames to. Both calls are idempotent, so a re-init of
+    // this struct costs a dictionary lookup.
+    if let sync = SyncService.shared {
+      workRegisterChatCommandScope(
+        sync,
+        sessionId: sessionId,
+        personalChat: personalChat,
+        crossProjectContext: crossProjectContext
+      )
+      if let key = sync.chatThreadKey(for: sessionId) {
+        ChatThreadSignposts.beginOpen(sessionId: sessionId)
+        _threadKey = State(initialValue: key)
+        _threadModel = State(initialValue: sync.chatThreadRegistry.model(for: key))
+      }
+    }
   }
 
   /// Whether this view is a cross-project "quick look" (see `crossProjectContext`).
   /// Becomes false once the background Hub activate commits, so Send/approve
   /// and history paging switch to the active-project path without remounting.
   var isCrossProject: Bool {
-    hubChatIsForeignProject(
+    // A chat on another machine never becomes "active": its project id can
+    // equal a project id on the focused machine (the id hashes the path).
+    if isRemoteMachineChat { return true }
+    return hubChatIsForeignProject(
       context: crossProjectContext,
       ownerIsActive: crossProjectContext.map {
         syncService.isActiveProject(id: $0.projectId, rootPath: $0.projectRootPath)
@@ -830,6 +375,11 @@ struct WorkSessionDestinationView: View {
     )
   }
   var isRemoteOnlyChat: Bool { isCrossProject || personalChat }
+  /// The chat lives on another paired machine (see `WorkChatCrossProjectContext.machineKey`).
+  var isRemoteMachineChat: Bool {
+    guard let machineKey = crossProjectContext?.machineKey else { return false }
+    return machineKey != syncService.focusedMachineKey
+  }
   /// Single gate for lane→PR work in this destination. See `WorkChatLanePrPolicy`.
   var resolvesLanePr: Bool {
     WorkChatLanePrPolicy(showsLaneActions: showsLaneActions).resolvesLanePr
@@ -844,32 +394,20 @@ struct WorkSessionDestinationView: View {
   // once the controls have rendered they never disappear while the view stays
   // mounted.
   @State var lastKnownChatSummary: AgentChatSessionSummary?
-  @State var transcript: [WorkChatEnvelope] = []
-  @State var transcriptRenderSignature = 0
-  @State var transcriptAllowsIncrementalSnapshot = false
-  @State var transcriptIncrementalDelta: [WorkChatEnvelope] = []
-  @State var mainChatRenderEpoch = 0
-  @State var liveTranscriptCache = WorkLiveTranscriptCache()
-  @State var fallbackEntries: [AgentChatTranscriptEntry] = []
-  @State var fallbackEntriesRenderSignature = 0
-  // Canonical transcript entries keyed by their host-side index. Tail
-  // refreshes overwrite the newest indices while "load earlier" pages fill
-  // older ones, so a poll can never clobber scroll-back history. The cursor
-  // is the oldest fetched index (0 = transcript head reached).
-  @State var transcriptEntriesByIndex: [Int: AgentChatTranscriptEntry] = [:]
-  @State var olderTranscriptCursor: Int?
-  @State var transcriptCursorKind: String?
-  // Newer hosts page canonical chat JSONL by byte offset. Prefer this path for
-  // scrollback because it keeps the websocket stream tail-sized while still
-  // walking arbitrarily old transcript history.
-  @State var olderChatEventHistoryCursor: Int?
-  @State var olderTranscriptLoading = false
-  /// True once the idle prune has actually dropped heavy content events from
-  /// this session's local window. Drives the "load earlier" head slot so a
-  /// text-back-filled thread does not render as if nothing were missing.
-  @State var liveEventWindowTruncated = false
+  /// This chat's thread engine face (see `ChatThreadModel`). Every transcript
+  /// the destination reads — echo reconciliation, steer reconciliation, the
+  /// subagent roster — comes from its frame. Nil only without a SyncService.
+  @State var threadModel: ChatThreadModel?
+  @State var threadKey: ChatThreadKey?
+  /// Whether this mounted view holds an attach on `threadKey` (keeps the
+  /// engine from being evicted while it is on screen).
+  @State var threadAttached = false
+  @State var threadSubscriptionOpened = false
+  /// Count + last id of the transcript the subagent / schedule snapshots were
+  /// last derived from. Streaming text deltas do not change it, so the roster
+  /// scan runs per new envelope rather than per token.
+  @State var chatInfoTranscriptShape = ""
   @State var artifacts: [ComputerUseArtifactSummary] = []
-  @State var artifactsRenderSignature = 0
   @State var localEchoMessages: [WorkLocalEchoMessage] = []
   /// Post-send reconciliation runs behind the composer rather than in front of
   /// it, so `sending` can drop the moment the host accepts the message. Chained
@@ -914,9 +452,15 @@ struct WorkSessionDestinationView: View {
   /// capped at one PR — the lane may own several, and a PR opened on another
   /// lane can be linked to this session explicitly.
   @State var laneChatPrs: [PullRequestListItem] = []
+  /// Project-wide PR catalog, used to find GitHub stack siblings that are not
+  /// yet linked to this chat.
+  @State var chatPrCatalog: [PullRequestListItem] = []
   /// The user's pick from the switcher. Nil means "show what the resolver
   /// chose", which is the primary row.
   @State var selectedChatPrId: String?
+  /// "Not now" on a stack offer, keyed by session+stack so it stays hidden.
+  @State var dismissedStackOfferKey: String?
+  @State var chatPrLinkBusy = false
   /// Lane the last completed PR resolve ran for; lets same-lane re-resolves
   /// keep showing the current PR instead of clearing it first.
   @State var lastResolvedPrLaneId: String?
@@ -936,21 +480,21 @@ struct WorkSessionDestinationView: View {
   /// request cannot republish its older PR list or clear the newer pick either.
   @State var prDetailsRequestToken = 0
   @State var prLinkCopied = false
+  /// PR Watch / Ship for the PR on screen; nil reads as Off.
+  @State var prChatWatch: PrChatWatchSummary?
+  @State var prChatWatchBusy = false
+  @State var prChatWatchError: String?
+  @State var prChatWatchUnknown = false
+  /// "Restart agent session" was refused mid-turn; asks before stopping it.
+  @State var restartStopTurnConfirmPresented = false
   @State var sessionActionRenamePresented = false
   @State var sessionActionRenameText = ""
   @State var sessionIdCopied = false
   @State var sessionDeepLinkCopied = false
   @State var lastSessionRowRefreshAt = Date.distantPast
-  @State var lastTranscriptRemoteRefreshAt = Date.distantPast
-  @State var lastEmptyTranscriptHydrationAt = Date.distantPast
-  @State var lastCanonicalTranscriptRefreshAt = Date.distantPast
   @State var lastArtifactRefreshAt = Date.distantPast
-  @State var initialTranscriptTailHydrated = false
-  @State var openingTranscriptSnapshotRequestedAtUptime: TimeInterval?
   @State var initialLoadCompleted = false
   @State var openingLoadInFlight = false
-  @State var emptyTranscriptHydrationInFlight = false
-  @State var canonicalTranscriptRefreshInFlight = false
   @State var handledOpeningPromptKey: String?
   @State var stagedOpeningPromptKey: String?
   @State var composerDraftRestore: WorkChatComposerDraftRestore?
@@ -961,108 +505,15 @@ struct WorkSessionDestinationView: View {
       && !trimmedInitialOpeningPrompt.isEmpty
   }
 
-  @MainActor
-  func setTranscript(
-    _ next: [WorkChatEnvelope],
-    allowsIncrementalSnapshot: Bool = false,
-    incrementalDelta: [WorkChatEnvelope] = []
-  ) {
-    if transcript.isEmpty, !next.isEmpty {
-      mainChatRenderEpoch &+= 1
-    }
-    let canUseIncrementalSnapshot = allowsIncrementalSnapshot && !incrementalDelta.isEmpty
-    if canUseIncrementalSnapshot {
-      // Multiple host ticks can arrive before the renderer's coalescing window
-      // wakes. Keep every fragment since the last rendered revision together;
-      // the child clears this binding after it consumes them.
-      transcriptIncrementalDelta.append(contentsOf: incrementalDelta)
-      transcriptAllowsIncrementalSnapshot = true
-    } else {
-      transcriptAllowsIncrementalSnapshot = false
-      transcriptIncrementalDelta = []
-    }
-    transcript = next
-    transcriptRenderSignature &+= 1
-    cacheCurrentTranscriptPresentationIfNeeded()
-  }
-
-  @MainActor
-  func setFallbackEntries(_ next: [AgentChatTranscriptEntry]) {
-    if transcript.isEmpty, fallbackEntries.isEmpty, !next.isEmpty {
-      mainChatRenderEpoch &+= 1
-    }
-    fallbackEntries = next
-    fallbackEntriesRenderSignature = workFallbackEntriesRenderSignature(next)
-    cacheCurrentTranscriptPresentationIfNeeded()
-  }
-
-  @MainActor
-  func resetTranscriptHistoryState() {
-    transcriptEntriesByIndex = [:]
-    olderTranscriptCursor = nil
-    transcriptCursorKind = nil
-    olderChatEventHistoryCursor = nil
-    initialTranscriptTailHydrated = false
-    openingTranscriptSnapshotRequestedAtUptime = nil
-  }
-
-  @MainActor
-  func cacheCurrentTranscriptPresentationIfNeeded() {
-    guard !transcript.isEmpty || !fallbackEntries.isEmpty else { return }
-    // The mapped transcript and canonical fallback represent the same visible
-    // conversation in two shapes. Retaining both doubled the largest chat
-    // arrays after navigating back to Work. Keep the render-ready transcript
-    // when available; retain fallback rows only for fallback-only sessions.
-    let cachedFallbackEntries = transcript.isEmpty ? fallbackEntries : []
-    workChatTranscriptPresentationCacheBySession[sessionId] = WorkChatTranscriptPresentationCacheEntry(
-      transcript: transcript,
-      fallbackEntries: cachedFallbackEntries,
-      olderTranscriptCursor: olderTranscriptCursor,
-      transcriptCursorKind: transcriptCursorKind,
-      olderChatEventHistoryCursor: olderChatEventHistoryCursor,
-      initialTranscriptTailHydrated: initialTranscriptTailHydrated,
-      storedAt: Date()
-    )
-    guard workChatTranscriptPresentationCacheBySession.count > workChatTranscriptPresentationCacheLimit else { return }
-    let overflow = workChatTranscriptPresentationCacheBySession.count - workChatTranscriptPresentationCacheLimit
-    let expiredSessionIds = workChatTranscriptPresentationCacheBySession
-      .sorted { $0.value.storedAt < $1.value.storedAt }
-      .prefix(overflow)
-      .map(\.key)
-    for expiredSessionId in expiredSessionIds {
-      workChatTranscriptPresentationCacheBySession.removeValue(forKey: expiredSessionId)
-    }
-  }
-
-  @MainActor
-  func seedTranscriptFromPresentationCacheIfNeeded() {
-    guard !forceFreshTranscriptOnOpen else { return }
-    guard transcript.isEmpty,
-          fallbackEntries.isEmpty,
-          let cached = workChatTranscriptPresentationCacheBySession[sessionId],
-          cached.hasVisibleTranscript
-    else { return }
-
-    olderTranscriptCursor = cached.olderTranscriptCursor
-    transcriptCursorKind = cached.transcriptCursorKind
-    olderChatEventHistoryCursor = cached.olderChatEventHistoryCursor
-    transcriptEntriesByIndex = workChatTranscriptEntriesByIndexForRestoredPresentation(
-      fallbackEntries: cached.fallbackEntries,
-      cursorKind: cached.transcriptCursorKind
-    )
-    initialTranscriptTailHydrated = cached.initialTranscriptTailHydrated
-    if !cached.transcript.isEmpty {
-      setTranscript(cached.transcript)
-    }
-    if !cached.fallbackEntries.isEmpty {
-      setFallbackEntries(cached.fallbackEntries)
-    }
+  /// The engine's folded transcript. Read-only here: the destination never
+  /// builds or merges a transcript of its own.
+  var transcript: [WorkChatEnvelope] {
+    threadModel?.frame?.transcript ?? []
   }
 
   @MainActor
   func setArtifacts(_ next: [ComputerUseArtifactSummary]) {
     artifacts = next
-    artifactsRenderSignature = workArtifactSummariesRenderSignature(next)
   }
 
   @MainActor
@@ -1086,7 +537,22 @@ struct WorkSessionDestinationView: View {
     if let navigationTitleOverride {
       return navigationTitleOverride
     }
-    return chatSummary?.title ?? session?.title ?? "Session"
+    // A restored chat has no live summary yet; the durable cache and the
+    // roster still know its name, so the header never reads "Session" for a
+    // chat the phone can name.
+    return chatSummary?.title
+      ?? session?.title
+      ?? syncService.chatSummaryCache[sessionId]?.title
+      ?? syncService.remoteMachineRosterChat(sessionId: sessionId)?.title
+      ?? "Session"
+  }
+
+  /// The machine name under the header title: the host this phone is
+  /// connected to. The project is deliberately not repeated here.
+  var sessionDestinationNavigationSubtitle: String? {
+    workChatHeaderSubtitle(
+      machineName: syncService.chatMachineName(sessionId: sessionId)
+    )
   }
 
   /// Summary the composer's model/permission controls render from. Every other
@@ -1102,6 +568,10 @@ struct WorkSessionDestinationView: View {
       ?? initialChatSummary
       ?? lastKnownChatSummary
       ?? syncService.chatSummaryCache[sessionId]
+      // A chat on another machine has no host summary on this phone, however
+      // it was opened (Hub, Work, a notification): its machine's roster row
+      // names the provider and model.
+      ?? syncService.remoteMachineRosterChat(sessionId: sessionId)?.rosterChatSummary
   }
 
   var cursorCloudMirrorWatchKey: String {
@@ -1122,7 +592,7 @@ struct WorkSessionDestinationView: View {
 
 
   var hostReachable: Bool {
-    syncService.connectionState == .connected
+    syncService.chatHostIsReachable(sessionId: sessionId)
   }
 
   /// Live polling/load gates require BOTH the parent's "session is live" flag
@@ -1130,6 +600,18 @@ struct WorkSessionDestinationView: View {
   /// for sessions the parent considers ended/archived.
   var isLiveAndReachable: Bool {
     isLive && hostReachable
+  }
+
+  /// This chat's pending thread comments, or none when the host predates them.
+  var sendableThreadComments: [ChatThreadComment] {
+    guard syncService.supportsThreadComments(sessionId: sessionId) else { return [] }
+    return syncService.threadComments(sessionId: sessionId)
+  }
+
+  /// Re-lists comments when the chat opens and whenever it comes back online,
+  /// so changes made on the desktop while the phone was away show up.
+  var threadCommentsRefreshKey: String {
+    "\(sessionId)|\(isLiveAndReachable)|\(syncService.supportsThreadComments(sessionId: sessionId))"
   }
 
   var canComposeChatMessages: Bool {
@@ -1170,10 +652,10 @@ struct WorkSessionDestinationView: View {
   }
 
   /// Live host-side "turn is running" hint (chat_subscribe ack + status/done
-  /// events). Fresher than the synced session row, which arrives via the
-  /// slower changeset pump.
+  /// events), tracked by the thread engine. Fresher than the synced session
+  /// row, which arrives via the slower changeset pump.
   var liveTurnActiveHint: Bool? {
-    syncService.chatTurnActiveHint(sessionId: sessionId)
+    threadModel?.frame?.hostTurnActiveHint
   }
 
   /// Host-gated as well as provider-gated. A brain that predates
@@ -1185,7 +667,11 @@ struct WorkSessionDestinationView: View {
     guard syncService.supportsChatRemoteAction("chat.dispatchSteer", sessionId: sessionId) else {
       return []
     }
-    return workChatManualSteerDispatchModes(session: session, summary: composerChatSummary ?? chatSummary)
+    return workChatManualSteerDispatchModes(
+      session: session,
+      summary: composerChatSummary ?? chatSummary,
+      hostSupportsOpenCodeSteer: syncService.supportsOpenCodeInboxSteer
+    )
   }
 
   /// Lane id the header menu acts on. Resolved against the loaded lane list so
@@ -1225,6 +711,7 @@ struct WorkSessionDestinationView: View {
           onCopySessionId: { copyCurrentSessionId() },
           onCopySessionDeepLink: { copyCurrentSessionDeepLink() },
           onTogglePinned: { Task { await toggleCurrentSessionPinned() } },
+          onRestartAgent: { Task { await restartAgentSession(stopFirst: false) } },
           onAttachIssue: {
             ADEHaptics.light()
             syncService.linearPaneAttachSessionId = session.id
@@ -1264,7 +751,9 @@ struct WorkSessionDestinationView: View {
       canAttachIssue: syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession"),
       showsRename: !CursorCloudNaming.ownsName(
         composerChatSummary?.cursorCloudAgentId ?? session.cursorCloudAgentId
-      )
+      ),
+      // Optional on mobile: an older host has no restart, and the item hides.
+      showsRestartAgent: syncService.supportsChatRemoteAction("chat.restartSession", sessionId: session.id)
     )
   }
 
@@ -1404,15 +893,19 @@ struct WorkSessionDestinationView: View {
       .workSessionNavigationChrome(
         mode: isFullScreenTerminalSession ? .embedded : navigationChrome,
         title: sessionDestinationNavigationTitle,
+        subtitle: sessionDestinationNavigationSubtitle,
         trailingControls: { sessionHeaderTrailingControls }
       )
-      .adeNavigationZoomTransition(id: sessionDestinationZoomTransitionId, in: transitionNamespace)
+      // No zoom navigation transition here: a zoom-pushed screen closes on a
+      // downward swipe, so pulling down at the top of the thread (to load
+      // older messages) closed the chat. Back is the button or the edge swipe.
       .adeAnalyticsScreen(.workSession)
       .sheet(item: $fullscreenImage) { image in
         WorkFullscreenImageView(image: image)
       }
       .sheet(isPresented: $chatInfoPresented) {
-        let sourceList = buildWorkChatSourceList(from: transcript)
+        // Folded off the main actor by the thread engine, like the timeline.
+        let threadSnapshot = threadModel?.frame?.snapshot ?? .empty
         WorkChatInfoDetailsSheet(
           sessionId: sessionId,
           subagentSnapshots: subagentSnapshots,
@@ -1422,9 +915,9 @@ struct WorkSessionDestinationView: View {
           provider: subagentProvider,
           expandedTaskIds: $expandedSubagentDetailIds,
           sessionModel: composerChatSummary?.model,
-          sourceRefs: sourceList.refs,
-          omittedSourceRefCount: sourceList.omittedCount,
-          taskList: buildWorkChatTaskListSnapshot(from: transcript),
+          sourceRefs: threadSnapshot.sourceRefs,
+          omittedSourceRefCount: threadSnapshot.omittedSourceRefCount,
+          taskList: threadSnapshot.taskList,
           onResolveSourceFavicons: { domains in try await syncService.resolveSourceFavicons(domains: domains) },
           onSelect: handleSubagentSelection,
           onCancelScheduledWork: scheduledWorkCancelAction,
@@ -1476,11 +969,36 @@ struct WorkSessionDestinationView: View {
           onOpenGitHub: openLanePrOnGitHub,
           linkedPrs: laneChatPrs,
           selectedPrId: chatDisplayPr?.id,
-          onSelectPr: { selectChatPr($0) }
+          onSelectPr: { selectChatPr($0) },
+          stackOffer: visibleChatStackOffer,
+          linkablePrs: chatPrLinkableCatalog,
+          canLink: hostReachable && !sessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          linkBusy: chatPrLinkBusy,
+          onLinkStack: { Task { await linkChatStackOffer() } },
+          onDismissStackOffer: {
+            if let offer = visibleChatStackOffer {
+              dismissedStackOfferKey = "\(sessionId):\(offer.stackNumber)"
+            }
+          },
+          onLinkPr: { prId, allowCrossLane in
+            Task { await linkChatPr(prId: prId, allowCrossLane: allowCrossLane) }
+          },
+          onUnlink: { Task { await unlinkCurrentChatPr() } }
         )
         .presentationDetents([.height(500), .large])
         .presentationDragIndicator(.visible)
         .presentationContentInteraction(.scrolls)
+      }
+      .task(id: prChatWatchTaskKey) {
+        await refreshPrChatWatch()
+      }
+      .alert("Stop the turn and restart?", isPresented: $restartStopTurnConfirmPresented) {
+        Button("Cancel", role: .cancel) {}
+        Button("Stop and restart", role: .destructive) {
+          Task { await restartAgentSession(stopFirst: true) }
+        }
+      } message: {
+        Text("The agent is mid-turn. Restarting stops this turn and any background jobs it started. The conversation is kept.")
       }
       .alert("Rename session", isPresented: $sessionActionRenamePresented) {
         TextField("Title", text: $sessionActionRenameText)
@@ -1495,16 +1013,18 @@ struct WorkSessionDestinationView: View {
         Text("Give this session a clearer title for search, pinning, and activity tracking.")
       }
       .onAppear {
+        ChatOpenCloseTiming.destinationAppeared(sessionId: sessionId)
         chatDestinationVisible = true
         // Install remote routing synchronously with presentation so the first
         // user interaction cannot race the async load task and accidentally
         // fall back to the active project.
         registerChatCommandScope()
-        if !isRemoteOnlyChat,
-           let currentSession = session ?? initialSession,
-           isChatSession(currentSession) {
-          syncService.retainChatEventSubscription(sessionId: sessionId)
-        }
+        attachThreadModel()
+        syncThreadOverlays()
+        // Same run-loop turn as the attach: the subscribe (with the engine's
+        // durable resume point when the host has one) goes out before the
+        // summary/artifact loads below.
+        openThreadSubscriptionIfNeeded()
       }
       .onChange(of: isCrossProject) { wasForeign, isForeign in
         switch hubChatActivationScopeTransition(wasForeign: wasForeign, isForeign: isForeign) {
@@ -1531,31 +1051,17 @@ struct WorkSessionDestinationView: View {
       }
       .task {
         // Cross-project "quick look": register the foreign scope BEFORE load()
-        // so every transcript/summary/send routes to that project without
-        // switching the phone's active project.
+        // so every summary/send routes to that project without switching the
+        // phone's active project.
         registerChatCommandScope()
-        liveTranscriptCache.reset(sessionId: sessionId)
-        if forceFreshTranscriptOnOpen {
-          resetTranscriptHistoryState()
+        if session == nil {
           session = initialSession
+        }
+        if chatSummary == nil {
           chatSummary = initialChatSummary
+        }
+        if lastKnownChatSummary == nil {
           lastKnownChatSummary = initialChatSummary
-          setTranscript(initialTranscript ?? [])
-          setFallbackEntries([])
-        } else {
-          if session == nil {
-            session = initialSession
-          }
-          if chatSummary == nil {
-            chatSummary = initialChatSummary
-          }
-          if lastKnownChatSummary == nil {
-            lastKnownChatSummary = initialChatSummary
-          }
-          if transcript.isEmpty && fallbackEntries.isEmpty {
-            setTranscript(initialTranscript ?? [])
-            seedTranscriptFromPresentationCacheIfNeeded()
-          }
         }
         if initialOpeningPromptNeedsManualRetry, let initialOpeningPrompt {
           composerDraftRestore = WorkChatComposerDraftRestore(text: initialOpeningPrompt)
@@ -1572,10 +1078,11 @@ struct WorkSessionDestinationView: View {
           await refreshRemoteSubagentSnapshots()
         }
       }
-      .task(id: liveChatObservationKey) {
-        reconcileChatSummaryModeFromCacheIfNeeded()
-        syncTranscriptFromLiveEvents()
-        await reconcileIdleCanonicalTranscriptIfNeeded()
+      .onChange(of: threadModel?.frame?.revision) { _, _ in
+        handleThreadFrameApplied()
+      }
+      .onChange(of: threadOverlayInputs) { _, _ in
+        syncThreadOverlays()
       }
       .onChange(of: workChatTranscriptPreferenceStatus(
         sessionStatus: normalizedWorkChatSessionStatus(session: session, summary: chatSummary),
@@ -1588,12 +1095,6 @@ struct WorkSessionDestinationView: View {
         // liveTurnActiveHint) so the belt still fires when the row lags.
         guard previous == "active", current != "active" else { return }
         Task { await reconcileOptimisticSteersAfterTurnEnd() }
-      }
-      .task(id: emptyTranscriptHydrationKey) {
-        await hydrateEmptyTranscriptFromHostIfNeeded()
-      }
-      .task(id: openingSnapshotRetryKey) {
-        await retryUnacknowledgedOpeningSnapshotIfNeeded()
       }
       .task(id: sessionRowObservationKey) {
         // A cross-project quick look has no local DB row for this session (only
@@ -1642,6 +1143,14 @@ struct WorkSessionDestinationView: View {
       .task(id: pollingKey) {
         await pollIfNeeded()
       }
+      .task(id: sessionId) {
+        await runEmptyThreadProbe()
+      }
+      .task(id: threadCommentsRefreshKey) {
+        guard isLiveAndReachable, syncService.supportsThreadComments(sessionId: sessionId) else { return }
+        // Best effort: the live `session_meta_updated` path keeps it current.
+        try? await syncService.refreshThreadComments(sessionId: sessionId)
+      }
       .task(id: cursorCloudMirrorWatchKey) {
         let watchId = sessionId
         let agentId = composerChatSummary?.cursorCloudAgentId?
@@ -1670,14 +1179,16 @@ struct WorkSessionDestinationView: View {
         }
         refreshScheduledWorkSnapshots()
       }
-      .onChange(of: transcript) { _, _ in
-        refreshChatInfoSnapshots()
-      }
       .onChange(of: chatInfoPresented) { _, presented in
         handleChatInfoPresentationChange(presented)
       }
       .onDisappear {
         chatDestinationVisible = false
+        detachThreadModel()
+        // The next appearance re-retains the stream (cancelling the delayed
+        // unsubscribe scheduled below) and resumes it if it closed.
+        threadSubscriptionOpened = false
+        ChatThreadSignposts.cancelOpen(sessionId: sessionId)
         hubActivationRebindTask?.cancel()
         hubActivationRebindTask = nil
         if let announcedLaneId {
@@ -1733,15 +1244,10 @@ struct WorkSessionDestinationView: View {
       syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
       return
     }
+    // The scope changed, so the engine key did too: attach the active-project
+    // engine before its snapshot arrives.
+    rebindThreadModelIfNeeded()
     _ = try? await syncService.subscribeToChatEvents(sessionId: sessionId, requestSnapshot: true)
-    guard hubChatShouldContinueActivationRebind(
-      destinationVisible: chatDestinationVisible,
-      taskCancelled: Task.isCancelled
-    ) else {
-      syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
-      return
-    }
-    await loadTranscript(forceRemote: true)
     guard hubChatShouldContinueActivationRebind(
       destinationVisible: chatDestinationVisible,
       taskCancelled: Task.isCancelled
@@ -1781,15 +1287,8 @@ struct WorkSessionDestinationView: View {
       syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
       return
     }
+    rebindThreadModelIfNeeded()
     _ = try? await syncService.subscribeToChatEvents(sessionId: sessionId, requestSnapshot: true)
-    guard hubChatShouldContinueActivationRebind(
-      destinationVisible: chatDestinationVisible,
-      taskCancelled: Task.isCancelled
-    ) else {
-      syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
-      return
-    }
-    await loadTranscript(forceRemote: true)
     guard hubChatShouldContinueActivationRebind(
       destinationVisible: chatDestinationVisible,
       taskCancelled: Task.isCancelled
@@ -1800,19 +1299,22 @@ struct WorkSessionDestinationView: View {
   }
 
   func registerChatCommandScope() {
-    if personalChat {
-      syncService.setPersonalChatScope(sessionId: sessionId)
-    } else if isCrossProject, let crossProjectContext {
-      syncService.setCrossProjectChatScope(
-        sessionId: sessionId,
-        projectId: crossProjectContext.projectId,
-        projectRootPath: crossProjectContext.projectRootPath
-      )
-    }
+    workRegisterChatCommandScope(
+      syncService,
+      sessionId: sessionId,
+      personalChat: personalChat,
+      crossProjectContext: crossProjectContext
+    )
+  }
+
+  var sessionDestinationRoot: some View {
+    let bodyStart = CACurrentMediaTime()
+    defer { ScrollDiagnostics.shared.record(.destinationBody, since: bodyStart) }
+    return sessionDestinationRootContent
   }
 
   @ViewBuilder
-  var sessionDestinationRoot: some View {
+  private var sessionDestinationRootContent: some View {
     if let session {
       if isChatSession(session) {
         chatSessionDestinationRoot(for: session)
@@ -1829,26 +1331,87 @@ struct WorkSessionDestinationView: View {
         )
         .adeScreenBackground()
       } else {
-        WorkChatOpeningSessionPlaceholder()
-          .accessibilityLabel("Opening session")
+        connectingFrame
       }
     }
   }
 
   @ViewBuilder
   private func chatSessionDestinationRoot(for session: TerminalSessionSummary) -> some View {
-    makeWorkChatSessionView(for: session)
-      .id("main-\(session.id)-\(mainChatRenderEpoch)")
+    if let threadModel {
+      // Keyed on the engine too: a Hub activation moves the chat to another
+      // scope's engine, and the transcript view's scroll state belongs to one.
+      makeWorkChatSessionView(for: session, thread: threadModel)
+        .id("main-\(session.id)-\(threadModel.key.description)")
+    } else {
+      connectingFrame
+    }
+  }
+
+  /// Shown until the chat loads. Its task resolves the owning machine and,
+  /// when the machine stays unreachable for `SyncService.workSessionNavigationTimeout`,
+  /// leaves for the Hub with a notice. A slow load over a live connection is
+  /// progress, not a failure, so it never times out. The task is cancelled the
+  /// moment the real chat replaces the frame.
+  private var connectingFrame: some View {
+    WorkChatConnectingFrame(machineName: sessionDestinationNavigationSubtitle)
+      .task(id: sessionId) { await watchChatConnecting() }
+  }
+
+  private func watchChatConnecting() async {
+    var deadline = Date().addingTimeInterval(SyncService.workSessionNavigationTimeout)
+    var ownerResolved = false
+    while Date() < deadline {
+      try? await Task.sleep(nanoseconds: 500_000_000)
+      if Task.isCancelled { return }
+      // Same owner lookup an outside link gets, but only once Clerk has
+      // restored the account: resolving during the cold launch's own
+      // reconnect turned a plain launch into a machine switch.
+      if !ownerResolved,
+         AccountService.shared.phase == .signedIn,
+         syncService.connectionState != .connecting,
+         let ownerKey = syncService.navigationMachineKey(rawMachineKey: nil, sessionId: sessionId),
+         !syncService.accountMachineIsFocused(ownerKey) {
+        ownerResolved = true
+        _ = await syncService.ensureAccountMachineForNavigation(ownerKey, sessionId: sessionId)
+        if Task.isCancelled { return }
+        // The wait above can include the Wake & open prompt, however long the
+        // person took. Give the chat a fresh window to load on the machine
+        // it just reached.
+        deadline = Date().addingTimeInterval(SyncService.workSessionNavigationTimeout)
+      }
+      // Connected to the chat's own machine: the chat is loading, however
+      // slowly. Only an unreachable owner runs the clock down.
+      let ownerKey = syncService.navigationMachineKey(rawMachineKey: nil, sessionId: sessionId)
+      if syncService.connectionState == .connected,
+         ownerKey == nil || syncService.accountMachineIsFocused(ownerKey) {
+        deadline = Date().addingTimeInterval(SyncService.workSessionNavigationTimeout)
+      }
+      // Never time out under the Wake & open prompt; give the open a fresh
+      // window once the person has answered.
+      if syncService.pendingMachineWake != nil {
+        while syncService.pendingMachineWake != nil {
+          try? await Task.sleep(nanoseconds: 500_000_000)
+          if Task.isCancelled { return }
+        }
+        deadline = Date().addingTimeInterval(SyncService.workSessionNavigationTimeout)
+      }
+    }
+    guard !Task.isCancelled else { return }
+    let machine = sessionDestinationNavigationSubtitle
+    syncService.clearOpenWorkSessionRoute()
+    dismiss()
+    syncService.landOnHub(
+      notice: machine.map { "\($0) did not answer. The chat did not open." }
+        ?? "The chat did not open."
+    )
   }
 
   private func makeWorkChatSessionView(
-    for session: TerminalSessionSummary
+    for session: TerminalSessionSummary,
+    thread: ChatThreadModel
   ) -> WorkChatSessionView {
-    let transcriptForView = transcript
-    let fallbackEntriesForView: [AgentChatTranscriptEntry] = fallbackEntries
     let artifactsForView: [ComputerUseArtifactSummary] = artifacts
-    let optimisticPendingSteersForView: [WorkPendingSteerModel] = optimisticPendingSteers
-    let localEchoMessagesForView: [WorkLocalEchoMessage] = localEchoMessages
     let sessionStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
     let shouldSteer = hostReachable && sessionStatus == "active"
     let prPolicy = WorkChatLanePrPolicy(showsLaneActions: showsLaneActions)
@@ -1861,6 +1424,20 @@ struct WorkSessionDestinationView: View {
         )
       : nil
     let openPrDetails: (() -> Void)? = prPolicy.rendersPrBadge ? { presentChatPrDetails() } : nil
+    let prWatchModel: WorkChatPrWatchModel? = chatPrBadge == nil ? nil : chatPrWatchModel
+    let setPrWatchAction: ((String?) -> Void)? = prWatchModel == nil
+      ? nil
+      : { mode in Task { await setPrChatWatch(mode: mode) } }
+    // Codex goal controls, host-gated per command like desktop's panel.
+    let setCodexGoalAction: ((String) -> Void)? = syncService.supportsChatRemoteAction("chat.setCodexGoal", sessionId: session.id)
+      ? { objective in Task { await setCodexGoal(objective: objective) } }
+      : nil
+    let setCodexGoalPausedAction: ((Bool) -> Void)? = syncService.supportsChatRemoteAction("chat.setCodexGoalStatus", sessionId: session.id)
+      ? { paused in Task { await setCodexGoalStatus(paused ? "paused" : "active") } }
+      : nil
+    let clearCodexGoalAction: (() -> Void)? = syncService.supportsChatRemoteAction("chat.clearCodexGoal", sessionId: session.id)
+      ? { Task { await clearCodexGoal() } }
+      : nil
     let inputLockMessage: String? = nil
     let openLaneAction: (() -> Void)? = showsLaneActions ? { openSessionLane() } : nil
     // Wired per mode, not per provider, so a provider that gains or loses a
@@ -1886,6 +1463,14 @@ struct WorkSessionDestinationView: View {
     } else {
       dispatchSteerInterruptAction = nil
     }
+    // Host-gated like dispatch: an older brain has no `chat.moveSteer`.
+    let moveSteerAction: (@MainActor (String, Int) async -> Void)?
+    if syncService.supportsChatRemoteAction("chat.moveSteer", sessionId: session.id),
+       workChatQueuedSteersCanReorder(session: session, summary: composerChatSummary ?? chatSummary) {
+      moveSteerAction = { steerId, toIndex in await moveSteer(steerId, toIndex: toIndex) }
+    } else {
+      moveSteerAction = nil
+    }
     let resolvedSessionStatus: String? = sessionStatus
     let loadOlderTranscriptAction: (@MainActor () async -> WorkChatOlderHistoryLoadResult)?
     if isCrossProject && !syncService.supportsSubscribedChatHistory(sessionId: sessionId) {
@@ -1894,7 +1479,7 @@ struct WorkSessionDestinationView: View {
       // read history; the next host upgrade makes the same cached view pageable.
       loadOlderTranscriptAction = nil
     } else {
-      loadOlderTranscriptAction = { await loadOlderTranscriptEntries() }
+      loadOlderTranscriptAction = { await thread.loadOlder() }
     }
     let supportsRecovery = syncService.supportsChatRemoteAction(
       "chat.recoverTurn",
@@ -1936,6 +1521,29 @@ struct WorkSessionDestinationView: View {
       continueUsageLimitOnAlternateAction = nil
     }
     let canWriteSpawnKind = syncService.supportsSpawnKindUpdate
+    // An older brain advertises no comment commands and the chip never appears.
+    let threadCommentsAvailable = syncService.supportsThreadComments(sessionId: session.id)
+    let threadCommentsForView = sendableThreadComments
+    let updateThreadCommentAction: (@MainActor (String, String?, Bool?) async throws -> Void)?
+    let deleteThreadCommentAction: (@MainActor (String) async throws -> Void)?
+    if threadCommentsAvailable {
+      let commentSessionId = session.id
+      let service = syncService
+      updateThreadCommentAction = { commentId, body, includeInNextSend in
+        try await service.updateThreadComment(
+          sessionId: commentSessionId,
+          commentId: commentId,
+          body: body,
+          includeInNextSend: includeInNextSend
+        )
+      }
+      deleteThreadCommentAction = { commentId in
+        try await service.deleteThreadComment(sessionId: commentSessionId, commentId: commentId)
+      }
+    } else {
+      updateThreadCommentAction = nil
+      deleteThreadCommentAction = nil
+    }
     let restoreCancelledQueueAction: (@MainActor (String) async -> Void)?
     if syncService.supportsChatRemoteAction(
       "chat.restoreCancelledQueue",
@@ -1955,18 +1563,8 @@ struct WorkSessionDestinationView: View {
           syncService.chatSummaryCache[parentId]?.title
         }
       ),
-      transcript: transcriptForView,
-      transcriptRenderSignature: transcriptRenderSignature,
-      allowsIncrementalTranscriptUpdate: transcriptAllowsIncrementalSnapshot,
-      transcriptIncrementalDelta: $transcriptIncrementalDelta,
-      fallbackEntries: fallbackEntriesForView,
-      fallbackEntriesRenderSignature: fallbackEntriesRenderSignature,
+      thread: thread,
       artifacts: artifactsForView,
-      artifactsRenderSignature: artifactsRenderSignature,
-      optimisticPendingSteers: optimisticPendingSteersForView,
-      optimisticPendingSteersRenderSignature: workPendingSteersRenderSignature(optimisticPendingSteers),
-      localEchoMessages: localEchoMessagesForView,
-      localEchoMessagesRenderSignature: workLocalEchoMessagesRenderSignature(localEchoMessages),
       cardExpansionSnapshot: cardExpansion,
       cardExpansionRenderSignature: workCardExpansionRenderSignature(cardExpansion),
       artifactContentRenderSignature: artifactContentRenderSignature,
@@ -1982,7 +1580,10 @@ struct WorkSessionDestinationView: View {
       sending: $sending,
       errorMessage: $errorMessage,
       isLive: isLiveAndReachable,
-      hostUnreachable: syncService.connectionState.isHostUnreachable,
+      hostUnreachable: isRemoteMachineChat
+        ? !syncService.chatHostIsReachable(sessionId: sessionId)
+        : syncService.connectionState.isHostUnreachable,
+      suppressDomainHydrationNotices: syncService.shouldSuppressDomainHydrationNotices,
       canComposeMessages: canComposeChatMessages,
       canSendMessages: canSendChatMessages,
       sendWillQueue: sendWillQueueChatMessage || shouldSteer,
@@ -1996,6 +1597,9 @@ struct WorkSessionDestinationView: View {
       onOpenLane: openLaneAction,
       onSend: { text, attachments, mode in
         await sendMessage(text, attachments: attachments, deliveryMode: mode)
+      },
+      onSendWithCompaction: { text, attachments, mode, enabled in
+        await sendMessage(text, attachments: attachments, deliveryMode: mode, compactFirst: enabled)
       },
       onInterrupt: interruptSession,
       onRestoreCancelledQueue: restoreCancelledQueueAction,
@@ -2012,7 +1616,16 @@ struct WorkSessionDestinationView: View {
       onRetryLoad: load,
       onOpenFile: openFileReference,
       onOpenPr: openPullRequestReference,
-      onLoadArtifact: loadArtifactContent,
+      onLoadArtifact: { artifact, intent in
+        // A chat on another machine reads its artifacts from that machine.
+        if let remote = syncService.remoteMachineChat(sessionId: sessionId) {
+          await SyncFleetTaskRoute.$chat.withValue(remote) {
+            await loadArtifactContent(artifact, intent)
+          }
+        } else {
+          await loadArtifactContent(artifact, intent)
+        }
+      },
       onRefreshArtifacts: {
         await refreshArtifacts(force: true)
       },
@@ -2020,6 +1633,7 @@ struct WorkSessionDestinationView: View {
       onEditSteer: editSteer,
       onDispatchSteerInline: dispatchSteerInlineAction,
       onDispatchSteerInterrupt: dispatchSteerInterruptAction,
+      onMoveSteer: moveSteerAction,
       onSelectModel: selectModel,
       onSelectRuntimeMode: selectRuntimeMode,
       onSelectEffort: selectReasoningEffort,
@@ -2031,7 +1645,6 @@ struct WorkSessionDestinationView: View {
       resolvedSessionStatus: resolvedSessionStatus,
       lanes: lanes,
       lanesRenderSignature: lanesRenderSignature,
-      hasOlderTranscriptHistory: hasOlderTranscriptHistory,
       onLoadOlderTranscript: loadOlderTranscriptAction,
       subagentSnapshots: subagentSnapshots,
       subagentSnapshotsRenderSignature: subagentSnapshotsRenderSignature,
@@ -2062,7 +1675,11 @@ struct WorkSessionDestinationView: View {
       },
       prBadge: chatPrBadge,
       onOpenPrDetails: openPrDetails,
-      liveTurnActiveHint: liveTurnActiveHint,
+      prWatch: prWatchModel,
+      onSetPrWatch: setPrWatchAction,
+      onSetCodexGoal: setCodexGoalAction,
+      onSetCodexGoalPaused: setCodexGoalPausedAction,
+      onClearCodexGoal: clearCodexGoalAction,
       compactComposer: compactComposer,
       liveRedirectOnlySends: liveRedirectOnlySends,
       isPersonalChat: personalChat,
@@ -2085,13 +1702,14 @@ struct WorkSessionDestinationView: View {
         : nil,
       transcriptLoadState: transcriptLoadState,
       onRetryTranscript: {
-        Task { @MainActor in
-          await syncService.retryFullChatEventSnapshot(sessionId: sessionId)
-          await loadTranscript(forceRemote: true, preferLightweight: false)
-        }
+        thread.retry()
       },
       onTakeOverSubagent: canWriteSpawnKind ? takeOverSubagent : nil,
-      onKeepReportingSubagent: canWriteSpawnKind ? keepReportingSubagent : nil
+      onKeepReportingSubagent: canWriteSpawnKind ? keepReportingSubagent : nil,
+      threadComments: threadCommentsForView,
+      onUpdateThreadComment: updateThreadCommentAction,
+      onDeleteThreadComment: deleteThreadCommentAction,
+      crossMachineHandoffActions: crossMachineHandoffActions
     )
   }
 
@@ -2111,33 +1729,11 @@ struct WorkSessionDestinationView: View {
     return "\(session?.id ?? sessionId)-\(status)-\(isLiveAndReachable)-\(liveTurnActiveHint.map(String.init) ?? "nil")"
   }
 
-  var liveChatObservationKey: String {
-    workChatLiveObservationKey(
-      sessionId: sessionId,
-      chatEventRevision: syncService.chatEventRevision(for: sessionId)
-    )
-  }
-
-  var emptyTranscriptHydrationKey: String {
-    "\(session?.id ?? sessionId)-empty:\(transcript.isEmpty)-fallback:\(fallbackEntries.isEmpty)-host:\(hostReachable)-opening:\(openingLoadInFlight)-local:\(syncService.localStateRevision)"
-  }
-
-  var openingSnapshotRetryKey: String {
-    "\(sessionId)-request:\(openingTranscriptSnapshotRequestedAtUptime ?? -1)-reachable:\(isLiveAndReachable)"
-  }
-
-  /// What the chat pane should show when the timeline is empty. An empty
-  /// timeline is only genuinely "no messages" once nothing is in flight and
-  /// nothing has failed; the other two cases used to render the same confident
-  /// "No chat messages yet" as a real empty chat.
+  /// What the empty timeline may claim. The engine says `.loading` only while
+  /// it has neither disk rows nor a host snapshot; with the host unreachable
+  /// that wait would never end, so it becomes the idle "reconnect" state.
   var transcriptLoadState: WorkChatTranscriptLoadState {
-    if syncService.isFullChatEventSnapshotStalled(sessionId: sessionId) {
-      return .failed("The machine didn't send this chat's transcript.")
-    }
-    if openingLoadInFlight || syncService.isFullChatEventSnapshotPending(sessionId: sessionId) {
-      return .loading
-    }
-    return .idle
+    workChatTranscriptLoadState(frame: threadModel?.frame, isLiveAndReachable: isLiveAndReachable)
   }
 
   var artifactObservationKey: String {
@@ -2167,12 +1763,18 @@ struct WorkSessionDestinationView: View {
     syncService.announceLaneOpen(laneId: laneId)
   }
 
+  /// Session row, chat summary and proof artifacts. None of it gates the
+  /// transcript: rows come from the thread engine, which was attached and
+  /// subscribed before this runs. The summary and artifact loads run side by
+  /// side instead of in series.
   @MainActor
   func load() async {
     guard !openingLoadInFlight else { return }
     openingLoadInFlight = true
     defer { openingLoadInFlight = false }
 
+    async let summaryLoad: Void = refreshChatSummaryFromHost()
+    async let artifactLoad: Void = refreshOpeningArtifacts()
     do {
       // Deep links and programmatic navigation do not always carry the Work
       // list's ephemeral roster projection. Seed from the active-project
@@ -2180,6 +1782,7 @@ struct WorkSessionDestinationView: View {
       // can render and subscribe as soon as the machine roster announces it.
       if !isRemoteOnlyChat, session == nil {
         session = syncService.activeProjectRosterSession(sessionId: sessionId)
+        openThreadSubscriptionIfNeeded()
       }
       if !isRemoteOnlyChat, let fetchedSession = try await syncService.fetchSession(id: sessionId) {
         session = fetchedSession
@@ -2193,26 +1796,20 @@ struct WorkSessionDestinationView: View {
         }
       }
       lastSessionRowRefreshAt = Date()
-      await refreshChatSummaryFromHost()
-      // Proof artifacts are active-project-scoped; skip for a cross-project
-      // quick look (the drawer stays empty rather than querying the wrong project).
-      if !isRemoteOnlyChat && !syncService.prefersReducedSyncLoad {
-        await refreshArtifacts(force: true)
-      }
-      await loadTranscript(forceRemote: shouldHydrateTranscriptFromHost, preferLightweight: syncService.prefersReducedSyncLoad)
-      await hydrateEmptyTranscriptFromHostIfNeeded()
+      openThreadSubscriptionIfNeeded()
       errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
     }
+    _ = await (summaryLoad, artifactLoad)
   }
 
-  var shouldHydrateTranscriptFromHost: Bool {
-    guard hostReachable,
-          let currentSession = session ?? initialSession,
-          isChatSession(currentSession)
-    else { return false }
-    return true
+  /// Proof artifacts are active-project-scoped; skip for a cross-project
+  /// quick look (the drawer stays empty rather than querying the wrong project).
+  @MainActor
+  private func refreshOpeningArtifacts() async {
+    guard !isRemoteOnlyChat, !syncService.prefersReducedSyncLoad else { return }
+    await refreshArtifacts(force: true)
   }
 
   /// Fold a cache-side mode patch (applied by SyncService when a
@@ -2242,6 +1839,19 @@ struct WorkSessionDestinationView: View {
        current.title != cached.title {
       current.title = cached.title
     }
+    // A cross-machine move record folded from a live notice (or an action's
+    // answer). Newer wins, so a fetched summary is never rolled back by an
+    // older cache entry.
+    // The brain's explicit clear drops the live record too; a merely absent
+    // cached record (an older host) does not.
+    if cached.crossMachineHandoff == nil, syncService.crossMachineHandoffClears[sessionId] != nil {
+      current.crossMachineHandoff = nil
+    } else {
+      current.crossMachineHandoff = AgentChatCrossMachineHandoffRecord.pickNewer(
+        current: current.crossMachineHandoff,
+        incoming: cached.crossMachineHandoff
+      )
+    }
     if current != chatSummary {
       chatSummary = current
     }
@@ -2257,10 +1867,18 @@ struct WorkSessionDestinationView: View {
     // live tail, which the brain serves WITHOUT booting the foreign project.
     // The scoped chat.getSummary command routes through the project scope
     // registry and would spin up that project's runtime just to look.
-    guard !isCrossProject else { return }
+    // A chat on another machine is the exception: the command goes to that
+    // machine (where the chat is live), and without it the composer shows no
+    // access mode, or a wrong one. A Claude chat is the other one: only its
+    // summary says whether its cache expired, so without it the Compact first
+    // chip never shows.
+    let onOtherMachine = isRemoteMachineChat || syncService.isRemoteMachineChat(sessionId: sessionId)
+    guard !isCrossProject || onOtherMachine || subagentProvider == "claude" else { return }
 
     if syncService.supportsChatRemoteAction("chat.getSummary", sessionId: sessionId),
-       let fetchedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
+       let rawSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
+      // A fetch that started before the brain cleared the move still carries it.
+      let fetchedSummary = syncService.withCrossMachineHandoffClearApplied(rawSummary)
       if chatSummary != fetchedSummary {
         chatSummary = fetchedSummary
       }
@@ -2268,610 +1886,23 @@ struct WorkSessionDestinationView: View {
       return
     }
 
+    // The lane listing below goes to the focused machine; it cannot find a
+    // chat that lives on another one.
     guard !personalChat,
+          !onOtherMachine,
+          !isCrossProject,
           let laneId = (session ?? initialSession)?.laneId,
           !laneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           syncService.supportsRemoteAction("chat.listSessions"),
           let summaries = try? await syncService.listChatSessions(laneId: laneId),
-          let fallbackSummary = summaries.first(where: { $0.sessionId == sessionId })
+          let rawFallback = summaries.first(where: { $0.sessionId == sessionId })
     else { return }
+    let fallbackSummary = syncService.withCrossMachineHandoffClearApplied(rawFallback)
 
     if chatSummary != fallbackSummary {
       chatSummary = fallbackSummary
     }
     syncService.cacheChatSummary(fallbackSummary)
-  }
-
-  @MainActor
-  func hydrateEmptyTranscriptFromHostIfNeeded(force: Bool = false) async {
-    guard transcript.isEmpty,
-          fallbackEntries.isEmpty,
-          shouldHydrateTranscriptFromHost,
-          !emptyTranscriptHydrationInFlight,
-          force || !openingLoadInFlight
-    else { return }
-
-    let now = Date()
-    guard force || now.timeIntervalSince(lastEmptyTranscriptHydrationAt) >= 2 else { return }
-    let status = normalizedWorkChatSessionStatus(session: session ?? initialSession, summary: chatSummary ?? initialChatSummary)
-    let transcriptStatus = workChatTranscriptPreferenceStatus(
-      sessionStatus: status,
-      liveTurnActiveHint: syncService.chatTurnActiveHint(sessionId: sessionId)
-    )
-    guard !(syncService.prefersReducedSyncLoad && transcriptStatus == "active") else { return }
-
-    emptyTranscriptHydrationInFlight = true
-    lastEmptyTranscriptHydrationAt = now
-    defer { emptyTranscriptHydrationInFlight = false }
-
-    await refreshChatSummaryFromHost()
-    await loadTranscript(forceRemote: true, preferLightweight: false)
-  }
-
-  /// Long-stop for an opening snapshot that never arrived. `SyncService` resends
-  /// the subscribe itself; this re-pulls the transcript outright if even that
-  /// produced nothing.
-  ///
-  /// This used to be gated on `isCrossProject`, which meant an ordinary
-  /// same-project chat whose subscribe was dropped simply stayed blank — the
-  /// most common form of the bug, with no recovery at all.
-  @MainActor
-  func retryUnacknowledgedOpeningSnapshotIfNeeded() async {
-    guard isLiveAndReachable,
-          transcript.isEmpty,
-          fallbackEntries.isEmpty,
-          let requestedAtUptime = openingTranscriptSnapshotRequestedAtUptime,
-          syncService.isFullChatEventSnapshotPending(sessionId: sessionId)
-    else { return }
-
-    let elapsed = ProcessInfo.processInfo.systemUptime - requestedAtUptime
-    let remaining = max(0, workChatOpeningSnapshotRetryInterval - elapsed)
-    if remaining > 0 {
-      try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
-    }
-    guard !Task.isCancelled,
-          isLiveAndReachable,
-          transcript.isEmpty,
-          fallbackEntries.isEmpty,
-          openingTranscriptSnapshotRequestedAtUptime == requestedAtUptime,
-          syncService.isFullChatEventSnapshotPending(sessionId: sessionId)
-    else { return }
-
-    openingTranscriptSnapshotRequestedAtUptime = nil
-    await loadTranscript(forceRemote: true, preferLightweight: false)
-  }
-
-  @MainActor
-  func loadTranscript(forceRemote: Bool, preferLightweight: Bool = false) async {
-    seedTranscriptFromPresentationCacheIfNeeded()
-    let status = normalizedWorkChatSessionStatus(session: session ?? initialSession, summary: chatSummary ?? initialChatSummary)
-    let transcriptStatus = workChatTranscriptPreferenceStatus(
-      sessionStatus: status,
-      liveTurnActiveHint: syncService.chatTurnActiveHint(sessionId: sessionId)
-    )
-    let reducedActiveLiveStream = preferLightweight && transcriptStatus == "active"
-    var requestedOpeningSnapshotThisLoad = false
-
-    if forceRemote, let currentSession = session ?? initialSession, isChatSession(currentSession) {
-      let alreadySubscribed = syncService.subscribedChatSessionIds.contains(sessionId)
-      let hasReusablePresentation = workChatTranscriptPresentationCacheBySession[sessionId]?.hasVisibleTranscript == true
-      let hasCachedEventHistory = !syncService.chatEventHistory(sessionId: sessionId).isEmpty
-      let hasVisiblePresentation = !transcript.isEmpty || !fallbackEntries.isEmpty || hasReusablePresentation
-      let needsOpeningSnapshot = workChatShouldRequestOpeningSnapshot(
-        alreadySubscribed: alreadySubscribed,
-        openingSnapshotRequestedAtUptime: openingTranscriptSnapshotRequestedAtUptime,
-        forceFreshTranscriptOnOpen: forceFreshTranscriptOnOpen,
-        initialTranscriptTailHydrated: initialTranscriptTailHydrated,
-        hasVisiblePresentation: hasVisiblePresentation,
-        hasCachedEventHistory: hasCachedEventHistory
-      )
-      requestedOpeningSnapshotThisLoad = needsOpeningSnapshot
-      if status == "active" {
-        // First visit subscribes (the host answers with a snapshot or a
-        // sinceSeq replay). Once subscribed, live chat_event push plus the
-        // host's transcript pump cover continuity — re-requesting a full
-        // byte-capped snapshot on every 8s poll was redundant wire traffic
-        // and a full dedupe/sort merge on the phone mid-stream.
-        do {
-          let snapshotRequestDispatched = try await syncService.subscribeToChatEvents(
-            sessionId: sessionId,
-            requestSnapshot: needsOpeningSnapshot
-          )
-          if needsOpeningSnapshot && snapshotRequestDispatched {
-            openingTranscriptSnapshotRequestedAtUptime = ProcessInfo.processInfo.systemUptime
-          }
-        } catch {
-          // Leave the retry latch open. A later poll can recover if the
-          // transport changed while this request was being dispatched.
-        }
-      } else if needsOpeningSnapshot {
-        // Active streaming stays on reduced snapshots for performance, but an
-        // idle detail view must reconcile against a full event snapshot. A
-        // reduced JSONL tail can start mid-message and render as a broken
-        // final transcript until the canonical transcript fetch lands.
-        do {
-          let snapshotRequestDispatched = try await syncService.requestFullChatEventSnapshot(
-            sessionId: sessionId
-          )
-          if snapshotRequestDispatched {
-            openingTranscriptSnapshotRequestedAtUptime = ProcessInfo.processInfo.systemUptime
-          }
-        } catch {
-          // Leave the retry latch open; the next poll can try again.
-        }
-      } else {
-        // Reopening an already-warm idle chat must still cancel its pending
-        // delayed unsubscribe. No envelope is sent when the subscription is
-        // already active; this only preserves live delivery while visible.
-        _ = try? await syncService.subscribeToChatEvents(sessionId: sessionId)
-      }
-
-      if let subscribedCursor = syncService.chatOlderHistoryCursor(sessionId: sessionId) {
-        updateOlderChatEventHistoryCursor(subscribedCursor)
-      }
-
-      // Quick looks seed their byte cursor from chat_subscribe and page through
-      // the scoped chat_history envelope. Canonical history commands remain
-      // disabled here because they would boot the foreign runtime for a read.
-      let shouldHydrateCanonicalEventTail = !isCrossProject
-        && !reducedActiveLiveStream
-        && (
-        !preferLightweight
-        || transcript.isEmpty
-        || transcriptStatus != "active"
-        || !initialTranscriptTailHydrated
-        || needsOpeningSnapshot
-      )
-      if shouldHydrateCanonicalEventTail {
-        do {
-          if syncService.supportsChatRemoteAction("chat.getChatEventHistory", sessionId: sessionId) {
-            let snapshot = try await syncService.hydrateChatEventHistorySnapshot(sessionId: sessionId)
-            seedOlderChatEventHistoryCursor(from: snapshot)
-            // A host that authoritatively reports no older history is believed:
-            // probing a tail page for a scroll-back cursor would be a wasted
-            // round trip that can only come back empty.
-            if (snapshot.tailStartOffset ?? 0) <= 0,
-               snapshot.hasOlderHistory != false,
-               (snapshot.windowTruncated == true || snapshot.truncated),
-               syncService.supportsChatRemoteAction("chat.getChatEventHistoryPage", sessionId: sessionId) {
-              if let page = try? await syncService.hydrateChatEventHistoryTailPage(sessionId: sessionId) {
-                seedOlderChatEventHistoryCursor(from: page)
-              }
-            }
-          } else if syncService.supportsChatRemoteAction("chat.getChatEventHistoryPage", sessionId: sessionId) {
-            let page = try await syncService.hydrateChatEventHistoryTailPage(sessionId: sessionId)
-            seedOlderChatEventHistoryCursor(from: page)
-          }
-        } catch {
-          if syncService.supportsChatRemoteAction("chat.getChatEventHistoryPage", sessionId: sessionId) {
-            if let page = try? await syncService.hydrateChatEventHistoryTailPage(sessionId: sessionId) {
-              seedOlderChatEventHistoryCursor(from: page)
-            }
-          }
-        }
-      }
-    }
-
-    let liveTranscript = liveTranscriptCache.transcript(
-      for: sessionId,
-      events: syncService.chatEventHistory(sessionId: sessionId)
-    )
-    let liveDeltaTranscript = liveTranscriptCache.recentDeltaTranscript
-    let liveTranscriptWasRebuilt = liveTranscriptCache.recentTranscriptWasRebuilt
-    if !liveTranscript.isEmpty {
-      initialTranscriptTailHydrated = true
-    }
-    var fallbackTranscript: [WorkChatEnvelope] = []
-    var eventTranscript: [WorkChatEnvelope] = []
-    var fetchedFallbackEntries: [AgentChatTranscriptEntry] = []
-    // Track whether the fallback fetch genuinely produced data so that a
-    // skipped or failed fetch preserves the previous fallbackEntries instead
-    // of clobbering them with [], which would erase artifact and tool history
-    // in the fallback render path.
-    var fetchedFallbackEntriesAvailable = false
-
-    // Reduced-load mode skips heavy transcript fetches during live streaming,
-    // but once a session is idle the phone must reconcile with the canonical
-    // host transcript. Live event snapshots can be byte-capped tails of a long
-    // answer, which are useful while streaming but not enough for final copy
-    // or history.
-    let needsInitialTailHydration = forceRemote && !initialTranscriptTailHydrated
-    // Cross-project quick looks never take the command-based fallback fetch —
-    // chat.getTranscript routes through the project scope registry and boots
-    // the foreign runtime for a read.
-    let shouldFetchFallback = !isCrossProject
-      && !reducedActiveLiveStream
-      && (
-      requestedOpeningSnapshotThisLoad
-      || needsInitialTailHydration
-      || !preferLightweight
-      || (liveTranscript.isEmpty && transcript.isEmpty)
-      || (!liveTranscript.isEmpty && transcriptStatus != "active")
-    )
-    let fallbackMaxChars = transcriptStatus == "active" ? 240_000 : 600_000
-    if shouldFetchFallback, let page = try? await syncService.fetchChatTranscriptPage(sessionId: sessionId, maxChars: fallbackMaxChars) {
-      recordTranscriptPage(page, before: nil)
-      initialTranscriptTailHydrated = true
-      fetchedFallbackEntries = combinedTranscriptEntries()
-      fetchedFallbackEntriesAvailable = true
-      fallbackTranscript = makeWorkChatTranscript(from: fetchedFallbackEntries, sessionId: sessionId)
-    }
-
-    // Chat-only fallback: parses chat envelopes out of the raw terminal buffer.
-    // Terminal sessions own their subscription via TerminalSessionScreen's
-    // offset stream; a preview-budget subscribe here would race a second
-    // replace-snapshot into that stream.
-    // Terminal buffers are active-project scoped; a quick-look must not
-    // subscribe them (wrong project, and another read-path boot vector).
-    if forceRemote && !preferLightweight && !isRemoteOnlyChat, let currentSession = session ?? initialSession, isChatSession(currentSession) {
-      try? await syncService.subscribeTerminal(sessionId: sessionId)
-      let raw = syncService.terminalBuffers[sessionId] ?? ""
-      let parsed = parseWorkChatTranscript(raw)
-      if !parsed.isEmpty {
-        eventTranscript = mergeWorkChatTranscripts(base: eventTranscript, live: parsed)
-      }
-    }
-
-    if !liveTranscript.isEmpty {
-      eventTranscript = mergeWorkChatTranscripts(base: eventTranscript, live: liveTranscript)
-    }
-
-    let shouldPreferFallbackTranscript = workChatShouldPreferFallbackTranscript(
-      fallbackTranscript: { fallbackTranscript },
-      sessionStatus: transcriptStatus,
-      liveTranscript: eventTranscript
-    )
-    let canonicalEventTranscript: [WorkChatEnvelope]
-    if shouldPreferFallbackTranscript {
-      canonicalEventTranscript = workChatIdleCanonicalEventTranscript(eventTranscript)
-    } else {
-      canonicalEventTranscript = eventTranscript
-    }
-
-    // Live event history is already the source of truth for the current tail.
-    // Re-merging it into `transcript` replays delta chunks into the same
-    // assistant item on every refresh, which duplicates text only on iOS.
-    let mergedTranscript: [WorkChatEnvelope]
-    let liveTranscriptStillMoving = transcriptStatus == "active" || workTranscriptIndicatesActiveTurn(eventTranscript)
-    if !shouldPreferFallbackTranscript,
-       !liveDeltaTranscript.isEmpty,
-       !transcript.isEmpty {
-      mergedTranscript = appendWorkChatTranscripts(base: transcript, live: liveDeltaTranscript)
-    } else if !shouldPreferFallbackTranscript,
-       liveTranscriptWasRebuilt,
-       !transcript.isEmpty {
-      mergedTranscript = preferredWorkTranscript(
-        current: transcript,
-        fallback: fallbackTranscript,
-        eventTranscript: canonicalEventTranscript
-      )
-    } else if !shouldPreferFallbackTranscript,
-       !needsInitialTailHydration,
-       liveTranscriptStillMoving,
-       !transcript.isEmpty {
-      mergedTranscript = transcript
-    } else {
-      mergedTranscript = preferredWorkTranscript(
-        current: [],
-        fallback: fallbackTranscript,
-        eventTranscript: canonicalEventTranscript
-      )
-    }
-    if !mergedTranscript.isEmpty, mergedTranscript != transcript {
-      setTranscript(
-        mergedTranscript,
-        allowsIncrementalSnapshot: !liveDeltaTranscript.isEmpty && !liveTranscriptWasRebuilt,
-        incrementalDelta: liveDeltaTranscript
-      )
-    }
-    if fetchedFallbackEntriesAvailable, fallbackEntries != fetchedFallbackEntries {
-      setFallbackEntries(fetchedFallbackEntries)
-    }
-    reconcileOptimisticPendingSteers(with: mergedTranscript)
-    reconcileLocalEchoMessages()
-    // No prune here. This runs at the end of every transcript refresh — i.e.
-    // immediately after hydration has just fetched up to 1 000 events — and cut
-    // that freshly-built window straight back down to the idle tail. The live
-    // event path (`syncTranscriptFromLiveEvents`) still prunes while idle, so
-    // the memory guard is intact without throwing away what we just asked for.
-    if forceRemote {
-      lastTranscriptRemoteRefreshAt = Date()
-    }
-  }
-
-  @MainActor
-  func pruneIdleLiveChatEventHistoryIfNeeded(
-    transcriptStatus: String,
-    eventTranscript: [WorkChatEnvelope]
-  ) {
-    guard transcriptStatus != "active",
-          liveTurnActiveHint != true,
-          !workTranscriptIndicatesActiveTurn(eventTranscript)
-    else { return }
-    let eventsBefore = syncService.chatEventHistory(sessionId: sessionId).count
-    let compactedEvents = syncService.pruneChatEventHistory(sessionId: sessionId) { events in
-      workPrunedIdleChatEventHistory(events, keepingHeavyTail: workChatIdleLiveEventTailLimit)
-    }
-    if compactedEvents.count < eventsBefore {
-      // Heavy content was dropped. Text comes back from the canonical
-      // transcript on reopen, so the thread would otherwise render as if it
-      // were whole — arm the "load earlier" head slot and say so instead.
-      liveEventWindowTruncated = true
-    }
-    liveTranscriptCache.compact(sessionId: sessionId, events: compactedEvents)
-  }
-
-  /// Fold one host transcript page into the local ordered store. New hosts
-  /// return byte cursors, so ordering is maintained locally instead of
-  /// pretending byte offsets are dense entry indices.
-  @MainActor
-  func recordTranscriptPage(_ page: SyncService.AgentChatTranscriptPage, before cursor: Int?) {
-    if page.cursorKind == "byte" {
-      transcriptCursorKind = "byte"
-      let existing = combinedTranscriptEntries()
-      let merged = cursor == nil
-        ? mergeWorkTranscriptPageOccurrences(older: existing, newer: page.entries)
-        : page.entries + existing
-      transcriptEntriesByIndex = Dictionary(
-        uniqueKeysWithValues: merged.enumerated().map { ($0.offset, $0.element) }
-      )
-      if cursor == nil {
-        if olderTranscriptCursor == nil {
-          olderTranscriptCursor = page.nextCursor ?? 0
-        }
-      } else {
-        olderTranscriptCursor = page.nextCursor ?? 0
-      }
-      return
-    }
-    transcriptCursorKind = page.cursorKind
-    let end = min(cursor ?? page.totalEntries, page.totalEntries)
-    let start = max(0, end - page.entries.count)
-    let pageCursor = page.nextCursor ?? 0
-    if cursor == nil {
-      // Tail refresh. If the new window starts past everything stored (a
-      // burst of entries landed between polls), stitching would render a
-      // transcript with a silent hole — reset to the fresh tail instead and
-      // re-anchor scroll-back below it.
-      let nextContiguousIndex = transcriptEntriesByIndex.keys.max().map { $0 + 1 } ?? 0
-      if start > nextContiguousIndex, !page.entries.isEmpty {
-        transcriptEntriesByIndex = [:]
-        olderTranscriptCursor = pageCursor
-      } else if olderTranscriptCursor == nil {
-        // First fetch establishes the scroll-back anchor; later contiguous
-        // polls must not move it forward past pages the user already loaded.
-        olderTranscriptCursor = pageCursor
-      }
-    } else {
-      olderTranscriptCursor = min(olderTranscriptCursor ?? pageCursor, pageCursor)
-    }
-    for (offset, entry) in page.entries.enumerated() {
-      transcriptEntriesByIndex[start + offset] = entry
-    }
-  }
-
-  @MainActor
-  func seedOlderChatEventHistoryCursor(from snapshot: AgentChatEventHistorySnapshot) {
-    updateOlderChatEventHistoryCursor(
-      workChatSnapshotOlderHistoryCursor(
-        hasOlderHistory: snapshot.hasOlderHistory,
-        tailStartOffset: snapshot.tailStartOffset
-      )
-    )
-  }
-
-  @MainActor
-  func seedOlderChatEventHistoryCursor(from page: AgentChatEventHistoryPage) {
-    guard page.unavailable != true,
-          page.sessionId == sessionId
-    else { return }
-    guard page.sessionFound else {
-      olderChatEventHistoryCursor = 0
-      return
-    }
-    guard page.startOffset >= 0,
-          (!page.hasMore || page.startOffset > 0)
-    else { return }
-    updateOlderChatEventHistoryCursor(page.hasMore ? page.startOffset : nil)
-  }
-
-  @MainActor
-  func updateOlderChatEventHistoryCursor(_ cursor: Int?, authoritative: Bool = false) {
-    let normalizedCursor = cursor.flatMap { $0 > 0 ? $0 : nil } ?? 0
-    if authoritative {
-      olderChatEventHistoryCursor = normalizedCursor
-      return
-    }
-    if let existing = olderChatEventHistoryCursor {
-      // Zero is an explicit exhausted sentinel. Periodic tail refreshes must
-      // not re-seed already-consumed history and download the same pages again.
-      if existing == 0 { return }
-      guard let cursor, cursor > 0 else {
-        olderChatEventHistoryCursor = 0
-        return
-      }
-      olderChatEventHistoryCursor = min(existing, cursor)
-      return
-    }
-    olderChatEventHistoryCursor = normalizedCursor
-  }
-
-  @MainActor
-  func combinedTranscriptEntries() -> [AgentChatTranscriptEntry] {
-    transcriptEntriesByIndex.keys.sorted().compactMap { transcriptEntriesByIndex[$0] }
-  }
-
-  var hasOlderTranscriptHistory: Bool {
-    workChatHasOlderTranscriptHistory(
-      chatEventCursor: olderChatEventHistoryCursor,
-      canonicalTranscriptCursor: olderTranscriptCursor,
-      allowsCanonicalFallback: !isCrossProject,
-      liveEventWindowTruncated: liveEventWindowTruncated
-    )
-  }
-
-  /// Retire the idle-prune latch.
-  ///
-  /// `liveEventWindowTruncated` arms the "load earlier" head slot when the idle
-  /// prune drops heavy content: what is on screen is a tail, so offering the
-  /// slot is honest at that moment. It is NOT honest forever. Once a load has
-  /// run to a non-failure conclusion, the real cursors
-  /// (`olderChatEventHistoryCursor` / `olderTranscriptCursor`) know whether
-  /// anything older exists — and when they say no, a latch that never clears
-  /// leaves a permanently armed control whose every tap is a no-op.
-  ///
-  /// Chosen over "re-hydrate from the canonical transcript on tap": the tap
-  /// already does exactly that when a cursor exists, and when none does there
-  /// is nothing to re-hydrate from, so the only truthful move is to stop
-  /// offering the slot. A transient `.failed` deliberately does not clear it.
-  @MainActor
-  private func retireLiveEventWindowTruncationLatch() {
-    liveEventWindowTruncated = false
-  }
-
-  /// Fetch the next strictly-older transcript page from the host and prepend
-  /// it to the fallback entries that feed the chat timeline.
-  @MainActor
-  func loadOlderTranscriptEntries() async -> WorkChatOlderHistoryLoadResult {
-    guard !olderTranscriptLoading else {
-      return .loaded(hasMoreHistory: hasOlderTranscriptHistory, addedTimelineEntries: false)
-    }
-    olderTranscriptLoading = true
-    defer { olderTranscriptLoading = false }
-    switch await loadOlderChatEventHistoryPageIfPossible() {
-    case .loaded(let addedTimelineEntries):
-      // The event-page cursor is authoritative from here; the prune latch has
-      // nothing left to say.
-      retireLiveEventWindowTruncationLatch()
-      return .loaded(
-        hasMoreHistory: hasOlderTranscriptHistory,
-        addedTimelineEntries: addedTimelineEntries
-      )
-    case .failed:
-      return .failed
-    case .unsupported:
-      break
-    }
-    // Cross-project quick looks must never fall through to the canonical
-    // command path: that route activates the foreign runtime just to read
-    // history. A modern subscribe cursor will re-enable the scoped event-page
-    // path as soon as its ack arrives.
-    guard !isCrossProject else { return .failed }
-    guard let cursor = olderTranscriptCursor, cursor > 0 else {
-      // No event page, no canonical cursor: there is provably nothing older to
-      // fetch, so the head slot retires instead of staying armed on a tap that
-      // can only ever be a no-op.
-      retireLiveEventWindowTruncationLatch()
-      return .loaded(hasMoreHistory: false, addedTimelineEntries: false)
-    }
-    var loadedPage: SyncService.AgentChatTranscriptPage?
-    for retry in 0..<3 {
-      if retry > 0 {
-        try? await Task.sleep(nanoseconds: retry == 1 ? 250_000_000 : 750_000_000)
-      }
-      guard !Task.isCancelled else { return .failed }
-      if let page = try? await syncService.fetchChatTranscriptPage(
-        sessionId: sessionId,
-        cursor: cursor
-      ) {
-        loadedPage = page
-        break
-      }
-    }
-    guard let page = loadedPage else { return .failed }
-    guard workChatOlderTranscriptPageAdvances(
-      beforeOffset: cursor,
-      nextCursor: page.nextCursor
-    ) else { return .failed }
-    recordTranscriptPage(page, before: cursor)
-    let combined = combinedTranscriptEntries()
-    let fallbackChanged = !combined.isEmpty && combined != fallbackEntries
-    if fallbackChanged {
-      setFallbackEntries(combined)
-    }
-    // fallbackEntries only feed the timeline while `transcript` is empty
-    // (buildWorkTimeline), so splice the older entries into the rendered
-    // transcript right away — otherwise the fetched page stays invisible
-    // until the next loadTranscript poll. preferredWorkTranscript backfills
-    // by role+turnId+text identity, so entries already rendered from live
-    // events are not duplicated.
-    let olderTranscript = makeWorkChatTranscript(from: combined, sessionId: sessionId)
-    let merged = preferredWorkTranscript(current: [], fallback: olderTranscript, eventTranscript: transcript)
-    let transcriptChanged = !merged.isEmpty && merged != transcript
-    if transcriptChanged {
-      setTranscript(merged)
-    }
-    // A canonical page landed; `olderTranscriptCursor` owns the answer now.
-    retireLiveEventWindowTruncationLatch()
-    return .loaded(
-      hasMoreHistory: hasOlderTranscriptHistory,
-      addedTimelineEntries: fallbackChanged || transcriptChanged
-    )
-  }
-
-  @MainActor
-  private func loadOlderChatEventHistoryPageIfPossible() async -> WorkOlderHistoryPageResult {
-    guard (
-      syncService.supportsSubscribedChatHistory(sessionId: sessionId)
-      || syncService.supportsChatRemoteAction("chat.getChatEventHistoryPage", sessionId: sessionId)
-    ),
-          var cursor = olderChatEventHistoryCursor,
-          cursor > 0
-    else { return .unsupported }
-
-    for _ in 0..<6 {
-      guard cursor > 0 else { break }
-      var loadedPage: AgentChatEventHistoryPage?
-      for retry in 0..<3 {
-        if retry > 0 {
-          try? await Task.sleep(nanoseconds: retry == 1 ? 250_000_000 : 750_000_000)
-        }
-        guard !Task.isCancelled else { return .failed }
-        if let page = try? await syncService.fetchChatEventHistoryPage(
-          sessionId: sessionId,
-          beforeOffset: cursor,
-          maxBytes: 256 * 1024
-        ), page.unavailable != true {
-          loadedPage = page
-          break
-        }
-      }
-      guard let page = loadedPage else { return .failed }
-      guard page.unavailable != true,
-            page.sessionId == sessionId
-      else {
-        return .failed
-      }
-      guard page.sessionFound else {
-        olderChatEventHistoryCursor = 0
-        return .loaded(addedTimelineEntries: false)
-      }
-      guard
-            workChatOlderTranscriptPageAdvances(
-              beforeOffset: cursor,
-              nextCursor: page.startOffset
-            ),
-            (!page.hasMore || page.startOffset > 0)
-      else {
-        return .failed
-      }
-      olderChatEventHistoryCursor = page.hasMore && page.startOffset > 0 ? page.startOffset : 0
-      cursor = page.startOffset
-
-      let olderTranscript = makeWorkChatTranscript(from: page.events)
-      guard !olderTranscript.isEmpty else { continue }
-
-      let merged = pruneResolvedQueuedSteerEnvelopes(
-        mergeWorkChatTranscripts(base: olderTranscript, live: transcript)
-      )
-      let transcriptChanged = !merged.isEmpty && merged != transcript
-      if transcriptChanged {
-        setTranscript(merged)
-      }
-      return .loaded(addedTimelineEntries: transcriptChanged)
-    }
-
-    return .loaded(addedTimelineEntries: false)
   }
 
   /// Re-read this session's row from the phone's local replicated DB. Cheap
@@ -2900,38 +1931,18 @@ struct WorkSessionDestinationView: View {
     }
   }
 
+  /// After a chat action: summary, session row and proof artifacts. The
+  /// transcript is not refetched — whatever the action changed arrives on the
+  /// live stream into the thread engine.
   @MainActor
   func refreshChatStateAfterAction(forceRemote: Bool = true) async {
-    let preferLightweight = syncService.prefersReducedSyncLoad
-    let localEchoSnapshot = localEchoMessages
-    await loadTranscript(forceRemote: forceRemote, preferLightweight: preferLightweight)
-    if preferLightweight,
-       forceRemote,
-       transcript.isEmpty,
-       fallbackEntries.isEmpty,
-       shouldHydrateTranscriptFromHost {
-      let hydrationEchoSnapshot = localEchoMessages.isEmpty ? localEchoSnapshot : localEchoMessages
-      await hydrateEmptyTranscriptFromHostIfNeeded(force: true)
-      restoreLocalEchoesIfHydrationStillEmpty(hydrationEchoSnapshot)
-    }
-    if !preferLightweight {
+    if forceRemote, !syncService.prefersReducedSyncLoad {
       await refreshArtifacts(force: true)
     }
     await refreshChatSummaryFromHost()
     if !isRemoteOnlyChat, let refreshedSession = try? await syncService.fetchSession(id: sessionId) {
       session = refreshedSession
     }
-  }
-
-  @MainActor
-  func restoreLocalEchoesIfHydrationStillEmpty(_ echoes: [WorkLocalEchoMessage]) {
-    guard !echoes.isEmpty,
-          localEchoMessages.isEmpty,
-          transcript.isEmpty,
-          fallbackEntries.isEmpty else {
-      return
-    }
-    localEchoMessages = echoes
   }
 
   @MainActor
@@ -3024,6 +2035,7 @@ struct WorkSessionDestinationView: View {
         deliveryState: (sendWillQueueChatMessage || useSteer) ? "queued" : "sending"
       )
       localEchoMessages.append(nextEcho)
+      syncThreadOverlays()
       echo = nextEcho
     }
     let useSteer = shouldSteerActiveTurn
@@ -3089,89 +2101,7 @@ struct WorkSessionDestinationView: View {
       deliveryState: deliveryState,
       attachments: initialOpeningAttachments.isEmpty ? nil : initialOpeningAttachments
     ))
-  }
-
-  @MainActor
-  func syncTranscriptFromLiveEvents() {
-    if let subscribedCursor = syncService.chatOlderHistoryCursorState(sessionId: sessionId) {
-      updateOlderChatEventHistoryCursor(
-        subscribedCursor > 0 ? subscribedCursor : nil,
-        authoritative: true
-      )
-    }
-    let liveTranscript = liveTranscriptCache.transcript(
-      for: sessionId,
-      events: syncService.chatEventHistory(sessionId: sessionId)
-    )
-    let liveDeltaTranscript = liveTranscriptCache.recentDeltaTranscript
-    let liveTranscriptWasRebuilt = liveTranscriptCache.recentTranscriptWasRebuilt
-    guard !liveTranscript.isEmpty else { return }
-    let status = normalizedWorkChatSessionStatus(session: session ?? initialSession, summary: chatSummary ?? initialChatSummary)
-    let transcriptStatus = workChatTranscriptPreferenceStatus(
-      sessionStatus: status,
-      liveTurnActiveHint: syncService.chatTurnActiveHint(sessionId: sessionId)
-    )
-    guard !liveDeltaTranscript.isEmpty || liveTranscriptWasRebuilt || transcript.isEmpty else {
-      pruneIdleLiveChatEventHistoryIfNeeded(transcriptStatus: transcriptStatus, eventTranscript: liveTranscript)
-      return
-    }
-    // A full re-parse of the fallback entry array — a page that runs 240-600 KB.
-    // Every live streaming delta ran it on the main actor ~6-7x/s, and on that
-    // path nothing consumed the result: `workChatShouldPreferFallbackTranscript`
-    // short-circuits on an active turn before it reads the transcript, and the
-    // delta-append merge branch below never touches it. Build at most once, and
-    // only when a branch actually asks for it.
-    var memoizedFallbackTranscript: [WorkChatEnvelope]?
-    let fallbackTranscript: () -> [WorkChatEnvelope] = {
-      if let memoizedFallbackTranscript { return memoizedFallbackTranscript }
-      let built = makeWorkChatTranscript(from: fallbackEntries, sessionId: sessionId)
-      memoizedFallbackTranscript = built
-      return built
-    }
-    let shouldPreferFallbackTranscript = workChatShouldPreferFallbackTranscript(
-      fallbackTranscript: fallbackTranscript,
-      sessionStatus: transcriptStatus,
-      liveTranscript: liveTranscript
-    )
-    let canonicalLiveTranscript: [WorkChatEnvelope]
-    if shouldPreferFallbackTranscript {
-      canonicalLiveTranscript = workChatIdleCanonicalEventTranscript(liveTranscript)
-    } else {
-      canonicalLiveTranscript = liveTranscript
-    }
-    // Active live ticks should only fold the new event delta. Full fallback
-    // backfill remains for idle/terminal reconciliation where completeness beats
-    // per-frame streaming cost.
-    let mergedTranscript: [WorkChatEnvelope]
-    if !shouldPreferFallbackTranscript,
-       !liveDeltaTranscript.isEmpty,
-       !transcript.isEmpty {
-      mergedTranscript = appendWorkChatTranscripts(base: transcript, live: liveDeltaTranscript)
-    } else if !shouldPreferFallbackTranscript,
-       liveTranscriptWasRebuilt,
-       !transcript.isEmpty {
-      mergedTranscript = preferredWorkTranscript(
-        current: transcript,
-        fallback: fallbackTranscript(),
-        eventTranscript: canonicalLiveTranscript
-      )
-    } else {
-      mergedTranscript = preferredWorkTranscript(
-        current: [],
-        fallback: fallbackTranscript(),
-        eventTranscript: canonicalLiveTranscript
-      )
-    }
-    if !mergedTranscript.isEmpty, mergedTranscript != transcript {
-      setTranscript(
-        mergedTranscript,
-        allowsIncrementalSnapshot: !liveDeltaTranscript.isEmpty && !liveTranscriptWasRebuilt,
-        incrementalDelta: liveDeltaTranscript
-      )
-    }
-    reconcileOptimisticPendingSteers(with: mergedTranscript)
-    reconcileLocalEchoMessages()
-    pruneIdleLiveChatEventHistoryIfNeeded(transcriptStatus: transcriptStatus, eventTranscript: liveTranscript)
+    syncThreadOverlays()
   }
 
   @MainActor
@@ -3188,12 +2118,16 @@ struct WorkSessionDestinationView: View {
     } else {
       optimisticPendingSteers.append(model)
     }
+    syncThreadOverlays()
   }
 
   @MainActor
   func reconcileOptimisticPendingSteers(with transcript: [WorkChatEnvelope]) {
     guard !optimisticPendingSteers.isEmpty else { return }
-    let pendingIds = Set(derivePendingWorkSteers(from: transcript).map(\.id))
+    // The engine already folded the canonical pending queue for this frame.
+    let pendingIds = Set(
+      (threadModel?.frame?.snapshot.pendingSteers ?? derivePendingWorkSteers(from: transcript)).map(\.id)
+    )
     optimisticPendingSteers.removeAll { steer in
       transcriptContainsResolvedSteer(transcript, steer: steer) || pendingIds.contains(steer.id)
     }
@@ -3206,40 +2140,27 @@ struct WorkSessionDestinationView: View {
   /// the host no longer lists as pending has been delivered (or cancelled) — the
   /// steer id is the host-assigned id, so absence is definitive. We never drop
   /// while the host is unreachable or the refresh came back empty.
+  ///
+  /// The authoritative refresh is a fresh host snapshot into the engine: once
+  /// a host-origin frame newer than the request lands, any optimistic steer the
+  /// host no longer lists as pending has been delivered or cancelled.
   @MainActor
   func reconcileOptimisticSteersAfterTurnEnd() async {
-    guard !optimisticPendingSteers.isEmpty, isLiveAndReachable else { return }
-    await loadTranscript(forceRemote: true, preferLightweight: false)
+    guard !optimisticPendingSteers.isEmpty, isLiveAndReachable, let threadModel else { return }
+    let requestedAfterRevision = threadModel.frame?.revision ?? 0
+    threadModel.retry()
+    for _ in 0..<40 {
+      try? await Task.sleep(nanoseconds: 200_000_000)
+      guard !Task.isCancelled else { return }
+      if let frame = threadModel.frame,
+         frame.revision > requestedAfterRevision,
+         frame.cacheOrigin == .host || frame.cacheOrigin == .mixed {
+        break
+      }
+    }
     guard isLiveAndReachable, !transcript.isEmpty else { return }
     let canonicalPendingIds = Set(derivePendingWorkSteers(from: transcript).map(\.id))
     optimisticPendingSteers.removeAll { !canonicalPendingIds.contains($0.id) }
-  }
-
-  @MainActor
-  func reconcileIdleCanonicalTranscriptIfNeeded() async {
-    guard !canonicalTranscriptRefreshInFlight else { return }
-
-    // We used to bail when fallbackEntries was non-empty, but loadTranscript
-    // now populates fallbackEntries during active sessions too — so a populated
-    // cache no longer means "we already reconciled". Rely on the active-status
-    // gate plus the 6s debounce below to throttle work instead.
-    let status = normalizedWorkChatSessionStatus(session: session ?? initialSession, summary: chatSummary ?? initialChatSummary)
-    guard status != "active" else { return }
-
-    let liveTranscript = makeWorkChatTranscript(from: syncService.chatEventHistory(sessionId: sessionId))
-    guard !workTranscriptIndicatesActiveTurn(liveTranscript) else { return }
-
-    let hasLiveOrCachedText = !liveTranscript.isEmpty || !transcript.isEmpty
-    guard hasLiveOrCachedText else { return }
-
-    let now = Date()
-    guard now.timeIntervalSince(lastCanonicalTranscriptRefreshAt) >= 6 else { return }
-
-    canonicalTranscriptRefreshInFlight = true
-    lastCanonicalTranscriptRefreshAt = now
-    defer { canonicalTranscriptRefreshInFlight = false }
-
-    await loadTranscript(forceRemote: isLiveAndReachable, preferLightweight: false)
   }
 
   @MainActor
@@ -3251,6 +2172,7 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func refreshChatInfoSnapshots() {
+    chatInfoTranscriptShape = workChatInfoTranscriptShape(transcript)
     refreshSubagentSnapshots()
     refreshScheduledWorkSnapshots()
   }
@@ -3315,32 +2237,11 @@ struct WorkSessionDestinationView: View {
     }
   }
 
-  @MainActor
-  func materializeParentTranscriptFromLiveEventsIfNeeded() {
-    guard transcript.isEmpty, fallbackEntries.isEmpty else { return }
-    let liveTranscript = liveTranscriptCache.transcript(
-      for: sessionId,
-      events: syncService.chatEventHistory(sessionId: sessionId)
-    )
-    guard !liveTranscript.isEmpty else { return }
-    let merged = preferredWorkTranscript(current: [], fallback: [], eventTranscript: liveTranscript)
-    if !merged.isEmpty {
-      setTranscript(merged)
-    }
-  }
-
-  /// Hydrate the transcript (so the subagent roster is fully populated) and
-  /// present the unified Chat Info sheet. Replaces the old standalone subagent
-  /// drawer presentation — subagents, background, and schedule now share one
-  /// sheet.
+  /// Present the unified Chat Info sheet (subagents, background, schedule),
+  /// derived from the engine's current transcript plus the host's roster.
   @MainActor
   func prepareChatInfoPresentation() async {
-    materializeParentTranscriptFromLiveEventsIfNeeded()
-    if transcript.isEmpty && fallbackEntries.isEmpty && shouldHydrateTranscriptFromHost {
-      await refreshChatSummaryFromHost()
-      await loadTranscript(forceRemote: true, preferLightweight: false)
-    }
-    materializeParentTranscriptFromLiveEventsIfNeeded()
+    refreshChatInfoSnapshots()
     chatInfoPresented = true
     await refreshRemoteSubagentSnapshots()
   }
@@ -3408,11 +2309,9 @@ struct WorkSessionDestinationView: View {
         let status = normalizedWorkChatSessionStatus(session: self.session, summary: self.chatSummary)
         return status == "active" || status == "awaiting-input" || self.liveTurnActiveHint == true
       }() {
-      syncTranscriptFromLiveEvents()
+      // Transcript updates stream into the thread engine on their own; this
+      // loop only keeps the summary, the session row and proof current.
       let now = Date()
-      if now.timeIntervalSince(lastTranscriptRemoteRefreshAt) >= 8 {
-        await loadTranscript(forceRemote: true, preferLightweight: syncService.prefersReducedSyncLoad)
-      }
       let sessionRefreshInterval = syncService.prefersReducedSyncLoad ? 10.0 : 5.0
       if now.timeIntervalSince(lastSessionRowRefreshAt) >= sessionRefreshInterval {
         lastSessionRowRefreshAt = now
@@ -3430,25 +2329,308 @@ struct WorkSessionDestinationView: View {
   }
 }
 
-private func workInitialTranscriptSeedRenderSignature(_ transcript: [WorkChatEnvelope]?) -> Int {
-  guard let transcript else { return 0 }
-  var hasher = Hasher()
-  hasher.combine(transcript.count)
-  if let first = transcript.first {
-    hasher.combine(workChatEnvelopeMergeKey(first))
-    hasher.combine(first.sequence)
-    hasher.combine(first.timestamp)
-  }
-  if let last = transcript.last {
-    hasher.combine(workChatEnvelopeMergeKey(last))
-    hasher.combine(last.sequence)
-    hasher.combine(last.timestamp)
-    if case .assistantText(let text, _, _) = last.event {
-      hasher.combine(text.utf8.count)
-      hasher.combine(text.hashValue)
+// MARK: - Empty-thread probe
+
+/// Why a chat that is working shows nothing, or nil when it is fine. Field
+/// reports showed chats on another machine streaming live activity under
+/// "No chat messages yet" until the user sent a message.
+func workChatEmptyThreadAnomaly(
+  shownTimelineCount: Int,
+  isStreamingTurn: Bool,
+  sessionDeleted: Bool,
+  loadState: WorkChatTranscriptLoadState,
+  diagnostics: ChatThreadIngestDiagnostics,
+  isLiveAndReachable: Bool
+) -> String? {
+  // Only the idle empty state claims "No chat messages yet"; loading shows a
+  // skeleton and a failure shows Retry, which are different reports.
+  guard isLiveAndReachable, !sessionDeleted, shownTimelineCount == 0, loadState == .idle else { return nil }
+  guard isStreamingTurn || diagnostics.liveEventCount > 0 else { return nil }
+  if diagnostics.awaitingBoundaryPage { return "held_for_boundary_page" }
+  if diagnostics.snapshotCount == 0 { return "no_snapshot" }
+  if diagnostics.lastSnapshotEventCount == 0 { return "empty_snapshot" }
+  return "snapshot_not_rendered"
+}
+
+extension WorkSessionDestinationView {
+  /// While the chat is open, look every 10 s for the empty-thread state and
+  /// report it to Sentry once per appearance, with the stream trace that says
+  /// where the history went. Reading a frame costs nothing; the report is rare.
+  @MainActor
+  func runEmptyThreadProbe() async {
+    let openedAt = Date()
+    while !Task.isCancelled {
+      try? await Task.sleep(nanoseconds: 10_000_000_000)
+      guard !Task.isCancelled, let threadModel else { continue }
+      let shown = threadModel.frame
+      let latest = await threadModel.engine.currentFrame
+      guard !Task.isCancelled, let reference = latest ?? shown else { continue }
+      guard let kind = workChatEmptyThreadAnomaly(
+        shownTimelineCount: shown?.presentation.timelineCount ?? 0,
+        isStreamingTurn: shown?.isStreamingTurn ?? reference.isStreamingTurn,
+        sessionDeleted: reference.sessionDeleted,
+        loadState: reference.loadState,
+        diagnostics: reference.ingestDiagnostics,
+        isLiveAndReachable: isLiveAndReachable
+      ) else { continue }
+      reportEmptyThread(kind: kind, shown: shown, latest: latest, openedAt: openedAt)
+      return
     }
   }
-  return hasher.finalize()
+
+  @MainActor
+  private func reportEmptyThread(kind: String, shown: ChatThreadFrame?, latest: ChatThreadFrame?, openedAt: Date) {
+    let ingest = (latest ?? shown)?.ingestDiagnostics ?? ChatThreadIngestDiagnostics()
+    var context = syncService.chatStreamDiagnostics(sessionId: sessionId)
+    context["area"] = "chat.empty_thread.\(kind)"
+    context["kind"] = kind
+    context["sessionId"] = sessionId
+    context["machineKey"] = threadKey?.machineKey ?? "nil"
+    // The scope kind only: a cross-project key carries the project's root path.
+    context["threadScope"] = threadKey.map {
+      switch $0.scope {
+      case .project: return "project"
+      case .personal: return "personal"
+      case .crossProject: return "crossProject"
+      }
+    } ?? "nil"
+    context["isRemoteMachineChat"] = String(isRemoteMachineChat)
+    context["isCrossProject"] = String(isCrossProject)
+    context["personalChat"] = String(personalChat)
+    context["provider"] = composerChatSummary?.provider ?? "nil"
+    context["secondsOpen"] = String(Int(Date().timeIntervalSince(openedAt)))
+    context["shownRevision"] = shown.map { String($0.revision) } ?? "nil"
+    context["engineRevision"] = latest.map { String($0.revision) } ?? "nil"
+    context["shownTimeline"] = shown.map { String($0.presentation.timelineCount) } ?? "nil"
+    context["engineTimeline"] = latest.map { String($0.presentation.timelineCount) } ?? "nil"
+    context["engineTranscript"] = latest.map { String($0.transcript.count) } ?? "nil"
+    context["loadState"] = (latest ?? shown).map { String(describing: $0.loadState).prefix(40).description } ?? "nil"
+    context["cacheOrigin"] = (latest ?? shown).map { String(describing: $0.cacheOrigin) } ?? "nil"
+    context["engineSnapshots"] = String(ingest.snapshotCount)
+    context["engineLastSnapshotEvents"] = String(ingest.lastSnapshotEventCount)
+    context["engineLastSnapshotResumed"] = String(ingest.lastSnapshotResumed)
+    context["engineLastSnapshotResumeKind"] = ingest.lastSnapshotResumeKind ?? "nil"
+    context["engineLastSnapshotGap"] = String(ingest.lastSnapshotGap)
+    context["engineLastSnapshotTruncated"] = String(ingest.lastSnapshotTruncated)
+    context["engineLastSnapshotChatLogV2"] = String(ingest.lastSnapshotHostSupportsChatLogV2)
+    context["engineLiveEvents"] = String(ingest.liveEventCount)
+    context["engineLiveSinceSnapshot"] = String(ingest.liveEventsSinceSnapshot)
+    context["engineDiskRows"] = String(ingest.hasDiskRows)
+    context["engineAwaitingBoundaryPage"] = String(ingest.awaitingBoundaryPage)
+    CrashReporting.capture(
+      NSError(
+        domain: "ADE.ChatEmptyThread",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Working chat shows no messages (\(kind))"]
+      ),
+      context: context
+    )
+  }
+}
+
+/// Register the chat-command routing a destination needs before anything
+/// reads or sends for it. Idempotent; shared by `init` (so the engine key is
+/// right for the first render) and `onAppear`.
+@MainActor
+func workRegisterChatCommandScope(
+  _ syncService: SyncService,
+  sessionId: String,
+  personalChat: Bool,
+  crossProjectContext: WorkChatCrossProjectContext?
+) {
+  if personalChat {
+    syncService.setPersonalChatScope(sessionId: sessionId)
+    return
+  }
+  if let crossProjectContext,
+     let machineKey = crossProjectContext.machineKey,
+     machineKey != syncService.focusedMachineKey {
+    syncService.setRemoteMachineChatScope(
+      sessionId: sessionId,
+      machineKey: machineKey,
+      projectId: crossProjectContext.projectId,
+      projectRootPath: crossProjectContext.projectRootPath
+    )
+    return
+  }
+  guard let crossProjectContext,
+        hubChatIsForeignProject(
+          context: crossProjectContext,
+          ownerIsActive: syncService.isActiveProject(
+            id: crossProjectContext.projectId,
+            rootPath: crossProjectContext.projectRootPath
+          )
+        )
+  else { return }
+  syncService.setCrossProjectChatScope(
+    sessionId: sessionId,
+    projectId: crossProjectContext.projectId,
+    projectRootPath: crossProjectContext.projectRootPath
+  )
+}
+
+/// What the empty timeline may claim for a thread frame (edge case 21). The
+/// engine reports `.loading` only while it has neither disk rows nor a host
+/// snapshot; offline, that wait cannot end, so it becomes the idle "reconnect"
+/// state. A frame with cached rows is `.idle` and shows them, offline or not.
+func workChatTranscriptLoadState(
+  frame: ChatThreadFrame?,
+  isLiveAndReachable: Bool
+) -> WorkChatTranscriptLoadState {
+  guard let frame else {
+    return isLiveAndReachable ? .loading : .idle
+  }
+  if frame.sessionDeleted {
+    return .failed("This chat was deleted on the machine.")
+  }
+  if case .loading = frame.loadState, !isLiveAndReachable {
+    return .idle
+  }
+  return frame.loadState
+}
+
+/// Envelope count + newest id: changes when an envelope is added, not when a
+/// streaming delta grows the last one. Gates the Chat Info roster scans.
+func workChatInfoTranscriptShape(_ transcript: [WorkChatEnvelope]) -> String {
+  "\(transcript.count)|\(transcript.last.map(workChatEnvelopeMergeKey) ?? "")"
+}
+
+/// Everything the destination feeds the thread engine as overlays. Equatable
+/// so a single `onChange` pushes a new value only when one of them moved.
+struct WorkChatThreadOverlayInputs: Equatable {
+  var localEchoMessages: [WorkLocalEchoMessage]
+  var optimisticPendingSteers: [WorkPendingSteerModel]
+  var artifacts: [ComputerUseArtifactSummary]
+  var cardExpansionSignature: Int
+  var expandedTurnIds: Set<String>
+  var summary: ChatThreadSummaryContext
+  var sessionStatus: String
+}
+
+extension WorkSessionDestinationView {
+  var threadOverlayInputs: WorkChatThreadOverlayInputs {
+    let summary = composerChatSummary
+    let currentSession = session ?? initialSession
+    let summaryPendingId = summary?.pendingInputItemId?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let usageLimitResume = summary.flatMap { workUsageLimitResumeModel(for: $0) }
+    return WorkChatThreadOverlayInputs(
+      localEchoMessages: localEchoMessages,
+      optimisticPendingSteers: optimisticPendingSteers,
+      // Proof artifacts render in the thread; a quick look has none.
+      artifacts: artifacts,
+      cardExpansionSignature: workCardExpansionRenderSignature(cardExpansion),
+      expandedTurnIds: workExpandedTurnFoldIds(cardExpansion),
+      summary: ChatThreadSummaryContext(
+        provider: summary?.provider ?? "",
+        providerFallback: workChatProviderFamilyFromToolType(currentSession?.toolType),
+        model: summary?.model ?? "",
+        modelId: summary?.modelId,
+        usageLimitTurnId: usageLimitResume?.turnId,
+        hasUsageLimitResume: usageLimitResume != nil,
+        pendingInputItemId: summaryPendingId.isEmpty ? currentSession?.pendingInputItemId : summaryPendingId,
+        claudeGoal: summary?.claudeGoal,
+        orchestrationParentSessionId: summary?.orchestrationParentSessionId,
+        rowEndedAtCandidates: [
+          summary?.idleSinceAt,
+          summary?.endedAt,
+          currentSession?.chatIdleSinceAt,
+          currentSession?.endedAt,
+        ].compactMap { $0 },
+        isLive: isLiveAndReachable
+      ),
+      sessionStatus: normalizedWorkChatSessionStatus(session: currentSession, summary: chatSummary)
+    )
+  }
+
+  /// Push the destination-owned overlays into the engine. Synchronous up to
+  /// the engine hop: a send handler calls it right after appending its echo,
+  /// before any `await`, so the bubble is in the next frame.
+  @MainActor
+  func syncThreadOverlays() {
+    guard let threadModel else { return }
+    let inputs = threadOverlayInputs
+    threadModel.updateOverlays { overlays in
+      overlays.localEchoMessages = inputs.localEchoMessages
+      overlays.optimisticPendingSteers = inputs.optimisticPendingSteers
+      overlays.artifacts = inputs.artifacts
+      overlays.cardExpansionSignature = inputs.cardExpansionSignature
+      overlays.expandedTurnIds = inputs.expandedTurnIds
+      overlays.summary = inputs.summary
+      overlays.sessionStatus = inputs.sessionStatus
+    }
+  }
+
+  /// Hold this chat's engine while the view is on screen.
+  @MainActor
+  func attachThreadModel() {
+    guard !threadAttached, let key = syncService.chatThreadKey(for: sessionId) else { return }
+    let model = syncService.chatThreadRegistry.attach(key)
+    threadAttached = true
+    if threadKey != key || threadModel !== model {
+      threadKey = key
+      threadModel = model
+    }
+  }
+
+  @MainActor
+  func detachThreadModel() {
+    guard threadAttached, let threadKey else { return }
+    threadAttached = false
+    syncService.chatThreadRegistry.detach(threadKey)
+  }
+
+  /// The chat's routing scope changed (Hub activation or its rollback): move
+  /// the attach to the engine SyncService now routes this chat's frames to.
+  @MainActor
+  func rebindThreadModelIfNeeded() {
+    guard let key = syncService.chatThreadKey(for: sessionId), key != threadKey else { return }
+    detachThreadModel()
+    threadKey = key
+    threadModel = syncService.chatThreadRegistry.model(for: key)
+    attachThreadModel()
+    syncThreadOverlays()
+  }
+
+  /// Open the chat's live stream once per appearance, in the same run-loop
+  /// turn as the engine attach.
+  ///
+  /// - Warm engine on a `chatLogV2` host: resume from the engine's durable
+  ///   sequence (the subscribe payload carries it); nothing is re-sent when the
+  ///   stream never closed.
+  /// - Anything else: a full snapshot. Cached rows are already on screen from
+  ///   disk; the snapshot is authoritative for its range and extends them.
+  @MainActor
+  func openThreadSubscriptionIfNeeded() {
+    guard !threadSubscriptionOpened,
+          let currentSession = session ?? initialSession,
+          isChatSession(currentSession)
+    else { return }
+    threadSubscriptionOpened = true
+    let engineWarm = threadKey.flatMap { syncService.chatThreadRegistry.resumePoint(for: $0) } != nil
+    let streamLive = syncService.chatSubscriptionIsLive(sessionId: sessionId)
+    let requestSnapshot = !engineWarm || (!syncService.chatSupportsLogV2(sessionId: sessionId) && !streamLive)
+    syncService.subscribeToChatEventsNow(sessionId: sessionId, requestSnapshot: requestSnapshot)
+  }
+
+  /// Per-frame bookkeeping that needs the transcript: echo and steer
+  /// reconciliation (cheap, and guarded on having any), the summary-mode
+  /// patch from `session_meta_updated`, and the Chat Info roster (only when an
+  /// envelope was added).
+  @MainActor
+  func handleThreadFrameApplied() {
+    reconcileChatSummaryModeFromCacheIfNeeded()
+    let transcript = self.transcript
+    if !optimisticPendingSteers.isEmpty {
+      reconcileOptimisticPendingSteers(with: transcript)
+    }
+    if !localEchoMessages.isEmpty {
+      reconcileLocalEchoMessages()
+    }
+    if workChatInfoTranscriptShape(transcript) != chatInfoTranscriptShape {
+      refreshChatInfoSnapshots()
+    }
+  }
 }
 
 extension WorkSessionDestinationView: Equatable {
@@ -3460,7 +2642,6 @@ extension WorkSessionDestinationView: Equatable {
       && lhs.initialOpeningAttachments == rhs.initialOpeningAttachments
       && lhs.initialSession == rhs.initialSession
       && lhs.initialChatSummary == rhs.initialChatSummary
-      && workInitialTranscriptSeedRenderSignature(lhs.initialTranscript) == workInitialTranscriptSeedRenderSignature(rhs.initialTranscript)
       && (lhs.transitionNamespace == nil) == (rhs.transitionNamespace == nil)
       && lhs.isLive == rhs.isLive
       && lhs.navigationChrome == rhs.navigationChrome
@@ -3484,6 +2665,7 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
 
   let mode: WorkSessionNavigationChrome
   let title: String
+  let subtitle: String?
   let trailingControls: () -> TrailingControls
 
   @ViewBuilder
@@ -3503,41 +2685,17 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
         // Keep the edge gesture pass-through: vertical scrolls and row gestures
         // still reach the chat, while the helper only dismisses true edge swipes.
         .simultaneousGesture(edgeSwipeDismissGesture(containerWidth: contentWidth))
+        // Floats over the thread rather than sitting on an opaque bar: the
+        // transcript extends under this inset (it ignores the top safe area and
+        // reads the inset back as its own content inset), so the prose scrolls
+        // behind the glass controls.
         .safeAreaInset(edge: .top, spacing: 0) {
-          ZStack {
-            Text(title)
-              .font(.headline.weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-              .truncationMode(.tail)
-              .frame(maxWidth: .infinity)
-              .padding(.horizontal, 64)
-
-            HStack(spacing: 10) {
-              Button {
-                dismiss()
-              } label: {
-                Image(systemName: "chevron.left")
-                  .font(.system(size: 15, weight: .semibold))
-                  .foregroundStyle(ADEColor.accent)
-                  .frame(width: 28, height: 28)
-              }
-              .buttonStyle(.plain)
-              .contentShape(Rectangle())
-              .accessibilityLabel("Back to Work")
-
-              Spacer(minLength: 0)
-
-              trailingControls()
-            }
-          }
-          .padding(.horizontal, 16)
-          .padding(.bottom, 8)
-          .background {
-            ADEColor.pageBackground
-              .ignoresSafeArea(edges: .top)
-              .allowsHitTesting(false)
-          }
+          WorkChatGlassHeader(
+            title: title,
+            subtitle: subtitle,
+            onBack: { dismiss() },
+            trailingControls: trailingControls
+          )
         }
         .navigationTitle("")
         .toolbar(.hidden, for: .tabBar)
@@ -3576,14 +2734,83 @@ extension View {
   func workSessionNavigationChrome<TrailingControls: View>(
     mode: WorkSessionNavigationChrome,
     title: String,
+    subtitle: String? = nil,
     @ViewBuilder trailingControls: @escaping () -> TrailingControls
   ) -> some View {
     modifier(
       WorkSessionNavigationChromeModifier(
         mode: mode,
         title: title,
+        subtitle: subtitle,
         trailingControls: trailingControls
       )
     )
+  }
+}
+
+/// The header's secondary line: the machine name, or nothing when unknown.
+func workChatHeaderSubtitle(machineName: String?) -> String? {
+  guard let machine = machineName?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !machine.isEmpty else { return nil }
+  return machine
+}
+
+/// The chat thread's header: an independent round glass back button, the
+/// title (one line) over the machine name in a glass capsule that takes the
+/// width between the back button and the trailing actions. No bar and no
+/// scrim behind it — the thread runs edge to edge, up under the status bar,
+/// and only the controls themselves are glass.
+struct WorkChatGlassHeader<TrailingControls: View>: View {
+  let title: String
+  let subtitle: String?
+  let onBack: () -> Void
+  let trailingControls: () -> TrailingControls
+
+  var body: some View {
+    HStack(alignment: .center, spacing: 8) {
+      Button(action: onBack) {
+        WorkChatGlassCircleLabel(systemName: "chevron.left", glyphSize: 18)
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Back")
+      .accessibilityIdentifier("Work.Chat.Header.Back")
+
+      titleCapsule
+        .layoutPriority(1)
+
+      trailingControls()
+    }
+    .padding(.horizontal, 12)
+    .padding(.top, 2)
+    .padding(.bottom, 6)
+  }
+
+  private var trimmedSubtitle: String? {
+    guard let subtitle = subtitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !subtitle.isEmpty else { return nil }
+    return subtitle
+  }
+
+  private var titleCapsule: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Text(title)
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .truncationMode(.tail)
+      if let trimmedSubtitle {
+        Text(trimmedSubtitle)
+          .font(.caption2.weight(.medium))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+      }
+    }
+    .padding(.horizontal, 16)
+    .padding(.vertical, 4)
+    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+    .workChatGlass(in: Capsule(style: .continuous))
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.isHeader)
   }
 }

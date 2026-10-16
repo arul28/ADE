@@ -7,6 +7,7 @@ import {
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { providerSupportsLiveRedirect } from "../../../shared/types/chat";
+import type { OpenProjectBinding } from "../../../shared/types";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { settingsRouteFor } from "../settings/settingsManifest";
 
@@ -54,7 +55,7 @@ export function resolveModelSelection(
  * CTO Settings draws from the same configured catalog as the chat composer.
  * Also exposes a jump to provider settings for the empty-catalog case.
  */
-export function useCtoModelOptions(): {
+export function useCtoModelOptions(pin: OpenProjectBinding | null = null): {
   availableModelIds: string[];
   loadingModels: boolean;
   openProviderSettings: () => void;
@@ -67,7 +68,8 @@ export function useCtoModelOptions(): {
     let cancelled = false;
     void (async () => {
       try {
-        const status = await window.ade.ai.getStatus();
+        // The CTO runs on its home machine, so its models are that machine's.
+        const status = await window.ade.ai.getStatus(undefined, pin);
         if (cancelled) return;
         // Narrowed here as well as in the picker's filter, so the panel's
         // "no models configured" state counts only models the CTO can use.
@@ -84,7 +86,7 @@ export function useCtoModelOptions(): {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [pin]);
 
   const openProviderSettings = useCallback(() => {
     navigate(settingsRouteFor("agents.providers"));

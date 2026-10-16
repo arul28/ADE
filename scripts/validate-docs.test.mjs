@@ -69,7 +69,19 @@ test("strips fragments and query strings and skips non-repo targets", () => {
   assert.equal(normalizeTarget("/configuration#providers", fromFile).absolute, "/configuration");
   assert.equal(normalizeTarget("/configuration?tab=a", fromFile).absolute, "/configuration");
 
-  for (const skipped of ["https://example.com", "http://example.com", "mailto:a@b.c", "tel:+1", "…", "...", ""]) {
+  for (const skipped of [
+    "https://example.com",
+    "http://example.com",
+    "mailto:a@b.c",
+    "tel:+1",
+    // ADE's own proof-citation scheme is documented in examples but is not a
+    // publishable route, so it must not be resolved as a relative path.
+    "ade-proof://artifact-1",
+    "ade-proof:artifact-1",
+    "…",
+    "...",
+    "",
+  ]) {
     assert.equal(normalizeTarget(skipped, fromFile), null);
   }
 });

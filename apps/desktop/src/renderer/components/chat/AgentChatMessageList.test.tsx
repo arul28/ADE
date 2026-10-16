@@ -9,6 +9,7 @@ import type {
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
   ComputerUseArtifactView,
+  OpenProjectBinding,
 } from "../../../shared/types";
 import * as modelRegistry from "../../../shared/modelRegistry";
 import {
@@ -16,6 +17,9 @@ import {
   TEXT_REVEAL_HORIZON_STORAGE_KEY,
 } from "./textReveal";
 import { setPerfActive } from "../../perf/markers";
+import { applyHostedWebZoom, __resetHostedWebZoomForTests } from "../../lib/webZoom";
+import { ChatComposerOverlayContext, createChatComposerOverlay } from "./chatComposerOverlayInset";
+import { ChatSurfaceShell } from "./ChatSurfaceShell";
 import { ADE_NAVIGATE_TARGET_EVENT } from "../../lib/openExternal";
 
 vi.mock("@lobehub/icons", () => {
@@ -61,12 +65,12 @@ vi.mock("../../state/appStore", async (importOriginal) => {
   };
 });
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactElement } from "react";
 import type * as AppStoreModule from "../../state/appStore";
 import {
   AgentChatMessageList,
-  calculateVirtualWindow,
   calculateVirtualWindowAnchoredToEnd,
+  calculateVirtualWindowFromOffsets,
   deriveTranscriptToolActivity,
   deriveTurnModelState,
   estimateTranscriptRowHeight,
@@ -92,16 +96,15 @@ import { resetChatTaskListCardStateForTests } from "./ChatTaskListCard";
 import {
   buildTranscriptEventRowKeys,
   collapseChatTranscriptEvents,
+  filterVisibleTranscriptRows,
   groupChatTranscriptRows,
   groupConsecutiveWorkLogRows,
 } from "./chatTranscriptRows";
 import { promptHistoryEventKey } from "./chatPromptHistory";
 import { resetFilesWorkspaceCacheForTests } from "./chatWorkspacePaths";
-import { rememberCallStill, resetSceneStillsForTest } from "./sceneStillStore";
-import { stubSceneCaptureBridge } from "./sceneStillTestHarness";
 import { mixedIdToolActivityBoundaryEvents } from "../../../shared/testFixtures/chatToolActivity";
 import { setPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
-import { CHAT_TIMELINE_ROW_GAP_PX } from "./chatUserMinimap.logic";
+import { CHAT_TIMELINE_ROW_GAP_PX, computeRowStartOffsets } from "./chatUserMinimap.logic";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
   // Option buttons carry role="radio"/"checkbox" for accessibility, so search
@@ -162,17 +165,21 @@ function renderMessageList(
     onReturnToLatest?: () => void;
     proofArtifacts?: ComputerUseArtifactView[];
     allowLocalProofArtifactProtocol?: boolean;
-    onOpenProofDrawer?: () => void;
+    onOpenProofDrawer?: (focus?: { label: string; artifactIds: readonly string[] }) => void;
     onOpenTurnSources?: (turnId: string) => void;
     usageLimitResumeActive?: boolean;
     usageLimitResumeTurnId?: string | null;
     sessionProvider?: string | null;
     resolveSpawnedChatProvider?: (sessionId: string) => string | null;
+    runtimePin?: OpenProjectBinding | null;
+    /** Mount the list inside a host, e.g. a chat shell with a floating composer. */
+    wrapList?: (list: ReactElement) => ReactElement;
   },
 ) {
+  const wrapList = options?.wrapList ?? ((list: ReactElement) => list);
   return render(
     <MemoryRouter initialEntries={[{ pathname: "/", state: options?.initialState }]}>
-      <AgentChatMessageList
+      {wrapList(<AgentChatMessageList
         events={events}
         usageLimitResumeActive={options?.usageLimitResumeActive}
         usageLimitResumeTurnId={options?.usageLimitResumeTurnId}
@@ -182,6 +189,7 @@ function renderMessageList(
         sessionId={options?.sessionId}
         sessionProvider={options?.sessionProvider}
         resolveSpawnedChatProvider={options?.resolveSpawnedChatProvider}
+        runtimePin={options?.runtimePin}
         scrollMemoryKey={options?.scrollMemoryKey}
         transcriptCollapseCacheKey={options?.transcriptCollapseCacheKey}
         laneId={options?.laneId}
@@ -203,7 +211,7 @@ function renderMessageList(
         allowLocalProofArtifactProtocol={options?.allowLocalProofArtifactProtocol}
         onOpenProofDrawer={options?.onOpenProofDrawer}
         onOpenTurnSources={options?.onOpenTurnSources}
-      />
+      />)}
       <LocationProbe />
     </MemoryRouter>,
   );
@@ -639,18 +647,25 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
   });
 
-  // Proof used to be appended after every row as a permanently open thread
-  // footer. With no transcript rows it is now a compact chronological capture
-  // row that starts collapsed.
-  it("renders proof attached to an empty chat as a collapsed capture row", () => {
-    const rendered = renderMessageList([], { proofArtifacts: [transcriptProofArtifact] });
+  // Proof in the thread is a count; its pictures live on the rows that filed
+  // them and in the drawer. Each count opens the drawer narrowed to its records.
+  const proofCounts = () => screen.queryAllByRole("button", { name: /proof filed/ });
+  const openedFocus = (onOpenProofDrawer: ReturnType<typeof vi.fn>, count: HTMLElement) => {
+    fireEvent.click(count);
+    expect(onOpenProofDrawer, "the count opens the drawer").toHaveBeenCalledTimes(1);
+    return onOpenProofDrawer.mock.calls[0]![0] as { label: string; artifactIds: string[] };
+  };
 
-    expect(screen.queryByText("Proof collected in this chat")).toBeNull();
-    expect(rendered.container.querySelector("[data-chat-proof-timeline]")).toBeNull();
-    expect(screen.getByRole("button", { name: /Proof added/ }).getAttribute("aria-expanded")).toBe("false");
+  it("counts proof attached to an empty chat and opens the drawer on exactly it", () => {
+    const onOpenProofDrawer = vi.fn();
+    renderMessageList([], { proofArtifacts: [transcriptProofArtifact], onOpenProofDrawer });
+
+    expect(proofCounts()).toHaveLength(1);
+    expect(openedFocus(onOpenProofDrawer, proofCounts()[0]!).artifactIds).toEqual([transcriptProofArtifact.id]);
   });
 
-  it("chips proof onto the turn rule of the turn that captured it", () => {
+  it("counts proof on the turn that captured it and opens the drawer on that turn", () => {
+    const onOpenProofDrawer = vi.fn();
     renderMessageList(
       [
         {
@@ -664,13 +679,16 @@ describe("AgentChatMessageList transcript rendering", () => {
           event: { type: "done", turnId: "turn-1", status: "completed" },
         },
       ],
-      { proofArtifacts: [{ ...transcriptProofArtifact, createdAt: "2026-03-17T10:01:00.000Z" }] },
+      { proofArtifacts: [{ ...transcriptProofArtifact, createdAt: "2026-03-17T10:01:00.000Z" }], onOpenProofDrawer },
     );
 
-    expect(screen.getByRole("button", { name: /1 proof/ })).toBeTruthy();
+    expect(proofCounts()).toHaveLength(1);
+    expect(proofCounts()[0]!.textContent).toContain("1 proof filed");
+    expect(openedFocus(onOpenProofDrawer, proofCounts()[0]!)).toEqual({ label: "This turn", artifactIds: [transcriptProofArtifact.id] });
   });
 
   it("does not attribute proof older than the loaded transcript page to its first visible turn", () => {
+    const onOpenProofDrawer = vi.fn();
     renderMessageList(
       [
         {
@@ -686,6 +704,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       ],
       {
         hasOlderHistory: true,
+        onOpenProofDrawer,
         proofArtifacts: [
           { ...transcriptProofArtifact, id: "proof-older-page", createdAt: "2026-03-17T09:30:00.000Z" },
           { ...transcriptProofArtifact, id: "proof-visible-turn", createdAt: "2026-03-17T10:01:00.000Z" },
@@ -693,11 +712,12 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     );
 
-    expect(screen.getByRole("button", { name: /1 proof/ })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /2 proof/ })).toBeNull();
+    expect(proofCounts()).toHaveLength(1);
+    expect(openedFocus(onOpenProofDrawer, proofCounts()[0]!).artifactIds).toEqual(["proof-visible-turn"]);
   });
 
-  it("keeps proof captured after the latest done event visible at the transcript tail", () => {
+  it("keeps proof captured after the latest done event out of that turn's count", () => {
+    const onOpenProofDrawer = vi.fn();
     renderMessageList(
       [
         {
@@ -711,11 +731,11 @@ describe("AgentChatMessageList transcript rendering", () => {
           event: { type: "done", turnId: "turn-1", status: "completed" },
         },
       ],
-      { proofArtifacts: [{ ...transcriptProofArtifact, createdAt: "2026-03-17T10:02:00.000Z" }] },
+      { proofArtifacts: [{ ...transcriptProofArtifact, createdAt: "2026-03-17T10:02:00.000Z" }], onOpenProofDrawer },
     );
 
-    expect(screen.queryByRole("button", { name: /1 proof/ })).toBeNull();
-    expect(screen.getByRole("button", { name: /Proof added/ }).getAttribute("aria-expanded")).toBe("false");
+    expect(proofCounts()).toHaveLength(1);
+    expect(openedFocus(onOpenProofDrawer, proofCounts()[0]!).label).not.toBe("This turn");
   });
 
   it("keeps idle proof before a later turn and never attributes it to that turn", () => {
@@ -745,10 +765,9 @@ describe("AgentChatMessageList transcript rendering", () => {
       { proofArtifacts: [{ ...transcriptProofArtifact, createdAt: "2026-03-17T10:02:00.000Z" }] },
     );
 
-    const proof = screen.getByRole("button", { name: /Proof added/ });
+    expect(proofCounts()).toHaveLength(1);
     const laterTurn = screen.getByText("Later turn.");
-    expect(proof.compareDocumentPosition(laterTurn) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-    expect(screen.queryByRole("button", { name: /1 proof/ })).toBeNull();
+    expect(proofCounts()[0]!.compareDocumentPosition(laterTurn) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
   it("does not render trailing proof from outside the loaded history window", () => {
@@ -757,53 +776,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       proofArtifacts: [transcriptProofArtifact],
     });
 
-    expect(screen.queryByRole("button", { name: /Proof added/ })).toBeNull();
-  });
-
-  it("renders broken timeline proof as an amber missing state", () => {
-    renderMessageList(
-      [{
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: { type: "done", turnId: "turn-1", status: "completed" },
-      }],
-      {
-        proofArtifacts: [{
-          ...transcriptProofArtifact,
-          availability: "missing_file",
-          createdAt: "2026-03-17T10:00:00.000Z",
-        }],
-      },
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: /1 proof/ }));
-    expect(screen.getByText("Missing proof")).toBeTruthy();
-    expect(document.querySelector('[data-chat-proof-broken="true"]')).toBeTruthy();
-    expect(screen.queryByRole("img")).toBeNull();
-  });
-
-  it("resolves proof thumbnails in the non-virtualized transcript path", () => {
-    renderMessageList(
-      [{
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: { type: "done", turnId: "turn-1", status: "completed" },
-      }],
-      {
-        allowLocalProofArtifactProtocol: true,
-        proofArtifacts: [{
-          ...transcriptProofArtifact,
-          kind: "screenshot",
-          mimeType: "image/png",
-          uri: ".ade/artifacts/proof.png",
-          createdAt: "2026-03-17T10:00:00.000Z",
-        }],
-      },
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: /1 proof/ }));
-    expect(screen.getByRole("img", { name: transcriptProofArtifact.title }).getAttribute("src"))
-      .toBe("ade-artifact://project/.ade/artifacts/proof.png");
+    expect(proofCounts()).toHaveLength(0);
   });
 
   it("keeps turn file-change summaries visible without a session id", () => {
@@ -1074,7 +1047,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     }));
 
     await waitFor(() => {
-      expect(globalThis.window.ade.terminal.activeForChat).toHaveBeenCalledWith({
+      expect(vi.mocked(globalThis.window.ade.terminal.activeForChat).mock.calls[0]?.[0]).toEqual({
         chatSessionId: "session-1",
       });
       expect(onRevealChatTerminal).toHaveBeenCalledWith({
@@ -1130,14 +1103,14 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
   });
 
-  it("copies a multi-block assistant turn from the last text row", async () => {
+  it("copies a multi-block assistant turn from its end row", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
     });
 
-    renderMessageList([
+    const events: AgentChatEventEnvelope[] = [
       {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:00.000Z",
@@ -1148,12 +1121,27 @@ describe("AgentChatMessageList transcript rendering", () => {
         timestamp: "2026-03-17T10:00:01.000Z",
         event: { type: "text", text: "Second block.", itemId: "text-2", turnId: "turn-1" },
       },
-    ]);
+    ];
+    const view = renderMessageList(events);
 
     expect(screen.getAllByRole("button", { name: "Copy message" })).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "Copy whole turn" })).toBeNull();
+    const completedEvents: AgentChatEventEnvelope[] = [
+      ...events,
+      { sessionId: "session-1", timestamp: "2026-03-17T10:00:02.000Z", event: { type: "done", turnId: "turn-1", status: "completed" } },
+    ];
+    view.rerender(
+      <MemoryRouter>
+        <AgentChatMessageList events={completedEvents} />
+      </MemoryRouter>,
+    );
+    expect(screen.getAllByRole("button", { name: "Copy message" })).toHaveLength(1);
     const turnButton = screen.getByRole("button", { name: "Copy whole turn" });
+    expect(turnButton.closest("[data-chat-row-key]")?.getAttribute("data-chat-row-key")).toBe(
+      buildTranscriptEventRowKeys(completedEvents)[2],
+    );
     fireEvent.click(turnButton);
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith("First block.\n\nSecond block."));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("Second block."));
   });
 
   it("puts the text row's hover footer on its own line under the prose, live or folded", () => {
@@ -1177,13 +1165,16 @@ describe("AgentChatMessageList transcript rendering", () => {
     const view = renderMessageList(events, { showStreamingIndicator: true });
     for (const text of ["I'll pull the description.", "ADE is a workspace."]) {
       const footer = footerOf(text);
-      // In flow, not pinned over the text.
-      expect(footer.className).not.toMatch(/(^|\s)absolute(\s|$)/);
+      // Under the prose, never pinned over the end of the text.
       expect(footer.parentElement!.className).not.toContain("pr-7");
       expect(within(footer).getByRole("button", { name: "Copy message" })).toBeTruthy();
     }
+    // The turn's latest reply keeps its strip in flow; an earlier narration
+    // line floats its strip so short progress lines are not spread apart.
+    expect(footerOf("ADE is a workspace.").className).not.toMatch(/(^|\s)absolute(\s|$)/);
+    expect(footerOf("I'll pull the description.").className).toMatch(/(^|\s)absolute(\s|$)/);
 
-    // The folded turn's answer keeps the same footer, now with Copy turn.
+    // Copy turn belongs on the turn-end row, not beside the answer block.
     view.rerender(
       <MemoryRouter>
         <AgentChatMessageList
@@ -1193,7 +1184,8 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
     const answerFooter = footerOf("ADE is a workspace.");
     expect(answerFooter.className).not.toMatch(/(^|\s)absolute(\s|$)/);
-    expect(within(answerFooter).getByRole("button", { name: "Copy whole turn" })).toBeTruthy();
+    expect(within(answerFooter).queryByRole("button", { name: "Copy whole turn" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Copy whole turn" })).toBeTruthy();
   });
 
   it("adds selected assistant text to the composer as chat context", async () => {
@@ -1220,10 +1212,10 @@ describe("AgentChatMessageList transcript rendering", () => {
     fireEvent.click(add);
     expect(onInsertDraft).toHaveBeenCalledTimes(1);
     expect(String(onInsertDraft.mock.calls[0]?.[0])).toContain("Retry the lane checkout.");
-    expect(String(onInsertDraft.mock.calls[0]?.[0])).toContain("added it as context");
+    expect(String(onInsertDraft.mock.calls[0]?.[0])).toContain("quoted this from your earlier output");
   });
 
-  it("renders sent chat-context tags as Chat context chips", () => {
+  it("renders sent chat-context tags as quote cards", () => {
     renderMessageList([{
       sessionId: "session-1",
       timestamp: "2026-03-17T10:00:00.000Z",
@@ -1233,7 +1225,9 @@ describe("AgentChatMessageList transcript rendering", () => {
         deliveryState: "delivered",
       },
     }]);
-    expect(screen.getByTestId("user-message-chat-context-chip").textContent).toBe("Chat context");
+    // The legacy "added it as context" preamble still parses; the card shows
+    // the quote itself, not a generic label.
+    expect(screen.getByTestId("user-message-chat-context-chip").textContent).toBe("Retry the lane checkout.");
     expect(screen.getByText(/please/)).toBeTruthy();
     expect(screen.getByText(/thanks/)).toBeTruthy();
   });
@@ -1330,7 +1324,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByText(/THE_END/)).toBeNull();
   });
 
-  it("keeps compact display text while exposing the full user prompt", async () => {
+  it("shows what the user typed, not the expanded prompt the provider received", async () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1345,10 +1339,11 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Pearl UI audit handoff")).toBeTruthy();
-      expect(screen.getByText("Full prompt")).toBeTruthy();
     });
-    fireEvent.click(screen.getByText("Full prompt"));
-    expect(screen.getByText("Full handoff prompt with all implementation details.")).toBeTruthy();
+    // The expanded provider prompt (mention blocks, handoff detail) is not part
+    // of the user's bubble.
+    expect(screen.queryByText("Full handoff prompt with all implementation details.")).toBeNull();
+    expect(document.body.textContent).not.toContain("implementation details");
   });
 
   it("hides the full handoff prompt when handoff metadata marks it internal", async () => {
@@ -1370,9 +1365,12 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
     expect(screen.queryByText("Full prompt")).toBeNull();
     expect(screen.queryByText(/Secret implementation brief/)).toBeNull();
+    // The hidden brief is marked in the thread above the bubble, not inside it.
+    const divider = screen.getByTestId("handoff-brief-divider");
+    expect(divider.textContent).toContain("Started from a brief of the previous chat");
   });
 
-  it("renders a brief chip for hidden cross-machine handoff messages", async () => {
+  it("renders a brief divider for hidden cross-machine handoff messages", async () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1387,13 +1385,13 @@ describe("AgentChatMessageList transcript rendering", () => {
     ]);
 
     await waitFor(() => {
-      expect(screen.getByTestId("handoff-brief-chip")).toBeTruthy();
+      expect(screen.getByTestId("handoff-brief-divider")).toBeTruthy();
     });
-    expect(screen.getByText(/Previous chat summarized into this chat/i)).toBeTruthy();
+    expect(screen.getByText("Continued from another computer")).toBeTruthy();
     expect(screen.getByText("Continue the handoff")).toBeTruthy();
   });
 
-  it("does not render a brief chip for hidden messages that are not handoffs", async () => {
+  it("does not render a brief divider for hidden messages that are not handoffs", async () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1410,7 +1408,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(screen.getByText("Visible summary")).toBeTruthy();
     });
-    expect(screen.queryByTestId("handoff-brief-chip")).toBeNull();
+    expect(screen.queryByTestId("handoff-brief-divider")).toBeNull();
   });
 
   it("renders a provider handoff divider with direction and provider marks", () => {
@@ -1572,7 +1570,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
   });
 
-  it("shows attachment and simulator send confirmations for delivered user messages with context", async () => {
+  it("shows the simulator send confirmation for delivered user messages with attachments", async () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1592,7 +1590,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(screen.getByTestId("user-message-send-confirmations")).toBeTruthy();
     });
-    expect(screen.getByTestId("user-message-attachment-analyzed").textContent).toContain("Attachments analyzed");
     expect(screen.getByTestId("user-message-simulator-analyzed").textContent).toContain("Attachments from simulator analyzed");
   });
 
@@ -1616,24 +1613,58 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByTestId("user-message-send-confirmations")).toBeNull();
   });
 
-  it("uses the paperclip icon line for file-only attachments when delivered", async () => {
+  it.each([
+    { label: "delivered", deliveryState: "delivered", sent: true },
+    { label: "processed", deliveryState: "processed", sent: true },
+    { label: "inline", deliveryState: "inline", sent: true },
+    { label: "no delivery state", deliveryState: undefined, sent: true },
+    { label: "accepted", deliveryState: "accepted", sent: false },
+    { label: "queued", deliveryState: "queued", sent: false },
+    { label: "unprocessed", deliveryState: "unprocessed", sent: false },
+    { label: "failed", deliveryState: "failed", sent: false },
+  ] as const)("marks an image thumbnail as sent only when the message is $label", async ({ deliveryState, sent }) => {
     renderMessageList([
       {
         sessionId: "session-1",
         timestamp: "2026-04-28T10:00:00.000Z",
         event: {
           type: "user_message",
-          text: "See file",
-          deliveryState: "delivered",
-          attachments: [{ path: "/tmp/doc.txt", type: "file" }],
+          text: "Look at this screenshot",
+          ...(deliveryState !== undefined ? { deliveryState } : {}),
+          attachments: [{ path: "/tmp/shot.png", type: "image" }],
         },
       },
     ]);
 
     await waitFor(() => {
-      expect(screen.getByTestId("user-message-attachment-analyzed")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Open shot.png" })).toBeTruthy();
     });
-    expect(screen.getByTestId("user-message-attachment-analyzed").textContent).toContain("Attachment analyzed");
+    expect(Boolean(screen.queryByTestId("chat-image-attachment-accepted"))).toBe(sent);
+  });
+
+  it.each([
+    { label: "empty", displayText: "" },
+    { label: "missing", displayText: undefined },
+  ])("shows the pasted file as a chip and hides its body when delivered with $label display text", async ({ displayText }) => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-04-28T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "Attached file contents:\n\nprivate pasted source body",
+          ...(displayText !== undefined ? { displayText } : {}),
+          deliveryState: "delivered",
+          attachments: [{ path: "/tmp/doc.txt", type: "file", intent: "user_prompt" }],
+        },
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getByText("doc.txt")).toBeTruthy();
+    });
+    expect(screen.queryByText(/private pasted source body/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy message" })).toBeNull();
   });
 
   it("surfaces the model attribution on an interrupted end-of-turn divider", () => {
@@ -1983,38 +2014,57 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(navEvent?.detail).toMatchObject({ sessionId: "child-subagent-1" });
   });
 
-  it("renders a spawn_completed peer notice as a quiet chip that navigates to the child", () => {
-    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
-    renderMessageList([
-      {
-        sessionId: "parent-session",
-        timestamp: "2026-07-14T10:00:00.000Z",
-        event: {
-          type: "system_notice",
-          noticeKind: "info",
-          status: "spawn_completed",
-          message: 'Peer "Docs" finished',
-          detail: {
-            spawnCompletion: {
-              childSessionId: "child-peer-1",
-              childTitle: "Docs",
-              spawnKind: "peer",
-              status: "completed",
-              summary: "Wrote the docs.",
-            },
+  it("opens each finished child from a shared line on the machine it ran on", () => {
+    // The parent chat lives on another machine. A child that ran there too is
+    // opened with the parent's pin; one that ran elsewhere is left to the Work
+    // list. Neither is sent to the parent's lane, which need not be its own.
+    const parentPin: OpenProjectBinding = {
+      kind: "remote",
+      key: "studio:project-1",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/repo",
+      displayName: "repo",
+    };
+    const completion = (childSessionId: string, childTitle: string, childMachineName?: string) => ({
+      sessionId: "parent-session",
+      timestamp: "2026-07-14T10:00:00.000Z",
+      event: {
+        type: "system_notice" as const,
+        noticeKind: "info" as const,
+        status: "spawn_completed",
+        message: `Chat "${childTitle}" finished its turn`,
+        detail: {
+          spawnCompletion: {
+            childSessionId,
+            childTitle,
+            spawnKind: "peer" as const,
+            status: "completed" as const,
+            ...(childMachineName ? { childMachineName } : {}),
           },
         },
       },
-    ], { sessionId: "parent-session" });
+    });
+    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+    renderMessageList([
+      completion("child-docs", "Docs"),
+      completion("child-ios", "iOS build", "Mac mini"),
+    ], { sessionId: "parent-session", laneId: "parent-lane", runtimePin: parentPin });
 
-    const chip = screen.getByRole("button", { name: /Docs.*finished/i });
-    fireEvent.click(chip);
-
-    const navEvent = dispatchSpy.mock.calls
-      .map(([evt]) => evt)
-      .find((evt): evt is CustomEvent => evt instanceof CustomEvent && evt.type === "ade:work:select-session");
-    expect(navEvent).toBeTruthy();
-    expect((navEvent!.detail as { sessionId?: string }).sessionId).toBe("child-peer-1");
+    const openedWith = (name: RegExp) => {
+      dispatchSpy.mockClear();
+      fireEvent.click(screen.getByRole("button", { name }));
+      const navEvent = dispatchSpy.mock.calls
+        .map(([evt]) => evt)
+        .find((evt): evt is CustomEvent => evt instanceof CustomEvent && evt.type === "ade:work:select-session");
+      expect(navEvent, `opening ${name}`).toBeTruthy();
+      return navEvent!.detail as { sessionId?: string; laneId?: string | null; binding?: OpenProjectBinding };
+    };
+    expect(openedWith(/Docs/)).toEqual({ sessionId: "child-docs", laneId: null, binding: parentPin });
+    expect(openedWith(/iOS build/)).toEqual({ sessionId: "child-ios", laneId: null });
+    // Both children share one line rather than a pill each.
+    expect(screen.getAllByTestId("spawn-completed-line")).toHaveLength(1);
   });
 
   it("titles a legacy spawn_completed notice from its old message when the detail carries no completion", () => {
@@ -2513,6 +2563,90 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByRole("button", { name: "Jump to latest message" })).toBeNull();
   });
 
+  it("stays pinned to latest when a floating composer grows over the transcript", async () => {
+    // The thread runs behind a floating composer, so a taller composer adds
+    // reserved space at the end of the scroll content instead of shrinking the
+    // viewport. Fake layout: the content grows by whatever the composer covers.
+    const overlay = createChatComposerOverlay();
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "user_message", text: "Keep typing", deliveryState: "delivered" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "text", text: "Still at the bottom.", itemId: "text-1", turnId: "turn-1" },
+      },
+    ], {
+      wrapList: (list) => <ChatComposerOverlayContext.Provider value={overlay}>{list}</ChatComposerOverlayContext.Provider>,
+    });
+
+    const transcript = timelinePane();
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, get: () => 1_000 + overlay.inset.get() });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 400 });
+    act(() => overlay.inset.set(100));
+    transcript.scrollTop = 700;
+    fireEvent.scroll(transcript);
+
+    act(() => overlay.inset.set(260));
+
+    expect(transcript.scrollTop).toBe(860);
+    expect(screen.queryByRole("button", { name: "Jump to latest message" })).toBeNull();
+
+    // A reader who scrolled up keeps their place when the composer grows again.
+    transcript.scrollTop = 300;
+    fireEvent.scroll(transcript);
+    act(() => overlay.inset.set(320));
+    expect(transcript.scrollTop).toBe(300);
+  });
+
+  it.each([
+    { chips: 1, docked: true },
+    { chips: 0, docked: false },
+  ])("docks Jump To Latest in the composer's chip row only while it shows a chip (chips: $chips)", async ({ chips, docked }) => {
+    const footer = (
+      <div data-chat-composer-dock="">
+        <div data-chat-composer-chip-row="">
+          <div data-status-strip="">
+            {Array.from({ length: chips }, (_, index) => <span key={index}>Snoozed</span>)}
+          </div>
+          <div data-chat-composer-jump-slot="" />
+        </div>
+      </div>
+    );
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "user_message", text: "Start the audit", deliveryState: "delivered" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "text", text: "Working through the inventory.", itemId: "text-1", turnId: "turn-1" },
+      },
+    ], {
+      wrapList: (list) => <ChatSurfaceShell mode="standard" overlayFooter footer={footer}>{list}</ChatSurfaceShell>,
+    });
+
+    const transcript = timelinePane();
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+    transcript.scrollTop = 100;
+    fireEvent.scroll(transcript);
+
+    const jump = await screen.findByRole("button", { name: "Jump to latest message" });
+    const slot = document.querySelector("[data-chat-composer-jump-slot]");
+    expect(slot?.contains(jump)).toBe(docked);
+    expect(transcript.closest("[data-chat-message-list-root]")?.contains(jump)).toBe(!docked);
+    fireEvent.click(jump);
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Jump to latest message" })).toBeNull();
+    });
+  });
+
   it("automatically backfills an underfilled transcript without requiring a scroll event", async () => {
     const onLoadOlderHistory = vi.fn();
     renderMessageList([], {
@@ -2569,14 +2703,20 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(shouldStickToBottomAfterScroll({
       distanceFromBottom: 80,
       wasStuckToBottom: true,
+      scrolledDown: false,
+      repinHeld: false,
     })).toBe(true);
     expect(shouldStickToBottomAfterScroll({
       distanceFromBottom: 80,
       wasStuckToBottom: false,
+      scrolledDown: true,
+      repinHeld: false,
     })).toBe(false);
     expect(shouldStickToBottomAfterScroll({
       distanceFromBottom: 12,
       wasStuckToBottom: false,
+      scrolledDown: true,
+      repinHeld: false,
     })).toBe(true);
   });
 
@@ -3329,18 +3469,14 @@ describe("AgentChatMessageList transcript rendering", () => {
   });
 
   it("recomputes virtualization windows when measured heights change", () => {
-    const baseline = calculateVirtualWindow({
-      rowCount: 100,
+    const windowFor = (rowHeight: (index: number) => number) => calculateVirtualWindowFromOffsets({
+      offsets: computeRowStartOffsets(100, rowHeight),
       scrollTop: 2000,
       containerHeight: 240,
-      rowHeight: () => 80,
+      rowHeight,
     });
-    const updated = calculateVirtualWindow({
-      rowCount: 100,
-      scrollTop: 2000,
-      containerHeight: 240,
-      rowHeight: (index) => (index === 0 ? 180 : 80),
-    });
+    const baseline = windowFor(() => 80);
+    const updated = windowFor((index) => (index === 0 ? 180 : 80));
 
     expect(updated.totalHeight).toBeGreaterThan(baseline.totalHeight);
     expect(updated.offsetTop).toBeGreaterThan(baseline.offsetTop);
@@ -3544,6 +3680,40 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(groupedRows).toHaveLength(2);
     expect(groupedRows[0]?.event.type).toBe("user_message");
     expect(resolveAnchoredChatRowIndex({ events, groupedRows, anchorEvent: 43, hasFullHistory: false })).toBe(1);
+  });
+
+  it("resolves an anchor on an out-of-date finished-turn notice to its child's current line", () => {
+    // A child's older notice folds into its newest one further down the
+    // thread; a deep link to the older one lands where that child is shown.
+    const notice = (sequence: number, second: number, childSessionId: string, childTitle: string): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-03-17T10:00:0${second}.000Z`,
+      sequence,
+      event: {
+        type: "system_notice",
+        noticeKind: "info",
+        status: "spawn_completed",
+        message: `Chat "${childTitle}" finished its turn`,
+        // One notice per child TURN, as the host writes them.
+        detail: { spawnCompletion: { childSessionId, childTitle, spawnKind: "peer", childTurnId: `turn-${sequence}`, status: "completed" } },
+      },
+    });
+    const events: AgentChatEventEnvelope[] = [
+      notice(10, 0, "child-engine", "Engine"),
+      notice(11, 1, "child-docs", "Docs"),
+      { sessionId: "session-1", timestamp: "2026-03-17T10:00:02.000Z", sequence: 12, event: { type: "text", text: "Thanks.", messageId: "m-1" } },
+      notice(13, 3, "child-engine", "Engine"),
+    ];
+    const groupedRows = groupChatTranscriptRows(filterVisibleTranscriptRows(collapseChatTranscriptEvents(events)));
+    const lineOf = (childSessionId: string) => groupedRows.findIndex((row) => (
+      row.event.type === "system_notice"
+      && typeof row.event.detail === "object"
+      && row.event.detail?.spawnCompletion?.childSessionId === childSessionId
+    ));
+    expect(lineOf("child-engine"), "Engine's current line").toBeGreaterThan(lineOf("child-docs"));
+
+    expect(resolveAnchoredChatRowIndex({ events, groupedRows, anchorEvent: 10, hasFullHistory: false })).toBe(lineOf("child-engine"));
+    expect(resolveAnchoredChatRowIndex({ events, groupedRows, anchorEvent: 11, hasFullHistory: false })).toBe(lineOf("child-docs"));
   });
 
   it("formats turn elapsed time as working-for seconds then minutes", () => {
@@ -3768,7 +3938,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     // inside an expander <button> the moment the first tool entry lands. That
     // swap remounts the timer <span>, so a timer that captured the element once
     // would keep writing into the detached node and freeze on screen at "0s"
-    // while "taking longer than usual" still appears — the reported bug.
+    // instead of ticking — the reported bug.
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-17T10:00:00.000Z"));
     try {
@@ -3822,6 +3992,37 @@ describe("AgentChatMessageList transcript rendering", () => {
       expect(view.container.textContent).toContain("working for 10s");
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  // A steer lands inside the running turn. The working line must keep naming
+  // the tool still running from before it, with the turn's activity to open.
+  // Which messages stay in a turn is `userMessageStartsTurn`'s table; these two
+  // rows prove the working line follows it.
+  it.each<[string, AgentChatEventEnvelope["event"], boolean]>([
+    ["Claude inline steer", { type: "user_message", text: "also check iOS", steerId: "s1", deliveryState: "inline", turnId: "turn-1" }, true],
+    ["steer delivered as its own new turn", { type: "user_message", text: "also check iOS", steerId: "s1", deliveryState: "delivered", turnId: "turn-2" }, false],
+  ])("the working line after a %s keeps (or rightly drops) the running tool", (_name, steer, keepsTools) => {
+    const at = (second: number) => `2026-03-17T10:00:${String(second).padStart(2, "0")}.000Z`;
+    renderMessageList([
+      { sessionId: "session-1", timestamp: at(0), event: { type: "user_message", text: "run the tests", turnId: "turn-1" } },
+      {
+        sessionId: "session-1",
+        timestamp: at(1),
+        event: { type: "command", command: "pnpm test", cwd: "/repo", output: "", itemId: "cmd-1", turnId: "turn-1", status: "running" },
+      },
+      { sessionId: "session-1", timestamp: at(2), event: { type: "activity", activity: "running_command", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: at(3), event: steer },
+    ], { showStreamingIndicator: true });
+
+    const expander = screen.queryByRole("button", { name: "Show activity from the active turn" });
+    if (keepsTools) {
+      expect(expander, "the turn's activity can still be opened").not.toBeNull();
+      expect(expander!.textContent, "the line names the running command").toContain("pnpm test");
+    } else {
+      // A new turn has run nothing yet; the old turn's tool is not its work.
+      expect(expander).toBeNull();
+      expect(document.body.textContent).not.toContain("pnpm test");
     }
   });
 
@@ -5042,13 +5243,13 @@ describe("AgentChatMessageList transcript rendering", () => {
           type: "done",
           turnId: "turn-claude-runtime",
           status: "failed",
-          model: "claude-haiku-4-5-20260707",
-          modelId: "anthropic/claude-haiku-4-5",
+          model: "claude-haiku-5-5-20260707",
+          modelId: "anthropic/claude-haiku-5-5",
         },
       },
     ]);
 
-    expect(screen.getAllByText("Claude Haiku 4.5 (claude-haiku-4-5-20260707)").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Claude Haiku 5.5 (claude-haiku-5-5-20260707)").length).toBeGreaterThan(0);
   });
 
   it("surfaces the latest turn task rollup and inline file changes", () => {
@@ -5374,8 +5575,8 @@ describe("AgentChatMessageList question receipts", () => {
     ]);
 
     const receipt = screen.getByTestId("answered-question-receipt");
-    expect(receipt.textContent ?? "").toContain("you declined");
-    expect(receipt.textContent ?? "").toContain("proceeded on its own assumption");
+    expect(receipt.textContent ?? "").toContain("declined");
+    expect(receipt.textContent ?? "").not.toContain("answered");
   });
 
   // The answer to an isSecret question never reaches the (durable, synced)
@@ -5623,6 +5824,19 @@ describe("turn-level file-change de-clutter", () => {
         writeEntry("entry-1", "/root/apps/desktop/src/main/services/lanes/laneService.ts", 1, 0) as never,
       ]),
     ).toBe("Editing laneService.ts");
+  });
+
+  it.each([
+    ["a running command", "running_command", [{ entryKind: "command", status: "running", command: "pnpm   test\n  --run" }], "Running pnpm test --run"],
+    ["a running shell tool", "tool_calling", [{ entryKind: "tool", status: "running", toolName: "Bash", args: { command: "git status" } }], "Running git status"],
+    ["a running read", "tool_calling", [{ entryKind: "tool", status: "running", toolName: "Read", args: { file_path: "/repo/src/foo.ts" } }], "Read foo.ts"],
+    ["the newest running entry", "tool_calling", [
+      { entryKind: "tool", status: "running", toolName: "Read", args: { file_path: "/repo/old.ts" } },
+      { entryKind: "command", status: "running", command: "ls" },
+    ], "Running ls"],
+    ["only finished entries", "tool_calling", [{ entryKind: "command", status: "completed", command: "ls" }], "Calling tool"],
+  ])("names the wait behind a tool or command activity: %s", (_case, activity, entries, expected) => {
+    expect(resolveWorkingIndicatorLabel(activity, [], entries as never)).toBe(expected);
   });
 
   it("labels every activity the runtimes emit", () => {
@@ -6300,141 +6514,6 @@ describe("usage-limit turn footer", () => {
   });
 });
 
-describe("AgentChatMessageList voice calls", () => {
-  function voiceEnvelope(
-    sequence: number,
-    event: AgentChatEventEnvelope["event"],
-    voiceCallId?: string,
-  ): AgentChatEventEnvelope {
-    return {
-      sessionId: "session-voice",
-      timestamp: new Date(Date.UTC(2026, 8, 16, 12, 0, sequence)).toISOString(),
-      sequence,
-      event,
-      ...(voiceCallId ? { provenance: { voiceCallId } } : {}),
-    } as AgentChatEventEnvelope;
-  }
-
-  const callEvents: AgentChatEventEnvelope[] = [
-    voiceEnvelope(1, { type: "user_message", text: "what is failing on main?", deliveryState: "delivered" }, "call-1"),
-    voiceEnvelope(2, { type: "text", text: "Two checks are red.", itemId: "a-1" }, "call-1"),
-    voiceEnvelope(3, { type: "user_message", text: "fix the first one", deliveryState: "delivered" }, "call-1"),
-  ];
-
-  it("renders a whole call collapsed as one card, not as loose bubbles", () => {
-    renderMessageList(callEvents);
-
-    const card = screen.getByTestId("voice-call-card");
-    expect(card.getAttribute("data-voice-call-id")).toBe("call-1");
-    expect(card.textContent).toContain("Voice call");
-    expect(card.textContent).toContain("2 exchanges");
-    expect(card.textContent).toContain("what is failing on main?");
-    // Collapsed is the default: nothing the model said is in the transcript yet.
-    expect(document.body.textContent).not.toContain("Two checks are red.");
-    expect(screen.queryByTestId("voice-call-rows")).toBeNull();
-  });
-
-  it("reveals the call's own rows when expanded", () => {
-    renderMessageList(callEvents);
-
-    const toggle = screen.getByRole("button", { expanded: false, name: /Voice call/ });
-    fireEvent.click(toggle);
-
-    expect(screen.getByRole("button", { name: /Voice call/ }).getAttribute("aria-expanded")).toBe("true");
-    const rows = screen.getByTestId("voice-call-rows");
-    expect(rows.textContent).toContain("what is failing on main?");
-    expect(rows.textContent).toContain("Two checks are red.");
-    expect(rows.textContent).toContain("fix the first one");
-  });
-
-  /** The caret is the one thing in the row that LOOKS like a toggle. */
-  it("expands from the caret, not only from the title", () => {
-    renderMessageList(callEvents);
-
-    const caret = screen.getByTestId("voice-call-caret");
-    expect(screen.getByRole("button", { expanded: false, name: /Voice call/ }).contains(caret)).toBe(true);
-
-    fireEvent.click(caret);
-
-    expect(screen.getByTestId("voice-call-rows")).toBeTruthy();
-  });
-
-  /**
-   * The owner's report: "after an image scene the CTO makes, make sure there is
-   * a still". A call's scene is drawn by the HUD, which is gone by the time the
-   * card exists, so the picture has to be carried into the card or the call
-   * reads as if it never drew anything.
-   */
-  it("shows the views the call drew, collapsed as a thumbnail and expanded in full", () => {
-    rememberCallStill("call-1", {
-      uri: ".ade/artifacts/computer-use/red-checks.png",
-      artifactId: "a1",
-      title: "Red checks",
-    });
-    try {
-      renderMessageList(callEvents);
-
-      const thumb = screen.getByTestId("voice-call-still-thumb");
-      expect(thumb.getAttribute("src"))
-        .toBe("ade-artifact://project/.ade/artifacts/computer-use/red-checks.png");
-
-      fireEvent.click(screen.getByTestId("voice-call-caret"));
-      expect(screen.queryByTestId("voice-call-still-thumb")).toBeNull();
-      const stills = screen.getByTestId("voice-call-stills");
-      expect(stills.textContent).toContain("Red checks");
-      expect(screen.getByTestId("voice-call-still")).toBeTruthy();
-    } finally {
-      resetSceneStillsForTest();
-    }
-  });
-
-  /**
-   * A reopened window has nothing in memory: the pictures come back from the
-   * artifact index, matched to this call by the id stored with them.
-   */
-  it("finds a finished call's views in the artifact index", async () => {
-    const bridge = stubSceneCaptureBridge({
-      artifacts: [{
-        id: "a1",
-        uri: ".ade/artifacts/computer-use/red-checks.png",
-        title: "Generated view",
-        metadata: { kind: "scene_still", voiceCallId: "call-1", sceneTitle: "Red checks" },
-      }],
-    });
-    try {
-      renderMessageList(callEvents, { sessionId: "chat-1" });
-      await waitFor(() => expect(screen.getByTestId("voice-call-still-thumb")).toBeTruthy());
-      expect(screen.getByTestId("voice-call-still-thumb").getAttribute("src"))
-        .toBe("ade-artifact://project/.ade/artifacts/computer-use/red-checks.png");
-      expect(bridge.listArtifacts.mock.calls[0]?.[0]).toMatchObject({
-        ownerKind: "chat_session",
-        ownerId: "chat-1",
-        metadataKind: "scene_still",
-      });
-    } finally {
-      resetSceneStillsForTest();
-    }
-  });
-
-  it("draws no tile for a call that never drew anything", () => {
-    renderMessageList(callEvents);
-    expect(screen.queryByTestId("voice-call-still-thumb")).toBeNull();
-    fireEvent.click(screen.getByTestId("voice-call-caret"));
-    expect(screen.queryByTestId("voice-call-stills")).toBeNull();
-  });
-
-  it("leaves a transcript with no voice events untouched", () => {
-    renderMessageList([
-      voiceEnvelope(1, { type: "user_message", text: "typed by hand", deliveryState: "delivered" }),
-      voiceEnvelope(2, { type: "text", text: "answered in text", itemId: "a-1" }),
-    ]);
-
-    expect(screen.queryByTestId("voice-call-card")).toBeNull();
-    expect(document.body.textContent).toContain("typed by hand");
-    expect(document.body.textContent).toContain("answered in text");
-  });
-});
-
 describe("AgentChatMessageList turn fold", () => {
   beforeEach(() => resetTurnFoldMemoryForTests());
   afterEach(() => {
@@ -6526,6 +6605,53 @@ describe("AgentChatMessageList turn fold", () => {
     const text = view.container.textContent ?? "";
     expect(text).toContain("ran <1s");
     expect(text).not.toMatch(/\d+ms/);
+  });
+
+  it.each<{
+    name: string;
+    provider: string;
+    message?: Partial<Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>>;
+    alsoAnswered?: boolean;
+    chip: boolean;
+    turnEndLine: boolean;
+  }>([
+    { name: "a /compact the user sent as its own turn", provider: "claude", chip: true, turnEndLine: false },
+    // A /compact steered into a running turn belongs to that turn: its tools, proof and turn-end line stay.
+    { name: "a /compact steered into a running turn", provider: "claude", message: { steerId: "steer-1", deliveryState: "inline" }, chip: false, turnEndLine: true },
+    // On a provider with no compact action the text is an ordinary prompt.
+    { name: "a /compact sent to a provider with no compact action", provider: "cursor", chip: false, turnEndLine: true },
+    {
+      name: "a /compact that carries an attachment",
+      provider: "claude",
+      message: { attachments: [{ path: "/tmp/notes.md", type: "file" }] },
+      chip: false,
+      turnEndLine: true,
+    },
+    // The turn did more than compact: its turn-end line carries that work.
+    { name: "a /compact whose turn also answered", provider: "claude", alsoAnswered: true, chip: true, turnEndLine: true },
+  ])("draws $name as a compaction line only when that is all the turn was", ({ provider, message, alsoAnswered, chip, turnEndLine }) => {
+    const at = (second: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-09-23T10:00:${String(second).padStart(2, "0")}.000Z`,
+      event,
+    });
+    const view = renderMessageList([
+      at(0, { type: "user_message", text: "/compact", turnId: "turn-c", ...message }),
+      at(1, { type: "context_compact", trigger: "manual", state: "completed", turnId: "turn-c", compactionId: "c-1", preTokens: 66_800, postTokens: 5_500 }),
+      ...(alsoAnswered ? [at(5, { type: "text", text: "Compacted, and here is where we are.", messageId: "m-1", turnId: "turn-c" })] : []),
+      at(9, { type: "done", turnId: "turn-c", status: "completed" }),
+    ], { sessionProvider: provider });
+    const text = view.container.textContent ?? "";
+    // The compaction shows with how much smaller the chat got; a turn that
+    // also answered folds it into its work, like any other intermediate row.
+    if (!alsoAnswered) {
+      expect(text).toContain("66.8k");
+      expect(text).toContain("5.5k");
+    }
+    expect(view.container.querySelector("[data-chat-compact-command]") !== null, "quiet command chip").toBe(chip);
+    expect(view.container.querySelector("[data-chat-user-message-card]") === null, "no message bubble").toBe(chip);
+    // An ordinary turn keeps its turn-end line; a compact-only turn ends at the compaction line.
+    expect(/ran \d/.test(text), "turn-end line").toBe(turnEndLine);
   });
 
   it("omits the duration of a turn with no user message and no start event", () => {
@@ -6709,13 +6835,14 @@ describe("AgentChatMessageList turn fold", () => {
     expect(text.indexOf("Turn details")).toBeLessThan(text.indexOf("93 days."));
   });
 
-  it("copies the whole turn, folded narration included, from the answer", async () => {
+  it("copies only text outside the turn fold", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     renderMessageList([...turnEvents(), doneEvent()]);
+    fireEvent.click(foldButton());
     fireEvent.click(screen.getByRole("button", { name: "Copy whole turn" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(
-      "Checking the config first.\n\nThe build is green again.",
+      "The build is green again.",
     ));
   });
 
@@ -7137,7 +7264,7 @@ describe("AgentChatMessageList turn fold — scrolling, jumps, and row-indexed f
   });
 
   describe("Copy turn", () => {
-    it("sits on the last text row, visible, when a final answer is followed by more text", async () => {
+    it("sits on the turn-end row and copies assistant text outside the fold", async () => {
       const writeText = vi.fn().mockResolvedValue(undefined);
       Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
       const turn: AgentChatEventEnvelope[] = [
@@ -7153,14 +7280,16 @@ describe("AgentChatMessageList turn fold — scrolling, jumps, and row-indexed f
       expect(text).not.toContain("Looking into it.");
       expect(text.indexOf("Worked for")).toBeLessThan(text.indexOf("Here is the answer."));
       const copy = screen.getByRole("button", { name: "Copy whole turn" });
-      expect(copy.closest("[data-chat-row-key]")?.getAttribute("data-chat-row-key")).toBe(rowKeyOf(turn, 4));
+      expect(copy.closest("[data-chat-row-key]")?.getAttribute("data-chat-row-key")).toBe(rowKeyOf(turn, 5));
       fireEvent.click(copy);
       await waitFor(() => expect(writeText).toHaveBeenCalledWith(
-        "Looking into it.\n\nHere is the answer.\n\nP.S. one caveat.",
+        "Here is the answer.\n\nP.S. one caveat.",
       ));
     });
 
-    it("offers no whole-turn copy when the answer is the turn's only text", () => {
+    it("offers whole-turn copy for a one-block completed turn", async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
       const view = renderMessageList([
         env(0, { type: "user_message", text: "Explain", turnId: "turn-1" }),
         env(1, { type: "reasoning", text: "Thinking.", turnId: "turn-1" }),
@@ -7169,7 +7298,9 @@ describe("AgentChatMessageList turn fold — scrolling, jumps, and row-indexed f
       ], { sessionId: SESSION });
       expect(foldButton()).toBeTruthy();
       expect(view.container.textContent).toContain("Only answer.");
-      expect(screen.queryByRole("button", { name: "Copy whole turn" })).toBeNull();
+      const copy = screen.getByRole("button", { name: "Copy whole turn" });
+      fireEvent.click(copy);
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith("Only answer."));
     });
   });
 });
@@ -7204,7 +7335,7 @@ describe("AgentChatMessageList — stable row keys, list anchoring, and scroll r
    * placed against the pane's scrollTop. `offsetHeight` feeds the virtualizer's
    * row measurement; `getBoundingClientRect` feeds the DOM anchors.
    */
-  function installFakeLayout(clientHeight: number, heightOf: (key: string) => number): () => void {
+  function installFakeLayout(clientHeight: number, heightOf: (key: string) => number, zoom = 1): () => void {
     const paneOf = () => document.querySelector<HTMLElement>(".ade-chat-timeline-pane");
     const keyOf = (el: Element): string | null => {
       if (!(el instanceof HTMLElement)) return null;
@@ -7233,7 +7364,7 @@ describe("AgentChatMessageList — stable row keys, list anchoring, and scroll r
       return y;
     };
     const rect = (top: number, height: number) => ({
-      top, bottom: top + height, height, left: 0, right: 800, width: 800, x: 0, y: top, toJSON: () => ({}),
+      top: top * zoom, bottom: (top + height) * zoom, height: height * zoom, left: 0, right: 800 * zoom, width: 800 * zoom, x: 0, y: top * zoom, toJSON: () => ({}),
     }) as DOMRect;
     const saved = (["scrollHeight", "clientHeight"] as const)
       .map((prop) => [prop, Object.getOwnPropertyDescriptor(Element.prototype, prop)!] as const);
@@ -7315,15 +7446,20 @@ describe("AgentChatMessageList — stable row keys, list anchoring, and scroll r
   }
 
   describe.each([
-    { path: "virtualized", tailRows: 80 },
-    { path: "plain", tailRows: 12 },
-  ])("an older page prepended on the $path path", ({ path, tailRows }) => {
+    { path: "virtualized", tailRows: 80, zoom: 1 },
+    { path: "plain", tailRows: 12, zoom: 1 },
+    { path: "virtualized", tailRows: 80, zoom: 1.1 },
+    { path: "plain", tailRows: 12, zoom: 1.1 },
+    { path: "virtualized", tailRows: 80, zoom: 1.25 },
+    { path: "plain", tailRows: 12, zoom: 1.25 },
+  ])("an older page prepended on the $path path at zoom $zoom", ({ path, tailRows, zoom }) => {
     it("keeps measured heights and mounted rows, and moves scrollTop by exactly the inserted height", async () => {
       const TAIL_ROW = 120;
       const tail = userEvents("tail", tailRows, 30);
       const older = userEvents("older", 40, 10);
       const olderKeys = new Set(buildTranscriptEventRowKeys(older));
-      const restoreLayout = installFakeLayout(600, (key) => (olderKeys.has(key) ? OLDER_ROW : TAIL_ROW));
+      applyHostedWebZoom(zoom);
+      const restoreLayout = installFakeLayout(600, (key) => (olderKeys.has(key) ? OLDER_ROW : TAIL_ROW), zoom);
       try {
         const view = render(listElement(tail, { hasOlderHistory: true }));
         await nextFrame();
@@ -7344,7 +7480,7 @@ describe("AgentChatMessageList — stable row keys, list anchoring, and scroll r
         // The row the reader was on did not move on screen and was not remounted.
         const anchorNow = timelinePane().querySelector<HTMLElement>(`[data-chat-row-key="${anchor.key}"]`)!;
         expect(anchorNow).toBe(anchor.node);
-        expect(anchorNow.getBoundingClientRect().top).toBe(anchor.top);
+        expect(anchorNow.getBoundingClientRect().top).toBeCloseTo(anchor.top);
         // Every tail row still mounted is the same DOM node (no remount, so no
         // replayed fade-ins or re-highlighting).
         const survivors = rowNodes().filter((node) => mountedBefore.has(node.dataset.chatRowKey!));
@@ -7356,6 +7492,7 @@ describe("AgentChatMessageList — stable row keys, list anchoring, and scroll r
         }
       } finally {
         restoreLayout();
+        __resetHostedWebZoomForTests();
       }
     });
   });
@@ -7702,5 +7839,105 @@ describe("AgentChatMessageList — the chat's one task list", () => {
     expect(keys.at(-1)).toBe("task-list:task-session");
     // The running item reads in its present-continuous form.
     expect(screen.getByTestId("chat-task-list-card").textContent).toBe("Tasks·0/1·Deploying to staging");
+  });
+});
+
+describe("AgentChatMessageList self-paced wake loops", () => {
+  it("opens both the closed chain and the check's own fold when a jump lands inside them", () => {
+    const at = (minute: number) => `2026-10-05T01:${String(minute).padStart(2, "0")}:00.000Z`;
+    const envelope = (minute: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: at(minute),
+      event,
+    });
+    const wake = (minute: number, turnId: string, id: string, dueMinute: number) =>
+      envelope(minute, {
+        type: "scheduled_work_update",
+        id,
+        kind: "wakeup",
+        status: "scheduled",
+        origin: "schedule_wakeup",
+        nextRunAt: at(dueMinute),
+        turnId,
+      });
+    const events = [
+      envelope(0, { type: "user_message", text: "Watch the deploy", turnId: "A" }),
+      envelope(1, { type: "text", text: "Watching the deploy.", turnId: "A" }),
+      wake(1, "A", "w1", 5),
+      envelope(2, { type: "done", turnId: "A", status: "completed" }),
+      // Check B: its interim line is inside B's fold, and B is inside the chain.
+      envelope(6, { type: "text", text: "Reading the run log.", itemId: "b-interim", turnId: "B" }),
+      envelope(6, { type: "command", command: "gh run view", cwd: "/repo", output: "", itemId: "b-cmd", status: "completed", turnId: "B" }),
+      envelope(6, { type: "text", text: "Check 2: still queued.", itemId: "b-answer", turnId: "B" }),
+      wake(6, "B", "w2", 10),
+      envelope(7, { type: "done", turnId: "B", status: "completed" }),
+      envelope(11, { type: "text", text: "Check 3: deploy finished.", turnId: "C" }),
+      envelope(12, { type: "done", turnId: "C", status: "completed" }),
+    ];
+    const view = renderMessageList(events);
+    expect(view.container.textContent).not.toContain("Reading the run log.");
+    const interimKey = buildTranscriptEventRowKeys(events)[4]!;
+
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={events} scrollToRowKeyRequest={{ key: interimKey, requestId: 1 }} />
+      </MemoryRouter>,
+    );
+
+    expect(view.container.querySelector(`[data-chat-row-key="${interimKey}"]`)).not.toBeNull();
+    expect(view.container.textContent).toContain("Reading the run log.");
+    expect(screen.getByRole("button", { name: "Hide 1 more check" }).getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("draws each wake-up on its turn-end line and folds earlier checks under the line that started them", () => {
+    const at = (minute: number) => `2026-10-05T01:${String(minute).padStart(2, "0")}:00.000Z`;
+    const envelope = (minute: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: at(minute),
+      event,
+    });
+    const wake = (minute: number, turnId: string, id: string, status: "scheduled" | "completed", dueMinute: number) =>
+      envelope(minute, {
+        type: "scheduled_work_update",
+        id,
+        kind: "wakeup",
+        status,
+        origin: "schedule_wakeup",
+        reason: `deploy-watch ${id}`,
+        ...(status === "scheduled" ? { nextRunAt: at(dueMinute) } : { firedAt: at(dueMinute) }),
+        turnId,
+      });
+    const rendered = renderMessageList([
+      envelope(0, { type: "user_message", text: "Watch the deploy", turnId: "A" }),
+      envelope(1, { type: "text", text: "Watching the deploy.", turnId: "A" }),
+      wake(1, "A", "w1", "scheduled", 5),
+      envelope(2, { type: "done", turnId: "A", status: "completed" }),
+      envelope(6, { type: "text", text: "Check 2: still queued.", turnId: "B" }),
+      wake(6, "B", "w2", "scheduled", 10),
+      wake(6, "B", "w1", "completed", 5),
+      envelope(7, { type: "done", turnId: "B", status: "completed" }),
+      envelope(11, { type: "text", text: "Check 3: still queued.", turnId: "C" }),
+      wake(11, "C", "w3", "scheduled", 15),
+      wake(11, "C", "w2", "completed", 10),
+      envelope(12, { type: "done", turnId: "C", status: "completed" }),
+      envelope(16, { type: "text", text: "Check 4: deploy finished.", turnId: "D" }),
+      wake(16, "D", "w3", "completed", 15),
+      envelope(17, { type: "done", turnId: "D", status: "completed" }),
+    ]);
+
+    let text = rendered.container.textContent ?? "";
+    expect(text).toContain("Watching the deploy.");
+    expect(text).toContain("Check 4: deploy finished.");
+    expect(text).not.toContain("Check 2: still queued.");
+    expect(text).not.toContain("Check 3: still queued.");
+    // The wake-up rides the turn-end line that scheduled it; no row of its own.
+    expect(rendered.container.querySelectorAll('[data-scheduled-work="w1"]')).toHaveLength(1);
+    expect(text).toMatch(/woke at/i);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show 2 more checks" }));
+    text = rendered.container.textContent ?? "";
+    expect(text).toContain("Check 2: still queued.");
+    expect(text).toContain("Check 3: still queued.");
+    expect(text.indexOf("Watching the deploy.")).toBeLessThan(text.indexOf("Check 2: still queued."));
   });
 });

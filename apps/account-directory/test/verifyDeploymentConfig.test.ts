@@ -5,8 +5,10 @@ import { dirname, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   DeploymentConfigError,
+  OPTIONAL_SECRETS,
   REQUIRED_SECRETS,
   parseJsonc,
+  verifyDevicePage,
   verifyDirectoryDeploymentConfig,
   wranglerSecretListInvocation,
   wranglerSecretNames,
@@ -26,6 +28,7 @@ const completeVars = {
   USAGE_RESEARCH_DAILY_GLOBAL_LIMIT: "20000",
   USAGE_RESEARCH_RETENTION_DAYS: "180",
   USAGE_RESEARCH_STORAGE_CEILING_MB: "4096",
+  MODEL_REGISTRY_REFRESH: "1",
 };
 
 const relayBinding = [{ binding: "ACTIVITY_RELAY", service: "ade-push-relay" }];
@@ -36,15 +39,18 @@ const completeConfig = {
   env: { production: { vars: completeVars, services: relayBinding } },
 };
 
+/** Every secret a fully set-up environment holds: the required ones and the optional ones. */
+const allSecrets = [...REQUIRED_SECRETS, ...OPTIONAL_SECRETS.map(({ name }) => name)];
+
 function verify(args: {
   environments?: string[];
   secretsByEnvironment?: Record<string, string[]>;
   config?: unknown;
-}): { warnings: string[] } {
+}): { warnings: string[]; devicePageOrigins: Array<{ environment: string; origin: string }> } {
   return verifyDirectoryDeploymentConfig({
     environments: args.environments,
     listSecretNames: (environment) =>
-      args.secretsByEnvironment?.[environment] ?? [...REQUIRED_SECRETS],
+      args.secretsByEnvironment?.[environment] ?? allSecrets,
     readConfig: () => args.config ?? completeConfig,
   });
 }
@@ -160,6 +166,7 @@ describe("account directory deployment preflight", () => {
       "USAGE_RESEARCH_DAILY_GLOBAL_LIMIT",
       "USAGE_RESEARCH_RETENTION_DAYS",
       "USAGE_RESEARCH_STORAGE_CEILING_MB",
+      "MODEL_REGISTRY_REFRESH",
     ].map((name) => expect.stringContaining(`${name} is not set for the ${environment} environment`))));
   });
 
@@ -173,9 +180,95 @@ describe("account directory deployment preflight", () => {
     ]);
   });
 
-  it("accepts the committed wrangler.jsonc with no warnings", () => {
+  it("accepts the committed wrangler.jsonc with no warnings, and names the sign-in page a production deploy must find live", () => {
     const config = parseJsonc(readFileSync(wranglerConfigPath, "utf8"));
-    expect(verify({ config })).toEqual({ warnings: [] });
+    const result = verify({ config });
+    expect(result.warnings).toEqual([]);
+    // Production hands out sign-in links on the website, so the deploy has to
+    // check that page first. The default environment keeps the Worker's own.
+    expect(result.devicePageOrigins).toEqual([
+      { environment: "production", origin: "https://ade-app.dev" },
+    ]);
+  });
+
+  it("warns, and does not fail, when the phone-approval key is missing", () => {
+    // Without CLERK_SECRET_KEY only `/device/approve` is off (503), and the
+    // browser page still signs people in. Blocking a deploy on it would be a
+    // false gate; saying nothing would hide why phone approval does not work.
+    const result = verify({
+      environments: ["production"],
+      secretsByEnvironment: { production: [...REQUIRED_SECRETS] },
+    });
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("CLERK_SECRET_KEY is not set for the production environment");
+    expect(result.devicePageOrigins).toEqual([]);
+  });
+
+  it.each([
+    ["a path", "https://ade-app.dev/device"],
+    ["a trailing slash", "https://ade-app.dev/"],
+    ["a query", "https://ade-app.dev?x=1"],
+    ["plain http", "http://ade-app.dev"],
+    ["not a URL", "ade-app.dev"],
+  ])("fails when DEVICE_PAGE_ORIGIN is not an exact https origin (%s)", (_label, value) => {
+    // The Worker ignores such a value without saying so and hands out links on
+    // its own host, so the mistake would only show up as "the QR code does not
+    // open the app".
+    const vars = { ...completeVars, DEVICE_PAGE_ORIGIN: value };
+    const config = { vars: completeVars, services: relayBinding, env: { production: { vars, services: relayBinding } } };
+    expect(() => verify({ environments: ["production"], config })).toThrow(DeploymentConfigError);
+    expect(() => verify({ environments: ["production"], config })).toThrow(/DEVICE_PAGE_ORIGIN for the production environment/);
+    // The default environment does not set it, so it is not affected.
+    expect(verify({ environments: ["default"], config }).devicePageOrigins).toEqual([]);
+  });
+});
+
+describe("sign-in page check", () => {
+  const worker = "https://directory.example.workers.dev/device?user_code=ABCD-EFGH";
+  const www = "https://www.ade-app.dev/device?user_code=ABCD-EFGH";
+
+  /** Answers each request in turn with a status and an optional Location. */
+  function site(steps: Array<[number, string | null] | Error>): { fetchImpl: typeof fetch; urls: string[] } {
+    const urls: string[] = [];
+    let index = 0;
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      urls.push(String(input));
+      const step = steps[Math.min(index, steps.length - 1)];
+      index += 1;
+      if (step instanceof Error) throw step;
+      return new Response(null, { status: step[0], headers: step[1] ? { location: step[1] } : {} });
+    }) as typeof fetch;
+    return { fetchImpl, urls };
+  }
+
+  it.each([
+    ["redirects straight to the sign-in page", [[302, worker]]],
+    // The live site sends every path from the bare host to `www` first.
+    ["redirects through its own www host first", [[307, www], [302, worker]]],
+  ] as Array<[string, Array<[number, string | null]>]>)("passes a website that %s", async (_label, steps) => {
+    const { fetchImpl, urls } = site(steps);
+    await expect(verifyDevicePage("https://ade-app.dev", fetchImpl)).resolves.toBeUndefined();
+    expect(urls[0]).toBe("https://ade-app.dev/device?user_code=ABCD-EFGH");
+    expect(urls).toHaveLength(steps.length);
+  });
+
+  it.each([
+    // The state of the live site before `/device` is deployed: the hop to
+    // `www` happens for every path, and then the page is the app shell.
+    ["only hops to its own www host and then serves a page", [[307, www], [200, null]]],
+    ["serves a page", [[200, null]]],
+    ["answers 404", [[404, null]]],
+    ["drops the code", [[302, "https://directory.example.workers.dev/device"]]],
+    ["redirects to another path", [[302, "https://directory.example.workers.dev/sign-in?user_code=ABCD-EFGH"]]],
+    ["redirects to plain http", [[302, "http://directory.example.workers.dev/device?user_code=ABCD-EFGH"]]],
+    ["redirects to itself forever", [[307, www]]],
+    ["cannot be reached", [new Error("getaddrinfo ENOTFOUND")]],
+  ] as Array<[string, Array<[number, string | null] | Error>]>)("refuses a website that %s", async (_label, steps) => {
+    const { fetchImpl, urls } = site(steps);
+    await expect(verifyDevicePage("https://ade-app.dev", fetchImpl)).rejects.toBeInstanceOf(DeploymentConfigError);
+    // Bounded: a redirect loop inside the site cannot hang a deploy.
+    expect(urls.length).toBeGreaterThan(0);
+    expect(urls.length).toBeLessThanOrEqual(4);
   });
 });
 

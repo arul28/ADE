@@ -159,24 +159,88 @@ final class PrDetailRedesignTests: XCTestCase {
     PrTimelineEvent(id: id, kind: kind, title: id, author: author, body: nil, timestamp: at, metadata: nil)
   }
 
-  func testCommitsJoinIntoPushesAndBotsFoldPerPush() {
-    let items = buildPrDigestDisplayItems([
-      event("c1", .commit, at: "2026-01-01T00:00:00Z"),
-      event("c2", .commit, at: "2026-01-01T01:00:00Z"),
-      event("r1", .review, author: "coderabbitai", at: "2026-01-01T02:00:00Z"),
-      event("r2", .comment, author: "coderabbitai", at: "2026-01-01T02:10:00Z"),
-      event("h1", .comment, author: "octocat", at: "2026-01-01T02:20:00Z"),
-      event("c3", .commit, at: "2026-01-01T03:00:00Z"),
-      event("f1", .forcePush, at: "2026-01-01T04:00:00Z"),
-    ])
-    let shape = items.map { item -> String in
-      switch item {
-      case .push(_, let events): return "push:\(events.count)"
-      case .botGroup(_, let identity, let events): return "bot:\(identity.displayName):\(events.count)"
-      case .event(let event): return event.id
-      }
+  func testConversationDigestFoldsBotsWithThreadAndCommentCounts() {
+    func thread(_ id: String, _ author: String, bot: Bool? = nil, resolved: Bool = true, outdated: Bool = false, at: String) -> PrDigestEntry {
+      PrDigestEntry(id: "thread:\(id)", kind: .thread, author: author, authorIsBot: bot, at: at, body: "x", path: "a/B.swift", line: 3, resolved: resolved, outdated: outdated)
     }
-    XCTAssertEqual(shape, ["push:2", "bot:CodeRabbit:2", "h1", "push:1", "push:1"])
+    func comment(_ id: String, _ author: String, bot: Bool? = nil, at: String) -> PrDigestEntry {
+      PrDigestEntry(id: id, kind: .comment, author: author, authorIsBot: bot, at: at, body: "hi")
+    }
+    func commit(_ id: String, at: String, force: Bool = false) -> PrDigestCommit {
+      PrDigestCommit(id: id, sha: "\(id)sha", shortSha: id, subject: id, at: at, forcePushed: force)
+    }
+    let t = "2026-01-01T0"
+    struct Case {
+      let name: String
+      var commits: [PrDigestCommit] = []
+      let entries: [PrDigestEntry]
+      /// Each item: `push:<id>:<commits>`, `bot:<name>:<summary>`, `entry:<id>`.
+      let shape: [String]
+      let openThreads: [String]
+    }
+    let devinThreads = (0..<10).map { thread("d\($0)", "devin-ai-integration[bot]", at: "\(t)1:0\($0):00Z") }
+    let cases: [Case] = [
+      Case(
+        name: "all resolved and two comments",
+        entries: devinThreads + [comment("dc1", "devin-ai-integration[bot]", at: "\(t)2:00:00Z"), comment("dc2", "devin-ai-integration[bot]", at: "\(t)2:01:00Z")],
+        shape: ["bot:Devin:10 threads · all resolved · 2 comments"],
+        openThreads: []
+      ),
+      Case(
+        name: "some open",
+        entries: [thread("r1", "coderabbitai[bot]", at: "\(t)1:00:00Z"), thread("r2", "coderabbitai[bot]", resolved: false, at: "\(t)1:01:00Z"), thread("r3", "coderabbitai[bot]", at: "\(t)1:02:00Z")],
+        shape: ["bot:CodeRabbit:3 threads · 2 resolved"],
+        openThreads: ["thread:r2"]
+      ),
+      Case(
+        name: "none resolved",
+        entries: [thread("g1", "greptile-apps[bot]", resolved: false, at: "\(t)1:00:00Z"), thread("g2", "greptile-apps[bot]", resolved: false, at: "\(t)1:01:00Z")],
+        shape: ["bot:Greptile:2 threads · 2 open"],
+        openThreads: ["thread:g2", "thread:g1"]
+      ),
+      Case(
+        name: "an outdated thread is not open",
+        entries: [thread("o1", "coderabbitai[bot]", resolved: false, outdated: true, at: "\(t)1:00:00Z")],
+        shape: ["bot:CodeRabbit:1 thread · all resolved"],
+        openThreads: []
+      ),
+      Case(
+        name: "one comment reads as posted, a deploy bot as an update",
+        entries: [comment("v1", "vercel[bot]", at: "\(t)1:00:00Z"), comment("c1", "coderabbitai[bot]", at: "\(t)1:01:00Z")],
+        shape: ["bot:Vercel:Deploy update", "bot:CodeRabbit:Comment posted"],
+        openThreads: []
+      ),
+      Case(
+        name: "a short login folds only with GitHub's bot flag",
+        entries: [comment("k1", "cursor", bot: true, at: "\(t)1:00:00Z"), comment("k2", "cursor", at: "\(t)1:01:00Z")],
+        shape: ["bot:Cursor:Comment posted", "entry:k2"],
+        openThreads: []
+      ),
+      Case(
+        name: "pushes split on conversation and force-push; people stay rows; people's threads lead",
+        commits: [commit("c1", at: "\(t)0:00:00Z"), commit("c2", at: "\(t)1:00:00Z"), commit("c3", at: "\(t)3:00:00Z"), commit("f1", at: "\(t)4:00:00Z", force: true)],
+        entries: [
+          thread("b1", "coderabbitai[bot]", resolved: false, at: "\(t)2:00:00Z"),
+          comment("b2", "coderabbitai[bot]", at: "\(t)2:10:00Z"),
+          thread("h1", "octocat", resolved: false, at: "\(t)2:20:00Z"),
+        ],
+        shape: ["push:c1:2", "bot:CodeRabbit:1 thread · 1 open · 1 comment", "entry:thread:h1", "push:c3:1", "push:f1:1"],
+        openThreads: ["thread:h1", "thread:b1"]
+      ),
+    ]
+    for testCase in cases {
+      let digest = buildPrConversationDigest(commits: testCase.commits, entries: testCase.entries)
+      let shape = digest.items.map { item -> String in
+        switch item {
+        case .push(let push): return "push:\(push.id):\(push.commitCount)"
+        case .bot(let group): return "bot:\(group.identity.displayName):\(prDescribeBotGroup(group))"
+        case .entry(let entry, _): return "entry:\(entry.id)"
+        case .story(let event): return "story:\(event.id)"
+        }
+      }
+      XCTAssertEqual(shape, testCase.shape, testCase.name)
+      XCTAssertEqual(digest.openThreads.map(\.id), testCase.openThreads, testCase.name)
+    }
   }
 
   // MARK: - Bot blocks in the PR body
@@ -212,23 +276,51 @@ final class PrDetailRedesignTests: XCTestCase {
     XCTAssertTrue(lower.sections.isEmpty)
   }
 
-  func testDescriptionBotEventsCarryThePrefix() {
-    let event = PrTimelineEvent(id: "\(prDescriptionBotEventPrefix)cursor-summary", kind: .comment, title: "", author: "cursor", body: "x", timestamp: "2026-01-01T00:00:00Z", metadata: nil)
-    XCTAssertTrue(prIsDescriptionBotEvent(event))
-    XCTAssertFalse(prIsDescriptionBotEvent(self.event("c-1", .comment, at: "2026-01-01T00:00:00Z")))
+  func testBodyCleanerDropsEveryHtmlCommentAndSplitsBotBlocks() {
+    struct Case {
+      let name: String
+      let body: String
+      let expected: String
+      var sections: [String] = []
+    }
+    let cases: [Case] = [
+      Case(name: "plain markdown passes through", body: "Plain **markdown**", expected: "Plain **markdown**"),
+      Case(name: "Devin review JSON", body: "Fixes it.\n<!-- devin-review-comment {\"id\":1,\"file\":\"a.ts\"} -->\nMore.", expected: "Fixes it.\n\nMore."),
+      Case(
+        name: "Cursor agent markers",
+        body: "<!-- CURSOR_AGENT_PR_BODY_BEGIN -->\nBody text\n<!-- CURSOR_AGENT_PR_BODY_END -->",
+        expected: "Body text"
+      ),
+      Case(name: "multi-line comment", body: "A\n<!--\nhidden\nlines\n-->\nB", expected: "A\n\nB"),
+      Case(name: "unterminated comment hides the rest", body: "Visible\n<!-- never closed\nsecret", expected: "Visible"),
+      Case(name: "runs of blank lines collapse", body: "A\n\n<!-- x -->\n\n\nB", expected: "A\n\nB"),
+      Case(
+        name: "bot blocks leave, nested comments too",
+        body: """
+        Summary.
+        <!-- This is an auto-generated comment: release notes by coderabbit.ai -->
+        ## Summary by CodeRabbit
+        <!-- walkthrough_start -->
+        - New header
+        <!-- end of auto-generated comment: release notes by coderabbit.ai -->
+        <!-- devin-review-badge-begin -->
+        [Open with Devin](https://app.devin.ai)
+        <!-- devin-review-badge-end -->
+        """,
+        expected: "Summary.",
+        sections: ["coderabbit-summary", "devin-review-badge"]
+      ),
+    ]
+    for testCase in cases {
+      let cleaned = prCleanBody(testCase.body)
+      XCTAssertEqual(cleaned.body, testCase.expected, testCase.name)
+      XCTAssertEqual(cleaned.sections.map(\.id), testCase.sections, testCase.name)
+      XCTAssertFalse(cleaned.sections.contains { $0.body.contains("<!--") }, testCase.name)
+      XCTAssertFalse(prDigestPreview(testCase.body).contains("<!--"), testCase.name)
+    }
   }
 
   // MARK: - Header
-
-  func testHeaderShowsUpdatedOnlyWhenItDiffersFromOpened() {
-    let formatter = ISO8601DateFormatter()
-    let opened = formatter.string(from: Date().addingTimeInterval(-10 * 86_400))
-    let recent = formatter.string(from: Date().addingTimeInterval(-3_600))
-    XCTAssertTrue(prHeaderAgeLabel(createdAt: opened, updatedAt: recent).contains("· updated "))
-    XCTAssertFalse(prHeaderAgeLabel(createdAt: opened, updatedAt: opened).contains("updated"))
-    XCTAssertFalse(prHeaderAgeLabel(createdAt: opened, updatedAt: nil).contains("updated"))
-    XCTAssertTrue(prHeaderAgeLabel(createdAt: opened, updatedAt: nil).hasPrefix("opened "))
-  }
 
   // MARK: - Optional PR actions (prs.setDraft / prs.setAutoMerge)
 
@@ -324,14 +416,5 @@ final class PrDetailRedesignTests: XCTestCase {
     try await body(service)
   }
 
-  func testAccountFlagFoldsAShortLoginBot() {
-    let items = buildPrDigestDisplayItems(
-      [event("r1", .review, author: "cursor", at: "2026-01-01T02:00:00Z")],
-      botFlags: ["cursor": true]
-    )
-    guard case .botGroup(_, let identity, _) = items.first else {
-      return XCTFail("expected a folded bot row")
-    }
-    XCTAssertEqual(identity.displayName, "Cursor")
-  }
+
 }

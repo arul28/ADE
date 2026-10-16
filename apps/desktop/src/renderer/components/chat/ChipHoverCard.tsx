@@ -18,16 +18,18 @@
 //   - **Degrades to nothing.** No lane, no session row, no PR record, no
 //     network: the card simply does not appear. There is no error state for a
 //     hover.
-//   - **Reads, never fetches, except for PRs.** Lanes, chats, and Linear issues
-//     already live in app state. PRs go through `listPrsCoalesced`, the same
-//     coalesced reader the composer's `#` suggestions use, and only once the
-//     user has actually hovered.
+//   - **Reads, never fetches, except for PRs and Linear issues.** Lanes and
+//     chats already live in app state. PRs go through `listPrsCoalesced`, the
+//     same coalesced reader the composer's `#` suggestions use; Linear issues go
+//     through the issue viewer's cache (`linearIssueStore`), so a hover after
+//     the issue was opened costs nothing and a hover before it warms the tab.
+//     Both only once the user has actually hovered.
 //   - **The CHAT's machine, not the tab's.** A lane id is unique per machine,
 //     not globally, so resolving one against the project tab's lane list can
 //     match a DIFFERENT lane that happens to share the id — and then print its
 //     name and branch. A chat pinned to a remote machine must read that
 //     machine's lanes, sessions and PRs, which is what `useChatRuntimeScope()`
-//     plus `useLanesForPin` / `useMachineEntryForBinding` resolve. Nothing here
+//     plus `useLanesForPin` / `useSessionsForPin` resolve. Nothing here
 //     touches a global store read.
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -41,9 +43,15 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { listPrsCoalesced } from "../../lib/prReadCache";
+import { loadLinearIssue, peekLinearIssue } from "../issues/linearIssueStore";
+import { loadGitHubIssue, peekGitHubIssue } from "../issues/githubIssueStore";
+import { GitHubIssueStateIcon } from "../lanes/githubBrand";
+import { issueRefFromUrl } from "../../../shared/issueRefs";
+import { LinearStateIcon } from "../lanes/linearBrand";
 import { relativeWhen } from "../../lib/format";
-import { useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
+import { useLanesForPin, useSessionsForPin } from "../../state/crossMachineLanes";
 import { computeTooltipPosition, type TooltipPlacement } from "../ui/tooltipPosition";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { useChipPreviewImage } from "./chipPreviewStore";
 
@@ -62,6 +70,25 @@ export type ChipCardSources = {
   rootPath: string | null;
 };
 
+/** A chip's view of the chat machine: its lanes and sessions. */
+export type ChipScopeSources = {
+  lanes: LaneSummary[] | null;
+  sessions: TerminalSessionSummary[] | null;
+};
+
+/**
+ * The machine this CHAT runs on. `AgentChatMessageList` sits under
+ * `ChatRuntimeScopeProvider`, exactly like `UserMessageIssueContext` next door,
+ * so the scope is already the right answer here — no prop drilling and,
+ * crucially, no global store read of the project tab's lanes.
+ */
+export function useChipScopeSources(): ChipScopeSources {
+  const scope = useChatRuntimeScope();
+  const lanes = useLanesForPin(scope.binding);
+  const sessions = useSessionsForPin(scope.binding);
+  return { lanes, sessions };
+}
+
 const EMPTY_LANES: LaneSummary[] = [];
 const EMPTY_SESSIONS: TerminalSessionSummary[] = [];
 
@@ -74,7 +101,22 @@ export type ChipCardData =
   | { kind: "pr"; number: number; title: string | null; state: PrState; repo: string | null }
   | { kind: "lane"; name: string; branch: string | null }
   | { kind: "chat"; title: string; lastActivity: string | null }
-  | { kind: "linear"; identifier: string; title: string }
+  | {
+    kind: "linear";
+    identifier: string;
+    title: string;
+    stateName?: string | null;
+    stateType?: string | null;
+    assigneeName?: string | null;
+  }
+  | {
+    kind: "github-issue";
+    reference: string;
+    title: string;
+    state: "open" | "closed";
+    stateReason: string | null;
+    assignees: string[];
+  }
   | { kind: "link"; host: string; title: string | null; imageUrl: string };
 
 type ChipCardTarget =
@@ -82,7 +124,8 @@ type ChipCardTarget =
   | { kind: "lane"; laneId: string }
   | { kind: "chat"; sessionId: string }
   | { kind: "linear"; identifier: string }
-  | { kind: "link"; host: string };
+  | { kind: "link"; host: string }
+  | { kind: "github-issue"; owner: string; repo: string; number: number };
 
 function githubPullTarget(url: string): ChipCardTarget | null {
   try {
@@ -134,6 +177,10 @@ export function chipCardTarget(chip: Chip): ChipCardTarget | null {
         return null;
       }
     }
+    case "issue": {
+      const ref = source.origin === "url" ? issueRefFromUrl(source.url) : null;
+      return ref?.provider === "github" ? { kind: "github-issue", owner: ref.owner, repo: ref.repo, number: ref.number } : null;
+    }
     default:
       return null;
   }
@@ -181,7 +228,32 @@ export async function loadChipCardData(
       lastActivity: session.lastActivityAt || session.endedAt || session.startedAt || null,
     };
   }
+  if (target.kind === "github-issue") {
+    const issue = peekGitHubIssue(sources.rootPath, target.owner, target.repo, target.number)
+      ?? await loadGitHubIssue(sources.rootPath, target.owner, target.repo, target.number).catch(() => null);
+    if (!issue || issue.isPullRequest) return null;
+    return {
+      kind: "github-issue",
+      reference: `${issue.owner}/${issue.repo}#${issue.number}`,
+      title: issue.title,
+      state: issue.state,
+      stateReason: issue.stateReason,
+      assignees: issue.assignees.map((entry) => entry.login),
+    };
+  }
   if (target.kind === "linear") {
+    const issue = peekLinearIssue(sources.rootPath, target.identifier)
+      ?? await loadLinearIssue(sources.rootPath, target.identifier).catch(() => null);
+    if (issue) {
+      return {
+        kind: "linear",
+        identifier: issue.identifier,
+        title: issue.title,
+        stateName: issue.stateName,
+        stateType: issue.stateType,
+        assigneeName: issue.assigneeName,
+      };
+    }
     const title = linearTitleFromLanes(sources.lanes, target.identifier) ?? previewTitle;
     return title ? { kind: "linear", identifier: target.identifier, title } : null;
   }
@@ -257,38 +329,55 @@ function ChipCardBody({ data }: { data: ChipCardData }) {
   if (data.kind === "pr") {
     return (
       <>
-        <div className="flex items-center gap-1.5 text-[11px] text-white/60">
+        <div className="flex items-center gap-1.5 text-[11px] text-fg/60">
           <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${PR_STATE_DOT[data.state]}`} />
-          <span className="font-medium text-white/85">#{data.number}</span>
+          <span className="font-medium text-fg/85">#{data.number}</span>
           <span className="capitalize">{data.state}</span>
           {data.repo ? <span className="truncate">· {data.repo}</span> : null}
         </div>
-        {data.title ? <div className="mt-1 line-clamp-2 text-[12px] text-white/90">{data.title}</div> : null}
+        {data.title ? <div className="mt-1 line-clamp-2 text-[12px] text-fg/90">{data.title}</div> : null}
       </>
     );
   }
   if (data.kind === "lane") {
     return (
       <>
-        <div className="truncate text-[12px] font-medium text-white/90">{data.name}</div>
-        {data.branch ? <div className="mt-0.5 truncate font-mono text-[11px] text-white/55">{data.branch}</div> : null}
+        <div className="truncate text-[12px] font-medium text-fg/90">{data.name}</div>
+        {data.branch ? <div className="mt-0.5 truncate font-mono text-[11px] text-fg/55">{data.branch}</div> : null}
       </>
     );
   }
   if (data.kind === "chat") {
     return (
       <>
-        <div className="line-clamp-2 text-[12px] font-medium text-white/90">{data.title}</div>
+        <div className="line-clamp-2 text-[12px] font-medium text-fg/90">{data.title}</div>
         {data.lastActivity
-          ? <div className="mt-0.5 text-[11px] text-white/55">Last activity {relativeWhen(data.lastActivity)}</div>
+          ? <div className="mt-0.5 text-[11px] text-fg/55">Last activity {relativeWhen(data.lastActivity)}</div>
           : null}
+      </>
+    );
+  }
+  if (data.kind === "github-issue") {
+    return (
+      <>
+        <div className="flex items-center gap-1.5 text-[11px] text-fg/60">
+          <GitHubIssueStateIcon state={data.state} stateReason={data.stateReason} size={11} />
+          <span className="truncate font-medium text-fg/85">{data.reference}</span>
+        </div>
+        <div className="mt-0.5 line-clamp-2 text-[12px] text-fg/90">{data.title}</div>
+        {data.assignees.length > 0 ? <div className="mt-0.5 truncate text-[11px] text-fg/55">{data.assignees.join(", ")}</div> : null}
       </>
     );
   }
   return (
     <>
-      <div className="text-[11px] font-medium text-white/60">{data.identifier}</div>
-      <div className="mt-0.5 line-clamp-2 text-[12px] text-white/90">{data.title}</div>
+      <div className="flex items-center gap-1.5 text-[11px] text-fg/60">
+        {data.stateType ? <LinearStateIcon stateType={data.stateType} size={11} /> : null}
+        <span className="font-medium text-fg/85">{data.identifier}</span>
+        {data.stateName ? <span className="truncate">{data.stateName}</span> : null}
+      </div>
+      <div className="mt-0.5 line-clamp-2 text-[12px] text-fg/90">{data.title}</div>
+      {data.assigneeName ? <div className="mt-0.5 truncate text-[11px] text-fg/55">{data.assigneeName}</div> : null}
     </>
   );
 }
@@ -339,23 +428,25 @@ export type ChipHoverCard = {
 export function useChipHoverCard(
   chip: Chip,
   previewTitle: string | null,
+  /**
+   * The chat machine's lanes and sessions, resolved once by the chip (see
+   * `useChipScopeSources`) and shared with its label, so a transcript of
+   * hundreds of pills subscribes to each list once per pill, not twice.
+   */
+  scoped: ChipScopeSources,
   previewImageUrl: string | null = null,
 ): ChipHoverCard {
   const cardId = useId();
-  // The machine this CHAT runs on. `AgentChatMessageList` sits under
-  // `ChatRuntimeScopeProvider`, exactly like `UserMessageIssueContext` next
-  // door, so the scope is already the right answer here — no prop drilling and,
-  // crucially, no global store read of the project tab's lanes.
   const scope = useChatRuntimeScope();
-  const machine = useMachineEntryForBinding(scope.binding);
-  const scopedLanes = useLanesForPin(scope.binding);
+  const scopedLanes = scoped.lanes;
+  const scopedSessions = scoped.sessions;
   // Held in a ref, not in the effect's deps: a lane-status refresh replaces
   // these arrays constantly, and depending on them would reload an open card on
   // every tick. This is the ref form the chat-scope lint rule sanctions.
   const sourcesRef = useRef<ChipCardSources>({ lanes: EMPTY_LANES, sessions: EMPTY_SESSIONS, pin: null, rootPath: null });
   sourcesRef.current = {
     lanes: scopedLanes ?? EMPTY_LANES,
-    sessions: machine?.sessions ?? EMPTY_SESSIONS,
+    sessions: scopedSessions ?? EMPTY_SESSIONS,
     pin: scope.pin,
     rootPath: scope.rootPath,
   };
@@ -461,25 +552,29 @@ export function useChipHoverCard(
 
   const card = open && data && typeof document !== "undefined"
     ? createPortal(
-        <div
-          ref={cardRef}
-          id={cardId}
-          role="tooltip"
-          data-chip-hover-card={data.kind}
-          className={
-            "pointer-events-none fixed z-[70] max-w-[300px] rounded-lg border border-white/12"
-            + " bg-[#16161b]/95 px-2.5 py-2 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-sm"
-          }
-          style={{
-            top: coords?.y ?? 0,
-            left: coords?.x ?? 0,
-            // Measured before it is placed: keep the first frame invisible so
-            // the card never flashes at the top-left corner of the window.
-            visibility: coords ? "visible" : "hidden",
-          }}
-        >
-          <ChipCardBody data={data} />
-        </div>,
+        // The host owns the viewport anchoring and the tooltip layer; the card
+        // is placed inside it at the viewport point computeTooltipPosition gave.
+        <ViewportOverlayHost layer="tooltip">
+          <div
+            ref={cardRef}
+            id={cardId}
+            role="tooltip"
+            data-chip-hover-card={data.kind}
+            className={
+              "pointer-events-none absolute max-w-[300px] rounded-lg border border-fg/12"
+              + " bg-(color:--work-popover-bg) px-2.5 py-2 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-sm"
+            }
+            style={{
+              top: coords?.y ?? 0,
+              left: coords?.x ?? 0,
+              // Measured before it is placed: keep the first frame invisible so
+              // the card never flashes at the top-left corner of the window.
+              visibility: coords ? "visible" : "hidden",
+            }}
+          >
+            <ChipCardBody data={data} />
+          </div>
+        </ViewportOverlayHost>,
         document.body,
       )
     : null;

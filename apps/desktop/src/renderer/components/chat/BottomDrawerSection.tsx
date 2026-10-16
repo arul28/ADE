@@ -22,7 +22,7 @@ export function BottomDrawerSection({
   className?: string;
 }) {
   return (
-    <div className={cn("border-t border-white/[0.06] bg-[#0D0B12]/60", className)}>
+    <div className={cn("border-t border-fg/[0.06] bg-surface-recessed/60", className)}>
       <button
         type="button"
         className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left"
@@ -52,7 +52,7 @@ export function BottomDrawerSection({
             transition={{ duration: 0.15, ease: "easeOut" }}
             className="overflow-hidden"
           >
-            <div className="max-h-[40vh] overflow-y-auto border-t border-white/[0.04]">
+            <div className="max-h-[40vh] overflow-y-auto border-t border-fg/[0.04]">
               {children}
             </div>
           </motion.div>

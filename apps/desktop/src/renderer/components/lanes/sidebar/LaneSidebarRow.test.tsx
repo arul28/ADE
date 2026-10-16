@@ -101,7 +101,9 @@ describe("LaneSidebarRow", () => {
     const props = renderRow({ prs: [makePr(1301, "open"), makePr(1299, "merged"), makePr(1295, "draft")] });
     const chip = screen.getByTestId("lane-sidebar-pr-chip");
     expect(chip.textContent).toContain("#1301");
-    expect(chip.textContent).toContain("+2");
+    // Several PRs collapse to a caret plus a count for assistive tech; the
+    // numeric "+N" chip is gone.
+    expect(chip.getAttribute("aria-label")).toBe("3 pull requests");
     fireEvent.click(chip);
     expect(props.onOpenPr).toHaveBeenCalledWith(expect.objectContaining({ githubPrNumber: 1301 }));
     expect(props.onSelect).not.toHaveBeenCalled();
@@ -140,5 +142,24 @@ describe("LaneSidebarRow", () => {
     fireEvent.contextMenu(screen.getByTestId("lane-sidebar-row"));
     expect(props.onSelect).not.toHaveBeenCalled();
     expect(props.onContextMenu).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { shiftKey: false, expectDeeplink: true },
+    { shiftKey: true, expectDeeplink: false },
+  ])("starts the deeplink drag only without Shift (shiftKey=$shiftKey)", ({ shiftKey, expectDeeplink }) => {
+    renderRow();
+    const row = screen.getByTestId("lane-sidebar-row");
+    const dataTransfer = { setData: vi.fn(), effectAllowed: "" };
+    // jsdom has no DragEvent, so RTL's dragStart drops shiftKey from the init.
+    // Build the event so the handler actually sees the modifier.
+    const event = new MouseEvent("dragstart", { bubbles: true, cancelable: true, shiftKey });
+    Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+    fireEvent(row, event);
+    if (expectDeeplink) {
+      expect(dataTransfer.setData).toHaveBeenCalledWith("text/uri-list", "ade://lane/lane-1");
+    } else {
+      expect(dataTransfer.setData).not.toHaveBeenCalled();
+    }
   });
 });

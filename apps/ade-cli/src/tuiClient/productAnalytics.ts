@@ -8,7 +8,7 @@ import type { AdeCodeConnection, RightPaneContent } from "./types";
 export type TuiAnalyticsScreenInput = {
   activePane: "drawer" | "chat" | "details" | "addMode";
   /** Kind of row the sessions pane has selected, when that pane is focused. */
-  workSelectionKind: "session" | "lane" | "new-chat" | "shelf" | null;
+  workSelectionKind: "session" | "lane" | "new-chat" | "shelf" | "drawer" | null;
   rightPaneKind: RightPaneContent["kind"];
   gridViewActive: boolean;
   addModeActive: boolean;

@@ -35,13 +35,15 @@ export type SettingsProviderId =
   | "cursor"
   | "droid"
   | "pi"
+  | "muse"
   | "opencode"
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 
-/** The four providers ADE drives over the Agent Client Protocol. */
+/** The providers ADE drives over the Agent Client Protocol. */
 export type AcpSettingsProviderId = AcpProviderId;
 
 /**
@@ -78,6 +80,8 @@ export type ProviderFact = {
   value: string;
   /** Paths and commands only. */
   mono?: boolean;
+  /** Small leading glyph, so a fact reads as an item and not a line of text. */
+  icon?: React.ReactNode;
 };
 
 /** Everything a descriptor, tile, or body can read or do. */
@@ -130,6 +134,7 @@ export type ProvidersViewContext = {
   acpDiagnostics: Partial<Record<AcpSettingsProviderId, AcpProviderDiagnostics>>;
   acpDiagnosticsBusy: AcpSettingsProviderId | null;
   acpDoctorBusy: AcpSettingsProviderId | null;
+  acpUpdateBusy: AcpSettingsProviderId | null;
   acpDiagnosticsError: Partial<Record<AcpSettingsProviderId, string>>;
 
   actions: ProvidersActions;
@@ -165,14 +170,14 @@ export type ProvidersActions = {
   saveCustomModelSlugs: () => Promise<void>;
 
 
-  revealClaudeLoginTerminal: (terminal: { terminalId: string; laneId: string }) => void;
-
   /** Flip a provider off (or back on). Writes the whole `disabledProviders` list. */
   setProviderDisabled: (provider: SettingsProviderId, disabled: boolean) => Promise<void>;
   /** Read binary path, config home, version, and last probe verdict. Spawns. */
   loadAcpDiagnostics: (provider: AcpSettingsProviderId) => Promise<void>;
   /** Run the vendor's own `doctor` and fold the output into the diagnostics. */
   runAcpDoctor: (provider: AcpSettingsProviderId) => Promise<void>;
+  /** Run the provider's one-click updater, then refresh its diagnostics. */
+  updateAcpProvider: (provider: AcpSettingsProviderId) => Promise<void>;
   /** Open the embedded terminal that runs this provider's login command. */
   openSignInTerminal: (provider: SettingsProviderId) => void;
 };
@@ -233,6 +238,11 @@ export type ProviderDescriptor = {
   status: (ctx: ProvidersViewContext) => ProviderStatusView;
   /** Models ADE can offer for this provider right now. */
   models: (ctx: ProvidersViewContext) => ProviderModelRow[];
+  /**
+   * One line under the model list when the rows are not usable yet (e.g. the
+   * curated list shown before sign-in). Null when there is nothing to add.
+   */
+  modelsNote?: (ctx: ProvidersViewContext) => string | null;
   /** Version string when the provider reports one. No update-available surface. */
   version?: (ctx: ProvidersViewContext) => string | null;
   /** Left-rail identity rows (binary path, config files, credential source). */

@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type net from "node:net";
+import net from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE,
@@ -443,10 +443,7 @@ describe("createSyncPairedChannelService", () => {
     expect(connectForward).not.toHaveBeenCalled();
     expect(sent).toContainEqual({
       type: "fwd_close",
-      payload: {
-        forwardId: "fwd-public",
-        reason: "Port forwards may connect only to 127.0.0.1 or localhost.",
-      },
+      payload: { forwardId: "fwd-public", reason: expect.any(String) },
     });
     service.dispose();
   });
@@ -486,6 +483,34 @@ describe("createSyncPairedChannelService", () => {
     expect(sent.find((envelope) => envelope.type === "fwd_close")?.payload).toMatchObject({
       forwardId: "fwd-echo",
     });
+    service.dispose();
+  });
+
+  it("reaches a dev server bound only to IPv6 loopback, and closes when nothing listens", async () => {
+    // Node on macOS resolves `localhost` to ::1 first, so Vite and Next often
+    // bind `[::1]:<port>` only. The desktop asks for 127.0.0.1; the forward
+    // must still reach the server instead of closing with no bytes.
+    const server = net.createServer((client) => client.end("hello from ::1"));
+    await new Promise<void>((resolve) => server.listen(0, "::1", resolve));
+    const port = (server.address() as net.AddressInfo).port;
+    const { service, sent, peer } = createHarness();
+
+    await service.handleEnvelope(peer, "fwd_open", { forwardId: "fwd-v6", host: "127.0.0.1", port }, true, true);
+    await waitFor(() => sent.some((envelope) => envelope.type === "fwd_data"), "data from the ::1 server");
+    const received = Buffer.concat(sent.flatMap((envelope) =>
+      envelope.type === "fwd_data" && envelope.payload.forwardId === "fwd-v6"
+        ? [Buffer.from(String(envelope.payload.data), "base64")]
+        : []
+    )).toString("utf8");
+    expect(received).toBe("hello from ::1");
+
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await service.handleEnvelope(peer, "fwd_open", { forwardId: "fwd-none", host: "localhost", port }, true, true);
+    await waitFor(
+      () => sent.some((envelope) => envelope.type === "fwd_close" && envelope.payload.forwardId === "fwd-none"),
+      "close for a port nothing listens on",
+    );
+    expect(sent.some((envelope) => envelope.type === "fwd_data" && envelope.payload.forwardId === "fwd-none")).toBe(false);
     service.dispose();
   });
 

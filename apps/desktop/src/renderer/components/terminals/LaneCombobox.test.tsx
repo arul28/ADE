@@ -207,9 +207,6 @@ describe("LaneCombobox inside the modal handoff dialog", () => {
         localOpen
         localContent={<LaneCombobox lanes={lanes} value="lane-auth" onChange={onChange} />}
         onCloseLocal={onCloseLocal}
-        remoteNoticeOpen={false}
-        machineName="studio"
-        onCloseRemoteNotice={vi.fn()}
       />,
     );
     fireEvent.click(trigger());

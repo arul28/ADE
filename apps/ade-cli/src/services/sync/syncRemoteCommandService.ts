@@ -1,22 +1,55 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
+import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
+import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
+import type { JiraIssueListState, LaneJiraIssue } from "../../../../desktop/src/shared/types/jira";
+import type { LinearIssueCreateInput, SessionAttentionSource } from "../../../../desktop/src/shared/types";
+import { parsePrWatchMode, type GetPrChatWatchArgs, type SetPrChatWatchArgs } from "../../../../desktop/src/shared/prWatch";
+import { normalizeThreadCommentAnchor } from "../../../../desktop/src/shared/threadComments";
+import {
+  buildMcpAppContentSecurityPolicy,
+  MCP_APP_LIMITS,
+  MCP_APP_TOO_LARGE_FOR_REMOTE,
+  type McpAppRemoteDocument,
+} from "../../../../desktop/src/shared/mcpApp";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
   droidPermissionModeFromLegacyPermissionMode,
   isAgentChatDroidPermissionMode,
   isAgentChatTurnRecoveryAction,
   normalizeAgentChatSessionMetadataFields,
 } from "../../../../desktop/src/shared/types/chat";
+import {
+  legacyPermissionModeFromMusePermissionMode,
+  musePermissionModeFromLegacyPermissionMode,
+} from "../../../../desktop/src/shared/modelPermissions";
 import { EXTERNAL_SESSION_PROVIDERS as EXTERNAL_SESSION_PROVIDER_LIST } from "../../../../desktop/src/shared/types/externalSessions";
 import { isAgentChatStopMode } from "../../../../desktop/src/shared/chatStopModes";
+import { accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
+import {
+  CTO_HOME_SETTING_KEY,
+  isCtoHomeMachineRecord,
+  type CtoHomeMachineRecord,
+} from "../../../../desktop/src/shared/ctoHomeMachine";
 import { runWithAbortSignal } from "./abortSignal";
+import {
+  buildSyncResultTooLargeError,
+  SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES,
+  SYNC_RESULT_TOO_LARGE_ERROR_CODE,
+  type SyncResultTooLargeError,
+} from "./syncProtocol";
 import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
 import { assertCursorCloudRenameAllowed } from "../../../../desktop/src/shared/cursorCloudNaming";
 import type { AttachmentUploadRegistry, AttachmentUploadTicket } from "./attachmentUploadService";
+import type { SyncPairingRecord } from "./syncPairingStore";
+import { parseCodedErrorMessage } from "../../../../desktop/src/shared/codedError";
 import type {
+  PrSnapshotHydration,
+  PrSummary,
   AgentChatCreateArgs,
   AgentChatCreateScheduledWorkArgs,
   AgentChatAcceptCrossMachineHandoffArgs,
@@ -50,6 +83,8 @@ import type {
   AgentChatParallelLaunchStateArgs,
   AgentChatPermissionMode,
   AgentChatPrepareCrossMachineHandoffArgs,
+  AgentChatStartCrossMachineHandoffArgs,
+  AgentChatPreviewCrossMachineHandoffArgs,
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatProvider,
   AgentChatRewindFilesArgs,
@@ -64,6 +99,7 @@ import type {
   AgentChatSubagentTranscriptArgs,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatMoveSteerArgs,
   AgentChatDispatchSteerArgs,
   AgentChatCancelDispatchedSteerArgs,
   AgentChatInterruptArgs,
@@ -113,6 +149,7 @@ import type {
   GitCheckoutBranchArgs,
   GitListBranchesArgs,
   GitListCommitFilesArgs,
+  GitListRecentCommitsArgs,
   GitPullArgs,
   GitPullMode,
   GitPushArgs,
@@ -174,6 +211,10 @@ import type {
   StartIntegrationResolutionArgs,
   SubmitPrReviewArgs,
   UnstackGitHubPrStackArgs,
+  LinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
+  UnlinkPrChatSessionArgs,
+  ListPrChatSessionsArgs,
   ExternalSessionDetail,
   ExternalSessionDetailArgs,
   ExternalSessionImportArgs,
@@ -188,6 +229,7 @@ import type {
   SyncListExternalSessionsArgs,
   SyncListExternalSessionsResult,
   SyncCommandPayload,
+  SyncCommandResultPayload,
   SyncRemoteCommandAction,
   SyncRemoteCommandDescriptor,
   SyncRemoteCommandPolicy,
@@ -220,7 +262,8 @@ import type {
   UpdatePrTitleArgs,
   WriteTextAtomicArgs,
 } from "../../../../desktop/src/shared/types";
-import { isAdeUsageRangePreset, isAdeUsageScope } from "../../../../desktop/src/shared/types";
+import { isAdeUsageCostBreakdownBy, isAdeUsageRangePreset, isAdeUsageScope, type AdeUsageCostBreakdownBy } from "../../../../desktop/src/shared/types";
+import { normalizePriceOverride } from "../../../../desktop/src/main/services/usage/usagePriceOverrides";
 import {
   parseSessionSettleOverride,
   SESSION_WAKE_REASONS,
@@ -262,11 +305,13 @@ import type { PushPublisherService } from "../push/pushPublisherService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
 import type { createMacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
 import type { MacDesktopSyncStream, MacDesktopSyncStreamSink } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
+import type { AppControlSyncStream, AppControlSyncStreamSink } from "./appControlSyncStream";
 import {
   createAppleRemoteCommandHandlers,
   type AppleDeviceRemoteService,
   type AppleStreamTicketIssuer,
 } from "./appleRemoteCommands";
+import { createProviderAccountRemoteCommandHandlers } from "./providerAccountRemoteCommands";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { resolveLaneCreateRemoteBase } from "../laneCreateRemoteBase";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
@@ -279,15 +324,17 @@ import { buildAiSettingsStatus, getUnavailableAiStatus, isDatabaseClosedError } 
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
+import type { CloudAgentsService } from "../../../../desktop/src/main/services/chat/cloudAgentsService";
 import { resolveSmartLinkImage, resolveSmartLinkPreview } from "../../../../desktop/src/main/services/chat/smartLinkPreviewService";
 import { getSourceFaviconService } from "../../../../desktop/src/main/services/chat/sourceFaviconService";
 import {
-  createPromptStash,
-  deletePromptStash,
-  listPromptStashes,
-} from "../../../../desktop/src/main/services/chat/promptStashService";
+  claimDraft,
+  createDraft,
+  deleteDraft,
+  listDrafts,
+  updateDraft,
+} from "../../../../desktop/src/main/services/chat/draftService";
 import { launchAgentChatCli } from "../../../../desktop/src/main/services/chat/agentChatCliLaunch";
-import { mergeAiConfig } from "../../../../desktop/src/main/services/config/projectConfigService";
 import { deleteApiKey } from "../../../../desktop/src/main/services/ai/apiKeyStore";
 import { resolveCodexComputerUseMcpConfig } from "../../../../desktop/src/main/utils/codexComputerUse";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
@@ -305,6 +352,7 @@ import type { createFileService } from "../../../../desktop/src/main/services/fi
 import { runGit } from "../../../../desktop/src/main/services/git/git";
 import type { createGitOperationsService } from "../../../../desktop/src/main/services/git/gitOperationsService";
 import type { createGithubService } from "../../../../desktop/src/main/services/github/githubService";
+import type { createJiraService } from "../../../../desktop/src/main/services/jira/jiraService";
 import type { createOperationService } from "../../../../desktop/src/main/services/history/operationService";
 import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
@@ -312,6 +360,7 @@ import {
   buildLaneEnvTeardown,
   restoreUnarchivedLaneRuntime,
 } from "../../../../desktop/src/main/services/lanes/laneRuntimeLifecycle";
+import { createArchiveService } from "../../../../desktop/src/main/services/archive/archiveService";
 import { resolveChatCreateModel } from "../../../../desktop/src/main/services/chat/chatCreateModelResolution";
 import {
   parseAgentChatCreateFields,
@@ -331,13 +380,14 @@ import type { createLaneService } from "../../../../desktop/src/main/services/la
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
-import { createSessionBoardMoveActions } from "../../../../desktop/src/main/services/adeActions/registry";
+import { buildProviderInstancesDomainService, createSessionBoardMoveActions } from "../../../../desktop/src/main/services/adeActions/registry";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
 import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import { resolveProviderInstanceForLaunch } from "../providerInstances/providerInstanceStore";
 import { resolveTrackedCliPreset } from "../../../../desktop/src/main/services/chat/harnessPresetLaunch";
+import { prepareHarnessLaunch } from "../../../../desktop/src/main/services/chat/harnessLaunchPrepare";
 import { buildCliIdentityResumeMetadata } from "../../../../desktop/src/shared/cliLaunch";
 import type { UsageTrackingHost } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
@@ -357,6 +407,9 @@ import { sanitizeResumeTargetId } from "../../../../desktop/src/main/utils/termi
 import type { SyncPinStore } from "./syncPinStore";
 import { compactChatEventForMobileWire } from "../../../../desktop/src/shared/chatMobileSlim";
 import type { ProxyService } from "../proxy/proxyService";
+import { noteSessionInputOrigin } from "../../../../desktop/src/main/services/chat/sessionInputOrigins";
+import { createWebhookRemoteCommandHandlers, type WebhookRemoteSource } from "./webhookRemoteCommands";
+import { createAutomationRuleRemoteCommandHandlers, type AutomationRuleRemoteSource } from "./automationRuleRemoteCommands";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
@@ -366,7 +419,152 @@ export type ExternalSessionsRemoteService = {
 
 const EXTERNAL_SESSION_PROVIDERS = new Set<ExternalSessionProvider>(EXTERNAL_SESSION_PROVIDER_LIST);
 
+/** Thrown when a command's serialized result is over the sync reply limit. */
+export class SyncRemoteCommandResultTooLargeError extends Error {
+  readonly code = SYNC_RESULT_TOO_LARGE_ERROR_CODE;
+  readonly details: SyncResultTooLargeError;
+
+  constructor(details: SyncResultTooLargeError) {
+    super(details.message);
+    this.name = "SyncRemoteCommandResultTooLargeError";
+    this.details = details;
+  }
+}
+
+// --- Shared `command` policy (every sync ingress) ----------------------------
+//
+// The project sync host and the brain's projectless ingress run the same gate,
+// the same args identity and the same error mapping for a `command` envelope,
+// so a phone sees one contract whichever of them answers.
+
+/**
+ * Cursor Cloud lifecycle writes are available to the interactive mobile/web
+ * clients, but not to another desktop or VPS peer acting as a read-only
+ * viewer. Bootstrap metadata is caller-controlled, so only the server-recorded
+ * pairing identity can grant this authority.
+ */
+export function isInteractiveControllerPeer(
+  peer: { pairingRecord: SyncPairingRecord | null },
+): boolean {
+  return peer.pairingRecord?.peerPlatform === "iOS"
+    || peer.pairingRecord?.peerDeviceType === "phone"
+    || peer.pairingRecord?.peerDeviceType === "browser";
+}
+
+function stableJsonValue(value: unknown): unknown {
+  if (value == null) return value;
+  if (Array.isArray(value)) return value.map(stableJsonValue);
+  if (typeof value !== "object") return value;
+  const input = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  for (const key of Object.keys(input).sort()) {
+    output[key] = stableJsonValue(input[key]);
+  }
+  return output;
+}
+
+/** Key-order-independent JSON of a command's args. */
+export function stableJsonKey(value: unknown): string {
+  return JSON.stringify(stableJsonValue(value)) ?? "null";
+}
+
+/**
+ * The identity of a command's args in an idempotency ledger: a retried command
+ * id with a different fingerprint is a different command, not a replay.
+ */
+export function remoteCommandArgsFingerprint(args: unknown): string {
+  return createHash("sha256").update(stableJsonKey(args)).digest("hex");
+}
+
+/** Why the policy gate refused a command: the ack message and the result error. */
+export type RemoteCommandRejection = { code: string; message: string };
+
+/**
+ * The policy gate a `command` passes before it runs. `hostProjectId` is the
+ * project this ingress resolved the command to (null when it has none);
+ * `requestedProjectId` is the project the command named by id.
+ */
+export function evaluateRemoteCommandPolicy(args: {
+  action: string;
+  descriptor: Pick<SyncRemoteCommandDescriptor, "scope" | "policy"> | null | undefined;
+  peer: { pairingRecord: SyncPairingRecord | null };
+  requestedProjectId: string | null;
+  hostProjectId: string | null;
+}): RemoteCommandRejection | null {
+  const { action, descriptor } = args;
+  const policy = descriptor?.policy ?? null;
+  if (!policy) {
+    return { code: "unsupported_command", message: `Unsupported remote command: ${action}.` };
+  }
+  if (descriptor?.scope === "project") {
+    if (args.hostProjectId && !args.requestedProjectId) {
+      return {
+        code: "missing_project",
+        message: `Remote command ${action} requires projectId. Select the project again and retry.`,
+      };
+    }
+    if (args.requestedProjectId && !args.hostProjectId) {
+      return {
+        code: "project_not_open",
+        message: `Remote command ${action} requires an open project on this ADE machine.`,
+      };
+    }
+  }
+  if (!policy.viewerAllowed && !(policy.controllerAllowed && isInteractiveControllerPeer(args.peer))) {
+    return {
+      code: "forbidden_command",
+      message: `Remote command ${action} is not available to paired controller devices.`,
+    };
+  }
+  if (policy.localOnly || policy.requiresApproval) {
+    return { code: "approval_required", message: `Remote command ${action} requires approval on this machine.` };
+  }
+  return null;
+}
+
+/**
+ * The `command_result` for a command that threw. Coded errors (e.g. laneService
+ * attach's lane_already_linked) embed the code in the message so it survives
+ * IPC transports; the command runs in-process here, so the gate is the Error's
+ * real `code` property — parsing the message alone would also mangle legit
+ * prefixes like git's "fatal:".
+ */
+export function commandErrorResult(commandId: string, error: unknown): SyncCommandResultPayload {
+  if (error instanceof SyncRemoteCommandResultTooLargeError) {
+    return { commandId, ok: false, error: error.details };
+  }
+  const rawCode = error instanceof Error ? (error as { code?: unknown }).code : null;
+  const directCode = typeof rawCode === "string" && rawCode.length > 0 ? rawCode : null;
+  return {
+    commandId,
+    ok: false,
+    error: directCode
+      ? { code: directCode, message: parseCodedErrorMessage(error).message }
+      : { code: "command_failed", message: error instanceof Error ? error.message : String(error) },
+  };
+}
+
+/** UTF-8 size of the JSON a result serializes to; 0 when it cannot be measured. */
+export function measureSyncRemoteCommandResultBytes(result: unknown): number {
+  if (result === undefined || result === null) return 0;
+  if (typeof result !== "object" && typeof result !== "string") return 0;
+  try {
+    const json = JSON.stringify(result);
+    return typeof json === "string" ? Buffer.byteLength(json, "utf8") : 0;
+  } catch {
+    // Unserializable results fail later in the envelope encoder with their own
+    // error; the size guard is not the place to report them.
+    return 0;
+  }
+}
+
 type SyncRemoteCommandServiceArgs = {
+  /** Webhook automations for phones and the web client (read-only); late-bound, null when absent. */
+  getWebhookAutomations?: () => WebhookRemoteSource | null;
+  /** Auto-handoff rules for the phone's session menu; late-bound, null when automations are off. */
+  getAutomationRules?: () => AutomationRuleRemoteSource | null;
+  /** Overrides the result size limit. Tests only. */
+  remoteCommandResultMaxBytes?: number;
   /**
    * Per-project cr-sqlite DB. Source of truth for the model-picker store
    * (favorites + recents) when no explicit `getModelPickerStore` accessor is
@@ -391,6 +589,7 @@ type SyncRemoteCommandServiceArgs = {
   fileService: ReturnType<typeof createFileService>;
   gitService?: ReturnType<typeof createGitOperationsService>;
   githubService?: ReturnType<typeof createGithubService> | null;
+  getJiraService?: () => ReturnType<typeof createJiraService> | null;
   diffService?: ReturnType<typeof createDiffService>;
   conflictService?: ReturnType<typeof createConflictService>;
   operationService?: ReturnType<typeof createOperationService> | null;
@@ -398,6 +597,7 @@ type SyncRemoteCommandServiceArgs = {
   agentChatService?: ReturnType<typeof createAgentChatService>;
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
+  cloudAgentsService?: CloudAgentsService | null;
   personalChatScope?: Pick<PersonalChatScopeContract, "call" | "streamEvents">;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
@@ -434,6 +634,12 @@ type SyncRemoteCommandServiceArgs = {
    * that built no Mac Desktop service — register no stream methods.
    */
   macDesktopSyncStream?: MacDesktopSyncStream | null;
+  /**
+   * App Control live frames for remote viewers. Absent on a runtime without an
+   * App Control service (chat-only), in which case `appControl.*` is not
+   * registered.
+   */
+  appControlSyncStream?: AppControlSyncStream | null;
   /**
    * The Apple device environment. Absent on Windows/Linux and on a chat-only
    * runtime, in which case `apple.*` is simply not registered and the phone /
@@ -512,6 +718,11 @@ export type SyncRemoteCommandExecutionContext = {
    * the stream over the command reply.
    */
   macDesktopStream?: MacDesktopSyncStreamSink;
+  /**
+   * The invoking peer's transport for `appControl.streamSubscribe`, for the
+   * same reason as `macDesktopStream`.
+   */
+  appControlStream?: AppControlSyncStreamSink;
   /**
    * The invoking socket's stable id. Every `macDesktop.*` command receives it
    * (the host sets it for that action prefix alone), because the takeover
@@ -810,6 +1021,13 @@ function parseGitHubGetIssueArgs(value: Record<string, unknown>): {
   };
 }
 
+function parseGitHubRepoArgs(value: Record<string, unknown>, command: string): { owner: string; name: string } {
+  return {
+    owner: requireString(value.owner, `${command} requires owner.`),
+    name: requireString(value.name, `${command} requires name.`),
+  };
+}
+
 function parseAttachGitHubIssueToSessionArgs(value: Record<string, unknown>): {
   chatSessionId: string;
   issues: LaneGitHubIssue[];
@@ -835,6 +1053,36 @@ function parseDetachGitHubIssueFromSessionArgs(value: Record<string, unknown>): 
     chatSessionId: requireString(
       value.chatSessionId,
       "lanes.detachGitHubIssueFromSession requires chatSessionId.",
+    ),
+    ...(issueId ? { issueId } : {}),
+  };
+}
+
+function parseAttachJiraIssueToSessionArgs(value: Record<string, unknown>): {
+  chatSessionId: string;
+  issues: LaneJiraIssue[];
+} {
+  if (!Array.isArray(value.issues)) {
+    throw new Error("lanes.attachJiraIssueToSession requires an issues array.");
+  }
+  return {
+    chatSessionId: requireString(
+      value.chatSessionId,
+      "lanes.attachJiraIssueToSession requires chatSessionId.",
+    ),
+    issues: value.issues as LaneJiraIssue[],
+  };
+}
+
+function parseDetachJiraIssueFromSessionArgs(value: Record<string, unknown>): {
+  chatSessionId: string;
+  issueId?: string;
+} {
+  const issueId = asTrimmedString(value.issueId);
+  return {
+    chatSessionId: requireString(
+      value.chatSessionId,
+      "lanes.detachJiraIssueFromSession requires chatSessionId.",
     ),
     ...(issueId ? { issueId } : {}),
   };
@@ -1012,7 +1260,7 @@ function parseHandoffMode(value: unknown, action: string): "brief" | "fork" | un
 function parseAgentChatHandoffArgs(value: Record<string, unknown>): AgentChatHandoffArgs {
   const handoffNote = asTrimmedString(value.handoffNote);
   return {
-    ...(value as AgentChatHandoffArgs),
+    ...(withoutClientRuntimeActor(value) as AgentChatHandoffArgs),
     sourceSessionId: requireString(value.sourceSessionId, "chat.handoff requires sourceSessionId."),
     targetModelId: requireString(value.targetModelId, "chat.handoff requires targetModelId.") as AgentChatHandoffArgs["targetModelId"],
     ...(handoffNote ? { handoffNote } : {}),
@@ -1039,6 +1287,7 @@ function parseCrossMachineDestinationPreflightArgs(
     ),
     ...(mode !== undefined ? { mode } : {}),
     ...(sourceProvider ? { sourceProvider: sourceProvider as AgentChatProvider } : {}),
+    ...(value.hasGitBundle === true ? { hasGitBundle: true } : {}),
   };
 }
 
@@ -1057,21 +1306,27 @@ function parseFastForwardCrossMachineHandoffLaneArgs(
   };
 }
 
-function parsePrepareCrossMachineHandoffArgs(
+/**
+ * The fields a move and its prepare step share: the source chat, the target
+ * model and its settings, the mode and whether changes travel. `action`
+ * names the command in error messages.
+ */
+function parseCrossMachineTargetArgs(
   value: Record<string, unknown>,
-): AgentChatPrepareCrossMachineHandoffArgs {
+  action: string,
+): Omit<AgentChatPrepareCrossMachineHandoffArgs, "handoffId"> {
   const parseNullableString = (key: string): string | null | undefined => {
     if (!(key in value)) return undefined;
     if (value[key] == null) return null;
     if (typeof value[key] !== "string") {
-      throw new Error(`chat.prepareCrossMachineHandoff ${key} must be a string or null.`);
+      throw new Error(`${action} ${key} must be a string or null.`);
     }
     return value[key].trim();
   };
   const parseBoolean = (key: string): boolean | undefined => {
     if (!(key in value)) return undefined;
     if (typeof value[key] !== "boolean") {
-      throw new Error(`chat.prepareCrossMachineHandoff ${key} must be a boolean.`);
+      throw new Error(`${action} ${key} must be a boolean.`);
     }
     return value[key];
   };
@@ -1079,7 +1334,7 @@ function parsePrepareCrossMachineHandoffArgs(
     if (!(key in value)) return undefined;
     const parsed = asTrimmedString(value[key]);
     if (!parsed || !allowed.includes(parsed as T)) {
-      throw new Error(`chat.prepareCrossMachineHandoff ${key} is invalid.`);
+      throw new Error(`${action} ${key} is invalid.`);
     }
     return parsed as T;
   };
@@ -1087,7 +1342,7 @@ function parsePrepareCrossMachineHandoffArgs(
     if (!("cursorConfigValues" in value)) return undefined;
     if (value.cursorConfigValues == null) return null;
     if (!isRecord(value.cursorConfigValues)) {
-      throw new Error("chat.prepareCrossMachineHandoff cursorConfigValues must be an object or null.");
+      throw new Error(`${action} cursorConfigValues must be an object or null.`);
     }
     const entries = Object.entries(value.cursorConfigValues).map(([rawKey, entryValue]) => {
       const key = rawKey.trim();
@@ -1099,7 +1354,7 @@ function parsePrepareCrossMachineHandoffArgs(
           || (typeof entryValue === "number" && Number.isFinite(entryValue))
         )
       ) {
-        throw new Error("chat.prepareCrossMachineHandoff cursorConfigValues contains an invalid entry.");
+        throw new Error(`${action} cursorConfigValues contains an invalid entry.`);
       }
       return [key, entryValue] as const;
     });
@@ -1109,42 +1364,91 @@ function parsePrepareCrossMachineHandoffArgs(
   const continuationPrompt = parseNullableString("continuationPrompt");
   const reasoningEffort = parseNullableString("reasoningEffort");
   const fastMode = parseBoolean("fastMode");
+  const fastTier = value.fastTier === "ultrafast" ? "ultrafast" as const : value.fastTier === null ? null : undefined;
   const claudePermissionMode = parseEnum("claudePermissionMode", ["default", "auto", "plan", "acceptEdits", "bypassPermissions"] as const);
   const codexApprovalPolicy = parseEnum("codexApprovalPolicy", ["untrusted", "on-request", "on-failure", "never"] as const);
   const codexSandbox = parseEnum("codexSandbox", ["read-only", "workspace-write", "danger-full-access"] as const);
   const codexConfigSource = parseEnum("codexConfigSource", ["flags", "config-toml"] as const);
   const opencodePermissionMode = parseEnum("opencodePermissionMode", ["plan", "edit", "full-auto", "config-toml"] as const);
   const droidPermissionMode = parseEnum("droidPermissionMode", AGENT_CHAT_DROID_PERMISSION_MODE_VALUES);
+  const musePermissionMode = parseEnum("musePermissionMode", AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES);
   const permissionMode = parseEnum("permissionMode", ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const);
   const cursorModeId = parseNullableString("cursorModeId");
   const cursorConfigValues = parseConfigValues();
-  const mode = parseHandoffMode(value.mode, "chat.prepareCrossMachineHandoff");
+  const mode = parseHandoffMode(value.mode, action);
+  const includeChanges = parseBoolean("includeChanges");
   return {
     sourceSessionId: requireString(
       value.sourceSessionId,
-      "chat.prepareCrossMachineHandoff requires sourceSessionId.",
+      `${action} requires sourceSessionId.`,
     ),
     ...(mode !== undefined ? { mode } : {}),
-    handoffId: requireString(
-      value.handoffId,
-      "chat.prepareCrossMachineHandoff requires handoffId.",
-    ),
     targetModelId: requireString(
       value.targetModelId,
-      "chat.prepareCrossMachineHandoff requires targetModelId.",
+      `${action} requires targetModelId.`,
     ) as AgentChatPrepareCrossMachineHandoffArgs["targetModelId"],
     ...(continuationPrompt !== undefined ? { continuationPrompt } : {}),
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     ...(fastMode !== undefined ? { fastMode } : {}),
+    ...(fastTier !== undefined ? { fastTier } : {}),
     ...(claudePermissionMode !== undefined ? { claudePermissionMode } : {}),
     ...(codexApprovalPolicy !== undefined ? { codexApprovalPolicy } : {}),
     ...(codexSandbox !== undefined ? { codexSandbox } : {}),
     ...(codexConfigSource !== undefined ? { codexConfigSource } : {}),
     ...(opencodePermissionMode !== undefined ? { opencodePermissionMode } : {}),
     ...(droidPermissionMode !== undefined ? { droidPermissionMode } : {}),
+    ...(musePermissionMode !== undefined ? { musePermissionMode } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(cursorModeId !== undefined ? { cursorModeId } : {}),
     ...(cursorConfigValues !== undefined ? { cursorConfigValues } : {}),
+    ...(includeChanges !== undefined ? { includeChanges } : {}),
+  };
+}
+
+function parsePrepareCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatPrepareCrossMachineHandoffArgs {
+  return {
+    ...parseCrossMachineTargetArgs(value, "chat.prepareCrossMachineHandoff"),
+    handoffId: requireString(value.handoffId, "chat.prepareCrossMachineHandoff requires handoffId."),
+  };
+}
+
+/** The brain-owned move: the shared target fields plus where and when. */
+function parseStartCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatStartCrossMachineHandoffArgs {
+  const flag = (key: string): boolean | undefined => {
+    if (!(key in value)) return undefined;
+    if (typeof value[key] !== "boolean") throw new Error(`chat.startCrossMachineHandoff ${key} must be a boolean.`);
+    return value[key] as boolean;
+  };
+  const clone = flag("clone");
+  const whenTurnEnds = flag("whenTurnEnds");
+  return {
+    ...parseCrossMachineTargetArgs(value, "chat.startCrossMachineHandoff"),
+    machine: requireString(value.machine, "chat.startCrossMachineHandoff requires machine."),
+    ...(clone !== undefined ? { clone } : {}),
+    ...(whenTurnEnds !== undefined ? { whenTurnEnds } : {}),
+  };
+}
+
+function parsePreviewCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatPreviewCrossMachineHandoffArgs {
+  if ("includeChanges" in value && typeof value.includeChanges !== "boolean") {
+    throw new Error("chat.previewCrossMachineHandoff includeChanges must be a boolean.");
+  }
+  const mode = parseHandoffMode(value.mode, "chat.previewCrossMachineHandoff");
+  return {
+    sourceSessionId: requireString(value.sourceSessionId, "chat.previewCrossMachineHandoff requires sourceSessionId."),
+    machine: requireString(value.machine, "chat.previewCrossMachineHandoff requires machine."),
+    targetModelId: requireString(
+      value.targetModelId,
+      "chat.previewCrossMachineHandoff requires targetModelId.",
+    ) as AgentChatPreviewCrossMachineHandoffArgs["targetModelId"],
+    ...(mode !== undefined ? { mode } : {}),
+    ...(value.includeChanges === true ? { includeChanges: true } : {}),
   };
 }
 
@@ -1188,6 +1492,7 @@ function parseValidateCrossMachineSourceArgs(
       value.capsuleFingerprint,
       "chat.validateCrossMachineSource requires capsuleFingerprint.",
     ),
+    ...(typeof value.includeChanges === "boolean" ? { includeChanges: value.includeChanges } : {}),
   };
 }
 
@@ -1265,6 +1570,7 @@ function parseTerminalListArgs(value: Record<string, unknown>): ChatTerminalList
     chatSessionId: optionalTerminalString(record, "chatSessionId", 128),
     laneId: optionalTerminalString(record, "laneId", 512),
     limit: optionalTerminalNumber(record, "limit", 1, 500),
+    ...(record.includeArchived === true ? { includeArchived: true } : {}),
   };
 }
 
@@ -1340,7 +1646,7 @@ function parseProjectConfigSaveArgs(value: Record<string, unknown>): { candidate
 }
 
 // `ai.apiKeys` holds live provider API keys (spent by aiIntegrationService and
-// openCodeRuntime), and the top-level `providers` bag is an unvalidated
+// the OpenCode server config, `buildOpenCodeConfig`), and the top-level `providers` bag is an unvalidated
 // passthrough that historically carried the same. Neither is reachable from a
 // paired peer: reads drop them, and writes keep whatever is already on disk.
 // The write side matters as much as the read side — every Settings section
@@ -1413,6 +1719,7 @@ async function summarizeChatSessionForRemote(
     ...(session.piSessionId ? { piSessionId: session.piSessionId } : {}),
     ...(session.piSessionFile ? { piSessionFile: session.piSessionFile } : {}),
     ...(session.droidPermissionMode ? { droidPermissionMode: session.droidPermissionMode } : {}),
+    ...(session.musePermissionMode ? { musePermissionMode: session.musePermissionMode } : {}),
     ...(session.cursorModeSnapshot ? { cursorModeSnapshot: session.cursorModeSnapshot } : {}),
     ...(session.cursorModeId !== undefined ? { cursorModeId: session.cursorModeId } : {}),
     ...(session.cursorConfigValues ? { cursorConfigValues: session.cursorConfigValues } : {}),
@@ -1425,6 +1732,7 @@ async function summarizeChatSessionForRemote(
     status: session.status,
     currentTurnStartedAt: session.currentTurnStartedAt ?? null,
     idleSinceAt: session.idleSinceAt ?? null,
+    ...(session.promptCache ? { promptCache: session.promptCache } : {}),
     startedAt: session.createdAt,
     endedAt: null,
     lastActivityAt: session.lastActivityAt,
@@ -1500,6 +1808,9 @@ function parseListLanesArgs(value: Record<string, unknown>): ListLanesArgs {
   };
 }
 
+/** 10 MB of bytes as base64 (4 characters per 3 bytes). */
+const LINEAR_REMOTE_UPLOAD_MAX_BASE64 = Math.ceil((10 * 1024 * 1024) / 3) * 4;
+
 function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
   return {
     name: requireString(value.name, "lanes.create requires name."),
@@ -1509,6 +1820,7 @@ function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
     ...(asTrimmedString(value.branchName) ? { branchName: asTrimmedString(value.branchName)! } : {}),
     ...(asTrimmedString(value.startPoint) ? { startPoint: asTrimmedString(value.startPoint)! } : {}),
     ...(isRecord(value.linearIssue) ? { linearIssue: value.linearIssue as CreateLaneArgs["linearIssue"] } : {}),
+    ...(isRecord(value.githubIssue) ? { githubIssue: value.githubIssue as CreateLaneArgs["githubIssue"] } : {}),
   };
 }
 
@@ -1532,6 +1844,7 @@ function parseAgentChatLaunchCliArgs(value: Record<string, unknown>): AgentChatL
     ...(model ? { model } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(fastMode !== undefined ? { fastMode } : {}),
+    ...(value.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     ...(permissionMode ? { permissionMode: permissionMode as AgentChatLaunchCliArgs["permissionMode"] } : {}),
     ...(asTrimmedString(value.instanceId) ? { instanceId: asTrimmedString(value.instanceId) } : {}),
     ...(asTrimmedString(value.presetId) ? { presetId: asTrimmedString(value.presetId) } : {}),
@@ -1785,6 +2098,7 @@ function parseStartCliSessionArgs(value: Record<string, unknown>): SyncStartCliS
     modelId: asTrimmedString(value.modelId),
     reasoningEffort: asTrimmedString(value.reasoningEffort),
     fastMode: asOptionalBoolean(value.fastMode) ?? asOptionalBoolean(value.codexFastMode),
+    ...(value.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     instanceId: asTrimmedString(value.instanceId),
     presetId: asTrimmedString(value.presetId),
     credentialId: asTrimmedString(value.credentialId),
@@ -1929,15 +2243,35 @@ function sessionNeedsResumeTargetHydration(session: {
   );
 }
 
+/**
+ * Spawn lineage is a fact about the row, not its runtime state, so it applies
+ * to every chat row. Mirrors `projectChatOntoSession` on desktop: an absent
+ * field stays absent rather than becoming an explicit null.
+ */
+function projectChatLineage(
+  session: ReturnType<SyncRemoteCommandServiceArgs["ptyService"]["enrichSessions"]>[number],
+  chat: AgentChatSessionSummary,
+) {
+  return {
+    ...session,
+    ...(chat.orchestrationParentSessionId
+      ? { orchestrationParentSessionId: chat.orchestrationParentSessionId }
+      : {}),
+    ...(chat.launchedBySessionId ? { launchedBySessionId: chat.launchedBySessionId } : {}),
+    ...(chat.spawnKind ? { spawnKind: chat.spawnKind } : {}),
+  };
+}
+
 function projectChatOntoSession(
   session: ReturnType<SyncRemoteCommandServiceArgs["ptyService"]["enrichSessions"]>[number],
   chat: AgentChatSessionSummary,
 ) {
   const base = {
-    ...session,
+    ...projectChatLineage(session, chat),
     currentTurnStartedAt: chat.currentTurnStartedAt ?? null,
     ...(chat.steeringInput ? { steeringInput: true } : {}),
     ...(chat.asyncQuestion ? { asyncQuestion: true } : {}),
+    ...(chat.promptCache ? { chatPromptCache: chat.promptCache } : {}),
   };
   if (chat.awaitingInput) {
     return {
@@ -2100,7 +2434,7 @@ function mapPrAiPermissionMode(mode: PrAgentPermissionMode): AgentChatPermission
 function mapPrAiPermissionModeToNativeFields(
   mode: PrAgentPermissionMode,
   provider: string,
-): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId">> {
+): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "interactionMode" | "cursorModeId">> {
   const legacy = mapPrAiPermissionMode(mode);
   if (provider === "claude") {
     const map: Record<string, AgentChatClaudePermissionMode> = {
@@ -2129,6 +2463,11 @@ function mapPrAiPermissionModeToNativeFields(
     if (legacy === "default") return { droidPermissionMode: "read-only" };
     return { droidPermissionMode: droidPermissionModeFromLegacyPermissionMode(legacy) ?? "read-only" };
   }
+  if (provider === "muse") {
+    // Plan is Muse's read-only mode plus ADE's plan guidance.
+    if (legacy === "plan") return { musePermissionMode: "denyUnmatched", interactionMode: "plan" };
+    return { musePermissionMode: musePermissionModeFromLegacyPermissionMode(legacy) ?? "onRequest" };
+  }
   if (provider === "cursor") {
     if (legacy === "full-auto") return { cursorModeId: "full-auto" };
     if (legacy === "plan") return { cursorModeId: "plan" };
@@ -2144,7 +2483,7 @@ function mapPrAiPermissionModeToNativeFields(
 }
 
 function deriveAiPermissionModeFromSummary(
-  summary: Pick<AgentChatSessionSummary, "provider" | "permissionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"> | null | undefined,
+  summary: Pick<AgentChatSessionSummary, "provider" | "permissionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "cursorModeId"> | null | undefined,
 ): PrAgentPermissionMode | null {
   if (!summary) return null;
   if (summary.permissionMode) return summary.permissionMode;
@@ -2167,6 +2506,9 @@ function deriveAiPermissionModeFromSummary(
     if (summary.droidPermissionMode === "auto-low" || summary.droidPermissionMode === "auto-medium") return "edit";
     if (summary.droidPermissionMode === "read-only") return "plan";
     return null;
+  }
+  if (summary.provider === "muse") {
+    return legacyPermissionModeFromMusePermissionMode(summary.musePermissionMode) ?? null;
   }
   if (summary.provider === "cursor") {
     if (summary.cursorModeId === "full-auto") return "full-auto";
@@ -2551,9 +2893,11 @@ async function listRemoteWorkSessions(
   if (chatSummaryBySessionId.size === 0) return visibleSessions;
 
   return visibleSessions.map((session) => {
-    if (!isChatToolType(session.toolType) || session.status !== "running") return session;
+    if (!isChatToolType(session.toolType)) return session;
     const chat = chatSummaryBySessionId.get(session.id);
     if (!chat) return session;
+    // Runtime fields are projected for running rows only; lineage for all chat rows.
+    if (session.status !== "running") return projectChatLineage(session, chat);
     return projectChatOntoSession(session, chat);
   });
 }
@@ -2596,10 +2940,25 @@ function parseAgentChatGetSummaryArgs(value: Record<string, unknown>): AgentChat
   };
 }
 
+/**
+ * A phone or web client is one of the user's own clients, and only the RPC
+ * server stamps `runtimeActor`. Any copy the payload carries, at the top level
+ * or under `chat.create` (a launch), is removed before the launch parsers see it.
+ */
+function withoutClientRuntimeActor(value: Record<string, unknown>): Record<string, unknown> {
+  const { runtimeActor: _topLevel, ...rest } = value;
+  const chat = isRecord(rest.chat) ? rest.chat : null;
+  const create = chat && isRecord(chat.create) ? chat.create : null;
+  if (!chat || !create) return rest;
+  const { runtimeActor: _nested, ...createRest } = create;
+  return { ...rest, chat: { ...chat, create: createRest } };
+}
+
 function parseAgentChatCreateArgs(value: Record<string, unknown>): AgentChatCreateArgs {
+  const clientValue = withoutClientRuntimeActor(value);
   return {
-    laneId: requireString(value.laneId, "chat.create requires laneId."),
-    ...parseAgentChatCreateFields(value),
+    laneId: requireString(clientValue.laneId, "chat.create requires laneId."),
+    ...parseAgentChatCreateFields(clientValue),
   };
 }
 
@@ -2609,11 +2968,20 @@ function parseAgentChatSteerArgs(value: Record<string, unknown>): AgentChatSteer
   if (dispatchMode !== undefined && dispatchMode !== "inline" && dispatchMode !== "interrupt") {
     throw new Error("chat.steer dispatchMode must be 'inline' or 'interrupt'.");
   }
+  // A steer that carries the chat's pending thread comments may have no text
+  // of its own: the host builds the message from the comments.
+  const includeThreadComments = value.includeThreadComments === true;
   return {
     sessionId: requireString(value.sessionId, "chat.steer requires sessionId."),
-    text: requireString(value.text, "chat.steer requires text."),
+    text: includeThreadComments
+      ? asTrimmedString(value.text) ?? ""
+      : requireString(value.text, "chat.steer requires text."),
     ...(attachments?.length ? { attachments } : {}),
     ...(dispatchMode ? { dispatchMode } : {}),
+    // A paired controller (the phone, a remote desktop) sends what its user
+    // typed in the composer.
+    sentByUser: true,
+    ...(includeThreadComments ? { includeThreadComments: true } : {}),
   };
 }
 
@@ -2633,6 +3001,18 @@ function parseAgentChatEditSteerArgs(value: Record<string, unknown>): AgentChatE
     sessionId: requireString(value.sessionId, "chat.editSteer requires sessionId."),
     steerId: requireString(value.steerId, "chat.editSteer requires steerId."),
     text: requireString(value.text, "chat.editSteer requires text."),
+  };
+}
+
+function parseAgentChatMoveSteerArgs(value: Record<string, unknown>): AgentChatMoveSteerArgs {
+  const toIndex = value.toIndex;
+  if (typeof toIndex !== "number" || !Number.isInteger(toIndex) || toIndex < 0) {
+    throw new Error("chat.moveSteer toIndex must be a non-negative integer.");
+  }
+  return {
+    sessionId: requireString(value.sessionId, "chat.moveSteer requires sessionId."),
+    steerId: requireString(value.steerId, "chat.moveSteer requires steerId."),
+    toIndex,
   };
 }
 
@@ -2773,6 +3153,7 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
 
   if ("title" in value) parsed.title = value.title == null ? null : asTrimmedString(value.title) ?? null;
   if ("modelId" in value) parsed.modelId = value.modelId == null ? undefined : asTrimmedString(value.modelId) as AgentChatUpdateSessionArgs["modelId"];
+  if ("presetId" in value) parsed.presetId = value.presetId == null ? null : asTrimmedString(value.presetId) ?? null;
   if ("reasoningEffort" in value) parsed.reasoningEffort = value.reasoningEffort == null ? null : asTrimmedString(value.reasoningEffort) ?? null;
   if ("permissionMode" in value) parsed.permissionMode = value.permissionMode == null ? undefined : asTrimmedString(value.permissionMode) as AgentChatUpdateSessionArgs["permissionMode"];
   if ("interactionMode" in value) parsed.interactionMode = value.interactionMode == null ? null : asTrimmedString(value.interactionMode) as AgentChatUpdateSessionArgs["interactionMode"];
@@ -2783,13 +3164,21 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
   if ("fastMode" in value || "codexFastMode" in value) {
     parsed.fastMode = asOptionalBoolean(value.fastMode) ?? asOptionalBoolean(value.codexFastMode);
   }
+  // Fast's tier: "ultrafast", or null for plain Fast. A value this host does
+  // not know (a newer client's tier) leaves the stored tier alone rather than
+  // downgrading it, as the cross-machine target parser does.
+  if (value.fastTier === "ultrafast") parsed.fastTier = "ultrafast";
+  else if ("fastTier" in value && value.fastTier === null) parsed.fastTier = null;
   if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatUpdateSessionArgs["opencodePermissionMode"];
   if ("droidPermissionMode" in value) parsed.droidPermissionMode = value.droidPermissionMode == null ? undefined : asTrimmedString(value.droidPermissionMode) as AgentChatUpdateSessionArgs["droidPermissionMode"];
+  if ("musePermissionMode" in value) parsed.musePermissionMode = value.musePermissionMode == null ? undefined : asTrimmedString(value.musePermissionMode) as AgentChatUpdateSessionArgs["musePermissionMode"];
   if ("cursorModeId" in value) parsed.cursorModeId = value.cursorModeId == null ? null : asTrimmedString(value.cursorModeId) ?? null;
   if ("cursorConfigValues" in value) {
     parsed.cursorConfigValues = parseCursorConfigValues(value.cursorConfigValues);
   }
   if ("manuallyNamed" in value) parsed.manuallyNamed = value.manuallyNamed === true;
+  // Claude session tag (desktop's "Set tag…"). Empty or null clears it.
+  if ("tag" in value) parsed.tag = value.tag == null ? null : asTrimmedString(value.tag) ?? null;
   if (value.spawnKind === "subagent" || value.spawnKind === "peer") {
     parsed.spawnKind = value.spawnKind;
   }
@@ -3004,10 +3393,15 @@ function parseGitGenerateCommitMessageArgs(value: Record<string, unknown>): GitG
   };
 }
 
-function parseGitListRecentCommitsArgs(value: Record<string, unknown>): { laneId: string; limit?: number } {
+function parseGitListRecentCommitsArgs(value: Record<string, unknown>): GitListRecentCommitsArgs {
+  const skip = asOptionalNumber(value.skip);
+  const scope = value.scope === "lanes" || value.scope === "lane" ? value.scope : undefined;
   return {
     laneId: requireString(value.laneId, "git.listRecentCommits requires laneId."),
     limit: asOptionalNumber(value.limit),
+    ...(skip != null ? { skip } : {}),
+    ...(scope ? { scope } : {}),
+    ...(value.includeCoAuthors === true ? { includeCoAuthors: true } : {}),
   };
 }
 
@@ -3225,6 +3619,7 @@ function parseChatModelsArgs(value: Record<string, unknown>): {
 const MODEL_CATALOG_REFRESH_PROVIDERS = new Set<AgentChatModelCatalogRefreshProvider>([
   "opencode",
   "pi",
+  "muse",
   "cursor",
   "droid",
   "lmstudio",
@@ -3233,6 +3628,7 @@ const MODEL_CATALOG_REFRESH_PROVIDERS = new Set<AgentChatModelCatalogRefreshProv
   "kimi",
   "grok",
   "copilot",
+  "devin",
 ]);
 
 function parseChatModelCatalogArgs(value: Record<string, unknown>): AgentChatModelCatalogArgs {
@@ -3331,6 +3727,57 @@ function parseUnstackGithubStackArgs(
   };
 }
 
+function parseLinkPrChatSessionArgs(value: Record<string, unknown>): LinkPrChatSessionArgs {
+  return {
+    prId: requireString(value.prId, "prs.linkChatSession requires prId."),
+    sessionId: requireString(value.sessionId, "prs.linkChatSession requires sessionId."),
+    ...(value.allowCrossLane === true ? { allowCrossLane: true } : {}),
+  };
+}
+
+function parseLinkPrChatStackArgs(value: Record<string, unknown>): LinkPrChatStackArgs {
+  const stackNumber = asOptionalNumber(value.stackNumber);
+  if (stackNumber == null || !Number.isInteger(stackNumber) || stackNumber <= 0) {
+    throw new Error("prs.linkChatStack requires a positive integer stackNumber.");
+  }
+  return {
+    sessionId: requireString(value.sessionId, "prs.linkChatStack requires sessionId."),
+    stackNumber,
+    ...(asTrimmedString(value.prId) ? { prId: asTrimmedString(value.prId) } : {}),
+  };
+}
+
+function parseUnlinkPrChatSessionArgs(value: Record<string, unknown>): UnlinkPrChatSessionArgs {
+  return {
+    prId: requireString(value.prId, "prs.unlinkChatSession requires prId."),
+    sessionId: requireString(value.sessionId, "prs.unlinkChatSession requires sessionId."),
+    ...(value.dismiss === false ? { dismiss: false } : {}),
+  };
+}
+
+function parseSetPrChatWatchArgs(value: Record<string, unknown>): SetPrChatWatchArgs {
+  return {
+    prId: requireString(value.prId, "prs.setChatWatch requires prId."),
+    sessionId: requireString(value.sessionId, "prs.setChatWatch requires sessionId."),
+    mode: parsePrWatchMode(value.mode),
+  };
+}
+
+function parseGetPrChatWatchArgs(value: Record<string, unknown>): GetPrChatWatchArgs {
+  const sessionId = asTrimmedString(value.sessionId);
+  const prId = asTrimmedString(value.prId);
+  return {
+    ...(sessionId ? { sessionId } : {}),
+    ...(prId ? { prId } : {}),
+  };
+}
+
+function parseListPrChatSessionsArgs(value: Record<string, unknown>): ListPrChatSessionsArgs {
+  return {
+    prId: requireString(value.prId, "prs.listChatSessionsForPr requires prId."),
+  };
+}
+
 function parseCreatePrArgs(value: Record<string, unknown>): CreatePrFromLaneArgs {
   const laneId = asTrimmedString(value.laneId);
   const title = asTrimmedString(value.title);
@@ -3351,6 +3798,7 @@ function parseCreatePrArgs(value: Record<string, unknown>): CreatePrFromLaneArgs
     ...(typeof value.allowDirtyWorktree === "boolean" ? { allowDirtyWorktree: value.allowDirtyWorktree } : {}),
     ...(typeof value.closeLinearIssueOnMerge === "boolean" ? { closeLinearIssueOnMerge: value.closeLinearIssueOnMerge } : {}),
     ...(strategy ? { strategy } : {}),
+    ...(value.source === "agent" || value.source === "human" ? { source: value.source } : {}),
   };
 }
 
@@ -3743,6 +4191,40 @@ async function unarchiveLaneWithRuntimeSetup(
   return { ok: true };
 }
 
+async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
+  service: ReturnType<typeof createAgentChatService>,
+  payload: T,
+): Promise<T> {
+  if (payload.model.trim().length > 0) return payload;
+  const available = await service.getAvailableModels({
+    provider: payload.provider,
+    // ACP providers are here for the same reason as OpenCode/Pi: their model
+    // rows are gated on a CLI auth pass, and `activateRuntime` refreshes that
+    // pass. It does not spawn an agent for them.
+    ...(
+      payload.provider === "opencode"
+      || payload.provider === "pi"
+      || payload.provider === "muse"
+      || payload.provider === "qwen"
+      || payload.provider === "kimi"
+      || payload.provider === "grok"
+      || payload.provider === "copilot"
+      || payload.provider === "devin"
+        ? { activateRuntime: true }
+        : {}
+    ),
+  });
+  const chosen = available[0];
+  if (!chosen) {
+    throw new Error(`No configured ${payload.provider} chat model is available on the host.`);
+  }
+  return {
+    ...payload,
+    model: chosen.id,
+    ...(!payload.modelId && chosen.modelId ? { modelId: chosen.modelId } : {}),
+  };
+}
+
 function sessionStatusBucket(argsIn: {
   status: string;
   runtimeState?: string | null;
@@ -3750,7 +4232,7 @@ function sessionStatusBucket(argsIn: {
   settleOverride?: "settled" | "active" | null;
   attentionRequestedAt?: string | null;
   pendingInputItemId?: string | null;
-  attentionSource?: "agent_explicit" | "provider_structured" | "user" | null;
+  attentionSource?: SessionAttentionSource | null;
   lastTurnFailedAt?: string | null;
 }): "running" | "awaiting-input" | "ended" {
   // Mirrors the settled-tier precedence in shared/sessionCanonicalState.ts:
@@ -4147,6 +4629,21 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     args.laneService.listGitHubIssuesForLaneSessions({
       laneId: requireString(payload.laneId, "lanes.listGitHubIssuesForLaneSessions requires laneId."),
     }));
+  register("lanes.attachJiraIssueToSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.attachJiraIssueToSession(parseAttachJiraIssueToSessionArgs(payload)));
+  register("lanes.detachJiraIssueFromSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.detachJiraIssueFromSession(parseDetachJiraIssueFromSessionArgs(payload)));
+  register("lanes.listJiraIssuesForSession", { viewerAllowed: true }, async (payload) =>
+    args.laneService.listJiraIssuesForSession({
+      chatSessionId: requireString(
+        payload.chatSessionId,
+        "lanes.listJiraIssuesForSession requires chatSessionId.",
+      ),
+    }));
+  register("lanes.listJiraIssuesForLaneSessions", { viewerAllowed: true }, async (payload) =>
+    args.laneService.listJiraIssuesForLaneSessions({
+      laneId: requireString(payload.laneId, "lanes.listJiraIssuesForLaneSessions requires laneId."),
+    }));
   register("lanes.rebaseStart", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebaseStart(parseRebaseStartArgs(payload)));
   register("lanes.rebasePush", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebasePush(parseRebasePushArgs(payload)));
   register("lanes.rebaseRollback", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebaseRollback(parseRunIdArgs(payload, "lanes.rebaseRollback")));
@@ -4212,7 +4709,7 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("lanes.getDeleteRisk", { viewerAllowed: true }, async (payload) =>
     args.laneService.getDeleteRisk(requireString(payload.laneId, "lanes.getDeleteRisk requires laneId.")));
   register("lanes.getReclaimRisk", { viewerAllowed: true }, async (payload) =>
-    args.laneService.getReclaimRisk(requireString(payload.laneId, "lanes.getReclaimRisk requires laneId.")));
+    args.laneService.getReclaimRisk({ laneId: requireString(payload.laneId, "lanes.getReclaimRisk requires laneId.") }));
   register("lanes.getEnvStatus", { viewerAllowed: true }, async (payload) => args.laneEnvironmentService?.getProgress(requireString(payload.laneId, "lanes.getEnvStatus requires laneId.")) ?? null);
   // Both route through the one shared setup path (template merged over the
   // project config). Active lanes only, as the sync host always resolved them.
@@ -4388,7 +4885,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       toolType: (parsed.toolType ?? "shell") as TerminalToolType,
     });
   });
-  register("work.startCliSession", { viewerAllowed: true, queueable: true }, async (payload) => {
+  register("work.startCliSession", { viewerAllowed: false, controllerAllowed: true, queueable: true }, async (payload) => {
     const parsed = parseStartCliSessionArgs(payload);
     const cols = clampCliDimension(parsed.cols, DEFAULT_CLI_COLS, 20, MAX_CLI_COLS);
     const rows = clampCliDimension(parsed.rows, DEFAULT_CLI_ROWS, 4, MAX_CLI_ROWS);
@@ -4407,6 +4904,13 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       ? await resolveCodexComputerUseMcpConfig()
       : null;
 
+    if (provider !== "shell") {
+      await prepareHarnessLaunch({
+        provider,
+        presetId: parsed.presetId ?? null,
+        credentialId: parsed.credentialId ?? null,
+      });
+    }
     const trackedPreset = resolveTrackedCliPreset(provider, {
       presetId: parsed.presetId,
       credentialId: parsed.credentialId,
@@ -4428,6 +4932,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
           model: resolvedModel,
           reasoningEffort: parsed.reasoningEffort ?? null,
           fastMode: parsed.fastMode ?? null,
+          ...(provider === "codex" && parsed.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
           ...(resolvedInstance ? { instanceId: resolvedInstance.id } : {}),
           ...(parsed.presetId ? { presetId: parsed.presetId } : {}),
           ...(parsed.credentialId ? { credentialId: parsed.credentialId } : {}),
@@ -4450,6 +4955,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
         model: parsed.modelId ?? parsed.model ?? undefined,
         reasoningEffort: parsed.reasoningEffort ?? undefined,
         fastMode: parsed.fastMode ?? undefined,
+        ...(provider === "codex" && parsed.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
         initialPrompt: parsed.initialInput,
         laneWorktreePath: resolveLaneWorktreePathForSync(args, parsed.laneId),
         ...(provider === "codex" ? { codexComputerUse } : {}),
@@ -4614,10 +5120,45 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   // to public HTTPS hosts; see chat/sourceFaviconService.ts.
   register("chat.resolveSourceFavicons", { viewerAllowed: true }, async (payload) =>
     getSourceFaviconService().resolve(payload), "runtime");
+  // MCP Apps (shared/mcpApp.ts). The page a phone gets is bounded, and it
+  // comes with the policy the phone must serve it with: the brain builds that
+  // string, from what the resource declared, and the phone builds none.
+  register("chat.getMcpApp", { viewerAllowed: true }, async (payload) => {
+    const result = await requireService(args.agentChatService, "Agent chat service not available.").getMcpApp({
+      sessionId: requireString(payload.sessionId, "chat.getMcpApp requires sessionId."),
+      itemId: requireString(payload.itemId, "chat.getMcpApp requires itemId."),
+    });
+    if (result.status !== "ready") return result;
+    if (Buffer.byteLength(result.app.html, "utf8") > MCP_APP_LIMITS.maxRemoteDocumentBytes) {
+      return { status: "unavailable" as const, reason: MCP_APP_TOO_LARGE_FOR_REMOTE };
+    }
+    const app: McpAppRemoteDocument = {
+      ...result.app,
+      contentSecurityPolicy: buildMcpAppContentSecurityPolicy(result.app.csp, { sandbox: true }),
+    };
+    return { status: "ready" as const, app };
+  });
+  // Not for a viewer: this is what runs a tool. `userActivated` is the
+  // controller's own word that the user just tapped inside the app's frame.
+  // `controllerAllowed` is what lets the owner's own phone through:
+  // `viewerAllowed: false` alone refuses every paired device.
+  register("chat.mcpAppRequest", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    const method = payload.method === "tools/call" || payload.method === "resources/read" ? payload.method : null;
+    if (!method) throw new Error("chat.mcpAppRequest requires method tools/call or resources/read.");
+    return requireService(args.agentChatService, "Agent chat service not available.").mcpAppRequest({
+      sessionId: requireString(payload.sessionId, "chat.mcpAppRequest requires sessionId."),
+      itemId: requireString(payload.itemId, "chat.mcpAppRequest requires itemId."),
+      method,
+      params: payload.params,
+      userActivated: payload.userActivated === true,
+    });
+  });
+  // Bound the registry sent to a phone: a project can discover hundreds of
+  // skill/command files, and the composer only ever renders a prefix list.
   register("chat.getSlashCommands", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getSlashCommands(
       parseAgentChatSlashCommandsArgs(payload),
-    ));
+    ).slice(0, 200));
   // Composer @-mention suggestions for iOS. Read-only and project-scoped, like
   // the slash-command list; machine rows are read inside the brain, so a
   // viewer never needs the CTO-only account actions.
@@ -4668,6 +5209,42 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").markCrossMachineHandoff(
       parseMarkCrossMachineHandoffArgs(payload),
     ));
+  // The brain-owned move (crossMachineHandoffOrchestrator). A phone or paired
+  // desktop is the person, so a start from here is never agent-requested.
+  register("chat.getCrossMachineHandoffOptions", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getCrossMachineHandoffOptions({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.getCrossMachineHandoffOptions requires sourceSessionId."),
+    }));
+  // Read-only: asks the destination through this brain's own transport.
+  register("chat.previewCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").previewCrossMachineHandoff(
+      parsePreviewCrossMachineHandoffArgs(payload),
+    ));
+  register("chat.startCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").startCrossMachineHandoff({
+      ...parseStartCrossMachineHandoffArgs(payload),
+      requestedBy: "user",
+    }));
+  register("chat.cancelCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").cancelCrossMachineHandoff({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.cancelCrossMachineHandoff requires sourceSessionId."),
+    }));
+  register("chat.retryCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").retryCrossMachineHandoff({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.retryCrossMachineHandoff requires sourceSessionId."),
+      ...(payload.asBrief === true ? { asBrief: true } : {}),
+    }));
+  register("chat.resolveCrossMachineHandoffApproval", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").resolveCrossMachineHandoffApproval({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.resolveCrossMachineHandoffApproval requires sourceSessionId."),
+      handoffId: requireString(payload.handoffId, "chat.resolveCrossMachineHandoffApproval requires handoffId."),
+      approve: payload.approve === true,
+    }));
+  register("chat.acknowledgeCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").acknowledgeCrossMachineHandoff({
+      sourceSessionId: requireString(payload.sourceSessionId, "chat.acknowledgeCrossMachineHandoff requires sourceSessionId."),
+      handoffId: requireString(payload.handoffId, "chat.acknowledgeCrossMachineHandoff requires handoffId."),
+    }));
   register("chat.getContextUsage", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getContextUsage(
       parseAgentChatContextUsageArgs(payload),
@@ -4715,15 +5292,61 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     }
     return readAttachmentChunk(filePath, payload.offset, payload.length);
   });
-  register("chat.listPromptStashes", { viewerAllowed: true }, async () =>
-    listPromptStashes(requireService(args.db, "Database not available.")));
-  register("chat.createPromptStash", { viewerAllowed: true }, async (payload) =>
-    createPromptStash(requireService(args.db, "Database not available."), payload));
-  register("chat.deletePromptStash", { viewerAllowed: true }, async (payload) => {
+  register("chat.listDrafts", { viewerAllowed: true }, async () =>
+    listDrafts(requireService(args.db, "Database not available.")));
+  register("chat.createDraft", { viewerAllowed: true }, async (payload) =>
+    createDraft(requireService(args.db, "Database not available."), payload));
+  register("chat.deleteDraft", { viewerAllowed: true }, async (payload) => {
     const id = typeof payload.id === "string" ? payload.id.trim() : "";
-    if (!id) throw new Error("Missing prompt stash id.");
-    return deletePromptStash(requireService(args.db, "Database not available."), id);
+    if (!id) throw new Error("Missing draft id.");
+    return deleteDraft(requireService(args.db, "Database not available."), id);
   });
+  register("chat.updateDraft", { viewerAllowed: true }, async (payload) =>
+    updateDraft(requireService(args.db, "Database not available."), payload));
+  // Claim-first restore: the host deletes the row and hands back the text, and
+  // a null result is the caller's signal that another machine got there first.
+  register("chat.claimDraft", { viewerAllowed: true }, async (payload) => {
+    const id = typeof payload.id === "string" ? payload.id.trim() : "";
+    if (!id) throw new Error("Missing draft id.");
+    return claimDraft(requireService(args.db, "Database not available."), id);
+  });
+  // Delivering takes the same exactly-once claim the scheduler does, so it
+  // belongs to the chat service rather than the draft store.
+  register("chat.sendDraftNow", { viewerAllowed: true }, async (payload) => {
+    const id = typeof payload.id === "string" ? payload.id.trim() : "";
+    if (!id) throw new Error("Missing draft id.");
+    return await requireService(args.agentChatService, "Agent chat service not available.")
+      .sendDraftNow(id);
+  });
+  // Thread comments: the user's pending notes on parts of an agent reply. The
+  // host's chat service validates every field; these only route.
+  register("chat.listThreadComments", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").listThreadComments({
+      sessionId: requireString(payload.sessionId, "chat.listThreadComments requires sessionId."),
+    }));
+  register("chat.createThreadComment", { viewerAllowed: true }, async (payload) => {
+    const anchor = normalizeThreadCommentAnchor(payload.anchor);
+    if (!anchor) throw new Error("chat.createThreadComment requires the text or table row the comment is about.");
+    return requireService(args.agentChatService, "Agent chat service not available.").createThreadComment({
+      sessionId: requireString(payload.sessionId, "chat.createThreadComment requires sessionId."),
+      messageKey: requireString(payload.messageKey, "chat.createThreadComment requires messageKey."),
+      messageExcerpt: typeof payload.messageExcerpt === "string" ? payload.messageExcerpt : "",
+      anchor,
+      body: typeof payload.body === "string" ? payload.body : "",
+    });
+  });
+  register("chat.updateThreadComment", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").updateThreadComment({
+      sessionId: requireString(payload.sessionId, "chat.updateThreadComment requires sessionId."),
+      commentId: requireString(payload.commentId, "chat.updateThreadComment requires commentId."),
+      ...(typeof payload.body === "string" ? { body: payload.body } : {}),
+      ...(typeof payload.includeInNextSend === "boolean" ? { includeInNextSend: payload.includeInNextSend } : {}),
+    }));
+  register("chat.deleteThreadComment", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").deleteThreadComment({
+      sessionId: requireString(payload.sessionId, "chat.deleteThreadComment requires sessionId."),
+      commentId: requireString(payload.commentId, "chat.deleteThreadComment requires commentId."),
+    }));
   register("chat.warmupModel", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").warmupModel(parseWarmupModelArgs(payload)));
   register("chat.launch", { viewerAllowed: true, queueable: true }, async (payload) => {
@@ -4833,6 +5456,12 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").continueUsageLimitOnAlternate({
       sessionId: requireString(payload.sessionId, "chat.continueUsageLimitOnAlternate requires sessionId."),
     }));
+  // Owner-only: it changes which login pays for the chat's next turn.
+  register("chat.switchAccount", { viewerAllowed: false, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").switchAccount({
+      sessionId: requireString(payload.sessionId, "chat.switchAccount requires sessionId."),
+      instanceId: requireString(payload.instanceId, "chat.switchAccount requires instanceId."),
+    }));
   register("chat.setScheduledWorkPaused", { viewerAllowed: true, queueable: false }, async (payload) => {
     const paused = asOptionalBoolean(payload.paused);
     if (paused === undefined) throw new Error("chat.setScheduledWorkPaused requires paused.");
@@ -4934,8 +5563,13 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     const maxBytes = typeof payload.maxBytes === "number" && Number.isFinite(payload.maxBytes) && payload.maxBytes > 0
       ? payload.maxBytes
       : undefined;
+    // chatLogV2 durable cursor, same meaning as `chat_history.beforeSequence`:
+    // rows with `sequence < beforeSequence`, taking precedence over the byte
+    // cursor. Advertised as the `chatHistoryPageBySequence` hello feature.
+    const beforeSequence = historyPageBeforeSequence(payload.beforeSequence);
     return await agentChatService.getChatEventHistoryPage(sessionId, {
       beforeOffset,
+      ...(beforeSequence != null ? { beforeSequence } : {}),
       ...(maxBytes != null ? { maxBytes } : {}),
       ...(context.signal ? { signal: context.signal } : {}),
     });
@@ -4957,7 +5591,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   // minutes later from an offline outbox would surprise everyone.
   const requireChatLaunchService = () => requireService(args.chatLaunchService, "New-lane launches are not available on this host.");
   register("chat.startLaunch", { viewerAllowed: true }, async (payload) =>
-    requireChatLaunchService().start(parseChatLaunchArgs(payload)));
+    requireChatLaunchService().start(parseChatLaunchArgs(withoutClientRuntimeActor(payload))));
   register("chat.getLaunch", { viewerAllowed: true }, async (payload) =>
     requireChatLaunchService().get(parseChatLaunchIdArgs(payload, "chat.getLaunch")));
   register("chat.listLaunches", { viewerAllowed: true }, async () => args.chatLaunchService?.list() ?? []);
@@ -4972,8 +5606,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.completeLaunchClient", { viewerAllowed: true }, async (payload) =>
     requireChatLaunchService().completeClient(parseChatLaunchCompleteClientArgs(payload)));
   register("chat.send", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const sendArgs = parseAgentChatSendArgs(payload);
+    // A phone or web message: no desktop is the one being talked from now.
+    noteSessionInputOrigin(sendArgs.sessionId, null);
     const result = await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(
-      parseAgentChatSendArgs(payload),
+      sendArgs,
       { awaitDispatch: false, routeActiveToSteer: true },
     );
     return isRecord(result) ? { ...result, ok: true } : { ok: true };
@@ -4984,6 +5621,14 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("chat.interruptWithQueueMode", { viewerAllowed: true, queueable: false }, async (payload) => {
     const result = await requireService(args.agentChatService, "Agent chat service not available.").interrupt(parseAgentChatInterruptArgs(payload));
+    return { ...result, ok: true };
+  });
+  register("chat.restartSession", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const result = await requireService(args.agentChatService, "Agent chat service not available.")
+      .restartSession({
+        sessionId: requireString(payload.sessionId, "chat.restartSession requires sessionId."),
+        ...(payload.stopFirst === true ? { stopFirst: true } : {}),
+      });
     return { ...result, ok: true };
   });
   register("chat.stopTask", { viewerAllowed: true, queueable: false }, async (payload) => {
@@ -5016,6 +5661,10 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("chat.editSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").editSteer(parseAgentChatEditSteerArgs(payload));
+    return { ok: true };
+  });
+  register("chat.moveSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
+    await requireService(args.agentChatService, "Agent chat service not available.").moveSteer(parseAgentChatMoveSteerArgs(payload));
     return { ok: true };
   });
   register("chat.dispatchSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
@@ -5083,11 +5732,18 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     await requireService(args.agentChatService, "Agent chat service not available.").deleteSession(parseAgentChatArchiveArgs(payload, "chat.delete"));
     return { ok: true };
   });
+  register("chat.getLaunchDefaults", { viewerAllowed: true }, async () =>
+    requireService(args.agentChatService, "Agent chat service not available.").getLaunchDefaults());
   register("chat.models", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getAvailableModels(parseChatModelsArgs(payload)));
   register("chat.modelCatalog", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getModelCatalog(parseChatModelCatalogArgs(payload)));
 
+}
+
+/** A `beforeSequence` history cursor: a non-negative integer, else absent. */
+export function historyPageBeforeSequence(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
 }
 
 function registerPersonalChatRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
@@ -5534,6 +6190,43 @@ function registerMacDesktopRemoteCommands({
         laneId: requireString(payload.laneId, "macDesktop.stop requires laneId."),
       }));
 
+    // A phone or any watch-only viewer's Stop. Distinct from `macDesktop.stop`
+    // on purpose: the general stop is a controller's, while signing the private
+    // screen out is the one action the plan gives a view-only client. It stops
+    // the lane's seat and nothing else.
+    register("macDesktop.stopPrivate", {
+      viewerAllowed: true,
+      controllerAllowed: true,
+      queueable: false,
+    }, async (payload) => {
+      const laneId = requireString(payload.laneId, "macDesktop.stopPrivate requires laneId.");
+      const status = await macDesktopService.getStatus({ laneId });
+      if (!status.windowsDesktop || (status.display && status.display.mode !== "virtual")) {
+        throw new Error("Only a private Windows screen can be stopped by a watch-only viewer.");
+      }
+      return await macDesktopService.stop({ laneId });
+    });
+
+    // The phone's and the web viewer's Stop for the lane's Windows screen on
+    // EITHER seat: the private screen, or the user's main desktop ("Using your
+    // main Windows desktop"), so the user always has the way out from any
+    // trusted device. `stopPrivate` above stays for phones that predate this.
+    // A Mac lane's display is still not a viewer's to stop: that takes the
+    // controller-only `macDesktop.stop`.
+    register("macDesktop.stopSeat", {
+      viewerAllowed: true,
+      controllerAllowed: true,
+      queueable: false,
+    }, async (payload) => {
+      const laneId = requireString(payload.laneId, "macDesktop.stopSeat requires laneId.");
+      const status = await macDesktopService.getStatus({ laneId });
+      if (status.platform !== "win32" || !status.windowsDesktop) {
+        throw new Error("Only a Windows screen can be stopped by a watch-only viewer.");
+      }
+      if (!status.display) throw new Error("This lane has no Windows screen to stop.");
+      return await macDesktopService.stop({ laneId });
+    });
+
     register("macDesktop.takeControl", {
       viewerAllowed: false,
       controllerAllowed: true,
@@ -5656,10 +6349,91 @@ function registerMacDesktopRemoteCommands({
         sink,
       });
     });
-    register("macDesktop.streamUnsubscribe", { viewerAllowed: true }, async (payload) =>
+    // Only the connection that subscribed may end its stream.
+    register("macDesktop.streamUnsubscribe", { viewerAllowed: true }, async (payload, context) =>
       macDesktopSyncStream.unsubscribe(
         requireString(payload.subscriptionId, "macDesktop.streamUnsubscribe requires subscriptionId."),
+        context.macDesktopStream?.connectionId ?? null,
       ));
+  }
+}
+
+/**
+ * App Control live view over the sync socket.
+ *
+ * All three are read-only and viewer-allowed, like the rest of the Work tools
+ * mirror: the phone and the web client watch the lane's app, they do not drive
+ * it. `status` answers for one lane (or project-wide without a lane);
+ * `streamSubscribe` forwards the lane's throttled JPEG frames as
+ * `appControl.streamFrame` pushes until `streamUnsubscribe` or the socket
+ * closes.
+ */
+function registerAppControlRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const stream = args.appControlSyncStream;
+  if (!stream) return;
+  register("appControl.status", { viewerAllowed: true }, async (payload) =>
+    await stream.getStatus({
+      laneId: asTrimmedString(payload.laneId) ?? null,
+      chatSessionId: asTrimmedString(payload.chatSessionId) ?? null,
+    }));
+  register("appControl.streamSubscribe", { viewerAllowed: true }, async (payload, context) => {
+    const sink = context.appControlStream;
+    if (!sink) throw new Error("appControl.streamSubscribe requires a live sync connection.");
+    const viewerLabel = asTrimmedString(payload.viewerLabel);
+    const maxFps = typeof payload.maxFps === "number" && Number.isFinite(payload.maxFps) ? payload.maxFps : null;
+    return await stream.subscribe({
+      laneId: requireString(payload.laneId, "appControl.streamSubscribe requires laneId."),
+      subscriptionId: requireString(payload.subscriptionId, "appControl.streamSubscribe requires subscriptionId."),
+      connectionId: sink.connectionId,
+      ...(viewerLabel ? { viewerLabel } : {}),
+      ...(maxFps != null ? { maxFps } : {}),
+      sink,
+    });
+  });
+  // Only the connection that subscribed may end its stream.
+  register("appControl.streamUnsubscribe", { viewerAllowed: true }, async (payload, context) =>
+    stream.unsubscribe(
+      requireString(payload.subscriptionId, "appControl.streamUnsubscribe requires subscriptionId."),
+      context.appControlStream?.connectionId ?? null,
+    ));
+}
+
+/**
+ * Provider accounts are machine-wide: they name config homes on the host, so
+ * they run at runtime scope and never need a project open. The caller's client
+ * (phone or browser) is not known at this layer, so analytics files them under
+ * the generic `api` surface, like the CLI action they share.
+ */
+function registerProviderAccountRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const domain = buildProviderInstancesDomainService({
+    productAnalyticsService: args.productAnalyticsService,
+    usageTrackingService: args.usageTrackingService,
+  });
+  for (const entry of createProviderAccountRemoteCommandHandlers(domain)) {
+    register(entry.action, entry.policy, entry.handler, "runtime");
+  }
+}
+
+/**
+ * Auto-handoff rules (`automations.list` / `saveDraft` / `deleteRule`). Not
+ * advertised unless the runtime wires a source, so the phone hides
+ * "Auto handoff…" on a host without automations.
+ */
+function registerAutomationRuleRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const getAutomationRules = args.getAutomationRules;
+  if (!getAutomationRules) return;
+  const resolve = (): AutomationRuleRemoteSource => {
+    const source = getAutomationRules();
+    if (!source) throw new Error("Automations are not available on this machine.");
+    return source;
+  };
+  const entries = createAutomationRuleRemoteCommandHandlers({
+    list: () => resolve().list(),
+    saveDraft: (req) => resolve().saveDraft(req),
+    deleteRule: (input) => resolve().deleteRule(input),
+  });
+  for (const entry of entries) {
+    register(entry.action, entry.policy, async (payload) => entry.handler(payload));
   }
 }
 
@@ -5671,6 +6445,29 @@ function registerMacDesktopRemoteCommands({
  * Windows brain or a chat-only runtime advertises no `apple.*` action at all
  * rather than a namespace whose every call throws.
  */
+function registerWebhookRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  // Not advertised unless the runtime wires a source, so a client's
+  // capability check hides the Webhooks pane on such a host.
+  const getWebhookAutomations = args.getWebhookAutomations;
+  if (!getWebhookAutomations) return;
+  // Late-bound: the ingress service that owns webhook URLs can start after
+  // this registry exists, and a runtime without automations has none.
+  const resolve = (): WebhookRemoteSource => {
+    const source = getWebhookAutomations();
+    if (!source) throw new Error("Webhook automations are not available on this machine.");
+    return source;
+  };
+  const entries = createWebhookRemoteCommandHandlers({
+    // No automations here yet (or at all) reads as no webhooks.
+    list: async () => (await getWebhookAutomations()?.list()) ?? [],
+    listDeliveries: (input) => resolve().listDeliveries(input),
+    getDelivery: (input) => resolve().getDelivery(input),
+  });
+  for (const entry of entries) {
+    register(entry.action, entry.policy, async (payload) => entry.handler(payload));
+  }
+}
+
 function registerAppleRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   const service = args.appleDeviceService;
   if (!service) return;
@@ -5731,6 +6528,40 @@ function registerModelPickerRemoteCommands({ args, register }: RemoteCommandRegi
   });
 }
 
+
+function parseLinearIssueSearchPayload(payload: Record<string, unknown>) {
+  const projectId = asNullableTrimmedString(payload.projectId);
+  const projectSlug = asNullableTrimmedString(payload.projectSlug);
+  const teamKey = asNullableTrimmedString(payload.teamKey);
+  const stateTypes = asStringArray(payload.stateTypes);
+  const stateIds = asStringArray(payload.stateIds);
+  const assigneeId = asNullableTrimmedString(payload.assigneeId);
+  const assignedToViewer = asOptionalBoolean(payload.assignedToViewer);
+  const activeCycle = asOptionalBoolean(payload.activeCycle);
+  const customViewId = asNullableTrimmedString(payload.customViewId);
+  const priority = asOptionalNumber(payload.priority);
+  const searchQuery = asNullableTrimmedString(payload.query);
+  const first = asOptionalNumber(payload.first);
+  const after = asNullableTrimmedString(payload.after);
+  const includeArchived = asOptionalBoolean(payload.includeArchived);
+  return {
+    ...(projectId !== undefined ? { projectId } : {}),
+    ...(projectSlug !== undefined ? { projectSlug } : {}),
+    ...(teamKey !== undefined ? { teamKey } : {}),
+    ...(stateTypes.length ? { stateTypes } : {}),
+    ...(stateIds.length ? { stateIds } : {}),
+    ...(assigneeId !== undefined ? { assigneeId } : {}),
+    ...(assignedToViewer !== undefined ? { assignedToViewer } : {}),
+    ...(activeCycle !== undefined ? { activeCycle } : {}),
+    ...(customViewId !== undefined ? { customViewId } : {}),
+    ...(priority !== undefined ? { priority } : {}),
+    ...(searchQuery !== undefined ? { query: searchQuery } : {}),
+    ...(first !== undefined ? { first } : {}),
+    ...(after !== undefined ? { after } : {}),
+    ...(includeArchived !== undefined ? { includeArchived } : {}),
+  };
+}
+
 function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("cto.ensureSession", { viewerAllowed: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
@@ -5752,6 +6583,33 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     const ctoStateService = requireService(args.ctoStateService, "CTO state service not available.");
     const recentLimit = asOptionalNumber(payload.recentLimit);
     return ctoStateService.getSnapshot(recentLimit ?? 20);
+  });
+  // The project's CTO home machine, the same account setting the desktop reads
+  // (`ctoHomeMachine.ts`): scope `repo:<origin>`, key `cto.homeMachine`.
+  register("cto.getHomeMachine", { viewerAllowed: true }, async (payload) => {
+    const scope = accountRepoScopeKey(asTrimmedString(payload.gitOriginUrl));
+    if (!scope || !args.accountSettingsStore) return { available: false, value: null };
+    const value = args.accountSettingsStore.get(scope, CTO_HOME_SETTING_KEY);
+    return { available: true, value: isCtoHomeMachineRecord(value) ? value : null };
+  });
+  // A phone write like `cto.updateIdentity`: paired devices may call it.
+  register("cto.setHomeMachine", { viewerAllowed: true }, async (payload) => {
+    const scope = accountRepoScopeKey(asTrimmedString(payload.gitOriginUrl));
+    if (!scope) throw new Error("cto.setHomeMachine requires the repository's git origin.");
+    const store = requireService(args.accountSettingsStore, "Account settings are not available on this machine.");
+    const record = payload.record as Record<string, unknown> | null | undefined;
+    const deviceId = asTrimmedString(record?.deviceId);
+    const name = asTrimmedString(record?.name);
+    if (!deviceId || !name) throw new Error("cto.setHomeMachine requires record.deviceId and record.name.");
+    const value: CtoHomeMachineRecord = {
+      version: 1,
+      deviceId,
+      name,
+      hostname: asTrimmedString(record?.hostname) ?? null,
+      chosenAt: new Date().toISOString(),
+    };
+    store.set(scope, CTO_HOME_SETTING_KEY, value);
+    return { ok: true, value };
   });
   register("cto.getAttention", { viewerAllowed: true }, async () => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
@@ -5864,43 +6722,98 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   register("cto.getLinearIssuePickerData", { viewerAllowed: true }, async () => {
     const linearIssueTracker = await getConnectedLinearIssueTracker(args);
     if (!linearIssueTracker) {
-      return { projects: [], users: [], states: [] };
+      return { projects: [], users: [], states: [], labels: [] };
     }
-    const [projects, users, states] = await Promise.all([
-      linearIssueTracker.listProjects().catch(() => []),
-      linearIssueTracker.listUsers().catch(() => []),
-      linearIssueTracker.listWorkflowStates().catch(() => []),
-    ]);
-    return { projects, users, states };
+    return await linearIssueTracker.getIssuePickerData();
   });
   register("cto.searchLinearIssues", { viewerAllowed: true }, async (payload) => {
     const linearIssueTracker = await getConnectedLinearIssueTracker(args);
     if (!linearIssueTracker) {
       return { issues: [], pageInfo: { hasNextPage: false, endCursor: null } };
     }
-    const projectId = asNullableTrimmedString(payload.projectId);
-    const projectSlug = asNullableTrimmedString(payload.projectSlug);
-    const teamKey = asNullableTrimmedString(payload.teamKey);
-    const stateTypes = asStringArray(payload.stateTypes);
-    const assigneeId = asNullableTrimmedString(payload.assigneeId);
+    return linearIssueTracker.searchIssues(parseLinearIssueSearchPayload(payload));
+  });
+  register("cto.countLinearIssues", { viewerAllowed: true }, async (payload) => {
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker || !isRecord(payload.queries)) return { counts: {} };
+    const queries: Record<string, ReturnType<typeof parseLinearIssueSearchPayload>> = {};
+    for (const [key, value] of Object.entries(payload.queries)) {
+      if (isRecord(value)) queries[key] = parseLinearIssueSearchPayload(value);
+    }
+    const cap = asOptionalNumber(payload.cap);
+    return linearIssueTracker.countIssues({ queries, ...(cap !== undefined ? { cap } : {}) });
+  });
+  register("cto.getLinearCustomViews", { viewerAllowed: true }, async () => {
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) return [];
+    return linearIssueTracker.listCustomViews();
+  });
+  register("cto.getLinearIssue", { viewerAllowed: true }, async (payload) => {
+    const issueId = asTrimmedString(payload.issueId);
+    if (!issueId) return null;
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) return null;
+    return linearIssueTracker.fetchIssueById(issueId);
+  });
+  register("cto.updateLinearIssue", { viewerAllowed: true }, async (payload) => {
+    const issueId = requireString(payload.issueId, "cto.updateLinearIssue requires issueId.");
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    const stateId = asTrimmedString(payload.stateId);
     const priority = asOptionalNumber(payload.priority);
-    const searchQuery = asNullableTrimmedString(payload.query);
-    const first = asOptionalNumber(payload.first);
-    const after = asNullableTrimmedString(payload.after);
-    const includeArchived = asOptionalBoolean(payload.includeArchived);
-    const query = {
-      ...(projectId !== undefined ? { projectId } : {}),
-      ...(projectSlug !== undefined ? { projectSlug } : {}),
-      ...(teamKey !== undefined ? { teamKey } : {}),
-      ...(stateTypes.length ? { stateTypes } : {}),
-      ...(assigneeId !== undefined ? { assigneeId } : {}),
+    const addedLabelIds = asStringArray(payload.addedLabelIds);
+    const removedLabelIds = asStringArray(payload.removedLabelIds);
+    return linearIssueTracker.updateIssue(issueId, {
+      ...(stateId ? { stateId } : {}),
+      // A phone cannot send JSON null in its arg dict; "" (or null) unassigns.
+      ...(Object.prototype.hasOwnProperty.call(payload, "assigneeId")
+        ? { assigneeId: asTrimmedString(payload.assigneeId) || null }
+        : {}),
       ...(priority !== undefined ? { priority } : {}),
-      ...(searchQuery !== undefined ? { query: searchQuery } : {}),
-      ...(first !== undefined ? { first } : {}),
-      ...(after !== undefined ? { after } : {}),
-      ...(includeArchived !== undefined ? { includeArchived } : {}),
-    };
-    return linearIssueTracker.searchIssues(query);
+      ...(addedLabelIds.length ? { addedLabelIds } : {}),
+      ...(removedLabelIds.length ? { removedLabelIds } : {}),
+      ...(typeof payload.title === "string" && payload.title.trim() ? { title: payload.title } : {}),
+      ...(typeof payload.description === "string" ? { description: payload.description } : {}),
+    });
+  });
+  register("cto.createLinearIssue", { viewerAllowed: true }, async (payload) => {
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    // The tracker reads the request (`parseLinearIssueCreateInput`).
+    return linearIssueTracker.createIssue(payload as unknown as LinearIssueCreateInput);
+  });
+  register("cto.getLinearIssueCreateOptions", { viewerAllowed: true }, async (payload) => {
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    return linearIssueTracker.getIssueCreateOptions(requireString(payload.teamKey, "cto.getLinearIssueCreateOptions requires teamKey."));
+  });
+  register("cto.listLinearProjectMilestones", { viewerAllowed: true }, async (payload) => {
+    const projectId = asTrimmedString(payload.projectId);
+    const linearIssueTracker = projectId ? await getConnectedLinearIssueTracker(args) : null;
+    return linearIssueTracker && projectId ? linearIssueTracker.listProjectMilestones(projectId) : [];
+  });
+  // A picture pasted into the create form on the web client or a phone. The
+  // bytes cross the sync channel, so they are capped well below Linear's own
+  // 50 MB limit.
+  register("cto.uploadLinearFile", { viewerAllowed: true }, async (payload) => {
+    const dataBase64 = requireString(payload.dataBase64, "cto.uploadLinearFile requires dataBase64.");
+    if (dataBase64.length > LINEAR_REMOTE_UPLOAD_MAX_BASE64) {
+      throw new Error("That file is over the 10 MB limit for uploads from another device.");
+    }
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    return linearIssueTracker.uploadFile({
+      filename: asTrimmedString(payload.filename) ?? "upload",
+      contentType: asTrimmedString(payload.contentType) ?? "application/octet-stream",
+      dataBase64,
+    });
+  });
+  register("cto.createLinearIssueComment", { viewerAllowed: true }, async (payload) => {
+    const issueId = requireString(payload.issueId, "cto.createLinearIssueComment requires issueId.");
+    const body = requireString(payload.body, "cto.createLinearIssueComment requires body.");
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    return linearIssueTracker.createComment(issueId, body);
   });
   register("cto.getLinearIssueComments", { viewerAllowed: true }, async (payload) => {
     const issueId = asTrimmedString(payload.issueId);
@@ -5911,7 +6824,9 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   });
   register("cto.updateIdentity", { viewerAllowed: true, queueable: true }, async (payload) => {
     const ctoStateService = requireService(args.ctoStateService, "CTO state service not available.");
-    const patch = isRecord(payload.patch) ? (payload.patch as Partial<CtoIdentity>) : {};
+    const raw = isRecord(payload.patch) ? (payload.patch as Partial<CtoIdentity>) : {};
+    // The cross-machine switch is the desktop's alone (see `CtoIdentity`).
+    const { crossMachineEnabled: _enabled, ...patch } = raw;
     return ctoStateService.updateIdentity(patch);
   });
 }
@@ -5919,6 +6834,11 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
 function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("git.getChanges", { viewerAllowed: true }, async (payload) =>
     requireService(args.diffService, "Diff service not available.").getChanges(parseGetDiffChangesArgs(payload).laneId));
+  // Advertising this is how a client learns the host understands `mode:
+  // "branch"`: an older host reads an unknown mode as "unstaged" without
+  // complaint, so clients send it only after this command exists.
+  register("git.getBranchChanges", { viewerAllowed: true }, async (payload) =>
+    requireService(args.diffService, "Diff service not available.").getBranchChanges(parseGetDiffChangesArgs(payload).laneId));
   register("git.getFile", { viewerAllowed: true }, async (payload) => {
     const diffService = requireService(args.diffService, "Diff service not available.");
     const parsed = parseGetFileDiffArgs(payload);
@@ -6041,6 +6961,32 @@ function registerTerminalRemoteCommands({ args, register }: RemoteCommandRegistr
     args.ptyService.activeForChat(parseTerminalActiveForChatArgs(payload)));
 }
 
+/**
+ * One archive across lanes, chats, and shells, for the web client and phone.
+ * Same service the action registry and Electron IPC build; it needs the
+ * project DB, so a host without one simply does not serve `archive.*`.
+ */
+function registerArchiveRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const db = args.db;
+  if (!db) return;
+  const archive = () => createArchiveService({
+    db,
+    laneService: args.laneService,
+    sessionService: args.sessionService,
+    ptyService: args.ptyService,
+    agentChatService: args.agentChatService ?? null,
+    projectConfigService: args.projectConfigService ?? null,
+    laneEnvironmentService: args.laneEnvironmentService ?? null,
+    portAllocationService: args.portAllocationService ?? null,
+    logger: args.logger,
+  });
+  // The archive service parses its own input, the same for every transport.
+  register("archive.list", { viewerAllowed: true }, async (payload) => archive().list(payload));
+  register("archive.summary", { viewerAllowed: true }, async (payload) => archive().summary(payload));
+  register("archive.restore", { viewerAllowed: true, queueable: true }, async (payload) => archive().restore(payload));
+  register("archive.delete", { viewerAllowed: true, queueable: false }, async (payload) => archive().delete(payload));
+}
+
 function registerConflictRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("conflicts.getLaneStatus", { viewerAllowed: true }, async (payload) =>
     requireService(args.conflictService, "Conflict service not available.").getLaneStatus(parseConflictLaneArgs(payload, "conflicts.getLaneStatus")));
@@ -6088,6 +7034,76 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       parsed.number,
     );
   });
+  // The issue viewer and the GitHub Issues pane (see docs/features/issues).
+  register("github.getRepoIssueSummary", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.getRepoIssueSummary");
+    return requireService(args.githubService, "GitHub service not available.").getRepoIssueSummary(owner, name);
+  });
+  register("github.listRepoIssueList", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listRepoIssueList");
+    return requireService(args.githubService, "GitHub service not available.").listRepoIssueList(owner, name, parseGitHubIssueListState(payload.state));
+  });
+  register("github.listIssueComments", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const parsed = parseGitHubGetIssueArgs(payload);
+    return requireService(args.githubService, "GitHub service not available.").listIssueComments(
+      parsed.owner,
+      parsed.name,
+      parsed.number,
+    );
+  });
+  register("github.getIssueWriteAccess", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.getIssueWriteAccess");
+    return requireService(args.githubService, "GitHub service not available.").getIssueWriteAccess(owner, name, {
+      force: payload.force === true,
+    });
+  });
+  register("github.listRepoMilestones", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listRepoMilestones");
+    return requireService(args.githubService, "GitHub service not available.").listRepoMilestones(owner, name);
+  });
+  register("github.listRepoLabels", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listRepoLabels");
+    return requireService(args.githubService, "GitHub service not available.").listRepoLabels(owner, name);
+  });
+  register("github.listRepoCollaborators", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listRepoCollaborators");
+    return requireService(args.githubService, "GitHub service not available.").listRepoCollaborators(owner, name);
+  });
+  register("github.createIssue", { viewerAllowed: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.createIssue");
+    return requireService(args.githubService, "GitHub service not available.").createIssue(
+      owner,
+      name,
+      parseGitHubIssueCreateInput(payload.input),
+    );
+  });
+  register("github.listIssueTemplates", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner, name } = parseGitHubRepoArgs(payload, "github.listIssueTemplates");
+    return requireService(args.githubService, "GitHub service not available.").listIssueTemplates(owner, name);
+  });
+  register("github.listIssueTypes", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const { owner } = parseGitHubRepoArgs(payload, "github.listIssueTypes");
+    return requireService(args.githubService, "GitHub service not available.").listIssueTypes(owner);
+  });
+  register("github.updateIssue", { viewerAllowed: true }, async (payload) => {
+    const parsed = parseGitHubGetIssueArgs(payload);
+    return requireService(args.githubService, "GitHub service not available.").updateIssue(
+      parsed.owner,
+      parsed.name,
+      parsed.number,
+      parseGitHubIssueUpdate(payload.patch),
+    );
+  });
+  register("github.commentOnIssue", { viewerAllowed: true }, async (payload) => {
+    const parsed = parseGitHubGetIssueArgs(payload);
+    const body = requireString(payload.body, "github.commentOnIssue requires body.");
+    return requireService(args.githubService, "GitHub service not available.").commentOnIssue(
+      parsed.owner,
+      parsed.name,
+      parsed.number,
+      body,
+    );
+  });
   register("github.publishCurrentProject", { viewerAllowed: true }, async (payload): Promise<PublishProjectResult> => {
     const { owner, name, description, isPrivate } = parsePublishCurrentProjectArgs(payload);
     return await requireService(args.githubService, "GitHub service not available.").publishCurrentProject({
@@ -6097,6 +7113,83 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       isPrivate,
     });
   }, "project");
+  const jira = () => requireService(args.getJiraService?.(), "Jira service not available on this machine.");
+  register("jira.getConnectionStatus", { viewerAllowed: true, observesAbort: true }, async () => jira().getConnectionStatus());
+  register("jira.connect", { viewerAllowed: false }, async (payload) => jira().connect({
+    siteUrl: requireString(payload.siteUrl, "jira.connect requires siteUrl."),
+    email: requireString(payload.email, "jira.connect requires email."),
+    apiToken: requireString(payload.apiToken, "jira.connect requires apiToken."),
+  }));
+  register("jira.disconnect", { viewerAllowed: false }, async () => jira().disconnect());
+  register("jira.listProjects", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().listProjects({ ...(typeof payload.query === "string" ? { query: payload.query } : {}) }));
+  register("jira.listIssues", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const state: JiraIssueListState = payload.state === "done" || payload.state === "all" ? payload.state : "open";
+    const projectKeys = Array.isArray(payload.projectKeys)
+      ? payload.projectKeys.filter((value): value is string => typeof value === "string")
+      : undefined;
+    const limit = typeof payload.limit === "number" && Number.isFinite(payload.limit) ? payload.limit : undefined;
+    const args = {
+      ...(projectKeys ? { projectKeys } : {}),
+      state,
+      ...(payload.assignee === "me" ? { assignee: "me" as const } : {}),
+      ...(typeof payload.query === "string" ? { query: payload.query } : {}),
+      ...(typeof payload.jql === "string" ? { jql: payload.jql } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+      ...(typeof payload.cursor === "string" ? { cursor: payload.cursor } : {}),
+    };
+    return jira().listIssues(args);
+  });
+  register("jira.getIssue", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().getIssue({ key: requireString(payload.key, "jira.getIssue requires key.") }));
+  register("jira.listComments", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().listComments({
+      key: requireString(payload.key, "jira.listComments requires key."),
+      cursor: typeof payload.cursor === "string" ? payload.cursor : null,
+    }));
+  register("jira.listTransitions", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().listTransitions({ key: requireString(payload.key, "jira.listTransitions requires key.") }));
+  register("jira.listAssignableUsers", { viewerAllowed: true, observesAbort: true }, async (payload) => jira().listAssignableUsers({
+    ...(typeof payload.projectKey === "string" ? { projectKey: payload.projectKey } : {}),
+    ...(typeof payload.key === "string" ? { key: payload.key } : {}),
+    ...(typeof payload.query === "string" ? { query: payload.query } : {}),
+  }));
+  register("jira.listLabels", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().listLabels({ ...(typeof payload.query === "string" ? { query: payload.query } : {}) }));
+  register("jira.getCreateMeta", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().getCreateMeta({ projectKey: requireString(payload.projectKey, "jira.getCreateMeta requires projectKey.") }));
+  register("jira.addComment", { viewerAllowed: false }, async (payload) => jira().addComment({
+    key: requireString(payload.key, "jira.addComment requires key."),
+    body: requireString(payload.body, "jira.addComment requires body."),
+  }));
+  register("jira.updateIssue", { viewerAllowed: false }, async (payload) => jira().updateIssue({
+    key: requireString(payload.key, "jira.updateIssue requires key."),
+    ...(typeof payload.title === "string" ? { title: payload.title } : {}),
+    ...(typeof payload.description === "string" ? { description: payload.description } : {}),
+    ...(Array.isArray(payload.labels) ? { labels: payload.labels.filter((value): value is string => typeof value === "string") } : {}),
+    ...(Object.prototype.hasOwnProperty.call(payload, "assigneeAccountId")
+      ? { assigneeAccountId: typeof payload.assigneeAccountId === "string" ? payload.assigneeAccountId : null }
+      : {}),
+    ...(typeof payload.priorityId === "string" ? { priorityId: payload.priorityId } : {}),
+    ...(Object.prototype.hasOwnProperty.call(payload, "dueDate")
+      ? { dueDate: typeof payload.dueDate === "string" ? payload.dueDate : null }
+      : {}),
+  }));
+  register("jira.transitionIssue", { viewerAllowed: false }, async (payload) => jira().transitionIssue({
+    key: requireString(payload.key, "jira.transitionIssue requires key."),
+    transitionId: requireString(payload.transitionId, "jira.transitionIssue requires transitionId."),
+  }));
+  register("jira.createIssue", { viewerAllowed: false }, async (payload) => jira().createIssue({
+    projectKey: requireString(payload.projectKey, "jira.createIssue requires projectKey."),
+    issueTypeId: requireString(payload.issueTypeId, "jira.createIssue requires issueTypeId."),
+    title: requireString(payload.title, "jira.createIssue requires title."),
+    ...(typeof payload.description === "string" ? { description: payload.description } : {}),
+    ...(Array.isArray(payload.labels) ? { labels: payload.labels.filter((value): value is string => typeof value === "string") } : {}),
+    ...(typeof payload.assigneeAccountId === "string" ? { assigneeAccountId: payload.assigneeAccountId } : {}),
+    ...(typeof payload.priorityId === "string" ? { priorityId: payload.priorityId } : {}),
+    ...(typeof payload.parentKey === "string" ? { parentKey: payload.parentKey } : {}),
+    ...(typeof payload.dueDate === "string" ? { dueDate: payload.dueDate } : {}),
+  }));
   register("projectConfig.get", { viewerAllowed: true }, async () =>
     redactProjectConfigSnapshotForRemote(
       requireService(args.projectConfigService, "Project config service not available.").get(),
@@ -6133,12 +7226,7 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
   // stays a desktop-only operation, and the web control says so.
   register("ai.updateConfig", { viewerAllowed: true, queueable: true }, async (payload) => {
     const projectConfigService = requireService(args.projectConfigService, "Project config service not available.");
-    const snapshot = projectConfigService.get();
-    const merged = mergeAiConfig(snapshot.shared?.ai ?? {}, payload as Partial<AiConfig>) ?? {};
-    projectConfigService.save({
-      shared: { ...snapshot.shared, ai: merged },
-      local: snapshot.local ?? {},
-    });
+    projectConfigService.updateAiConfig(payload as Partial<AiConfig>);
     // Mirrors the desktop IPC handler: a changed AI config can retarget the
     // model scheduled work runs on.
     void args.agentChatService?.refreshScheduledWork();
@@ -6156,8 +7244,10 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     }
     return { ok: true };
   });
-  register("ai.listCursorCloudRepositories", { viewerAllowed: true }, async () =>
-    requireService(args.aiIntegrationService, "AI integration service not available.").listCursorCloudRepositories());
+  register("ai.listCursorCloudRepositories", { viewerAllowed: true }, async (payload) =>
+    requireService(args.aiIntegrationService, "AI integration service not available.").listCursorCloudRepositories({
+      refresh: payload.refresh === true,
+    }));
   register("ai.listCursorCloudAgents", { viewerAllowed: true }, async (payload) =>
     requireService(args.aiIntegrationService, "AI integration service not available.").listCursorCloudAgents({
       includeArchived: payload.includeArchived !== false,
@@ -6323,6 +7413,190 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       requireString(payload.agentId, "ai.cursorCloudStopRun requires agentId."),
     );
   });
+
+  // Cloud agents (Devin Cloud and Cursor Cloud): one contract for both
+  // providers, the same one the desktop reaches over `ade.cloudAgents.*`. The
+  // list is read-only; open can create a lane and a chat, and stop, archive
+  // and launch act on the provider, so those are refused for viewers and run
+  // now rather than queue.
+  const cloudAgents = () => requireService(args.cloudAgentsService, "Cloud agents are not available.");
+  register("ai.listCloudAgents", { viewerAllowed: true }, async (payload) =>
+    cloudAgents().list({
+      provider: requireCloudAgentProvider(payload.provider, "ai.listCloudAgents"),
+      ...(payload.force === true ? { force: true } : {}),
+    }));
+  register("ai.openCloudAgent", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    cloudAgents().open({
+      provider: requireCloudAgentProvider(payload.provider, "ai.openCloudAgent"),
+      id: requireCloudAgentId(payload.id, "ai.openCloudAgent"),
+    }));
+  register("ai.stopCloudAgent", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    cloudAgents().stop({
+      provider: requireCloudAgentProvider(payload.provider, "ai.stopCloudAgent"),
+      id: requireCloudAgentId(payload.id, "ai.stopCloudAgent"),
+    }));
+  register("ai.archiveCloudAgent", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    cloudAgents().archive({
+      provider: requireCloudAgentProvider(payload.provider, "ai.archiveCloudAgent"),
+      id: requireCloudAgentId(payload.id, "ai.archiveCloudAgent"),
+      archived: payload.archived !== false,
+    }));
+  register("ai.launchCloudAgent", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    const prompt = requireString(payload.prompt, "ai.launchCloudAgent requires prompt.");
+    if (prompt.length > 100_000) throw new Error("ai.launchCloudAgent prompt is too long.");
+    const shortOptional = (value: unknown, name: string): string | null => {
+      if (typeof value !== "string" || !value.trim()) return null;
+      if (value.length > 256) throw new Error(`ai.launchCloudAgent ${name} is too long.`);
+      return value.trim();
+    };
+    return cloudAgents().launch({
+      provider: requireCloudAgentProvider(payload.provider, "ai.launchCloudAgent"),
+      prompt,
+      model: shortOptional(payload.model, "model"),
+      platform: shortOptional(payload.platform, "platform"),
+      laneId: shortOptional(payload.laneId, "laneId"),
+    });
+  });
+}
+
+function requireCloudAgentProvider(value: unknown, action: string): "devin" | "cursor" {
+  if (value === "devin" || value === "cursor") return value;
+  throw new Error(`${action} requires provider 'devin' or 'cursor'.`);
+}
+
+function requireCloudAgentId(value: unknown, action: string): string {
+  const id = requireString(value, `${action} requires id.`).trim();
+  if (id.length > 256) throw new Error(`${action} id is too long.`);
+  return id;
+}
+
+export type PrRefreshSnapshotScope = "all" | "active" | "none";
+
+type PrRefreshSyncArgs = {
+  prId: string | null;
+  prIds: string[];
+  includeSnapshots: PrRefreshSnapshotScope;
+};
+
+/**
+ * Serialized snapshot bytes one `prs.refresh` reply may carry. Snapshots past
+ * it are listed in `omittedSnapshotPrIds`; the client fetches those one PR at
+ * a time (`prs.refresh { prId }`) when the PR is opened.
+ */
+export const PR_REFRESH_SNAPSHOT_BUDGET_BYTES = 6 * 1024 * 1024;
+
+function parsePrRefreshSyncArgs(payload: Record<string, unknown>): PrRefreshSyncArgs {
+  const raw = payload.includeSnapshots;
+  // Old phones send no args; they get the bounded default.
+  const includeSnapshots: PrRefreshSnapshotScope = raw === "all" || raw === "none" ? raw : "active";
+  return {
+    prId: asTrimmedString(payload.prId),
+    prIds: asStringArray(payload.prIds),
+    includeSnapshots,
+  };
+}
+
+function isOpenPrState(state: string | null | undefined): boolean {
+  return state === "open" || state === "draft";
+}
+
+async function listLiveLaneIdsForPrRefresh(args: SyncRemoteCommandServiceArgs): Promise<Set<string> | null> {
+  try {
+    const lanes = await args.laneService.list({ includeArchived: false, includeStatus: false });
+    return new Set(lanes.map((lane) => lane.id));
+  } catch (error) {
+    args.logger.warn("sync.prs_refresh.live_lanes_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+/**
+ * `prs.refresh` for sync clients. Without `prId`/`prIds` it returns the whole
+ * PR list (small) but only the snapshots that matter now: PRs that are open or
+ * whose lane is still live. Snapshots for merged PRs on archived lanes load on
+ * demand. Every reply is capped at `PR_REFRESH_SNAPSHOT_BUDGET_BYTES` of
+ * snapshots, so the reply can never grow with the project's PR history.
+ */
+export async function refreshPullRequestsForSync(
+  args: Pick<SyncRemoteCommandServiceArgs, "prService" | "laneService" | "logger">,
+  input: PrRefreshSyncArgs,
+  budgetBytes: number = PR_REFRESH_SNAPSHOT_BUDGET_BYTES,
+): Promise<{
+  refreshedCount: number;
+  prs: PrSummary[];
+  snapshots: PrSnapshotHydration[];
+  snapshotScope: PrRefreshSnapshotScope | "requested";
+  omittedSnapshotPrIds: string[];
+}> {
+  const { prId, prIds } = input;
+  let refreshArgs: { prId?: string; prIds?: string[] } = {};
+  if (prId) refreshArgs = { prId };
+  else if (prIds.length > 0) refreshArgs = { prIds };
+  await args.prService.refresh(refreshArgs);
+  const allPrs = await args.prService.listAll();
+  const requestedPrIds = new Set(prId ? [prId] : prIds);
+  const isRequested = requestedPrIds.size > 0;
+  const prs = isRequested ? allPrs.filter((pr) => requestedPrIds.has(pr.id)) : allPrs;
+  let refreshedCount = prs.length;
+  if (prId) refreshedCount = 1;
+  else if (prIds.length > 0) refreshedCount = prIds.length;
+
+  let snapshotScope: PrRefreshSnapshotScope | "requested" = isRequested ? "requested" : input.includeSnapshots;
+  if (input.includeSnapshots === "none") snapshotScope = "none";
+  let snapshotPrIds: string[] | null;
+  if (snapshotScope === "none") {
+    snapshotPrIds = [];
+  } else if (snapshotScope === "requested") {
+    snapshotPrIds = [...requestedPrIds];
+  } else if (snapshotScope === "all") {
+    snapshotPrIds = null;
+  } else {
+    const liveLaneIds = await listLiveLaneIdsForPrRefresh(args as SyncRemoteCommandServiceArgs);
+    snapshotPrIds = allPrs
+      .filter((pr) => isOpenPrState(pr.state) || (liveLaneIds?.has(pr.laneId) ?? false))
+      .map((pr) => pr.id);
+  }
+  const wantedPrIds = snapshotPrIds === null ? null : new Set(snapshotPrIds);
+  const candidates = (snapshotPrIds === null
+    ? args.prService.listSnapshots()
+    : snapshotPrIds.length === 0
+      ? []
+      : prId
+        ? args.prService.listSnapshots({ prId })
+        : args.prService.listSnapshots({ prIds: snapshotPrIds }))
+    // The service narrows in SQL; this keeps the reply exact regardless.
+    .filter((snapshot) => wantedPrIds === null || wantedPrIds.has(snapshot.prId));
+
+  // Open PRs first, so a budget cut drops history rather than live work.
+  const stateByPrId = new Map(allPrs.map((pr) => [pr.id, pr.state] as const));
+  const ordered = [...candidates].sort((left, right) =>
+    Number(isOpenPrState(stateByPrId.get(right.prId))) - Number(isOpenPrState(stateByPrId.get(left.prId))));
+  const snapshots: PrSnapshotHydration[] = [];
+  const omittedSnapshotPrIds: string[] = [];
+  let usedBytes = 0;
+  for (const snapshot of ordered) {
+    const bytes = measureSyncRemoteCommandResultBytes(snapshot);
+    // A single requested PR always goes out; the command-level guard still
+    // refuses it if it alone is over the sync limit.
+    if (usedBytes + bytes > budgetBytes && !(prId && snapshots.length === 0)) {
+      omittedSnapshotPrIds.push(snapshot.prId);
+      continue;
+    }
+    usedBytes += bytes;
+    snapshots.push(snapshot);
+  }
+  if (omittedSnapshotPrIds.length > 0) {
+    args.logger.info("sync.prs_refresh.snapshots_over_budget", {
+      snapshotScope,
+      includedCount: snapshots.length,
+      omittedCount: omittedSnapshotPrIds.length,
+      usedBytes,
+      budgetBytes,
+    });
+  }
+  return { refreshedCount, prs, snapshots, snapshotScope, omittedSnapshotPrIds };
 }
 
 function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
@@ -6336,30 +7610,8 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.syncLanePr(parseLaneIdArgs(payload, "prs.syncLanePr").laneId));
   register("prs.reconcileOnFocus", { viewerAllowed: true }, async (payload) =>
     args.prService.reconcileOnFocus({ force: payload?.force === true }));
-  register("prs.refresh", { viewerAllowed: true, observesAbort: true }, async (payload) => {
-    const prId = asTrimmedString(payload.prId);
-    const prIds = asStringArray(payload.prIds);
-    let refreshArgs: { prId?: string; prIds?: string[] } = {};
-    if (prId) refreshArgs = { prId };
-    else if (prIds.length > 0) refreshArgs = { prIds };
-    await args.prService.refresh(refreshArgs);
-    const allPrs = await args.prService.listAll();
-    const requestedPrIds = new Set(prId ? [prId] : prIds);
-    const prs = requestedPrIds.size > 0 ? allPrs.filter((pr) => requestedPrIds.has(pr.id)) : allPrs;
-    let refreshedCount = prs.length;
-    if (prId) refreshedCount = 1;
-    else if (prIds.length > 0) refreshedCount = prIds.length;
-    const snapshots = prId
-      ? args.prService.listSnapshots({ prId }).filter((snapshot) => requestedPrIds.has(snapshot.prId))
-      : requestedPrIds.size > 0
-        ? args.prService.listSnapshots().filter((snapshot) => requestedPrIds.has(snapshot.prId))
-        : args.prService.listSnapshots();
-    return {
-      refreshedCount,
-      prs,
-      snapshots,
-    };
-  });
+  register("prs.refresh", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    refreshPullRequestsForSync(args, parsePrRefreshSyncArgs(payload)));
   // iOS "Send to your Mac" deeplink bounce. Mobile cannot natively open a
   // lane / repo-branch / cross-repo PR deeplink, so it forwards the URL to
   // the paired desktop via this command. Desktop main.ts wires up
@@ -6409,10 +7661,13 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.getMergeContexts(asStringArray(payload.prIds)));
   register("prs.listWithConflicts", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.listWithConflicts({ includeConflictAnalysis: payload.includeConflictAnalysis === true }));
-  register("prs.listSnapshots", { viewerAllowed: true, observesAbort: true }, async (payload) =>
-    args.prService.listSnapshots({
+  register("prs.listSnapshots", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const prIds = asStringArray(payload.prIds);
+    return args.prService.listSnapshots({
       ...(asTrimmedString(payload.prId) ? { prId: asTrimmedString(payload.prId)! } : {}),
-    }));
+      ...(Array.isArray(payload.prIds) ? { prIds } : {}),
+    });
+  });
   register("prs.getStatus", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getStatus(requirePrId(payload, "prs.getStatus")));
   register("prs.getChecks", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getChecks(requirePrId(payload, "prs.getChecks")));
   register("prs.getReviews", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getReviews(requirePrId(payload, "prs.getReviews")));
@@ -6482,6 +7737,25 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.addGithubStackPullRequests(parseAddGithubStackPullRequestsArgs(payload)));
   register("prs.unstackGithubStack", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.unstackGithubStack(parseUnstackGithubStackArgs(payload)));
+  register("prs.linkChatSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.linkChatSession(parseLinkPrChatSessionArgs(payload)));
+  register("prs.unlinkChatSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.unlinkChatSession(parseUnlinkPrChatSessionArgs(payload)));
+  register("prs.linkChatStack", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.linkChatStack(parseLinkPrChatStackArgs(payload)));
+  // Same reach as `chat.send`: arming a watch is how a client asks the agent
+  // to keep working on its PR.
+  register("prs.setChatWatch", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.setChatWatch(parseSetPrChatWatchArgs(payload)));
+  register("prs.getChatWatches", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    args.prService.getChatWatches(parseGetPrChatWatchArgs(payload)));
+  register("prs.listChatSessionsForPr", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    args.prService.listChatSessionsForPr(parseListPrChatSessionsArgs(payload)));
+  register("prs.getStackLinkOffer", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    args.prService.getStackLinkOffer({
+      sessionId: requireString(payload.sessionId, "prs.getStackLinkOffer requires sessionId."),
+      prId: asTrimmedString(payload.prId) || null,
+    }));
   register("prs.linkToLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.linkToLane(parseLinkPrToLaneArgs(payload)));
   register("prs.preflightCreateLaneFromPrBranch", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.preflightCreateLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));
   register("prs.createLaneFromPrBranch", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));
@@ -6574,12 +7848,32 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   register("prs.getMobileSnapshot", { viewerAllowed: true, observesAbort: true }, async () => args.prService.getMobileSnapshot());
 }
 
+let projectRemoteCommandDescriptors: SyncRemoteCommandDescriptor[] | null = null;
+
+/**
+ * The descriptors a full project runtime registers, without booting one.
+ * Registration is pure — every handler reads its services when it runs — so a
+ * registry built over absent services records exactly the action, scope and
+ * policy table. The brain's projectless ingress advertises its routable
+ * project commands from this. Families a runtime registers only when a
+ * service exists follow it: `workTools.*` is in (every project runtime the
+ * brain boots builds one); `macDesktop.*` and `personalChats.*` are out, and
+ * neither is routable to a project anyway.
+ */
+export function listProjectRemoteCommandDescriptors(): SyncRemoteCommandDescriptor[] {
+  projectRemoteCommandDescriptors ??= createSyncRemoteCommandService({
+    workToolsStateService: {},
+  } as unknown as SyncRemoteCommandServiceArgs).getDescriptors();
+  return projectRemoteCommandDescriptors;
+}
+
 export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArgs) {
   const registry = new Map<SyncRemoteCommandAction, RegisteredRemoteCommand>();
   // Mac Desktop leases per sync connection. See `MacDesktopConnectionLeases`:
   // a socket close must return control immediately, and this is the only place
   // that knows which derived holder ids a given socket took.
   const macDesktopConnectionLeases: MacDesktopConnectionLeases = new Map();
+  const remoteCommandResultMaxBytes = args.remoteCommandResultMaxBytes ?? SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES;
 
   const register = (
     action: SyncRemoteCommandAction,
@@ -6718,6 +8012,87 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     });
   }, "runtime");
 
+  // A bound the caller sent and the host cannot read is an error, never a
+  // quietly different period.
+  const rejectInvalidUsageBounds = (action: string, since: string | null | undefined, until: string | null | undefined) => {
+    if (since && Number.isNaN(Date.parse(since))) throw new Error(`${action} since must be an ISO timestamp.`);
+    if (until && Number.isNaN(Date.parse(until))) throw new Error(`${action} until must be an ISO timestamp.`);
+  };
+
+  // Spend by chat / lane / account comes from this machine's per-turn ledger;
+  // chat titles and lane names come from the project, so it is project-scoped
+  // like `usage.getAdeStats`.
+  register("usage.getCostBreakdown", { viewerAllowed: true }, async (payload) => {
+    if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
+    const by = asTrimmedString(payload.by);
+    if (!isAdeUsageCostBreakdownBy(by)) {
+      throw new Error("usage.getCostBreakdown by must be chat, lane, or account.");
+    }
+    const preset = asTrimmedString(payload.preset);
+    if (preset && !isAdeUsageRangePreset(preset)) {
+      throw new Error("usage.getCostBreakdown preset must be today, 7d, 30d, year, or all.");
+    }
+    const since = asTrimmedString(payload.since);
+    const until = asTrimmedString(payload.until);
+    rejectInvalidUsageBounds("usage.getCostBreakdown", since, until);
+    const laneId = asTrimmedString(payload.laneId);
+    const limit = typeof payload.limit === "number" && Number.isFinite(payload.limit) ? payload.limit : undefined;
+    return await args.usageTrackingService.getCostBreakdown({
+      by: by as AdeUsageCostBreakdownBy,
+      ...(isAdeUsageRangePreset(preset) ? { preset } : {}),
+      ...(since ? { since } : {}),
+      ...(until ? { until } : {}),
+      ...(laneId ? { laneId } : {}),
+      ...(limit != null ? { limit } : {}),
+      ...(payload.rankBy === "tokens" ? { rankBy: "tokens" as const } : {}),
+    });
+  });
+
+  register("usage.getModelDetail", { viewerAllowed: true }, async (payload) => {
+    if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
+    const preset = asTrimmedString(payload.preset);
+    if (preset && !isAdeUsageRangePreset(preset)) {
+      throw new Error("usage.getModelDetail preset must be today, 7d, 30d, year, or all.");
+    }
+    const scope = asTrimmedString(payload.scope);
+    if (scope && !isAdeUsageScope(scope)) {
+      throw new Error("usage.getModelDetail scope must be account, machine, or project.");
+    }
+    const since = asTrimmedString(payload.since);
+    const until = asTrimmedString(payload.until);
+    rejectInvalidUsageBounds("usage.getModelDetail", since, until);
+    return args.usageTrackingService.getModelDetail({
+      provider: requireString(payload.provider, "usage.getModelDetail requires provider."),
+      model: requireString(payload.model, "usage.getModelDetail requires model."),
+      ...(isAdeUsageRangePreset(preset) ? { preset } : {}),
+      ...(isAdeUsageScope(scope) ? { scope } : {}),
+      ...(since ? { since } : {}),
+      ...(until ? { until } : {}),
+    });
+  });
+
+  register("usage.getModelPriceOverrides", { viewerAllowed: true }, async () => {
+    if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
+    return args.usageTrackingService.getModelPriceOverrides();
+  }, "runtime");
+
+  // Writes this machine's price list, so it is a controller action like
+  // spending a reset credit, never a viewer's.
+  register("usage.setModelPriceOverride", { viewerAllowed: false, controllerAllowed: true }, async (payload) => {
+    const service = args.usageTrackingService;
+    if (!service) throw new Error("Model prices are not available in this runtime.");
+    const price = payload.price == null ? payload.price as null | undefined : normalizePriceOverride(payload.price);
+    if (payload.price != null && !price) throw new Error("usage.setModelPriceOverride price needs input and output rates.");
+    const mapTo = payload.mapTo === null ? null : asTrimmedString(payload.mapTo);
+    const models = Array.isArray(payload.models) ? payload.models.filter((model): model is string => typeof model === "string") : [];
+    return service.setModelPriceOverride({
+      model: requireString(payload.model, "usage.setModelPriceOverride requires model."),
+      ...(models.length ? { models } : {}),
+      ...(price !== undefined ? { price } : {}),
+      ...(payload.mapTo !== undefined ? { mapTo: mapTo || null } : {}),
+    });
+  }, "runtime");
+
   registerProxyRemoteCommands({ args, register });
   registerLaneRemoteCommands({ args, register });
   registerWorkRemoteCommands({ args, register });
@@ -6726,12 +8101,17 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerModelPickerRemoteCommands({ args, register });
   registerWorkToolsRemoteCommands({ args, register });
   registerMacDesktopRemoteCommands({ args, register, connectionLeases: macDesktopConnectionLeases });
+  registerAppControlRemoteCommands({ args, register });
   registerAppleRemoteCommands({ args, register });
+  registerWebhookRemoteCommands({ args, register });
+  registerAutomationRuleRemoteCommands({ args, register });
+  registerProviderAccountRemoteCommands({ args, register });
   registerPushRemoteCommands({ args, register });
   registerSyncRemoteCommands({ args, register });
   registerCtoRemoteCommands({ args, register });
   registerGitAndFileRemoteCommands({ args, register });
   registerTerminalRemoteCommands({ args, register });
+  registerArchiveRemoteCommands({ args, register });
   registerConflictRemoteCommands({ args, register });
   registerMiscRemoteCommands({ args, register });
   registerPrAndDeeplinkRemoteCommands({ args, register });
@@ -6791,13 +8171,28 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
         policy: handler.descriptor.policy,
       });
       const run = () => handler.handler(commandArgs, context);
-      return handler.observesAbort
+      const result = handler.observesAbort
         ? await runWithAbortSignal(
             run,
             context.signal,
             "Remote command aborted.",
           )
         : await run();
+      // Every command is bounded here, so no handler can build a reply that
+      // the transport would refuse (which used to close the connection and
+      // make the client reconnect into the same command forever).
+      const bytes = measureSyncRemoteCommandResultBytes(result);
+      const limitBytes = remoteCommandResultMaxBytes;
+      if (bytes > limitBytes) {
+        const details = buildSyncResultTooLargeError({ label: payload.action, bytes, limitBytes });
+        args.logger.warn("sync.remote_command.result_too_large", {
+          action: payload.action,
+          bytes,
+          limitBytes,
+        });
+        throw new SyncRemoteCommandResultTooLargeError(details);
+      }
+      return result;
     },
   };
 }

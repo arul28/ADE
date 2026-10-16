@@ -13,7 +13,6 @@ export const DEVICE: AppleLaneDevice = {
   family: "iphone",
   runtime: "iOS 26.2",
   createdAt: "2026-09-21T00:00:00.000Z",
-  templateUdid: null,
 };
 
 export const SETTINGS: IosSimulatorDeviceSettings = {

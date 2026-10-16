@@ -302,6 +302,12 @@ function createMockLinearIssueTracker() {
     listProjects: vi.fn().mockResolvedValue([{ id: "project-1", name: "Mobile", slug: "MOB" }]),
     listUsers: vi.fn().mockResolvedValue([{ id: "user-1", name: "Ada" }]),
     listWorkflowStates: vi.fn().mockResolvedValue([{ id: "state-1", name: "Todo", type: "todo" }]),
+    getIssuePickerData: vi.fn().mockResolvedValue({
+      projects: [{ id: "project-1", name: "Mobile", slug: "MOB" }],
+      users: [{ id: "user-1", name: "Ada" }],
+      states: [{ id: "state-1", name: "Todo", type: "todo" }],
+      labels: [],
+    }),
     searchIssues: vi.fn().mockResolvedValue({
       issues: [{ id: "issue-1", identifier: "ADE-42", title: "Mobile parity" }],
       pageInfo: { hasNextPage: false, endCursor: null },
@@ -1250,14 +1256,25 @@ describe("createSyncRemoteCommandService", () => {
       });
     });
 
-    it("git.listRecentCommits passes laneId and optional limit", async () => {
+    it("git.listRecentCommits passes laneId, optional limit and the co-author opt-in", async () => {
       await service.execute(makePayload("git.listRecentCommits", {
         laneId: "lane-1",
         limit: 5,
       }));
-      expect(gitService.listRecentCommits).toHaveBeenCalledWith({
+      expect(gitService.listRecentCommits).toHaveBeenLastCalledWith({
         laneId: "lane-1",
         limit: 5,
+      });
+
+      await service.execute(makePayload("git.listRecentCommits", {
+        laneId: "lane-1",
+        limit: 5,
+        includeCoAuthors: true,
+      }));
+      expect(gitService.listRecentCommits).toHaveBeenLastCalledWith({
+        laneId: "lane-1",
+        limit: 5,
+        includeCoAuthors: true,
       });
     });
 
@@ -1803,9 +1820,11 @@ describe("createSyncRemoteCommandService", () => {
         sessionId: "sess-1",
         text: "change direction",
       }));
+      // A paired controller sends what its user typed in the composer.
       expect(agentChatService.steerUserMessage).toHaveBeenCalledWith({
         sessionId: "sess-1",
         text: "change direction",
+        sentByUser: true,
       });
       expect(result).toEqual({ ok: true });
     });
@@ -2007,6 +2026,7 @@ describe("createSyncRemoteCommandService", () => {
         expect(agentChatService.steerUserMessage).toHaveBeenCalledWith({
           sessionId: "sess-1",
           text: "redirect",
+          sentByUser: true,
           attachments: [
             { path: "img.png", type: "image" },
             { path: "notes.txt", type: "file" },
@@ -2023,7 +2043,7 @@ describe("createSyncRemoteCommandService", () => {
         }));
         const sent = agentChatService.steerUserMessage.mock.calls[0][0] as Record<string, unknown>;
         expect(sent, "no valid attachments → key omitted").not.toHaveProperty("attachments");
-        expect(sent).toEqual({ sessionId: "sess-1", text: "redirect" });
+        expect(sent).toEqual({ sessionId: "sess-1", text: "redirect", sentByUser: true });
       });
 
       it("still throws when text is missing even if attachments are provided", async () => {
@@ -2700,6 +2720,7 @@ describe("createSyncRemoteCommandService", () => {
         projects: [{ id: "project-1" }],
         users: [{ id: "user-1" }],
         states: [{ id: "state-1" }],
+        labels: [],
       });
 
       const search = await service.execute(makePayload("cto.searchLinearIssues", {
@@ -2730,7 +2751,7 @@ describe("createSyncRemoteCommandService", () => {
       });
 
       const picker = await service.execute(makePayload("cto.getLinearIssuePickerData", {}));
-      expect(picker).toEqual({ projects: [], users: [], states: [] });
+      expect(picker).toEqual({ projects: [], users: [], states: [], labels: [] });
       expect(linearIssueTracker.listProjects).not.toHaveBeenCalled();
 
       const search = await service.execute(makePayload("cto.searchLinearIssues", {

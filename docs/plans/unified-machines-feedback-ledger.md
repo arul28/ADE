@@ -1,0 +1,12 @@
+# Feedback ledger: dev-app test (2026-09-28)
+
+Issues the user reports while testing the lane's dev build. Collected here, then
+fixed together as one batch.
+
+| # | Area | Issue | Where / notes | Status |
+|---|---|---|---|---|
+| 1 | New-tab page, Usage limits | Each provider shows its *tightest* window (e.g. Codex "5h"). The user wants the **longest available window** shown instead: monthly, else weekly, else 5h (e.g. Codex → weekly). | `components/projects/ProjectWelcomeSidePanels.tsx` ~L184–251: the `tightest` reduce picks the lowest percent-left. Change it to pick by window length (mo > wk > 5h), and update the doc comment. | fixed |
+| 2 | CTO header | Remove the "Runs on <Machine> · Change" line from the CTO header; the composer already shows the machine chip. Make that composer machine chip the Change action (click → home-machine chooser). | `components/cto/CtoPage.tsx` header + composer machine chip (`AgentChatComposer` / CTO composer footer). | fixed |
+| 3 | CTO behaviour | Asked "what lanes are on the Mac Studio?", the CTO spawned a new chat on that machine to do the inspection instead of answering itself. Read-only questions must be answered directly with the read-only tools (`listMachines`, `listLanes`/`inspectLane`/`listChats` with `machine`); `spawnChat` is only for actual work. | `main/services/cto/ctoPromptContent.ts` "Other machines" section + tool descriptions in `ai/tools/ctoOperatorTools.ts`. | fixed |
+| 4 | CTO capability | The CTO should be able to run any ADE action on any account machine, not just seven tools. Add one general tool, e.g. `runMachineAction({ machine, domain, action, args })`, over the existing brain→brain bridge, with the TARGET's action policy (CTO role ceiling) deciding what's allowed. Destructive actions keep the confirmation card. Tell the CTO in its prompt that this is its full remote surface. | `ai/tools/ctoCrossMachine.ts`, `ade-cli/src/services/account/ctoCrossMachineBridge.ts`, `ctoPromptContent.ts`, `ctoToolPacks.ts`. | fixed |
+| 5 | CTO on an older home machine | When the home machine runs an ADE build without the cross-machine tools (e.g. the Mac Studio's installed release while testing this lane), the CTO says it can't reach other machines. It resolves itself once the release ships everywhere, but consider a hint: if the home machine's runtime lacks the capability, show a small "update ADE on <Machine> to let the CTO reach other machines" note. | Capability/version check via the machine directory's reported version. | fixed |

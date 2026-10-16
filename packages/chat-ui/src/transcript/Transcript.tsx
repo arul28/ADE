@@ -7,14 +7,22 @@
  * embedded chat, so once escaped it stays escaped until they return to the
  * bottom themselves.
  *
- * v1 uses plain overflow scroll, not virtualization. Row counts here are
- * bounded by the host's `history()` window.
+ * Windowing: past `windowThreshold` rows, only the rows in view plus
+ * `overscan` rows either side are mounted, with spacers standing in for the
+ * rest (`useWindowedRows`). Where there is no layout to measure every row
+ * renders, which is the pre-0.3 behaviour.
+ *
+ * Paging: with `hasOlder`, a "Load older messages" control sits at the top and
+ * scrolling to the top calls `onLoadOlder`; the reader's position is kept when
+ * the older rows land above them.
  */
 
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -24,9 +32,11 @@ import type { ActivityLabelConfig } from "../activity/labels";
 import { resolveActivityLabel, DEFAULT_THINKING_LABEL } from "../activity/labels";
 import type { ThreadStatus } from "../sdkTypes";
 import { ApprovalCard, type ApprovalRespond, type ApprovalUiOptions } from "./ApprovalCard";
+import { AdeLinkHandlerProvider, type AdeLinkClickHandler } from "./links";
 import { renderMarkdown as defaultRenderMarkdown } from "./markdown";
-import { ToolChip } from "./ToolChip";
-import type { TranscriptRow } from "./transcriptRows";
+import { ToolChip, type ToolChipAction } from "./ToolChip";
+import type { ToolChipRow, TranscriptRow } from "./transcriptRows";
+import { RowSlot, useWindowedRows } from "./useWindowedRows";
 
 export type TranscriptProps = {
   rows: readonly TranscriptRow[];
@@ -42,18 +52,60 @@ export type TranscriptProps = {
   /** Replace the built-in markdown renderer. */
   renderMarkdown?: (text: string) => ReactNode;
   /**
+   * Decide what a link in assistant text does (see `AdeLinkClickHandler`).
+   * Without it a link opens with `target="_blank"`. In Electron that is a new,
+   * chrome-less app window showing a URL a model wrote, so an Electron host
+   * should pass this and open allowed URLs with `shell.openExternal`. A custom
+   * `renderMarkdown` draws its own links; this applies only to the built-in
+   * renderer (and to anything that renders `<AdeLink>`).
+   */
+  onLinkClick?: AdeLinkClickHandler;
+  /**
    * Answer an approval. Omit when the thread has no `approve`: approval cards
    * then render read-only with a line saying why.
    */
   onApprove?: ApprovalRespond;
   /** Custom approval card renderer and button wording. */
   approvals?: ApprovalUiOptions;
+  /**
+   * Extra content drawn under a tool chip — a preview, a result card, links
+   * built from `row.resourceLinks`. Called for every tool chip row, running
+   * ones included (check `row.status`); return null to draw nothing. Pure
+   * rendering: it runs on every render of that row.
+   */
+  renderToolResult?: (row: ToolChipRow) => ReactNode;
+  /**
+   * Buttons on a tool chip (e.g. "Open in Versic" from `row.resourceLinks` or
+   * `row.identity`). Called for every tool chip row; return `[]` for none.
+   * Labels must be unique within one chip.
+   */
+  toolChipActions?: (row: ToolChipRow) => readonly ToolChipAction[];
+  /** Older history exists (see `ThreadState.hasOlder`). Shows the load control. */
+  hasOlder?: boolean;
+  /** An older page is loading; the control is disabled meanwhile. */
+  loadingOlder?: boolean;
+  /**
+   * Load the next older page. Called from the top control and when the reader
+   * scrolls to the top while `hasOlder` is true and nothing is loading.
+   */
+  onLoadOlder?: () => void | Promise<void>;
+  /**
+   * Row count above which only the rows in view (plus `overscan`) are mounted.
+   * Default 150. `Infinity` turns windowing off. A row scrolled out of the
+   * window unmounts, so its local UI state (an expanded reasoning block or
+   * tool chip) resets when it scrolls back in.
+   */
+  windowThreshold?: number;
+  /** Rows mounted beyond each edge of the viewport when windowed. Default 8. */
+  overscan?: number;
   /** Shown when there are no rows. */
   emptyState?: ReactNode;
   className?: string;
 };
 
-const BOTTOM_THRESHOLD_PX = 32;
+const TOP_LOAD_THRESHOLD_PX = 48;
+const DEFAULT_WINDOW_THRESHOLD = 150;
+const DEFAULT_OVERSCAN = 8;
 
 /**
  * Replaces the thinking label while an approval sits unanswered at the tail.
@@ -71,33 +123,86 @@ export function Transcript({
   hideReasoning = false,
   expandReasoning = false,
   renderMarkdown = defaultRenderMarkdown,
+  onLinkClick,
   onApprove,
   approvals,
+  renderToolResult,
+  toolChipActions,
+  hasOlder = false,
+  loadingOlder = false,
+  onLoadOlder,
+  windowThreshold = DEFAULT_WINDOW_THRESHOLD,
+  overscan = DEFAULT_OVERSCAN,
   emptyState,
   className,
 }: TranscriptProps) {
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const pinnedRef = useRef(true);
+  const visible = useMemo(
+    () =>
+      rows.filter((row) => {
+        if (hideToolCalls && row.event.type === "tool_chip") return false;
+        if (hideReasoning && row.event.type === "reasoning") return false;
+        // Status rows are consumed by the live indicator, never drawn as cards.
+        return row.event.type !== "status";
+      }),
+    [rows, hideToolCalls, hideReasoning],
+  );
+
+  const {
+    rendered,
+    topSpacer,
+    bottomSpacer,
+    scrollRef,
+    pinnedRef,
+    onScroll: onWindowScroll,
+    observer,
+    offsets,
+  } = useWindowedRows(visible, { threshold: windowThreshold, overscan });
+
+  const loadOlderRef = useRef<{ hasOlder: boolean; loadingOlder: boolean; onLoadOlder?: () => unknown }>({
+    hasOlder,
+    loadingOlder,
+  });
+  loadOlderRef.current = onLoadOlder
+    ? { hasOlder, loadingOlder, onLoadOlder }
+    : { hasOlder, loadingOlder };
 
   const handleScroll = useCallback(() => {
     const node = scrollRef.current;
     if (!node) return;
-    const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
-    pinnedRef.current = distance <= BOTTOM_THRESHOLD_PX;
-  }, []);
+    onWindowScroll();
+    const older = loadOlderRef.current;
+    if (
+      node.scrollTop <= TOP_LOAD_THRESHOLD_PX
+      && older.hasOlder
+      && !older.loadingOlder
+      && older.onLoadOlder
+      // Only a scroll that has somewhere to go: a transcript shorter than its
+      // box sits at scrollTop 0 permanently and would page without end.
+      && node.scrollHeight > node.clientHeight
+    ) {
+      void older.onLoadOlder();
+    }
+  }, [onWindowScroll, scrollRef]);
 
+  // Keep the reader where they were when older rows land above them.
+  const firstKeyRef = useRef<string | null>(null);
+  const scrollHeightRef = useRef(0);
   useLayoutEffect(() => {
     const node = scrollRef.current;
-    if (!node || !pinnedRef.current) return;
-    node.scrollTop = node.scrollHeight;
-  }, [rows, status]);
-
-  const visible = rows.filter((row) => {
-    if (hideToolCalls && row.event.type === "tool_chip") return false;
-    if (hideReasoning && row.event.type === "reasoning") return false;
-    // Status rows are consumed by the live indicator, never drawn as cards.
-    return row.event.type !== "status";
-  });
+    if (!node) return;
+    const firstKey = visible[0]?.key ?? null;
+    const prepended =
+      firstKeyRef.current !== null
+      && firstKey !== firstKeyRef.current
+      && visible.some((row, index) => index > 0 && row.key === firstKeyRef.current);
+    if (pinnedRef.current) {
+      node.scrollTop = node.scrollHeight;
+    } else if (prepended) {
+      node.scrollTop += node.scrollHeight - scrollHeightRef.current;
+    }
+    firstKeyRef.current = firstKey;
+    scrollHeightRef.current = node.scrollHeight;
+  }, [visible, status, offsets, pinnedRef, scrollRef]);
 
   const tail = visible[visible.length - 1];
   // An unanswered approval is shown as waiting even when the host reports the
@@ -109,47 +214,77 @@ export function Transcript({
     || (status === "running" && (visible.length === 0 || tail!.event.type !== "tool_chip"));
 
   return (
-    <div
-      ref={scrollRef}
-      className={["adechat-transcript", className].filter(Boolean).join(" ")}
-      onScroll={handleScroll}
-      role="log"
-      aria-live="polite"
-      aria-relevant="additions text"
-    >
-      {visible.length === 0 && !showActivity ? (
-        <div className="adechat-transcript-empty">{emptyState ?? "No messages yet."}</div>
-      ) : null}
+    <AdeLinkHandlerProvider onLinkClick={onLinkClick}>
+      <div
+        ref={scrollRef}
+        className={["adechat-transcript", className].filter(Boolean).join(" ")}
+        onScroll={handleScroll}
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions text"
+      >
+        {hasOlder && onLoadOlder ? (
+          <button
+            type="button"
+            className="adechat-transcript-older"
+            onClick={() => void onLoadOlder()}
+            disabled={loadingOlder}
+          >
+            {loadingOlder ? "Loading older messages…" : "Load older messages"}
+          </button>
+        ) : null}
 
-      {visible.map((row) => (
-        <TranscriptRowView
-          key={row.key}
-          row={row}
-          {...(labels ? { labels } : {})}
-          expandReasoning={expandReasoning}
-          renderMarkdown={renderMarkdown}
-          {...(onApprove ? { onApprove } : {})}
-          {...(approvals ? { approvals } : {})}
-        />
-      ))}
+        {visible.length === 0 && !showActivity ? (
+          <div className="adechat-transcript-empty">{emptyState ?? "No messages yet."}</div>
+        ) : null}
 
-      {showActivity ? (
-        <ActivityIndicator
-          labels={labels}
-          {...(awaitingApproval ? { label: DEFAULT_APPROVAL_WAITING_LABEL } : {})}
-        />
-      ) : null}
-    </div>
+        {topSpacer > 0 ? (
+          <div className="adechat-transcript-spacer" style={{ height: topSpacer }} aria-hidden="true" />
+        ) : null}
+
+        {rendered.map((row) => (
+          <RowSlot key={row.key} rowKey={row.key} observer={observer}>
+            <TranscriptRowView
+              row={row}
+              {...(labels ? { labels } : {})}
+              expandReasoning={expandReasoning}
+              renderMarkdown={renderMarkdown}
+              {...(onApprove ? { onApprove } : {})}
+              {...(approvals ? { approvals } : {})}
+              {...(renderToolResult ? { renderToolResult } : {})}
+              {...(toolChipActions ? { toolChipActions } : {})}
+            />
+          </RowSlot>
+        ))}
+
+        {bottomSpacer > 0 ? (
+          <div className="adechat-transcript-spacer" style={{ height: bottomSpacer }} aria-hidden="true" />
+        ) : null}
+
+        {showActivity ? (
+          <ActivityIndicator
+            labels={labels}
+            {...(awaitingApproval ? { label: DEFAULT_APPROVAL_WAITING_LABEL } : {})}
+          />
+        ) : null}
+      </div>
+    </AdeLinkHandlerProvider>
   );
 }
 
-function TranscriptRowView({
+/**
+ * One row. Memoised: the row builder keeps an unchanged row's object identity,
+ * so a streamed delta re-renders the tail row and nothing above it.
+ */
+const TranscriptRowView = memo(function TranscriptRowView({
   row,
   labels,
   expandReasoning,
   renderMarkdown,
   onApprove,
   approvals,
+  renderToolResult,
+  toolChipActions,
 }: {
   row: TranscriptRow;
   labels?: ActivityLabelConfig | undefined;
@@ -157,6 +292,8 @@ function TranscriptRowView({
   renderMarkdown: (text: string) => ReactNode;
   onApprove?: ApprovalRespond | undefined;
   approvals?: ApprovalUiOptions | undefined;
+  renderToolResult?: ((row: ToolChipRow) => ReactNode) | undefined;
+  toolChipActions?: ((row: ToolChipRow) => readonly ToolChipAction[]) | undefined;
 }) {
   const event = row.event;
 
@@ -203,13 +340,19 @@ function TranscriptRowView({
   }
 
   if (event.type === "tool_chip") {
+    const actions = toolChipActions?.(event);
+    const extra = renderToolResult?.(event);
     return (
       <div className="adechat-row">
         <ToolChip
           chip={event}
           {...(labels ? { labels } : {})}
+          {...(actions?.length ? { actions } : {})}
           startedAt={Date.parse(row.timestamp) || undefined}
         />
+        {extra !== undefined && extra !== null && extra !== false ? (
+          <div className="adechat-tool-result">{extra}</div>
+        ) : null}
       </div>
     );
   }
@@ -229,7 +372,7 @@ function TranscriptRowView({
   }
 
   return null;
-}
+});
 
 function ReasoningRow({ text, defaultExpanded }: { text: string; defaultExpanded: boolean }) {
   const [expanded, setExpanded] = useState(defaultExpanded);

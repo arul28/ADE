@@ -105,6 +105,40 @@ export type PrNextStep = {
 /** The slice of a next step a lane summary carries (TUI, lane lists). */
 export type PrLaneNextStep = Pick<PrNextStep, "kind" | "headline" | "tone">;
 
+/**
+ * What a PR's next step is waiting on.
+ *
+ *  - `me` — a person must act before this PR can move (resolve conflicts,
+ *    update the branch, fix checks, answer feedback, review, clear a rule).
+ *  - `waiting` — CI or a bot is still working; there is nothing to do yet.
+ *  - `none` — nothing is outstanding (ready, draft, or terminal).
+ *
+ * This is the shared definition behind the PRs list "Blocked on me" sort and
+ * the Merge card: both read the same next step, so they cannot disagree.
+ */
+export type PrNextStepBlocker = "me" | "waiting" | "none";
+
+export function prNextStepBlocker(kind: PrNextStepKind): PrNextStepBlocker {
+  switch (kind) {
+    case "conflicts":
+    case "behind":
+    case "checks_failing":
+    case "changes_requested":
+    case "review_required":
+    case "rules_blocked":
+      return "me";
+    case "computing":
+    case "checks_pending":
+    case "auto_merge_armed":
+      return "waiting";
+    case "draft":
+    case "ready":
+    case "merged":
+    case "closed":
+      return "none";
+  }
+}
+
 const plural = (count: number, one: string, many = `${one}s`): string => `${count} ${count === 1 ? one : many}`;
 
 /**

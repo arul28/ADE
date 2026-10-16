@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { MacDesktopStreamStatus } from "../../../shared/types/macDesktop";
-import type { H264VideoStatus } from "./H264VideoCanvas";
+import type { H264StreamStatus } from "./h264StreamPlayer";
 import { setMacDesktopFrame } from "./macDesktopFrameStore";
 import {
   MAC_DESKTOP_LIVE_VIEW_PANE_PRIORITY,
@@ -54,13 +54,32 @@ export const RECOVER_DELAY_MS = 750;
  * the first drawn frame, so a stream that recovers can recover again.
  */
 export const RECOVER_MAX_TRIES = 3;
+/**
+ * How long a viewer that has spent its quick re-dials waits before asking once
+ * more.
+ *
+ * The small, slow budget above exists so a dead encoder is not hammered; it
+ * must not turn into a picture that can never come back on its own. A stream
+ * that drew nothing at 10:00 because the host's own capture was not delivering
+ * frames is fine at 10:01, and the person watching the pane should not have to
+ * press Reconnect to find out. This is a heartbeat, not a poll: it stops with
+ * the demand, which is the moment nobody is watching any more.
+ */
+export const RECOVER_SLOW_MS = 30_000;
+/**
+ * Times in a row a viewer that gave up takes the picture back on its own when
+ * the host announces one. Reset by a drawn frame or a person's Retry, so a host
+ * that keeps announcing a capture this viewer cannot draw costs a bounded
+ * number of re-dial rounds, not one per announcement.
+ */
+export const EVENT_RESTART_MAX = 2;
 
 /**
  * Whether the reader should try again, given what the last attempt did.
  *
  * Pure because it is the one rule worth stating on its own: only the error
  * state retries, only a lane retries, and the budget is spent for good until
- * something resets it — a fresh `restart()`, or an attempt that succeeded.
+ * something resets it: a frame actually drawn, or a person's Retry.
  */
 export function shouldRetryLiveView(args: {
   status: MacDesktopLiveView["status"];
@@ -93,7 +112,7 @@ export type MacDesktopLiveView = {
   streamStatus: MacDesktopStreamStatus | null;
   /** Pixel size of the decoded picture, once a frame has arrived. */
   dimensions: { width: number; height: number } | null;
-  onStatus: (status: H264VideoStatus, error: string | null) => void;
+  onStatus: (status: H264StreamStatus, error: string | null) => void;
   onDimensions: (size: { width: number; height: number }) => void;
   onCanvas: (canvas: HTMLCanvasElement | null) => void;
   /**
@@ -200,6 +219,8 @@ export function useMacDesktopLiveView(args: {
    */
   const recoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const recoverTriesRef = useRef(0);
+  /** Event-driven restarts since the last drawn frame or Retry (`EVENT_RESTART_MAX`). */
+  const eventRestartsRef = useRef(0);
   /**
    * The next start is a Reconnect: the host restarts a run that has sent
    * nothing instead of handing the same dead run back. Set by `restart()` and
@@ -207,6 +228,15 @@ export function useMacDesktopLiveView(args: {
    * again, not restarted.
    */
   const freshNextRef = useRef(false);
+
+  /**
+   * The restart in flight came from the slow heartbeat rather than from a
+   * person or the automatic re-dials, so it must not reset the give-up state:
+   * a surface that has said the picture is not coming through keeps saying it
+   * while the heartbeat asks again, instead of flicking back to "Connecting"
+   * every thirty seconds.
+   */
+  const slowRestartRef = useRef(false);
   const releaseWhenGivenUpRef = useRef(releaseWhenGivenUp);
   releaseWhenGivenUpRef.current = releaseWhenGivenUp;
   const scheduleRecover = useCallback((options?: { fresh?: boolean }) => {
@@ -233,12 +263,14 @@ export function useMacDesktopLiveView(args: {
   // that stopped wanting the lane and wants it again.
   useEffect(() => {
     recoverTriesRef.current = 0;
+    eventRestartsRef.current = 0;
     setGaveUp(false);
     setLetGo(false);
   }, [laneId]);
   useEffect(() => {
     if (enabled) return;
     recoverTriesRef.current = 0;
+    eventRestartsRef.current = 0;
     setGaveUp(false);
     setLetGo(false);
   }, [enabled]);
@@ -271,7 +303,7 @@ export function useMacDesktopLiveView(args: {
     ));
   }, []);
 
-  const onStatus = useCallback((next: H264VideoStatus, nextError: string | null) => {
+  const onStatus = useCallback((next: H264StreamStatus, nextError: string | null) => {
     if (next === "stopped") {
       // With no address the reader has nothing to stop: it says "stopped"
       // just for mounting, and taken as news it would overwrite a start's
@@ -283,13 +315,20 @@ export function useMacDesktopLiveView(args: {
     }
     if (next === "playing") {
       recoverTriesRef.current = 0;
+      eventRestartsRef.current = 0;
+      setResolveFailures(0);
       setGaveUp(false);
     }
     setStatus(next === "playing" ? "playing" : next === "error" ? "error" : "starting");
     setError(nextError);
   }, [scheduleRecover]);
 
-  const restart = useCallback(() => {
+  /** Tear down and start again with a fresh re-dial budget. */
+  const restartStream = useCallback(() => {
+    // A heartbeat tick and this can land in one React batch, and the effect
+    // that runs then sees only one intent. Ours is the person's, so it wins:
+    // the start it causes resets the budgets like any other.
+    slowRestartRef.current = false;
     setResolveFailures(0);
     recoverTriesRef.current = 0;
     // `gaveUp` clears when the new start begins, so the surface does not
@@ -298,21 +337,85 @@ export function useMacDesktopLiveView(args: {
     freshNextRef.current = true;
     setRestartNonce((nonce) => nonce + 1);
   }, []);
+  /** A person's Retry: it also renews the event-driven restarts. */
+  const restart = useCallback(() => {
+    eventRestartsRef.current = 0;
+    restartStream();
+  }, [restartStream]);
+
+  /*
+   * A viewer that has run out of automatic attempts keeps asking, slowly, for
+   * as long as it still wants the lane.
+   *
+   * Two budgets can run out: the quick re-dials after an address that never
+   * drew a frame (`gaveUp`), and the start/URL retries after a host that
+   * refused to hand one out (`resolveFailures`). Both mean the same thing to
+   * the surface — nothing is asking again on its own — and both end the same
+   * way, so one heartbeat serves them: without it a host that was simply
+   * unreachable for a minute leaves the pane on a dead error until somebody
+   * presses Retry.
+   *
+   * Each tick is one fresh run — a plain re-dial would be handed the same run
+   * that sent nothing — and every budget stays spent, so this never re-enters
+   * the dense retry loops. A surface that let go of the stream (the floating
+   * player does) wants nothing and is left alone.
+   */
+  const outOfRetries = gaveUp || (status === "error" && resolveFailures >= RETRY_MAX_ATTEMPTS);
+  useEffect(() => {
+    if (!outOfRetries) return undefined;
+    const timer = setInterval(() => {
+      if (!wantedRef.current) return;
+      slowRestartRef.current = true;
+      freshNextRef.current = true;
+      recoverTriesRef.current = RECOVER_MAX_TRIES;
+      setRestartNonce((nonce) => nonce + 1);
+    }, RECOVER_SLOW_MS);
+    return () => clearInterval(timer);
+  }, [outOfRetries]);
+
+  /*
+   * A viewer that gave up takes the picture back once the host has one again.
+   *
+   * Starting or stopping a recording can drop the live capture, and the quick
+   * re-dials can all land before the capture is back; another surface may also
+   * restart it. Without this the surface sits on "No picture" until a person
+   * presses Retry. Bounded by `EVENT_RESTART_MAX`: after that, only a drawn
+   * frame or Retry lets an announcement restart the viewer again.
+   */
+  useEffect(() => {
+    const api = window.ade?.macDesktop;
+    if (!gaveUp || !enabled || !laneId || !api?.onEvent) return undefined;
+    return api.onEvent((event) => {
+      const forLane = (event.type === "stream-started" && event.status.laneId === laneId)
+        || (event.type === "recording-changed" && event.status.laneId === laneId)
+        || (event.type === "display-created" && event.display.laneId === laneId);
+      if (!forLane || eventRestartsRef.current >= EVENT_RESTART_MAX) return;
+      eventRestartsRef.current += 1;
+      restartStream();
+    }, pinRef.current);
+  }, [enabled, gaveUp, laneId, pinKey, restartStream]);
 
   /* ── Start and stop ──────────────────────────────────────────────────── */
 
   useEffect(() => {
+    // Read before the guard below: a start that never happens must not leave a
+    // heartbeat's intent behind for the next one, which would then skip the
+    // resets a genuine start owes the surface.
+    const slowRestart = slowRestartRef.current;
+    slowRestartRef.current = false;
     if (!ownsDecoder || !enabled || !laneId) {
       setUrl(null);
       setStatus("idle");
       return undefined;
     }
     let cancelled = false;
-    setResolveFailures(0);
+    if (!slowRestart) {
+      setResolveFailures(0);
+      // A start is under way again, so the viewer has not given up on it yet.
+      setGaveUp(false);
+    }
     setStatus("starting");
     setError(null);
-    // A start is under way again, so the viewer has not given up on it yet.
-    setGaveUp(false);
 
     const fresh = freshNextRef.current;
     freshNextRef.current = false;
@@ -374,7 +477,9 @@ export function useMacDesktopLiveView(args: {
         const resolved = await window.ade.macDesktop.resolveStreamUrl(hostUrl, pinRef.current);
         if (cancelled) return;
         if (!resolved.url) throw new Error(resolved.error ?? "The live view returned no address.");
-        setResolveFailures(0);
+        // The budget is not renewed here: an address that resolves but never
+        // draws would otherwise retry forever. A drawn frame renews it.
+        setResolveFailures((failures) => failures + 1);
         setUrl(resolved.url);
         setStatus("starting");
         setError(null);

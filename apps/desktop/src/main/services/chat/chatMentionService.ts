@@ -13,6 +13,7 @@
 // Everything is injected so the module is testable without Electron, and so the
 // desktop main process and the `ade` runtime share one implementation.
 
+import { maskBrowserTabMentions } from "../../../shared/browserTabMention";
 import {
   CHAT_MENTION_KINDS,
   CHAT_MENTION_MAX_PER_KIND,
@@ -34,6 +35,11 @@ import {
 } from "../../../shared/accountMachineSnapshot";
 import type { AdeAccountMachine, AdeAccountMachinesResult } from "../../../shared/types/account";
 import type { AttentionSnapshot } from "../../../shared/types/attention";
+import {
+  buildModelMentionDetail,
+  parseModelMentions,
+  type ModelMentionModelInfo,
+} from "../../../shared/modelMentions";
 import type {
   ChatMentionDetail,
   ChatMentionKind,
@@ -108,7 +114,15 @@ export type ChatMentionServiceDeps = {
    * actually gained expansion blocks. Carries identity only — never text.
    */
   onMentionsExpanded?: ((event: { sessionId: string | null }) => void) | null;
+  /**
+   * Optional: look up a model for an `@model:` chip. Absent means model chips
+   * expand as unavailable, which tells the agent to ask instead of guess.
+   */
+  describeModel?: ((modelId: string) => ModelMentionModelInfo | null) | null;
 };
+
+/** Cap on model blocks per message, like `CHAT_MENTION_MAX_PER_MESSAGE`. */
+const MODEL_MENTION_MAX_PER_MESSAGE = 6;
 
 function toEpoch(value: string | null | undefined): number | null {
   if (!value) return null;
@@ -800,8 +814,10 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
    * transcript keeps the raw chips the user typed.
    */
   const expandChatMentionsForSend = async (text: string): Promise<string> => {
-    const targets = collectChatMentionTargets(text);
-    if (!targets.length) return text;
+    const userText = maskBrowserTabMentions(text);
+    const targets = collectChatMentionTargets(userText);
+    const modelBlocks = renderModelMentionBlocks(userText);
+    if (!targets.length && !modelBlocks.length) return text;
     const { details, reasons } = await resolveDetailsWithReasons(targets);
     const blocks = targets.map((target) => {
       const key = `${target.kind}:${target.id}`;
@@ -810,7 +826,26 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
         ? renderChatMentionBlock(detail)
         : renderUnresolvedChatMentionBlock(target.kind, target.id, reasons.get(key));
     });
-    return appendChatMentionBlocks(text, blocks);
+    return appendChatMentionBlocks(text, [...blocks, ...modelBlocks]);
+  };
+
+  /** One block per distinct model chip. Needs no roster, only the model catalog. */
+  const renderModelMentionBlocks = (text: string): string[] => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const mention of parseModelMentions(text)) {
+      if (seen.has(mention.token)) continue;
+      seen.add(mention.token);
+      let info: ModelMentionModelInfo | null = null;
+      try {
+        info = deps.describeModel?.(mention.modelId) ?? null;
+      } catch (error) {
+        deps.logger?.warn?.("model mention lookup failed", { modelId: mention.modelId, error });
+      }
+      out.push(renderChatMentionBlock(buildModelMentionDetail(mention, info)));
+      if (out.length >= MODEL_MENTION_MAX_PER_MESSAGE) break;
+    }
+    return out;
   };
 
   /**

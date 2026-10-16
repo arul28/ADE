@@ -142,7 +142,7 @@ describe("ProviderApiKeysPanel", () => {
     expect(remove).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText("Delete key"));
 
-    await waitFor(() => expect(remove).toHaveBeenCalledWith({ provider: "anthropic", credentialId: "openrouter-1" }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith({ provider: "anthropic", credentialId: "openrouter-1" }, null));
   });
 
   it("writes Cursor's key through the legacy slot its SDK signs in from", async () => {
@@ -154,7 +154,7 @@ describe("ProviderApiKeysPanel", () => {
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "key_live_123" } });
     fireEvent.click(screen.getByText("Save key"));
 
-    await waitFor(() => expect(storeApiKey).toHaveBeenCalledWith("cursor", "key_live_123"));
+    await waitFor(() => expect(storeApiKey).toHaveBeenCalledWith("cursor", "key_live_123", null));
     expect(store).not.toHaveBeenCalled();
   });
 
@@ -173,7 +173,7 @@ describe("ProviderApiKeysPanel", () => {
       label: "xAI console",
       key: "xai-abc",
       envVar: "XAI_API_KEY",
-    })));
+    }), null));
   });
 
   it("shows a refused delete in the store's own words, not the IPC wrapper", async () => {

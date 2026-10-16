@@ -36,6 +36,7 @@
 
 import {
   ACCOUNT_SCOPE_ALL,
+  accountDeviceSettingKey,
   accountRepoScopeKey,
   isAccountScope,
 } from "../../shared/accountSettingsScope";
@@ -44,6 +45,7 @@ import type {
   AccountSettingsResult,
   AccountSettingsWriteOptions,
 } from "../../shared/types/accountSettings";
+import { HARNESS_PRESETS_SETTING_KEY } from "../../shared/harnessPresets";
 import type { SettingScope } from "../components/settings/settingsManifest";
 import type { AppState } from "../state/appStore";
 import { mergeStarPillPrefs } from "./starPill";
@@ -83,6 +85,12 @@ export type AccountSyncedSetting<State = AccountSyncedState> = {
   /** The store key, which is also the account store's key. One name, not two. */
   key: string;
   scope: SettingScope;
+  /**
+   * Account-scoped, but one value per computer: stored under this device's
+   * own key (`accountDeviceSettingKey`) in the account-wide scope, and kept
+   * local until the device id is known.
+   */
+  perDevice?: boolean;
   read: (state: State) => unknown;
   apply: (state: State, value: unknown) => void;
 };
@@ -93,10 +101,12 @@ function pref<Value>(
   read: (state: AppState) => Value,
   apply: (state: AppState, value: Value) => void,
   scope: SettingScope = "account",
+  options?: { perDevice?: boolean },
 ): AccountSyncedSetting {
   return {
     key,
     scope,
+    ...(options?.perDevice ? { perDevice: true } : {}),
     read,
     apply: (state, value) => apply(state, value as Value),
   };
@@ -105,20 +115,29 @@ function pref<Value>(
 /**
  * Every account-scoped preference the app store persists.
  *
- * Exactly the contents of the `ade.userPreferences.v1` blob, minus
- * `userOverrodeChatFontSize` — that flag records that the user has taken the
- * chat font size off auto-sizing on THIS display, so it describes a screen
- * rather than a preference and stays machine-local. The font size itself does
- * travel.
+ * The contents of the `ade.userPreferences.v1` blob, minus what is not the
+ * account's to carry:
+ *
+ * - `userOverrodeChatFontSize` records that the user has taken the chat font
+ *   size off auto-sizing on THIS display, so it describes a screen. The font
+ *   size itself does travel.
+ * - **Appearance is per computer.** The theme and the custom theme list, the
+ *   follow-the-system flag, the interface and code faces, reduce motion and the
+ *   terminal text describe one screen. A phone, a laptop and a desktop do not
+ *   want the same theme, so none of it syncs. It lives in this machine's
+ *   localStorage and appears under Settings → This computer → Appearance.
  */
 export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
-  pref("theme", (state) => state.theme, (state, value) => state.setTheme(value)),
-  pref("terminalPreferences", (state) => state.terminalPreferences, (state, value) => state.setTerminalPreferences(value)),
   pref("smartTooltipsEnabled", (state) => state.smartTooltipsEnabled, (state, value) => state.setSmartTooltipsEnabled(value)),
   pref("launchPromptClipboardEnabled", (state) => state.launchPromptClipboardEnabled, (state, value) => state.setLaunchPromptClipboardEnabled(value)),
   pref("launchPromptClipboardNoticeEnabled", (state) => state.launchPromptClipboardNoticeEnabled, (state, value) => state.setLaunchPromptClipboardNoticeEnabled(value)),
-  pref("promptStashButtonEnabled", (state) => state.promptStashButtonEnabled, (state, value) => state.setPromptStashButtonEnabled(value)),
+  // The account field keeps its original name on purpose. It is an opaque key
+  // in the account store, not a label, and renaming it would orphan the value
+  // already saved there — so a device where the button was hidden would show it
+  // again. The local preference and every user-facing string are "drafts".
+  pref("promptStashButtonEnabled", (state) => state.draftsButtonEnabled, (state, value) => state.setDraftsButtonEnabled(value)),
   pref("voiceInputEnabled", (state) => state.voiceInputEnabled, (state, value) => state.setVoiceInputEnabled(value)),
+  pref("codexVoice", (state) => state.codexVoice, (state, value) => state.setCodexVoicePreferences(value)),
   pref("codeBlockCopyButtonPosition", (state) => state.codeBlockCopyButtonPosition, (state, value) => state.setCodeBlockCopyButtonPosition(value)),
   pref("agentTurnCompletionSound", (state) => state.agentTurnCompletionSound, (state, value) => state.setAgentTurnCompletionSound(value)),
   pref("agentTurnCompletionSoundVolume", (state) => state.agentTurnCompletionSoundVolume, (state, value) => state.setAgentTurnCompletionSoundVolume(value)),
@@ -132,7 +151,7 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   // unchanged: the whole list is one value under one key, so the newer-wins
   // rule applies to the list as a whole and two machines never interleave
   // half of each other's edits into one preset.
-  pref("harnessPresets", (state) => state.harnessPresets, (state, value) => state.setHarnessPresets(value)),
+  pref(HARNESS_PRESETS_SETTING_KEY, (state) => state.harnessPresets, (state, value) => state.setHarnessPresets(value)),
   // The star pill's counters live under their own storage key rather than in
   // the preferences blob (see `STAR_PILL_STORAGE_KEY`). Applying merges rather
   // than replaces: every field only grows, and a whole-value overwrite would
@@ -142,12 +161,18 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
     (state) => state.starPill,
     (state, value: unknown) => state.updateStarPill((local) => mergeStarPillPrefs(local, value)),
   ),
+  // Apple device options are per computer (Settings › This computer › Apple
+  // devices). They still go through the account store, under this device's
+  // own scope, because the brain on this computer reads the remote streaming
+  // cap from its account-settings store.
   pref(
     "apple.realisticBody",
     (state) => state.appleDevice.realisticBody,
     (state, value) => {
       if (typeof value === "boolean") state.setAppleDevicePreferences({ realisticBody: value });
     },
+    "account",
+    { perDevice: true },
   ),
   pref(
     "apple.recordingOverlays.tapRings",
@@ -155,6 +180,8 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
     (state, value) => {
       if (typeof value === "boolean") state.setAppleDevicePreferences({ recordingTapRings: value });
     },
+    "account",
+    { perDevice: true },
   ),
   pref(
     "apple.recordingOverlays.keyBadges",
@@ -162,6 +189,8 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
     (state, value) => {
       if (typeof value === "boolean") state.setAppleDevicePreferences({ recordingKeyBadges: value });
     },
+    "account",
+    { perDevice: true },
   ),
   pref(
     "apple.remoteBitrateKbpsCap",
@@ -169,6 +198,8 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
     (state, value) => {
       if (typeof value === "number") state.setAppleDevicePreferences({ remoteBitrateKbpsCap: value });
     },
+    "account",
+    { perDevice: true },
   ),
   pref(
     "apple.recordingsWarnBytes",
@@ -176,6 +207,8 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
     (state, value) => {
       if (typeof value === "number") state.setAppleDevicePreferences({ recordingsWarnBytes: value });
     },
+    "account",
+    { perDevice: true },
   ),
 ] as const;
 
@@ -185,6 +218,27 @@ export type AccountSettingsApi = {
     args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
   ): Promise<AccountSettingsResult<null>>;
   sync(): Promise<AccountSettingsResult<null>>;
+};
+
+/**
+ * The live engine's handle.
+ *
+ * Still a plain function — `useEffect(() => stop)` and every existing test
+ * depend on that — with one extra method attached: {@link flushKey} pushes one
+ * preference NOW and answers what the brain said. A save that must not be
+ * followed by a launch reading a stale copy awaits it; everything else keeps
+ * the fire-and-forget path.
+ */
+export type AccountSettingsSyncHandle = (() => void) & {
+  /**
+   * Push this key's current local value and await the brain's answer.
+   *
+   * Unlike the ordinary write-through, this pushes whether or not the key is
+   * dirty, so it is also the way a caller says "make sure the machine's copy is
+   * the one I am holding" before reading it somewhere else (a launch resolver
+   * reads the same file).
+   */
+  flushKey(key: string): Promise<AccountSettingsResult<null>>;
 };
 
 type AccountSettingsSyncOptionsBase<State> = {
@@ -197,8 +251,16 @@ type AccountSettingsSyncOptionsBase<State> = {
   getAccountUserId?: () => string | null;
   /** Fires whenever the signed-in account changes. */
   subscribeSignedIn?: (listener: () => void) => () => void;
+  /**
+   * Fires when `getLocalDeviceId` starts returning an id. Per-device settings
+   * have nowhere to be stored before that, so the engine pulls (and pushes any
+   * held edits) the moment it is known instead of waiting for the next tick.
+   */
+  subscribeLocalDeviceId?: (listener: () => void) => () => void;
   /** The open project's git remote, for `account-repo` keys. */
   getProjectRemote?: () => string | null;
+  /** This computer's sync device id, for per-device settings; null until known. */
+  getLocalDeviceId?: () => string | null;
   settings?: readonly AccountSyncedSetting<State>[];
   pollMs?: number;
   now?: () => number;
@@ -268,14 +330,41 @@ function readDirtyKeys(storage: Pick<Storage, "getItem" | "setItem"> | undefined
 
 function sameValue(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
-  // Terminal preferences are an object the setter replaces wholesale; a deep
-  // compare is what keeps a rehydrate from looking like a user edit.
+  // Several synced preferences are objects the setter replaces wholesale
+  // (harness presets, the Codex voice settings, the chat shell geometry); a
+  // deep compare is what keeps a rehydrate from looking like a user edit.
   try {
     return JSON.stringify(left) === JSON.stringify(right);
   } catch {
     return false;
   }
 }
+
+/**
+ * The answer a write gives when nothing reached the brain.
+ *
+ * `unavailable` rather than `rejected`: the caller's local value is intact and
+ * still queued, which is what makes a retry correct and what keeps a caller
+ * from rolling back a change the user can still see.
+ */
+function unsyncedResult(
+  signedOut: boolean,
+  error?: unknown,
+  override?: string,
+): AccountSettingsResult<null> {
+  const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return {
+    ok: false,
+    unavailable: true,
+    message: override || detail || (signedOut
+      ? "Sign in to ADE to sync this setting to your account."
+      : "This computer could not reach ADE's account settings service."),
+  };
+}
+
+/** The account changed while this write was in flight; it stays queued. */
+const IDENTITY_CHANGED_MESSAGE =
+  "The signed-in account changed while this was being saved. It will be sent again under the account signed in now.";
 
 /**
  * Starts hydrating from, and writing through to, the account settings store.
@@ -285,7 +374,7 @@ function sameValue(left: unknown, right: unknown): boolean {
  */
 export function startAccountSettingsSync<State = AccountSyncedState>(
   options: AccountSettingsSyncOptions<State>,
-): () => void {
+): AccountSettingsSyncHandle {
   const settings = (options.settings
     ?? (ACCOUNT_SYNCED_SETTINGS as readonly AccountSyncedSetting<State>[])).filter((entry) =>
     isAccountScope(entry.scope),
@@ -300,12 +389,29 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
 
   let stopped = false;
   let applying = false;
+  /**
+   * The REAL account id, or null.
+   *
+   * Never synthesised. The brain fences a settings write against the owner it
+   * holds (`accountCacheStore.mutate` refuses a mutation whose
+   * `expectedAccountUserId` differs from its own), so a placeholder sent as that
+   * fence is not "I don't know" — it is a claim that is always wrong, and the
+   * write stays dirty forever while the poll retries it with the same wrong
+   * value. A caller that has no id sends no fence and lets the store's own
+   * signed-in check decide.
+   */
+  const realAccountUserId = (): string | null => {
+    if (!options.isSignedIn()) return null;
+    return options.getAccountUserId?.()?.trim() || null;
+  };
   const resolveAccountUserId = (): string | null => {
     if (!options.isSignedIn()) return null;
     // The fallback keeps the standalone engine compatible with older test and
-    // hosted-web callers that only exposed a boolean status. The desktop hook
-    // always supplies the real user id, which is what namespaces credentials.
-    return options.getAccountUserId?.()?.trim() || "__signed-in__";
+    // hosted-web callers that only exposed a boolean status. It namespaces this
+    // machine's stamps and dirty keys only; it is never sent as the owner fence
+    // (see `realAccountUserId`). The desktop hook always supplies the real user
+    // id, which is what namespaces credentials.
+    return realAccountUserId() || "__signed-in__";
   };
   let accountUserId = resolveAccountUserId();
   let identityGeneration = 0;
@@ -334,15 +440,26 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
   };
 
   /**
-   * The account-store scope for one setting, or null when it must stay local.
+   * Where one setting is stored in the account store — its scope and key — or
+   * null when it must stay local.
    *
-   * Null is a real answer for a repo-scoped key in a project with no remote:
-   * such a checkout has no identity that means anything on a second machine,
-   * so its settings wait here until it gets one.
+   * Null is a real answer for a repo-scoped key in a project with no remote
+   * (no identity that means anything on a second machine) and for a
+   * per-device key before this computer's device id is known.
+   *
+   * A per-device setting keeps the account-wide scope and carries the device in
+   * its key (`accountDeviceSettingKey`): the relay accepts only the `all` and
+   * `repo:` scopes, and other machines skip the row because no entry of theirs
+   * has that key.
    */
-  const scopeKeyFor = (entry: AccountSyncedSetting<State>): string | null => {
-    if (entry.scope === "account") return ACCOUNT_SCOPE_ALL;
-    return accountRepoScopeKey(options.getProjectRemote?.() ?? null);
+  const targetFor = (entry: AccountSyncedSetting<State>): { scope: string; key: string } | null => {
+    if (entry.perDevice) {
+      const key = accountDeviceSettingKey(options.getLocalDeviceId?.() ?? null, entry.key);
+      return key ? { scope: ACCOUNT_SCOPE_ALL, key } : null;
+    }
+    if (entry.scope === "account") return { scope: ACCOUNT_SCOPE_ALL, key: entry.key };
+    const scope = accountRepoScopeKey(options.getProjectRemote?.() ?? null);
+    return scope ? { scope, key: entry.key } : null;
   };
 
   const stampKey = (scopeKey: string, key: string): string => `${scopeKey} ${key}`;
@@ -372,11 +489,15 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       && identityGeneration === generationAtStart
       && resolveAccountUserId() === userIdAtStart
       && accountUserId === userIdAtStart;
-    const byKey = new Map(settings.map((entry) => [entry.key, entry]));
+    // Indexed by where each entry is stored, so a row matches only its own
+    // scope and (for per-device settings) this computer's key.
+    const byTarget = new Map<string, AccountSyncedSetting<State>>();
     const scopes = new Set<string>();
     for (const entry of settings) {
-      const scopeKey = scopeKeyFor(entry);
-      if (scopeKey) scopes.add(scopeKey);
+      const target = targetFor(entry);
+      if (!target) continue;
+      byTarget.set(stampKey(target.scope, target.key), entry);
+      scopes.add(target.scope);
     }
     const seenRemoteKeys = new Set<string>();
     for (const scope of scopes) {
@@ -384,8 +505,8 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       if (!isCurrentIdentity() || !result.ok) return;
       const state = options.store.getState();
       for (const row of result.value) {
-        const entry = byKey.get(row.key);
-        if (!entry || scopeKeyFor(entry) !== row.scope) continue;
+        const entry = byTarget.get(stampKey(row.scope, row.key));
+        if (!entry) continue;
         seenRemoteKeys.add(stampKey(row.scope, row.key));
         if (dirtyKeys.has(dirtyKey(userIdAtStart, entry.key)) || dirtyKeys.has(dirtyKey(null, entry.key))) continue;
         const stamp = stamps[stampKey(row.scope, row.key)];
@@ -414,11 +535,11 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     if (!hydrateOptions.seedMissing) return;
     const localState = options.store.getState();
     for (const entry of settings) {
-      const scopeKey = scopeKeyFor(entry);
-      if (!scopeKey) continue;
-      const key = stampKey(scopeKey, entry.key);
+      const target = targetFor(entry);
+      if (!target) continue;
+      const key = stampKey(target.scope, target.key);
       if (seenRemoteKeys.has(key) || stamps[key]) continue;
-      push(entry, entry.read(localState));
+      void push(entry, entry.read(localState));
     }
   };
 
@@ -458,45 +579,75 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     entry: AccountSyncedSetting<State>,
     value: unknown,
     existingDirtyKey = dirtyKey(accountUserId, entry.key),
-  ): void {
+  ): Promise<AccountSettingsResult<null>> {
     const api = options.getApi();
-    const scopeKey = scopeKeyFor(entry);
+    const target = targetFor(entry);
     const userIdAtQueue = accountUserId;
-    if (!scopeKey || !api || !options.isSignedIn() || !userIdAtQueue) {
+    if (!target || !api || !options.isSignedIn() || !userIdAtQueue) {
       markDirtyKey(existingDirtyKey);
-      return;
+      return Promise.resolve(unsyncedResult(true));
     }
     try {
       const generationAtQueue = identityGeneration;
       if (resolveAccountUserId() !== userIdAtQueue) {
         markDirtyKey(existingDirtyKey);
-        return;
+        return Promise.resolve(unsyncedResult(false, undefined, IDENTITY_CHANGED_MESSAGE));
       }
+      const owner = realAccountUserId();
       // Calling set is the queue boundary. Do not move the stamp earlier: a
       // signed-out edit must remain dirty and must not suppress its next pull.
       const pending = api.set({
-        scope: scopeKey,
-        key: entry.key,
+        scope: target.scope,
+        key: target.key,
         value,
-        expectedAccountUserId: userIdAtQueue,
+        // Only ever a real id. See `realAccountUserId`.
+        ...(owner ? { expectedAccountUserId: owner } : {}),
       });
       if (identityGeneration !== generationAtQueue || resolveAccountUserId() !== userIdAtQueue) {
         markDirtyKey(existingDirtyKey);
-        return;
+        return Promise.resolve(unsyncedResult(false, undefined, IDENTITY_CHANGED_MESSAGE));
       }
-      stamps[stampKey(scopeKey, entry.key)] = new Date(now()).toISOString();
+      stamps[stampKey(target.scope, target.key)] = new Date(now()).toISOString();
       dirtyKeys.delete(existingDirtyKey);
       persistStamps();
       persistDirtyKeys();
-      void Promise.resolve(pending).then((result) => {
-        if (!result || result.ok !== true) markDirtyKey(existingDirtyKey);
-      }).catch(() => {
+      return Promise.resolve(pending).then((result) => {
+        // The account can change while the request is in flight, and an
+        // acknowledgement that belongs to the account it was sent as says
+        // nothing about the one signed in now. Reported as unavailable rather
+        // than as success, so the caller retries it under the new owner instead
+        // of trusting a confirmation it cannot use.
+        if (
+          identityGeneration !== generationAtQueue
+          || resolveAccountUserId() !== userIdAtQueue
+          || accountUserId !== userIdAtQueue
+        ) {
+          markDirtyKey(existingDirtyKey);
+          return unsyncedResult(false, undefined, IDENTITY_CHANGED_MESSAGE);
+        }
+        if (result?.ok === true) return result;
+        // Still dirty: the local value is the newest one this machine holds and
+        // a later tick, sign-in or `flushKey` retries it.
         markDirtyKey(existingDirtyKey);
+        return result ?? unsyncedResult(true);
+      }).catch((error: unknown) => {
+        markDirtyKey(existingDirtyKey);
+        return unsyncedResult(true, error);
       });
-    } catch {
+    } catch (error) {
       markDirtyKey(existingDirtyKey);
+      return Promise.resolve(unsyncedResult(true, error));
     }
   }
+
+  /** One key's value as this machine holds it, pushed now and awaited. */
+  const flushKey = async (key: string): Promise<AccountSettingsResult<null>> => {
+    const entry = settings.find((candidate) => candidate.key === key);
+    if (!entry) {
+      return { ok: false, unavailable: true, message: `This build does not sync '${key}'.` };
+    }
+    return await push(entry, entry.read(options.store.getState()));
+  };
 
   const flushDirty = (): void => {
     if (!options.isSignedIn() || !accountUserId || !options.getApi()) return;
@@ -505,7 +656,7 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       const accountDirtyKey = dirtyKey(accountUserId, entry.key);
       const signedOutDirtyKey = dirtyKey(null, entry.key);
       if (!dirtyKeys.has(accountDirtyKey) && !dirtyKeys.has(signedOutDirtyKey)) continue;
-      push(entry, entry.read(state), dirtyKeys.has(accountDirtyKey) ? accountDirtyKey : signedOutDirtyKey);
+      void push(entry, entry.read(state), dirtyKeys.has(accountDirtyKey) ? accountDirtyKey : signedOutDirtyKey);
     }
   };
 
@@ -516,11 +667,17 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       const value = entry.read(state);
       if (sameValue(value, lastSeen.get(entry.key))) continue;
       lastSeen.set(entry.key, value);
-      push(entry, value);
+      void push(entry, value);
     }
   };
 
   const unsubscribeStore = options.store.subscribe(onStoreChange);
+
+  /** Push held edits, then merge the account's rows: every resync path runs this. */
+  const resync = (): void => {
+    flushDirty();
+    void pullThenHydrate();
+  };
 
   const unsubscribeAccount = options.subscribeSignedIn?.(() => {
     const nextUserId = resolveAccountUserId();
@@ -531,8 +688,12 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     stamps = readStamps(storage, accountUserId);
     lastSeen.clear();
     for (const [key, value] of snapshot()) lastSeen.set(key, value);
-    flushDirty();
-    void pullThenHydrate();
+    resync();
+  });
+
+  const unsubscribeDevice = options.subscribeLocalDeviceId?.(() => {
+    if (!options.getApi() || !options.isSignedIn()) return;
+    resync();
   });
 
   void pullThenHydrate();
@@ -541,14 +702,18 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     if (!options.getApi() || !options.isSignedIn()) return;
     // Same sync-then-hydrate path as first sign-in, including the identity
     // abort. Seed still happens only when that merge succeeded.
-    flushDirty();
-    void pullThenHydrate();
+    resync();
   }, options.pollMs ?? ACCOUNT_SETTINGS_POLL_MS);
 
-  return () => {
+  const stop = (): void => {
     stopped = true;
     unsubscribeStore();
     unsubscribeAccount?.();
+    unsubscribeDevice?.();
     unschedule(timer);
   };
+  // One function, one extra method: a caller that must not read a stale copy
+  // awaits `flushKey`; every existing caller keeps treating this as the stop
+  // function it has always been.
+  return Object.assign(stop, { flushKey });
 }

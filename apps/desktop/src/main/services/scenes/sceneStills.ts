@@ -1,18 +1,10 @@
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
-import {
-  SCENE_STILL_METADATA_KIND,
-  type ComputerUseArtifactMetadataKind,
-  type ComputerUseArtifactView,
-} from "../../../shared/types/computerUseArtifacts";
+import { SCENE_STILL_METADATA_KIND } from "../../../shared/types/computerUseArtifacts";
 
 /**
  * Scene stills: the picture a generated view leaves behind when it stops.
  *
- * One module because there is one rule set. Filing decides what a still is
- * tagged as and how many may exist; reading is the same query run backwards to
- * answer a finished call's "Views drawn" section. Split across two files the
- * metadata tag was written in one and matched in the other, which is exactly
- * the pair that has to agree.
+ * Filing decides what a still is tagged as and how many may exist.
  *
  * A still is an INDEX, not a drawer row: it is tagged
  * `metadata.kind = "scene_still"` so every proof surface excludes it, and it
@@ -87,13 +79,6 @@ export type ResolveSceneStillOwnerArgs = {
   agentChatService: SceneStillChatService;
   /** The chat the RENDERER named. A claim, checked here, never trusted. */
   claimedSessionId: unknown;
-  /**
-   * The call a scene was drawn on, when it was drawn on one. Omit for the
-   * Proof button, which has no call and must not resolve an owner from one.
-   */
-  voiceCallId?: string | null;
-  /** Answers only for the call that is actually up; see below. */
-  resolveVoiceCallSessionId?: ((callId: string) => string | null) | null;
 };
 
 /**
@@ -102,39 +87,25 @@ export type ResolveSceneStillOwnerArgs = {
  * One function because the desktop handler and the runtime action must agree:
  * proof in ADE is chat-scoped, and a still filed with the wrong owner is filed
  * into someone else's drawer while a still filed with none skips both disk
- * bounds and empties the finished call's "Views drawn" section.
+ * bounds.
  *
- * Two sources, in order. The renderer's claim first, resolved against THIS
- * project's own sessions — `getSessionSummary` rather than a listing, because
- * the CTO's own thread is an identity session that every default filter hides,
- * and because listing every chat to validate one id reads hundreds of files.
- * Then, only for a claim that did not resolve, the call itself: the voice HUD
- * is mounted at the shell outside every chat scope, so it often cannot name a
- * chat at all, and this side owns the call.
+ * The renderer's claim is resolved against THIS project's own sessions —
+ * `getSessionSummary` rather than a listing, because the CTO's own thread is an
+ * identity session that every default filter hides, and because listing every
+ * chat to validate one id reads hundreds of files.
  *
  * A miss drops the OWNER, never the artifact — an unattributed picture is a
  * smaller loss than a misattributed one.
- *
- * NAMING THE LIVE CALL IS ALL A RENDERER CAN DO WITH THIS, AND THAT IS BY
- * DESIGN. `resolveVoiceCallSessionId` answers for the call that is actually up
- * and for nothing else, so the only owner a renderer can reach through it is
- * the CTO thread that call is already running on — a chat the same handler
- * would let it file proof against by claiming it outright. There is no wider
- * reach to close here, so there is no check beyond the live-call one.
  */
 export async function resolveSceneStillOwner({
   agentChatService,
   claimedSessionId,
-  voiceCallId,
-  resolveVoiceCallSessionId,
 }: ResolveSceneStillOwnerArgs): Promise<string | null> {
   const claimed = typeof claimedSessionId === "string" ? claimedSessionId.trim() : "";
   if (claimed && agentChatService) {
     const found = await agentChatService.getSessionSummary(claimed).catch(() => null);
     if (found) return claimed;
   }
-  const callId = typeof voiceCallId === "string" ? voiceCallId.trim() : "";
-  if (callId && resolveVoiceCallSessionId) return resolveVoiceCallSessionId(callId) ?? null;
   return null;
 }
 
@@ -149,8 +120,6 @@ export type FileSceneStillArgs = {
   ownerSessionId: string | null;
   /** Identity of the scene the picture is of: one still per key. */
   sceneScopeKey: string | null;
-  /** Set when the scene was drawn on a voice call; the call card reads by it. */
-  voiceCallId?: string | null;
 };
 
 export type SceneStillFiling = {
@@ -164,7 +133,7 @@ export type SceneStillFiling = {
  *
  * Bounds, both enforced here because both are about the same finite disk:
  *  - One still per `sceneScopeKey`. A scene that settles again — a re-render, a
- *    second window, a call that redraws the same view — supersedes its own
+ *    second window redrawing the same view — supersedes its own
  *    picture rather than leaving a trail of them.
  *  - At most {@link SCENE_STILL_MAX_PER_SESSION} per owning chat, oldest first.
  *
@@ -178,10 +147,8 @@ export function fileSceneStill({
   title,
   ownerSessionId,
   sceneScopeKey,
-  voiceCallId,
 }: FileSceneStillArgs): SceneStillFiling {
   const scopeKey = typeof sceneScopeKey === "string" ? sceneScopeKey.trim() : "";
-  const callId = typeof voiceCallId === "string" ? voiceCallId.trim() : "";
   const filed = broker.ingest({
     backend: { name: "scene", style: "manual", toolName: "scene_still" },
     // The desktop drew these pixels; ADE captured them.
@@ -197,7 +164,6 @@ export function fileSceneStill({
         kind: SCENE_STILL_METADATA_KIND,
         ...(scopeKey ? { sceneScopeKey: scopeKey } : {}),
         sceneTitle: title.slice(0, 200),
-        ...(callId ? { voiceCallId: callId } : {}),
       },
     }],
   });
@@ -250,72 +216,4 @@ function pruneSceneStills(args: {
   // filed through it rather than written and forgotten.
   broker.deleteArtifacts({ artifactIds: doomed });
   return doomed;
-}
-
-/* ─────────────────────────── reading them back ─────────────────────────── */
-
-/** Everything a call record needs to name one still. */
-export type VoiceCallStill = {
-  artifactId: string;
-  uri: string;
-  title: string;
-};
-
-/** The one broker method this needs, so a test can answer with four fields. */
-export type SceneStillArtifactSource = {
-  listArtifacts: (args: {
-    ownerKind?: "chat_session";
-    ownerId?: string | null;
-    metadataKind?: ComputerUseArtifactMetadataKind | null;
-    limit?: number;
-  }) => ComputerUseArtifactView[];
-};
-
-/**
- * How many of a session's STILLS are scanned for one call's.
- *
- * The broker orders newest first and a call's own stills are always among the
- * newest on its session, so a window rather than every still the CTO thread
- * has ever produced.
- */
-const SCENE_STILL_SCAN_LIMIT = 200;
-
-export function findVoiceCallStills(
-  broker: SceneStillArtifactSource | null | undefined,
-  { sessionId, callId }: { sessionId: string | null; callId: string | null },
-): VoiceCallStill[] {
-  // Null-safe by design: `computerUseArtifactBrokerService` is optional on the
-  // runtime, and a call that could not resolve its session has no owner to ask
-  // about. Neither is a reason to fail a hang-up — the record is written either
-  // way, just without a "Views drawn" section.
-  if (!broker || !sessionId || !callId) return [];
-  let rows: ComputerUseArtifactView[];
-  try {
-    rows = broker.listArtifacts({
-      ownerKind: "chat_session",
-      ownerId: sessionId,
-      // Filtered by the QUERY, not afterwards: a CTO thread with a page of
-      // ordinary proof filled the scan window with it and the call's own
-      // pictures fell off the end, so "Views drawn" came back empty on exactly
-      // the sessions that had been busiest.
-      metadataKind: SCENE_STILL_METADATA_KIND,
-      limit: SCENE_STILL_SCAN_LIMIT,
-    });
-  } catch {
-    // The store is a database on disk, and a call record without its pictures
-    // is a smaller loss than a hang-up that throws.
-    return [];
-  }
-  return rows
-    .filter((row) => row.metadata?.voiceCallId === callId)
-    // The broker answers newest first; a transcript reads in the order the call
-    // drew them.
-    .reverse()
-    .map((row) => ({
-      artifactId: row.id,
-      uri: row.uri,
-      title: (typeof row.metadata?.sceneTitle === "string" && row.metadata.sceneTitle.trim())
-        || row.title
-        || "Generated view",
-    }));
 }

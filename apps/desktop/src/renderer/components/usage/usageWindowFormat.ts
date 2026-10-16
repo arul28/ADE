@@ -3,8 +3,9 @@
  *
  * One place to phrase "82% used, resets in 3h", so the pace bars inside the
  * top-bar popover and the "updated 2m ago" line above them cannot describe one
- * window in two different dialects. Live quota lives only in that popover now;
- * the Usage page is spend and history.
+ * window in two different dialects. Live quota lives in the popover (this
+ * machine) and, pooled across machines, in the Usage page's "All machines"
+ * scope; the rest of the page is spend and history.
  */
 import type { UsagePacing, UsageWindow } from "../../../shared/types";
 import type { UsageWindowLabelInput } from "../../../shared/usageWindowPresentation";
@@ -46,6 +47,16 @@ export function formatCountdown(ms: number): string {
   if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${mins}m`;
   return `${mins}m`;
+}
+
+/** The largest unit only, for tight labels: "3d", "4h", "12m", "now". */
+export function formatCountdownShort(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "now";
+  const days = Math.floor(ms / 86_400_000);
+  if (days > 0) return `${days}d`;
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours > 0) return `${hours}h`;
+  return `${Math.max(1, Math.floor(ms / 60_000))}m`;
 }
 
 /**

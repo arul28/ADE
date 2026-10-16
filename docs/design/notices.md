@@ -12,6 +12,7 @@ its own folder. Do not build a one-off version in a feature folder.
 | `showToast`, `updateToast`, `dismissToast` | `components/app/toast/toastStore.ts` (rendered as `ToastCard` in `ToastViewport`) |
 | `confirmDialog`, `promptDialog`, `Dialog`, `DialogHost` | `components/ui/dialog/` |
 | `HeaderSheet` | `components/app/HeaderSheet.tsx` |
+| `ContextMenu`, `ContextMenuEntry` (right-click menus built from a list of rows) | `components/ui/ContextMenu.tsx` |
 | `ViewportOverlayHost` | `components/ui/ViewportOverlayHost.tsx` |
 | `noticeTone`, `NoticeTone` | `components/ui/notice/noticeTones.ts` |
 | `Z_LAYERS` | `components/ui/zLayers.ts` |
@@ -24,10 +25,12 @@ its own folder. Do not build a one-off version in a feature folder.
 | An app-wide state that lasts: signed out, update stuck, relay down, integration broken | `useAppBanner(model)` (docked, the default) |
 | A short one-line prompt the user acts on or dismisses: a link in the clipboard | `useAppBanner(model, { placement: "floating", priority: APP_BANNER_PRIORITY.prompt })` (`updatePrompt` keeps a ready-to-install update ahead of generic prompts) |
 | A state of one tab, pane, or panel: a lane needs a rebase, a PR is blocked | `<Banner model={...} layout="inline" />` inside that surface |
+| A short state of the chat a composer writes to: settled, snoozed, the lane is on another branch | `<StatusChip tone ...>` inside the composer's one `<StatusStrip>` (chips sit side by side; the explanation goes in `tooltip`) |
 | Something that just happened: lane created, PR checks failed, undo available | `showToast({...})` |
 | Yes/no before an action | `await confirmDialog({...})` |
 | One line of text input | `await promptDialog({...})` |
 | A modal with its own content: a form or a picker | `<Dialog open onOpenChange title ...>` |
+| One thing to read beside the page you are on (an issue) | `<Dialog placement="right" ...>`, the side sheet |
 | A dropdown that hangs off the top bar | `<HeaderSheet>` |
 
 Rules of thumb. A banner describes a **state**: it stays while the state
@@ -138,7 +141,7 @@ clicks ×. It does not run on auto-dismiss.
 | Kind | `durationMs` |
 |---|---|
 | Ordinary event | omit it: the 6 s default |
-| Worth reading: PR checks failed, review requested, a multi-line message | `18_000` (see `PR_TOAST_DURATION_MS`) |
+| Worth reading: PR checks failed, review requested, a multi-line message | `READABLE_TOAST_DURATION_MS` (18 s, from `toastStore`) |
 | Represents live state or needs an answer: a progress list, "N sessions idle" | `0` (sticky; dismiss or update it yourself) |
 
 Hovering a toast pauses its timer. Pass a stable `id` to replace a toast in
@@ -153,15 +156,15 @@ Pick a named layer and never type a z-index:
 
 | Layer | Value | For |
 |---|---|---|
+| `menuPanel` | 60 | A submenu panel floating off its host menu row. Relative, not absolute: the panel is a child of the host menu, so the host's own layer decides what the whole menu covers |
 | `chatDraftDeparture` | 79 | Departing Work draft chrome during the first-message handoff |
 | `chatFirstMessageHandoff` | 80 | Composer and first-message handoff animation |
-| `tabMenu` | 90 | Project-tab machine menu below sheets and app popovers |
 | `popover` | 100 | Anchored pickers and menus (model picker, reasoning effort) |
 | `sidebar` | 100 | The app sidebar |
+| `floatingBanner` | 115 | Floating top-center banners, below the sheets: a sheet someone just opened is what they are looking at, and a banner drawn over it covers its header |
 | `sheet` | 120 | `HeaderSheet` top-bar dropdowns and their click-away layer |
-| `hud` | 130 | The CTO voice-call HUD; above sheets so End call stays clickable |
-| `floatingBanner` | 140 | Floating top-center banners |
 | `dialog` | 200 | `Dialog` panel and scrim |
+| `dialogPopover` | 205 | An anchored menu or picker opened from inside a dialog; below nested confirms |
 | `nestedDialog` | 210 | A confirm or prompt raised from inside another dialog |
 | `toast` | 250 | `ToastViewport`; above dialogs so a toast raised from a dialog is visible |
 | `tooltip` | 300 | Tooltips and hover cards, including ones inside dialogs |
@@ -175,12 +178,20 @@ z-index, transform, filter or `isolation` would trap toasts under dialogs again.
 
 `ViewportOverlayHost` owns viewport anchoring and pointer passthrough for
 transient overlays that are not banners, sheets, dialogs, or toasts, including
-the call HUD, capture notice, and chat handoff animation. The hosts
+the capture notice and chat handoff animation. The hosts
 (`ToastViewport`, `HeaderSheet`, `AppBannerHost`, `Dialog`, and
 `ViewportOverlayHost`) already use named layers. If you need a z-index at all,
 you are probably building an overlay the hosts already provide. A new layer
 goes in `zLayers.ts`, with a comment explaining why the existing layers do not
 work.
+
+These layers order surfaces across the app. Inside one surface — a find bar
+over its own transcript or diff, a pill over its own list — the small Tailwind
+steps (`z-10` to `z-40`) order that surface's children against each other.
+They create no stacking context, so they share one with their neighbours:
+keep them below every `Z_LAYERS` value (all are 60 or more) and do not use
+them for anything that must cover another surface. The lint only flags `z-50`
+and arbitrary `z-[N]` with N ≥ 50, so this rule is yours to keep.
 
 ## Copy
 

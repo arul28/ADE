@@ -1,4 +1,5 @@
 import type { ThemeId } from "../../state/appStore";
+import type { ResolvedAdeThemePalette } from "../../../shared/theme";
 import {
   BACKDROP_FRAME_MS,
   BACKDROP_IDLE_FRAME_MS,
@@ -10,6 +11,7 @@ import {
   isSoftwareRenderer,
   resolveBackdropSize,
 } from "./workToolPickerBackdropShader";
+import type { WorkToolPickerBackdropTheme } from "./workToolPickerBackdropShader";
 
 /**
  * The tools picker backdrop's GL side: context, program, uniforms, the rAF loop
@@ -78,9 +80,20 @@ export type BackdropRenderer = {
 export function createBackdropRenderer(options: {
   canvas: HTMLCanvasElement;
   theme: ThemeId;
+  /** The active theme's palette; omitted for the two stylesheet themes. */
+  palette?: ResolvedAdeThemePalette;
+  /** A finished ramp that wins over the theme's, e.g. a scene picture's colours. */
+  override?: WorkToolPickerBackdropTheme;
   onRefused: () => void;
   /** When false, the last frame stays on the canvas and the loop does not run. */
   playing?: boolean;
+  /**
+   * The app's own Reduce-motion preference. It is OR'd with the OS
+   * `prefers-reduced-motion` query — either one stops the loop and the cursor
+   * swirl — so the setting reaches this canvas and not only the CSS the
+   * `data-motion` attribute covers.
+   */
+  reduceMotion?: boolean;
   /**
    * The `performance.now()` value the animation clock counts from. Canvases
    * that share an origin and a size draw the same frame, so several
@@ -186,7 +199,7 @@ export function createBackdropRenderer(options: {
     view: context.getUniformLocation(program, "u_view"),
   };
 
-  const palette = backdropThemeFor(theme);
+  const palette = options.override ?? backdropThemeFor(theme, options.palette);
   const colorCount = Math.min(palette.colors.length, 8);
   const flat = new Float32Array(24);
   for (let i = 0; i < colorCount; i += 1) {
@@ -221,7 +234,7 @@ export function createBackdropRenderer(options: {
   context.uniform4f(uniform.cursor, 0, UNIFORMS.cursorStrength, UNIFORMS.cursorRadius, 0);
   context.uniform4f(uniform.view, 0, 0, 1, 1);
 
-  const reduceMotion = matches("(prefers-reduced-motion: reduce)");
+  const reduceMotion = matches("(prefers-reduced-motion: reduce)") || options.reduceMotion === true;
   // A trackpad or a mouse can swirl the mesh. A touchscreen cannot hover, so
   // the "cursor" there is a tap that would yank the background sideways.
   const cursorEnabled = !reduceMotion && matches("(hover: hover)") && matches("(pointer: fine)");
@@ -474,11 +487,19 @@ export function createBackdropRenderer(options: {
     requestRender();
   };
   const measureLayout = () => {
+    const previous = bounds;
     bounds = canvas.getBoundingClientRect();
     // Resizing a WebGL canvas clears it. A running loop repaints on its next
     // frame, but a paused one (window blurred, tab hidden) would stay blank,
     // so repaint the last moment now.
     if (resizeCanvas()) draw(reduceMotion ? 0 : lastSeconds);
+    // Only a canvas that actually moved or changed size is a sign of life. A
+    // layout pass that changed nothing (the window-level observers fire for
+    // far more than this canvas) must not restart the freeze clock, or any
+    // streaming chat on screen keeps the backdrop drawing forever.
+    const moved = previous.x !== bounds.x || previous.y !== bounds.y
+      || previous.width !== bounds.width || previous.height !== bounds.height;
+    if (!moved) return;
     lastActivity = performance.now();
     updatePointerTarget();
     requestRender();
@@ -492,12 +513,32 @@ export function createBackdropRenderer(options: {
    * a terminal and a chat stream. The rect cannot change more than once per
    * frame anyway, so coalescing loses nothing.
    */
+  let layoutStale = false;
   const updateLayout = () => {
+    // Out of view includes a parked project surface (`content-visibility:
+    // hidden`), where reading the rect forces the browser to render the whole
+    // hidden surface, and the capture-phase scroll listener fires for every
+    // scroll in the visible one. Measure once it is back in view instead.
+    if (!inView) {
+      layoutStale = true;
+      return;
+    }
     if (layoutRaf !== 0 || disposed) return;
     layoutRaf = requestAnimationFrame(() => {
       layoutRaf = 0;
       if (!disposed) measureLayout();
     });
+  };
+  /**
+   * Capture-phase scroll fires for every scroller in the window, chats
+   * included, and a streaming chat scrolls itself several times a second. Only
+   * a scroller that contains the canvas can move it, so every other scroll is
+   * ignored without measuring.
+   */
+  const onAnyScroll = (event: Event) => {
+    const target = event.target;
+    if (target instanceof Node && target !== document && !target.contains(canvas)) return;
+    updateLayout();
   };
   const onVisibilityChange = () => {
     visible = document.visibilityState === "visible";
@@ -538,7 +579,7 @@ export function createBackdropRenderer(options: {
   window.addEventListener("pointermove", onPointerMove, { passive: true });
   if (cursorEnabled) {
     window.addEventListener("pointercancel", onPointerLeave);
-    window.addEventListener("scroll", updateLayout, true);
+    window.addEventListener("scroll", onAnyScroll, true);
     document.documentElement.addEventListener("pointerleave", onPointerLeave);
   }
 
@@ -546,6 +587,10 @@ export function createBackdropRenderer(options: {
   resizeObserver.observe(canvas);
   const intersectionObserver = new IntersectionObserver(([entry]) => {
     inView = entry?.isIntersecting ?? true;
+    if (inView && layoutStale) {
+      layoutStale = false;
+      updateLayout();
+    }
     if (inView) wake();
     else stop();
   });
@@ -625,7 +670,7 @@ export function createBackdropRenderer(options: {
       window.removeEventListener("pointermove", onPointerMove);
       if (cursorEnabled) {
         window.removeEventListener("pointercancel", onPointerLeave);
-        window.removeEventListener("scroll", updateLayout, true);
+        window.removeEventListener("scroll", onAnyScroll, true);
         document.documentElement.removeEventListener("pointerleave", onPointerLeave);
       }
       context.deleteBuffer(buffer);

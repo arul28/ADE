@@ -169,6 +169,7 @@ export function LaneContextMenu({
   onAppearanceChanged,
   onStartChatInLane,
   onToggleWorkPin,
+  onOpenHistory,
   workPinnedLaneIds,
 }: {
   laneContextMenu: { laneId: string; x: number; y: number };
@@ -185,6 +186,8 @@ export function LaneContextMenu({
   onStartChatInLane?: (laneId: string) => void;
   /** Work-sidebar pin (separate from the Lanes tab's own pins). */
   onToggleWorkPin?: (laneId: string) => void;
+  /** History's commit graph on the lane. */
+  onOpenHistory?: (laneId: string) => void;
   workPinnedLaneIds?: string[];
 }) {
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
@@ -228,6 +231,7 @@ export function LaneContextMenu({
     ...(onAppearanceChanged ? { onAppearanceChanged } : {}),
     ...(onStartChatInLane ? { onStartChatInLane } : {}),
     ...(onToggleWorkPin ? { onToggleWorkPin } : {}),
+    ...(onOpenHistory ? { onOpenHistory } : {}),
     ...(workPinnedLaneIds ? { workPinnedLaneIds } : {}),
     ...(openIn ? { openIn } : {}),
   };

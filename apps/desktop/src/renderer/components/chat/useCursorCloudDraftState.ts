@@ -10,6 +10,11 @@ export type CursorCloudRepoListState =
 
 type UseCursorCloudDraftStateInput = {
   cursorCloudAvailable: boolean;
+  /**
+   * The signed-in Cursor account, only as a refetch trigger: a new account
+   * reads its own repo list. The host's cache is keyed by API key, not this.
+   */
+  cursorAccountKey: string | null;
   laneId: string | null;
   laneGitRemote: string | null;
   laneGitBranch: string | null;
@@ -17,6 +22,16 @@ type UseCursorCloudDraftStateInput = {
   laneGitRemoteStatus: LaneGitRemoteStatus;
   laneGitRemoteError: string | null;
 };
+
+/**
+ * The account's Cursor repositories. The host caches and shares the request,
+ * because Cursor allows five a minute per account; `force` (Retry) skips it.
+ */
+function loadCursorCloudRepoUrls(force: boolean): Promise<string[]> {
+  return window.ade.ai
+    .cursorCloudListRepositories(force ? { refresh: true } : undefined)
+    .then((repos) => repos.map((repo) => repo.url));
+}
 
 /**
  * Owns the draft-only Cursor Cloud composer state: cloud mode, Auto-PR, and the
@@ -27,6 +42,7 @@ type UseCursorCloudDraftStateInput = {
  */
 export function useCursorCloudDraftState({
   cursorCloudAvailable,
+  cursorAccountKey,
   laneId,
   laneGitRemote,
   laneGitBranch,
@@ -49,16 +65,18 @@ export function useCursorCloudDraftState({
     setRepoFetchGeneration((current) => current + 1);
   }, []);
 
+  const repoAccountKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!cursorCloudAvailable) return;
-    if (repoStateRef.current.status === "ready") return;
+    if (repoStateRef.current.status === "ready" && repoAccountKeyRef.current === cursorAccountKey) return;
+    repoAccountKeyRef.current = cursorAccountKey;
     let cancelled = false;
     setRepoState({ status: "loading" });
-    void window.ade.ai
-      .cursorCloudListRepositories()
-      .then((repos) => {
+    // A Retry (generation > 0) skips the cache; the first read may reuse it.
+    void loadCursorCloudRepoUrls(repoFetchGeneration > 0)
+      .then((urls) => {
         if (cancelled) return;
-        setRepoState({ status: "ready", urls: repos.map((repo) => repo.url) });
+        setRepoState({ status: "ready", urls });
       })
       .catch((error: unknown) => {
         if (cancelled) return;
@@ -67,7 +85,7 @@ export function useCursorCloudDraftState({
     return () => {
       cancelled = true;
     };
-  }, [cursorCloudAvailable, laneId, repoFetchGeneration]);
+  }, [cursorAccountKey, cursorCloudAvailable, laneId, repoFetchGeneration]);
 
   useEffect(() => {
     if (!cursorCloudAvailable) {

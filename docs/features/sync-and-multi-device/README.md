@@ -23,9 +23,14 @@ does and does not travel, and the layers that implement it. Deep-dives:
   remote commands.
 - `remote-commands.md` — the `syncRemoteCommandService` registry that
   turns client actions into runtime-executed mutations.
-- `cross-machine-session-handoff.md` — the clean/published Git contract,
-  bounded context capsule, destination setup, route binding, and
-  idempotent recovery used by **Continue on another machine**.
+- `cross-machine-agents.md` — agents and the CLI on other machines:
+  `--machine`, `--all-machines`, children that wake parents across machines and
+  projects, remote device drive with proof filed back.
+- `cross-machine-session-handoff.md` — moving a Work chat to another
+  machine: the brain-owned move record and its states, agent and CLI control,
+  approval, the source banner and send routing, the Git contract (clean and
+  published, or uncommitted work carried as a bundle), the bounded context
+  capsule, destination setup, and idempotent recovery.
 - `push-notifications.md` — Activity's account-wide source of truth and
   its APNs + Live Activity pipeline: machine publishers, the Cloudflare
   consolidation relay, desktop/web/ADE Code/iOS reads, native Mac presentation,
@@ -633,6 +638,23 @@ package. The desktop tree only contains thin re-export proxies plus the
 legacy fallback; do not edit the desktop copies expecting the runtime to
 see your change.
 
+The iOS companion keeps a focused machine connection and a separate roster
+connection to each connected machine. `MachineFleet` owns the connected set,
+the four-machine limit, and foreground/background lifecycle; `MachineConnection`
+owns each roster socket and its bounded retry state. The Lanes and PRs screens
+read each live machine's checkout on demand, while chat, file, and CTO commands
+carry that machine and project identity back to the owning runtime.
+
+- `apps/ios/ADE/Services/MachineFleet.swift` and `MachineConnection.swift` —
+  account-wide connected machines and their lightweight roster sockets.
+- `apps/ios/ADE/Services/SyncService+RemoteLanes.swift` and
+  `apps/ios/ADE/Views/Lanes/LaneRemoteMachines.swift` — machine-qualified lane
+  reads and stale-result handling for the Lanes tab.
+- `apps/ios/ADE/Views/PRs/PrRemoteMachines.swift` — machine-qualified PR-to-lane
+  links for the PR list and detail screens.
+- `apps/ios/ADE/Services/SyncService+CtoHome.swift` — shared repository CTO
+  home selection and fail-closed routing when its machine is offline.
+
 Runtime support files outside `services/sync/`:
 
 - `apps/desktop/src/main/services/state/crsqliteExtension.ts` and
@@ -788,7 +810,8 @@ Runtime support files outside `services/sync/`:
   end-to-end failure is never retained. The relay route therefore appears
   in the directory without waiting for an external client to open the first
   tunnel. A 30-second heartbeat keeps the Worker row inside its 90-second online
-  window and carries the bounded, token-free provider/model/preset inventory
+  window (a heartbeat whose fields are unchanged updates only `last_seen_at`,
+  one billed D1 row) and carries the bounded, token-free provider/model/preset inventory
   summary used by the Accounts page. Failed publications retry after 1, 2, 5,
   10, then 20 seconds so a
   short outage normally recovers within the lease, and a 401 forces one token
@@ -1085,7 +1108,23 @@ Runtime support files outside `services/sync/`:
   stamped by the Worker and never by the caller, so no machine with a wrong
   clock can win an exchange; the caller's own `changedAt` is kept beside it for
   diagnostics and is never authoritative. Machine-scoped settings never arrive
-  here at all.
+  here at all. A setting that is account-scoped but one-value-per-computer — the
+  Apple device options — keeps the account-wide scope and carries the device in
+  the key instead (`device.<syncDeviceId>.<key>`, `accountDeviceSettingKey` in
+  `shared/accountSettingsScope.ts`), because the relay accepts only the `all`
+  and `repo:` scopes; another machine's row simply has a different key, and the
+  brain reads its own `device.<id>.<key>` before falling back to the old
+  account-wide key (`readAppleDeviceSetting` in `apps/ade-cli/src/bootstrap.ts`).
+- `apps/desktop/src/shared/accountSettingsScope.ts`,
+  `apps/desktop/src/renderer/lib/accountSettingsSync.ts`, and
+  `useAccountSettingsSync.ts` — the renderer's half of the account settings
+  path. `accountSettingsScope.ts` derives the store key from the four-value
+  setting scope (`accountSettingScopeKey` for `account` / `account-repo`, and
+  `accountDeviceSettingKey` for per-device rows, which returns null until the
+  device id is known); `accountSettingsSync.ts` is the local-first
+  write-through engine that hydrates newer remote rows and pushes local edits
+  with a per-key stamp and a dirty retry queue. Its registry is the only list of
+  what travels; machine-scoped values are absent by construction.
 - `apps/ade-cli/src/services/account/accountSettingsStore.ts` and
   `accountCacheStore.ts` — the machine's copy and its shared owner/epoch,
   queue, cursor, and encrypted-cache primitives. Reads never touch the
@@ -1114,6 +1153,28 @@ Runtime support files outside `services/sync/`:
   and it is built only when sync is enabled — a `--no-sync` brain has no store
   at all, which is a stronger guarantee that a test runtime cannot reach the
   account than a store with its uploads turned off.
+  The background sync is a 30 s tick, but it pulls only when it must: the push
+  relay returns per-account settings and vault **change marks** on every
+  machine publish (`accountChanges`, recorded by `pushRelayClient` into
+  `accountChangeMarks.ts`). A moved mark pulls at once; otherwise a tick pulls
+  only with queued edits, after a failed or never-run sync, when marks are
+  older than 90 s (no presence heartbeat, or an older relay that sends none),
+  or every 5 min as a safety net. A skipped tick still notifies listeners
+  `ready`, so the vault's follow-up work keeps its cadence. "Already synced" is
+  bound to the account and the cache epoch, so a reset, purge, or
+  account switch always pulls again before reporting `ready`. A failing sync
+  backs off instead of retrying every tick: 30 s, doubling to 10 min, and never
+  sooner than 60 s after a relay 429 (rate limit or the relay's daily request
+  budget). The backoff belongs to the account that earned it, holds the tick,
+  the change-mark listener, read-path syncs and post-write uploads, and does
+  not report `ready` while it lasts; an explicit `sync()` still makes one
+  attempt. The vault store (not settings) uploads a local write about 250 ms
+  after it lands instead of on the next tick, so another machine sees it on
+  its next heartbeat. `sync({ maxAgeMs })` answers from the cache when the last
+  successful pull is that recent and nothing is queued, which is how a read by
+  name asks for freshness without a request per call. A mark is
+  `<newest updated_at>#<rows at that instant>`, so a second write in the same
+  millisecond still moves it.
 - `apps/ade-cli/src/services/account/accountVaultStore.ts` — the machine's
   account-credential cache. It uses `account-vault.json.enc`, an atomic
   machine-key-encrypted envelope with `0600` permissions; a legacy
@@ -1135,8 +1196,23 @@ Runtime support files outside `services/sync/`:
   values. A source that stays pending or fails clears the runtime latch so a
   later vault-ready tick can retry it; completed sources stay protected by
   their receipts.
+- `apps/ade-cli/src/services/account/accountRuntimeLifecycle.ts` — pulls
+  `project_secret` rows out of the vault on every vault-ready sync tick and on
+  the initial sync, deliberately outside the migration latch. A secret another
+  machine adds tomorrow still has to arrive, and the one-shot migration can
+  never see it. `project_secret.pullFromAccount` (`ade secrets pull`, Settings >
+  Secrets > Pull from account) forces a vault sync with the relay and then runs
+  the same pull. `project_secret.get` / `list` (agents, `ade secrets get|list`,
+  the Secrets page) refresh from the account first — at most one request per
+  10 s, and waiting at most 3 s before answering from this machine's copy — so
+  a secret added on another machine moments ago is found. A miss says whether
+  the account was checked or could not be reached. Rows this machine saved
+  that have not uploaded yet carry `uploadPending` (Settings shows
+  "Uploading", the CLI `account (uploading)`), read from the vault's
+  `pendingKeys(scope, kind)`.
 - `account_settings` action domain (`list`, `get`, `set`, `remove`, `sync`) and
-  `account_vault` action domain (`list`, `get`, `set`, `remove`, `sync`) — how
+  `account_vault` action domain (`list`, `get`, `set`, `remove`, `sync`,
+  `pendingKeys`) — how
   desktop, `ade code`, the CLI, and iOS reach the stores through the brain.
   The domains remain separate: settings are non-secret account preferences,
   while vault reads/writes are host/CTO policy-gated credential operations.
@@ -1213,7 +1289,7 @@ Runtime support files outside `services/sync/`:
   `wrangler d1 execute --env production` already reaches, so support recovery is
   a direct D1 statement after these logs identify the row.
 - `apps/account-directory/src/diagnostics.ts` — `POST /diagnostics/upload`, the
-  write-only R2 sink behind the desktop's **Send to ADE** action and
+  write-only R2 sink behind the desktop's **Report issue** button and
   `ade report-issue --send`. It is matched in `index.ts` *before* the directory
   router, because it is the one route here that is not account-scoped and the
   directory's exact-origin CORS rule and 404-on-unknown-`OPTIONS` fit neither an
@@ -1253,7 +1329,10 @@ Runtime support files outside `services/sync/`:
   10,000 events / 16 MB total / 1 MB per event by default, emits live
   subscribers best-effort even for oversize events, and returns
   `eventEpoch`, `gap`, and `oldestCursor` from `drain()` so clients can
-  reset stale cursors when a daemon restarts or history was evicted. One
+  reset stale cursors when a daemon restarts or history was evicted. Transient
+  events (App Control screencast frames) reach live subscribers but are never
+  retained, and because their ids are never kept `gap` is judged against the
+  newest id lost to eviction rather than the oldest retained id. One
   `drain()` is one RPC reply, so it has a byte budget (1 MiB by default,
   `DEFAULT_EVENT_BUFFER_DRAIN_MAX_BYTES`) as well as a count cap. It always
   returns at least one event and sets `hasMore` when the budget stops it. A
@@ -1263,21 +1342,21 @@ Runtime support files outside `services/sync/`:
   reply, and the host closed a remote desktop's RPC channel on every poll.
 - `apps/ade-cli/src/runtimeEventVolume.ts` — the one predicate for "this
   runtime event carries a video frame, not a state change"
-  (`isHighVolumeRuntimeEvent`, currently App Control's `frame` events). App
-  Control's screencast is a CDP `Page.screencastFrame` pass-through at up to
-  1600x1000, quality 78, `everyNthFrame: 1` — 80–350 KB per frame at monitor
-  refresh, pushed whenever a session is attached whether or not anything is
-  watching. On a local socket that is merely wasteful; over a paired sync
-  transport it is fatal, because runtime RPC rides `rpc_data`, a **required**
-  send the host buffers rather than drops, so the peer was closed with 4001
-  "Required sync response backpressured" the moment `bufferedAmount` passed
-  16 MiB — roughly every ten seconds for a desktop bound to a remote runtime
-  with the Work tab open. The frames were not even rendered, since App Control
-  is reported unavailable for a remote project. Frames are therefore **opt-in
-  per subscription**: a subscriber that can actually paint them (a desktop on
-  its own local runtime) asks for them, and nobody else pays. Skipping is the
-  only correct response to a frame nobody asked for — a queued stale frame is
-  worse than none, because the next one is already better.
+  (`isHighVolumeRuntimeEvent`, currently App Control's `frame` events) plus
+  `runtimeEventFrameLaneId`, which keeps each lane's newest skipped frame
+  apart. App Control's screencast is a CDP `Page.screencastFrame` pass-through
+  at up to 1600x1000, quality 78, `everyNthFrame: 1` — 80–350 KB per frame at
+  monitor refresh. The screencast streams only while something shows or
+  records the lane: `appControl.setFrameDemand` records each source's lanes, a
+  frame is transient in the event buffer (live-delivered, never retained), and
+  a frame for a client that is behind is skipped rather than queued, with the
+  newest skipped frame of each lane following when the socket drains. Over a
+  paired sync transport this matters most, because runtime RPC rides
+  `rpc_data`, a **required** send the host buffers rather than drops, so a
+  queued frame could close the peer with 4001 "Required sync response
+  backpressured". Frames are therefore also **opt-in per subscription**: only
+  a desktop on its own local runtime asks for them, and a remote binding never
+  does, so nobody pays for frames it cannot paint.
 - `apps/ade-cli/src/services/sync/syncStatusEventPublisher.ts` — coalescing
   publisher for `sync-status` runtime events. Every status transition was
   pushed straight onto the runtime event buffer carrying a full ~5 KB
@@ -1359,7 +1438,7 @@ Desktop connection UI:
   host is still failing and retrying. Both used to report `sync_disabled`, which
   told a user whose sync host was crash-looping that sync was switched off and
   sent them hunting for a switch that was already on. `sync_not_started` reads
-  "sync hasn't started on this computer yet" and offers `ade doctor`, which is
+  "other devices can't reach this computer yet" and offers `ade doctor`, which is
   the surface that can actually say why. It is produced by `syncService.ts` and
   `projectlessSyncSnapshot.ts`, and by the account publisher's initial health
   before its first attempt. The Machines panel treats it as a non-publishing
@@ -1408,23 +1487,37 @@ Desktop connection UI:
   top-bar Connections surface with Machines, Phone, and Web tabs. The
   panel owns its header close control and passes the current in-app route to the
   Account page so signed-out users can return to the exact surface they left.
+  The desktop Connections control ends with the same account avatar shown in
+  Settings; its active-session action is **Account Settings**. In the top bar,
+  Connections follows Activity, while Cursor, Linear, and Usage appear before
+  Activity; narrow windows collect those controls in the Connections and usage
+  menu.
 - `apps/desktop/src/renderer/components/remoteTargets/RemoteTargetList.tsx` and
   `remoteMachineModel.ts` — the Machines list's one **This computer** card, and
   the only place publication state is worded. `describeThisComputerCard` renders
   a single sentence from `describeUnpublishedAccountDirectory` and one button
   whose label `thisComputerAction` decodes from the brain's refusal code
   (`Reconnect this computer`, `Sign in again`, `Retry`, or `Repair`), with the
-  channel-prefixed brain version beneath it. The list no longer renders a second
-  banner under the Machines heading; the card is the only reconnect affordance.
+  machine's version chip beside it. The state line carries a quiet status dot
+  rather than a check or warning icon, because it is a state with a fix beside
+  it. The list no longer renders a second banner under the Machines heading;
+  the card is the only reconnect affordance.
   A device sign-in it starts shows the browser-open confirmation (the code and a
   lone **Cancel**) or, when the handoff failed, the URL with **Copy link**.
   `ConnectionsPanel` passes `hideDirectorySummary` to `ThisMacCard` so the
   popover's top identity card cannot repeat the same sentence.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` —
   Connections uses the focused `"phone"` and `"web"` variants beneath a
-  shared **This computer** card. The card owns the pairing-PIN manager and the
-  internal phone QR; the Phone tab explains sign-in, QR + PIN, and Nearby + PIN,
-  while Web is account-sign-in only. When a configured PIN is available only
+  shared **This computer** card. The card draws the computer as its
+  machine-identity tile with a version chip (`MachineIdentity.tsx`), reading
+  this computer's machine key and last power report once per sign-in so the tile
+  matches what other devices draw for it. The card owns the pairing-PIN manager
+  and the internal phone QR; the Phone tab explains sign-in, QR + PIN, and
+  Nearby + PIN, while Web is account-sign-in only. When the status line already
+  says sync has not started, the card drops the listener's line for the same
+  state so it is not said twice; the listener's internal "no active sync project
+  scope" reason reads "Other devices can reach this computer once a project is
+  open in ADE". When a configured PIN is available only
   as its at-rest PBKDF2 hash after a runtime restart, the This computer card can
   generate and set a new six-digit PIN instead of leaving copy disabled.
   Initial-load failures show a short recovery action while keeping the raw
@@ -1480,15 +1573,18 @@ Desktop connection UI:
 - `apps/desktop/src/renderer/hooks/useBrainRepair.ts` and
   `apps/desktop/src/renderer/components/settings/BrainRepairButton.tsx` — the
   shared **Repair** affordance for a brain that cannot read the stored account
-  session. The hook calls `window.ade.app.restartBackgroundService()`
+  session. The hook calls `account.repairSession` (credential store first, then
+  the restart) and falls back to `window.ade.app.restartBackgroundService()`
   (`ade.app.restartBackgroundService`), which restarts this Mac's
   `com.ade.runtime` launch agent and resolves only once the replacement answers
   a ping — readiness is observable only in the main process, so the renderer
   awaits it rather than sleeping and hoping. The IPC is optional in
   `global.d.ts`: the hosted-web adapter and browser mock cannot touch a launch
   agent, so `repair.available` feature-detects before any surface offers the
-  button. A rejected restart renders "Repair failed — quit and reopen ADE."
-  with the technical detail in the `title`; `onSettled` runs on both paths so the
+  button. A rejected restart renders "Repair didn't finish." with the main
+  process's sentence and the technical detail in the `title`, and a service that
+  stayed down adds a **Restart ADE** button rather than an instruction to quit
+  and reopen; `onSettled` runs on both paths so the
   caller's banner is re-derived either way. The button accepts an optional
   `disabled` so a sibling action (Account **Reconnect this computer**) can block
   Repair while it is in flight. The This Mac card, the Machines panel's
@@ -1501,7 +1597,9 @@ Desktop connection UI:
   (`thisComputerAction`), beside **Repair**, with session-state-aware copy from
   `describeThisComputerMissing` that does not treat absence as proven removal.
   Its version line names the brain's channel-stamped version, falling back to the
-  package version only when the brain cannot answer and saying which it used. See
+  package version only when the brain cannot answer and saying which it used. Each
+  row's glyph is the machine's identity tile (`MachineIdentity.tsx`), the same
+  drawing and color the Machines list and This computer card use. See
   [onboarding and settings](../onboarding-and-settings/README.md).
 - `apps/desktop/src/shared/runtimeErrors.ts` — canonical cross-process error
   messages and predicates shared by the local-runtime pool, main IPC fallback,
@@ -1534,7 +1632,12 @@ Cross-machine Work union:
   contract as `decodeForeignLanes`, validating every field the badge path reads
   (`id`, `laneId`, `headBranch`, `githubPrNumber`, `githubUrl`, `state`) so a
   peer on an older build cannot produce a `PR #undefined` chip or one whose
-  click is a silent no-op. See
+  click is a silent no-op. A newly opened PR appears in a machine's slice only
+  once its owner has mapped it: the owner's poller repo-snapshot discovery sweep
+  is the path that maps a `gh pr create` row to its lane (the desktop focus
+  reconcile reaches only a project open on the owner's own computer), and a
+  pinned chat additionally asks the owner for a non-forced reconcile on its
+  header mount and window refocus. See
   [Pull requests](../pull-requests/README.md#which-machine-answers-a-pr-read).
   A detached chat created
   against another `OpenProjectBinding` is optimistically filed in that
@@ -1548,6 +1651,15 @@ Cross-machine Work union:
   `isThisMachine` decides whether the amber elsewhere glyph appears. Thus a
   remote-bound tab still labels every remotely owned lane, including those in
   its primary list rather than the foreign union.
+  A connection snapshot forces a status read of other machines only when the
+  reachable machines or their projects (id, root, origin) change. The module
+  keeps a content signature of those fields, so a snapshot that changes nothing
+  it reads — a re-stamped timestamp, or an error on a machine that stays down —
+  does not start a read; the main process likewise broadcasts a connection
+  snapshot only when something other than `lastAttemptedAt` changes, comparing
+  structured fields by content. The store republishes a machine slice's sync
+  stamps at most every 10 s when a read has no other news, so a stamp-only
+  change does not re-render every surface that lists machines.
   `requestCrossMachineLanesForMachine(machineId)` is the module's one
   on-demand escape from the slow foreign lane cadence, for a surface that is
   about to route work at a machine and needs its lane catalog now. It forgets
@@ -1594,25 +1706,42 @@ Cross-machine Work union:
 
 Cross-machine Work chat handoff:
 
-- `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` and
-  `CrossMachineHandoffModal.tsx` — Handoff-tab entry point and the staged
-  source/destination/clone/review/completion UI, including the destination
-  chat's model / reasoning / fast-mode / permission controls and the
-  fast-forward offer for a clean-but-behind destination lane.
+- `apps/desktop/src/main/services/chat/crossMachineHandoffOrchestrator.ts` —
+  the source brain's move: the durable record per chat (approval, queued
+  until the turn ends, sending checkpoints, continued / failed / cancelled /
+  unknown), the outbox capsule that retry and restart reuse, agent permission
+  mapping, and the copy for the approval card and ended notice.
+- `apps/desktop/src/main/services/chat/crossMachineHandoffSource.ts` — the kv
+  move store, the outbox files, and `inspectLane`, the one source check that
+  returns every blocker with its fix.
+- `apps/desktop/src/main/services/chat/handoffGitBundle.ts` — opt-in transfer
+  of uncommitted and unpushed work: private-index snapshot, bundle of what
+  origin lacks, LFS and submodule refusal, apply with full rollback, and the
+  GitHub auth header env.
+- `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx`,
+  `CrossMachineHandoffBanner.tsx` — the source banner for every move state,
+  the arrival banner on the destination, and the routed send after a chat
+  continues elsewhere.
+- `apps/desktop/src/renderer/components/chat/CrossMachineHandoffModal.tsx`
+  and `CrossMachineHandoffChooseStage.tsx` — the setup UI, a thin client of
+  `getCrossMachineHandoffOptions`, `previewCrossMachineHandoff` and
+  `startCrossMachineHandoff`.
+- `apps/desktop/src/renderer/components/terminals/CrossMachineMoveSubmenu.tsx`
+  — **Hand off › Another machine ▸** in the session menu, with quick brief.
 - `apps/desktop/src/renderer/components/chat/crossMachineHandoffPresentation.tsx`
-  — the modal's pure presentation half: stage/mode types, the `SourceCheck`
-  shape, the branch-row and route/repo-readiness copy, permission tone and icon
-  lookups, send-step labels, and the `CheckRow` component. Split out because
-  these are exactly the pieces that shipped wrong (a tone map that rendered
-  every permission pill grey, a branch row that called a two-commits-behind
-  branch "pushed") and were unreachable from a test inside the stateful modal.
+  — the modal's pure presentation half: permission tone and icon lookups and
+  the `CheckRow` component.
+- `apps/ios/ADE/Views/Work/WorkCrossMachineHandoffViews.swift`,
+  `WorkSessionHandoffSheets.swift`, and
+  `apps/ios/ADE/Services/SyncService+SessionHandoff.swift` — the phone's
+  handoff sheet, in-chat card, send gate, and session long-press menu.
 - `apps/desktop/src/renderer/components/shared/BlockedAction.tsx` and
   `apps/desktop/src/renderer/components/shared/PermissionModePicker.tsx` —
   cross-surface primitives the modal reuses rather than reimplementing: the
   reason-carrying blocked-action button/list, and the composer's permission
   pill.
-- `apps/desktop/src/main/services/chat/agentChatService.ts` — authoritative
-  source readiness, capsule creation and validation, destination preflight,
+- `apps/desktop/src/main/services/chat/agentChatService.ts` — the wiring of
+  the orchestrator, capsule creation and validation, destination preflight,
   deterministic lane/chat acceptance, durable replay record, and source notice;
   it also owns the one-call session metadata regeneration action for bound chats.
 - `apps/desktop/src/shared/crossMachineHandoff.ts` and
@@ -1684,6 +1813,14 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `ios_simulator` method by name. It refuses any method outside the
   `ios_simulator` action allowlist (`APPLE_AGENT_ACTIONS` plus
   `APPLE_USER_ONLY_ACTIONS`). See [Apple device](../apple-device/README.md).
+- `providerAccountRemoteCommands.ts` — the `providerAccounts.*` remote commands
+  (runtime-scoped) that forward to the `provider_instances` action domain, so
+  the phone and browser manage the host's Claude and Codex logins through the
+  same implementation the desktop uses. `list` / `getSettings` / `refresh` are
+  viewer-allowed; every login change and running sign-in read is
+  controller-only. The policy table is `PROVIDER_ACCOUNT_REMOTE_COMMANDS` in
+  `shared/types/sync.ts`. See
+  [remote commands](remote-commands.md#action-categories).
 
 - `syncService.ts` (~1,160 lines) — orchestrator that wires the runtime,
   peer client, device registry, draft persistence, pin store, and the
@@ -2713,7 +2850,7 @@ Account Activity and push:
   to `stale`/`idle` unless it is failed or needs-you), the title/preview tables, the
   2 h / 24 h / 7-day lifetimes, and `attentionProjectRef`. The `needs_you`
   privacy preview reads "An ADE agent needs you." — the same two words the status
-  label, the title suffix, and the notch's section heading use.
+  label and the title suffix use.
 - `apps/ade-cli/src/services/push/pushRegistrationStore.ts` — durable device,
   delivery, machine-revocation, and machine-acknowledgment state. Machine
   acknowledgments are keyed by account owner + item and remain pending until a
@@ -2754,7 +2891,7 @@ Account Activity and push:
   the D1 write when the roster did not move; item `revision` is excluded because
   it is a republish timestamp.
 - `apps/desktop/src/shared/types/attention.ts` — cross-client item, snapshot,
-  destination, availability, preference, and native-presentation contract.
+  destination, availability, and preference contract.
   `ATTENTION_CONTRACT_VERSION` is the *item* contract; the publish protocol
   version is separate (see `push-notifications.md`). It also owns the
   acknowledgment mechanics every shell shares:
@@ -2762,16 +2899,17 @@ Account Activity and push:
   bound), `chunkAttentionAcknowledgmentItemIds`, `runAcknowledgmentChunks` (with
   the abort-on-first-failing-chunk policy), and
   `AttentionAcknowledgmentOutcome`.
+- `apps/desktop/src/shared/attention/activityBoardColumn.ts` and
+  `activityBoardColumn.cases.json` — the four states every Activity surface
+  counts by (needs you, working, waiting, done; the Work board's columns), and
+  the fixture that pins the TypeScript, Swift and relay copies of the rule. The
+  brain writes the column on each agent item as `boardColumn`; see
+  [push-notifications.md › The four states](push-notifications.md#the-four-states).
 - `apps/desktop/src/shared/attention/activityStateGroup.cases.json` — the
-  cross-language conformance fixture for the six-group state table. The mapping
-  is implemented four times (renderer TypeScript, native notch Swift, iOS Swift,
-  and the hermetic relay Worker) because the surfaces cannot share code, and
-  documentation alone did not keep them in step. Every implementation runs these
-  cases through its own mapper. Canonical source of truth:
-  `activityStateGroup` in
-  `apps/desktop/src/renderer/components/activity/activityPresentation.ts`.
-  There are six groups, not five: `idle` was split out of `done` because a
-  session that went quiet mid-work is not a session that finished.
+  conformance fixture for the older six-group table. Desktop, the web client and
+  ADE Code no longer group by it; the relay still fills the Live Activity's
+  legacy `groups` field from it for old iOS builds, so the relay (and the iOS
+  mirror, until it moves) run these cases.
 - `apps/desktop/src/shared/activityCatalog.ts` — one table naming every
   Activity event: its group (agents / pull requests), its icon key, and its
   default delivery policy. Desktop settings, the Activity columns, and the
@@ -2784,28 +2922,28 @@ Account Activity and push:
   `stale` and `unreached` each roll back only their own rows, with different
   copy.
 - `apps/desktop/src/renderer/components/activity/useActivitySync.ts` — the
-  single account poller, mounted in `AppShell` so the header control and ADE
-  Notch stay truthful while `/activity` is closed. It also derives the notch
-  toast stream.
+  single account poller, mounted in `AppShell` so the header control stays
+  truthful while `/activity` is closed. It also loads the account's Activity
+  preferences, and clears the localStorage keys the removed notch left behind.
+- `apps/desktop/src/renderer/components/activity/ActivityPanel.tsx` — the one
+  Activity panel, in two sizes: a Sessions / Inbox switch with counts, the All /
+  Needs you / Working / Waiting / Done chips, the rows grouped by column with
+  Done folded into one "N done" line, and the Inbox list
+  (`ActivityInboxList.tsx`, PR/CI and review outcomes grouped by project).
 - `apps/desktop/src/renderer/components/activity/HeaderActivityControl.tsx` —
-  the global-header count (the `needs-you` group and nothing else) and its
-  popover preview, which shows every state section except the two resting bands
-  (`idle` and `done`).
+  the global-header count (the Needs you column, failures included) and the
+  compact panel in its popover, mounted only while open.
 - `apps/desktop/src/renderer/components/activity/ActivityPane.tsx` — the
-  `/activity` two-column pane, with `ActivitySessionsColumn.tsx` (the agent feed,
-  one section per state group, split per machine and divided where an offline
-  machine's rows become last-known state), `ActivityInboxColumn.tsx` (the
-  Notifications column: PR/CI and review outcomes grouped by project),
-  `ActivityFilters.tsx` (machine / project / chat type / model, plus a
-  single-select state-group glyph strip whose counts come from the unfiltered
-  snapshot), and `ActivityDetailSheet.tsx`.
+  expanded panel behind "Open all": `ActivityFilters.tsx` (machine / project /
+  chat type / model), multi-select with bulk Mark seen / Dismiss / Open, and
+  `ActivityDetailSheet.tsx`.
 - `apps/desktop/src/renderer/components/activity/ActivitySectionHeader.tsx`,
-  `activitySectionCollapse.ts`, `ActivityStateGlyphMark.tsx`,
+  `activitySectionCollapse.ts`, `ActivityColumnMark.tsx`,
   `ActivityAllClear.tsx`, and `useAllClearBeat.ts` — the shared section header
-  (the whole strip is the button, with the `<h3>`/`<h4>` outline preserved for
-  screen readers), per-surface collapsed-section memory, the Phosphor half of the
-  state glyph language, and the all-clear beat that fires on the transition to
-  zero raised hands and never on arrival.
+  (a toggle only where a section folds: Done, and the Inbox project groups),
+  per-surface collapsed-section memory for those Inbox groups, the column glyphs
+  (with the red warning mark for a failed agent), and the all-clear beat that
+  fires on the transition to zero raised hands and never on arrival.
 - `apps/desktop/src/renderer/components/activity/ActivityCard.tsx` and
   `ActivityCardSkeleton.tsx` — the row and its fixed-height placeholder. The
   card deliberately does **not** reuse `terminals/SessionCard`: an Activity row
@@ -2815,28 +2953,23 @@ Account Activity and push:
   shared instead through the pure `terminals/SessionStatusLabel.tsx`, extracted
   from `SessionStatusSlot` for exactly this reason. Read the comment at the top
   of `ActivityCard.tsx` before "simplifying" it.
-- `apps/desktop/src/renderer/components/activity/activityPresentation.ts` — the
-  canonical state glyph language: `ActivityStateGroup`, `ACTIVITY_STATE_GLYPHS`,
-  `ACTIVITY_STATE_GROUPS` (also the priority order), `activityStateGroup`, plus
-  the per-item label/tone/glyph derivation and the detail sheet's
-  `activityStateSentence` / `activityStateElapsed`. Change the rule here first;
-  the notch, iOS, and relay mirrors follow.
+- `apps/desktop/src/renderer/components/activity/activityPresentation.ts` — how
+  a column looks (`ACTIVITY_COLUMN_PRESENTATION`), the red mark
+  (`activityItemFailed`), a waiting row's reason (`activityWaitingReasonLabel`),
+  a row's column-based state (`activityRowStatus`), plus the per-item phase
+  presentation and the detail sheet's `activityStateSentence` /
+  `activityStateElapsed`.
 - `apps/desktop/src/renderer/components/activity/activityPriority.ts` — the
   projection every surface reads: `activityFeedItems` (agents only),
-  `activitySections` (one per state group, empties included),
-  `activityNotificationItems` (non-agent, inbox-eligible),
-  `activityFeedOrder` (what the notch mirrors), and the counts/leading-group
-  helpers that replaced four hand-written priority ladders.
+  `activitySections` (one per Work-board column, empties included),
+  `activityNotificationItems` (non-agent, inbox-eligible), and the counts and
+  phrases the trigger, chips and footer share.
 - `apps/desktop/src/renderer/components/activity/useProgressiveRows.ts` — the
   bounded row budget (60, stepped by 60) that keeps long columns cheap.
-- `apps/desktop/src/renderer/components/activity/activityNotchLocalSettings.ts`
-  — this Mac's offline cache of the notch presentation. Account preferences win
-  when loaded. The three original `ade:attention:notch-*` localStorage keys are
-  frozen wire for anyone who already made a choice; new settings got new keys.
 - `apps/desktop/src/renderer/components/activity/ActivitySettingsPopover.tsx` —
   the gear in both the popover and the pane. It mounts
   `settings/ActivitySettingsControls.tsx` in its `popover` variant, which
-  `settings/ActivitySection.tsx` also mounts, so the Settings tab and the
+  `settings/NotificationsSection.tsx` also mounts, so the Settings page and the
   in-surface gear cannot drift. Every row saves on change; there is no Save
   button, which the popover it replaced did have.
 - `apps/desktop/src/renderer/lib/legacyRoutes.ts` — `LEGACY_ROUTE_ALIASES`
@@ -3051,6 +3184,21 @@ phone flow:
    client switched projects is adopted in place and never disconnects.
    If the switch fails, the previous host is restored so the listener
    is never left unowned.
+5. A project that follows another machine's brain cannot be hosted here.
+   `prepareProjectConnection` asks the target's sync service
+   (`getHostBlocker`) before it answers, and replies `ok: false` with the
+   reason. Completion passes `requireHostRole`, so `switchSyncHost` refuses
+   such a target before it deactivates the current host. Without this
+   check, the old host released the machine-wide lease, the target never
+   took it, and every connected client dropped until the switch timed out.
+
+The saved viewer connection (`sync-peer-draft.json`) is in the machine-wide
+pairing directory, but joining another brain is a choice about one project
+database. The draft records the `projectSiteId` of the project that made it,
+and every other project ignores it. A draft written before that tag applies
+only to a project whose cluster record already names another machine's
+brain. A project with no cluster record (for example, one first opened from
+the phone) becomes its own host instead of a viewer of an unrelated machine.
 
 The hosted browser uses the same machine catalog and project-switch protocol
 behind a different shell. Its permanent Hub chooses a machine, while the top
@@ -3815,6 +3963,7 @@ payload.
 | File access | On-demand project/worktree file reads, listings, writes | iOS Files, desktop remote viewing |
 | Terminal stream/control | Subscribe to a logical-offset transcript snapshot plus live PTY output. The host installs a snapshot barrier before capture, queues concurrent data/exit events (256 events / 2 MB), trims overlap at UTF-8 boundaries, and recaptures up to four times when the snapshot did not reach the queued watermark; it closes instead of flushing a gap or unreconstructable overflow. Web/iOS clients drop duplicate ranges, trim overlap, and issue one guarded `sinceOffset` recovery subscribe when a live chunk starts beyond their watermark. A delta appends only the missing suffix; a full snapshot is authoritative replacement even when its end equals the current watermark. ACK-capable input uses stable `inputId`s and a bounded host dedupe ledger so reconnect/timeout retry cannot type twice; legacy hosts receive one-shot input with no ambiguous retry. Viewport resize remains subscription-scoped and the last desktop size is restored after the last mobile viewer detaches | iOS Work tab, hosted web Work terminal |
 | Chat stream | Agent chat transcript events plus subscribed byte-cursor scrollback. Each `chat_event` carries a host-assigned per-session monotonic `seq` backed by a capped replay buffer (500 events / 2 MB per session). The host carries sequence high-water marks through shared-listener rehydration and seeds a recreated buffer from the agent event sequence persisted in session metadata/transcript state, so it never reuses a `(sessionId, seq)` pair. The field remains optional and old clients keep working unchanged. `chat_subscribe` accepts `sinceSeq`: gaps the buffer covers replay as ordinary events; uncoverable gaps fall back to an authoritative snapshot. Optional live sends are marked delivered only after the WebSocket accepts the frame; a backpressured peer keeps its transcript offset in place and the pump stops at the first failed event so later chunks cannot overtake the missing one. A per-session hydration barrier blocks both the live broadcaster and transcript pump while a snapshot is captured. The pump resumes after the ack from the logical byte offset recorded before capture, so appends racing a slow snapshot arrive after the ack without a gap; snapshot overlap is removed by the normal delivery-key dedupe. The snapshot is a byte-capped tail: `chat_subscribe` also carries the client's `maxBytes`, and the host clamps the snapshot's `getChatEventHistory` budget to `min(host cap, maxBytes)` — for a mobile-sized budget even the newest oversize event is dropped rather than force-included, so a phone never receives a snapshot larger than it asked for. Modern acks also return `cursorKind: "byte"`, `tailStartOffset`, and authoritative `hasOlderHistory`. A host advertising `chatHistoryPaging` accepts `chat_history` only for an already-subscribed session and matching project/personal/foreign scope; it reads the same authorized transcript path without switching projects or booting a runtime. Transient failures return `unavailable: true` and preserve the requested cursor. Snapshot and older-page transcript reads use asynchronous filesystem/zlib work; same-session tail reads coalesce, while archived gzip inflations are globally admitted with only the active inflate and newest queued destination retained. Small archives use a bounded memory cache; a larger archive is inflated at most once into an unlinked, process-private temporary file under a 256 MiB logical-size/LRU budget and a temporary-volume free-space guard, after which pages are random-access disk reads. Request cancellation propagates through queued work, file reads, and inflates, so disconnected clients cannot leave expensive transcript jobs running. Both event-history paging and the legacy `chat.getTranscript` route use append-stable logical byte cursors; the latter advertises `cursorKind: "byte"` so clients do not treat an offset as a dense entry index. Hosted-web and iOS older pages are capped at 256 KiB and a failed read preserves its byte cursor for retry. Snapshot events are marked as already-sent to that peer, so the follow-on live pump does not re-deliver the overlap. The ack also carries `turnActive` from the live agent chat service — because the snapshot is a byte-capped tail, a long turn's `status: started` event can fall outside the window and the flag is what lets a mid-turn subscriber render streaming/stop affordances without waiting on the changeset pump (a full ack without the flag tells the client to drop any latched hint). The additive foreign-scope protocol remains available to controller reads, but iOS Hub taps activate the owning project before opening the chat. A `session_meta_updated` `chat_event` carrying a client's permission/interaction/mode change also rides this stream, so a mode switch made on one client (desktop ↔ iOS) patches every subscribed client's cached summary and composer controls live without a refetch | iOS Work tab, iOS Hub, controller chat |
+| Durable chat log (`chatLogV2`) | Hosts advertise `features.chatLogV2 { enabled, resumeMaxBytes }`. Every history reader of an active-project chat — snapshot, hydration offset, transcript pump, `chat_tool_result`, `chat_history` — uses the one file the chat service resolves (the durable, uncapped `.ade/transcripts/chat/<id>.jsonl`), so live updates continue past the legacy 8 MB session-row transcript. `chat_subscribe` accepts `sinceSequence` (the durable envelope `sequence`, valid across host restarts) plus `generation`: when the generation matches and every persisted event after `sinceSequence` fits in 2 MB, the ack is `{resumed: true, resumeKind: "sequence"}` and those events follow in order as required-send `chat_event`s (a socket that cannot take them is closed rather than left with a hole); otherwise the host sends a normal snapshot with `gap: true`. The hydration barrier and delivery-key dedupe apply exactly as for snapshots. Unsequenced (transient) events stay live-only. Each chat persists a `historyGeneration` (starts at 1) that increases on any in-place transcript rewrite (splice repair today); acks, `chat_history` pages and roster chat rows carry it, the ack also carries `maxSequence`, and the `session_meta_updated {historyInvalidated}` event carries the new generation. A `chatLogV2: true` subscribe moves the snapshot cut back to the nearest `user_message` or turn `status: started` (at most one extra budget) and reports unresolved approvals older than the window in `pinnedEvents` instead of splicing them into `events`. `chat_history` accepts `beforeSequence` as an alternative to `beforeOffset` (binary search over the transcript for the cut, then the same byte-capped page). Folded replay rows carry `sequenceStart` (the first folded delta). Roster agent-chat rows carry `maxSequence` and `historyGeneration` (live counter for booted projects, persisted sidecar otherwise). Durable resume and generations cover active-project chats; personal and cross-project quick looks get turn-aligned snapshots and `beforeSequence` paging but always answer a `sinceSequence` with a gap snapshot | iOS Work tab |
 | Chat roster | Machine-wide all-projects projection of every project's lanes + work sessions grouped by lane — agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions, live **and** ended — so the mobile Hub renders every project's sessions at once **without activating each project**. Identity-bound chats (including each project's CTO) and all attached descendants are excluded from this ordinary roster; the optional `identityKey` marker lets clients reject stale or legacy leaked rows. `roster_subscribe` (handshake mirrors `chat_subscribe`, with an optional `sinceSeq`) → `roster_snapshot` then incremental `roster_delta` (`changed` upserts whole project entries, `removed` lists dropped `projectId`s). Un-booted projects are read cheaply from disk — each project's `<root>/.ade/ade.db` (read-only, no cr-sqlite / no runtime boot) plus `.ade/cache/chat-sessions/*.json` — so their session status is limited to the last-persisted `idle`/`ended`/`awaiting`; live `running`/`awaiting` fidelity is overlaid only for scopes currently booted on the runtime (booted scopes also overlay PTY liveness so a live standalone CLI session reads `running`). `attentionCount` counts awaiting/failed **chat** rows and their attached shells only — standalone CLI failures never count, so a long-dead CLI exit can't pin a project to the top of the hub. Rows carry `toolType` so the phone routes chat rows to the chat surface and CLI rows to the terminal path. Roster session rows may also carry the normalized fixed-value `activityStatus` report and `activityStatusChangedAt`; this refines the Work card status slot without changing the roster phase or Activity group. Transcripts are excluded from the roster and load on demand after a row tap activates the owning project; the Hub cover exposes switching/hydration progress and an error with Retry instead of silently ignoring an unhydrated project. Oversized snapshots ride the generic `envelope_chunk` path. A host without a roster provider (single-project desktop) simply never answers `roster_subscribe`, so the phone falls back to the active project only | iOS Hub |
 | Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, `work.listExternalSessions`, `work.getExternalSessionDetail`, `work.importExternalSession`, etc.) | Controller devices |
 | Project switching | `project_catalog` + `project_switch_request/result` for multi-project runtimes | iOS project hub |
@@ -4003,7 +4152,9 @@ feature is merged or because a deliberately isolated-port host is running.
   keys use the `provider_api_key` vault kind, Linear OAuth refresh tokens use
   `linear_refresh_token` with a per-device `refreshOwner` so only one machine
   exchanges the rotating grant, and repository account secrets use `project_secret`
-  under the normalized repository scope. Local credential stores retain
+  under the normalized repository scope. The vault is not write-only: a
+  vault-ready sync tick pulls repository account secrets back down, so a secret
+  added on one machine reaches the other. Local credential stores retain
   provenance and purge account-origin values on sign-out or account switch;
   access tokens, GitHub tokens, and vendor CLI refresh credentials stay on the
   machine that owns them.
@@ -4115,6 +4266,7 @@ feature is merged or because a deliberately isolated-port host is running.
 | Typed sync protocol version floor/mismatch (`hello_error`, close `4406`) | Implemented |
 | Per-host-DB sync cursors (`serverDbSiteId` / `remoteDbVersionBySite`) | Implemented |
 | Resumable chat streams (per-session `seq` + `sinceSeq` replay buffer) | Implemented |
+| Durable chat log (`chatLogV2`: `sinceSequence` resume, `historyGeneration`, turn-aligned snapshots, `beforeSequence` paging) | Implemented (host) |
 | Mobile changeset diet (heavy never-read tables filtered for phones) | Implemented |
 | Lane presence decoration (`devicesOpen`) | Implemented |
 | PR mobile snapshot (`prs.getMobileSnapshot`) | Implemented |
@@ -4134,7 +4286,7 @@ feature is merged or because a deliberately isolated-port host is running.
 | Legacy manual-pairing adoption into an account (DPoP-gated) + `localTrustOrigin` demotion on sign-out | Implemented (`syncPairingStore.pairPeerViaAccount` / `revokeAccountOwnedExcept`, `syncHostService` account hello) |
 | Push notifications + Live Activities (APNs relay) | Implemented (see `push-notifications.md`; on-device E2E needs a physical iPhone) |
 | Tailscale integration | Implemented (address candidate + mDNS TXT + per-node `tailscale serve` publication on the live sync port) |
-| Clean, published lane + Work chat handoff between connected desktops | Implemented ([contract](./cross-machine-session-handoff.md)) |
+| Work chat move to another machine (desktop, phone, CLI and agents; clean or with uncommitted work) | Implemented ([contract](./cross-machine-session-handoff.md)) |
 
 ## Gotchas
 
@@ -4165,7 +4317,8 @@ feature is merged or because a deliberately isolated-port host is running.
   clearest case: 11.2 MB of a 28.1 MB synced project DB (39.7%), and iOS reads it in
   exactly one query (the per-PR detail behind `fetchPullRequestSnapshot(prId:)`)
   which it populates on demand through `prs.refresh` →
-  `replacePullRequestHydration`. That works for every paired build, however old,
+  `replacePullRequestHydration` (the argument-less form carries only open PRs
+  and PRs on live lanes, capped at 6 MiB; see `remote-commands.md`). That works for every paired build, however old,
   because `prs.refresh` and `prs.getMobileSnapshot` are both in the **required**
   remote-command set. Lists and badges are unaffected — the slim `pull_requests`
   rows still replicate. Devices paired before an exclusion keep the rows they

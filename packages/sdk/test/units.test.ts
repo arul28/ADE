@@ -41,11 +41,15 @@ import {
   normalizePermissionCapability,
   normalizeSettingSources,
   normalizeSettingSourcesCapability,
+  checkAttachmentRoot,
+  filterAttachmentRoots,
   isFilesystemRoot,
+  validateAttachmentRoots,
   validateThreadCwd,
 } from "../src/hostConfig.js";
 import { ADE_ERROR_CODES, AdeError, readAdeErrorCode } from "../src/errors.js";
 import { probeRuntimeSignature } from "../src/runtimeSignature.js";
+import { checkRuntimeCompatibility, SUPPORTED_RUNTIME_RANGE } from "../src/compatibility.js";
 import { mergeHistoryWithBuffer } from "../src/electron/protocol.js";
 import { SDK_VERSION } from "../src/version.js";
 import {
@@ -682,16 +686,15 @@ describe("buffered event decoding", () => {
   });
 
   it("tolerates a category this SDK version has never heard of", () => {
-    // The runtime's category list grows without the SDK — `cto_voice` was added
-    // for live CTO calls, and it carries a call's running transcript. Two rules
-    // hold at once and are asserted together: an unknown category must not make
-    // the stream throw or stall (the drain path is uncategorised, so it sees
-    // every category the buffer holds), and it must never decode into a chat
-    // envelope a subscriber would be handed. Only `runtime` is the chat channel.
+    // The runtime's category list can grow independently of the SDK. Two rules
+    // hold at once: an unknown category must not make the stream throw or stall
+    // (the drain path is uncategorised, so it sees every category the buffer
+    // holds), and it must never decode into a chat envelope. Only `runtime` is
+    // the chat channel.
     const unknown = {
       id: 9,
       timestamp: "2026-01-01T00:00:00.000Z",
-      category: "cto_voice",
+      category: "future_voice_state",
       payload: {
         sessionId: "s1",
         timestamp: "2026-01-01T00:00:00.000Z",
@@ -823,6 +826,77 @@ describe("thread store", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("migrates a pre-0.3 record: strips MCP header values, keeps names, rewrites the file", async () => {
+    // An SDK before 0.3 wrote MCP header values — bearer tokens — into this
+    // file in plaintext. On first read the values come off disk and only the
+    // names stay, so a later resume cannot replay a stale credential.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sdk-store-"));
+    try {
+      const file = path.join(dir, "threads.json");
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          version: 1,
+          threads: {
+            a: {
+              key: "a",
+              sessionId: "s1",
+              provider: "claude",
+              model: "m",
+              createdAt: "t",
+              lastOpenedAt: "t",
+              mcpServers: {
+                notes: {
+                  type: "http",
+                  url: "https://example.test/mcp",
+                  headers: { authorization: "Bearer secret" },
+                },
+              },
+            },
+          },
+        }),
+      );
+
+      const record = await new ThreadStore(file).get("a");
+      expect(record!.mcpServers).toEqual({
+        notes: { type: "http", url: "https://example.test/mcp", headerNames: ["authorization"] },
+      });
+      // The write is awaited before `get` resolves, so the plaintext is off disk
+      // by the time any caller can read the record.
+      expect(fs.readFileSync(file, "utf8")).not.toContain("Bearer secret");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("runtime compatibility", () => {
+  it.each([
+    ["1.2.81", false],
+    ["1.2.81-alpha.3", false],
+    ["1.2.82", true],
+    ["1.2.82-alpha.3", true], // a pre-release carries the same wire as its release
+    ["1.9.7", true],
+    ["2.0.0", false], // the next major
+    ["1.2.80", false], // one patch below the floor
+    ["0.0.0", true], // a source checkout
+    [null, true], // the runtime reported no version
+    ["", true],
+  ])("reports %s as supported=%s", (version, supported) => {
+    const report = checkRuntimeCompatibility(version as string | null);
+    expect(report.supported).toBe(supported);
+    expect(report.range).toBe(SUPPORTED_RUNTIME_RANGE);
+    if (supported && (version === null || version === "" || version === "0.0.0")) {
+      expect(report.note).toBeTruthy();
+    }
+  });
+
+  it("refuses a version it cannot parse rather than vouching for it", () => {
+    const report = checkRuntimeCompatibility("not-a-version");
+    expect(report).toMatchObject({ supported: false, version: "not-a-version" });
+    expect(report.note).toContain("could not be parsed");
   });
 });
 
@@ -1546,5 +1620,58 @@ describe("pending input kinds", () => {
       requestKind: "something_new",
     });
     expect(observed?.requestKind).toBeUndefined();
+  });
+});
+
+describe("attachment root checks", () => {
+  const home = path.join(os.tmpdir(), "ade-sdk-roots-home");
+  const tempReal = fs.realpathSync.native(os.tmpdir());
+
+  it("accepts exactly what threads.open accepts, in the canonical spelling", () => {
+    // A host calls the check so that ONE bad root cannot fail the whole open,
+    // which means it has to agree with the validator the open itself uses.
+    const downloads = path.join(os.tmpdir(), "ade-sdk-roots", "downloads");
+    const check = checkAttachmentRoot(downloads, home);
+    if (!check.ok) throw new Error(`expected the check to accept ${downloads}: ${check.reason}`);
+
+    expect(check.root).toBe(path.join(tempReal, "ade-sdk-roots", "downloads"));
+    expect(validateAttachmentRoots([downloads], home)).toEqual([check.root]);
+  });
+
+  it("refuses a root the runtime refuses, with a reason instead of a throw", () => {
+    for (const bad of [path.parse(process.cwd()).root, os.homedir(), "~", "relative/dir", path.join(home, "state")]) {
+      const check = checkAttachmentRoot(bad, home);
+      if (check.ok) throw new Error(`expected ${bad} to be refused`);
+      expect(check.reason.length, `a refusal must say why: ${bad}`).toBeGreaterThan(0);
+    }
+    // The validator refuses the same values, so the two cannot disagree about
+    // what is usable.
+    expect(() => validateAttachmentRoots(["~", "relative/dir"], home)).toThrow(AdeError);
+  });
+
+  it("drops a bad entry, keeps the good ones, and returns a list the open accepts", () => {
+    const downloads = path.join(os.tmpdir(), "ade-sdk-roots-filter", "downloads");
+    const music = path.join(os.tmpdir(), "ade-sdk-roots-filter", "music");
+
+    const { roots, dropped } = filterAttachmentRoots([downloads, path.parse(process.cwd()).root, music], home);
+
+    expect(roots).toEqual([path.join(tempReal, "ade-sdk-roots-filter", "downloads"), path.join(tempReal, "ade-sdk-roots-filter", "music")]);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]!.root).toBe(path.parse(process.cwd()).root);
+    expect(dropped[0]!.reason).toMatch(/root/);
+    // The point of the helper: what it returns never fails the open.
+    expect(() => validateAttachmentRoots(roots, home)).not.toThrow();
+  });
+
+  it("keeps at most 32 roots, reports the rest, and still refuses a non-array", () => {
+    const many = Array.from({ length: 40 }, (_, index) => path.join(os.tmpdir(), "ade-sdk-roots-cap", `r${index}`));
+    const { roots, dropped } = filterAttachmentRoots(many, home);
+
+    expect(roots).toHaveLength(32);
+    expect(dropped).toHaveLength(8);
+    expect(dropped[0]!.reason).toMatch(/at most 32/);
+    // A non-array is a programming error, not a root list to filter.
+    expect(() => filterAttachmentRoots("not-a-list", home)).toThrow(AdeError);
+    expect(() => validateAttachmentRoots("not-a-list", home)).toThrow(/array/);
   });
 });

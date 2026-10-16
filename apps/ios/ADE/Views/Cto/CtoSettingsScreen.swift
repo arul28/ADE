@@ -5,7 +5,10 @@ import SwiftUI
 /// as a sheet from the CTO tab's gear button.
 struct CtoSettingsScreen: View {
   @EnvironmentObject private var syncService: SyncService
+  @EnvironmentObject private var machineFleet: MachineFleet
   @Environment(\.dismiss) private var dismiss
+  @State private var homeMachineError: String?
+  @State private var homeMachineSaving = false
 
   let onSnapshotChanged: (CtoSnapshot) -> Void
 
@@ -46,6 +49,8 @@ struct CtoSettingsScreen: View {
               ADECardSkeleton(rows: 3)
             }
           }
+
+          homeMachineSection
 
           if let snapshot {
             identitySection(snapshot)
@@ -118,6 +123,86 @@ struct CtoSettingsScreen: View {
     }
   }
 
+  // MARK: - Home machine
+
+  /// The machine the project's one CTO lives on, for every device on the
+  /// account (desktop "CTO home"). Machines with a checkout of this project.
+  private var homeMachineSection: some View {
+    let options = workNewChatMachineOptions(syncService: syncService, fleet: machineFleet)
+    let currentName = syncService.ctoHomeMachineKey == nil
+      ? syncService.focusedMachineDisplayName
+      : syncService.ctoHomeMachineName ?? options.first { $0.machineKey == syncService.ctoHomeMachineKey }?.name ?? "Another machine"
+    return VStack(alignment: .leading, spacing: 6) {
+      SectionHeader(title: "Home machine")
+      Menu {
+        ForEach(options) { option in
+          Button {
+            Task { await chooseHomeMachine(option) }
+          } label: {
+            Label(option.isLive ? option.name : "\(option.name) (not connected)", systemImage: option.symbol)
+          }
+        }
+      } label: {
+        HStack(spacing: 10) {
+          Image(systemName: "desktopcomputer")
+            .font(.system(size: 14, weight: .regular))
+            .foregroundStyle(ADEColor.textSecondary)
+          VStack(alignment: .leading, spacing: 2) {
+            Text(currentName)
+              .font(.system(size: 13.5, weight: .semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+            Text("Memory and thread live here")
+              .font(.caption)
+              .foregroundStyle(ADEColor.textMuted)
+          }
+          Spacer(minLength: 8)
+          if homeMachineSaving {
+            ProgressView().controlSize(.mini)
+          } else {
+            Image(systemName: "chevron.up.chevron.down")
+              .font(.system(size: 11, weight: .semibold))
+              .foregroundStyle(ADEColor.textMuted)
+          }
+        }
+        .padding(.vertical, 8)
+      }
+      .disabled(homeMachineSaving || !canChooseHomeMachine)
+      if !canChooseHomeMachine {
+        // A brain without the command cannot store the choice for the account.
+        Text("Update ADE on \(options.first?.name ?? "the primary machine") to choose the CTO's home machine from the phone.")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      if let homeMachineError {
+        Text(homeMachineError)
+          .font(.caption)
+          .foregroundStyle(ADEColor.danger)
+      }
+    }
+  }
+
+  private var canChooseHomeMachine: Bool {
+    syncService.supportsRemoteAction("cto.setHomeMachine")
+  }
+
+  @MainActor
+  private func chooseHomeMachine(_ option: WorkNewChatMachineOption) async {
+    homeMachineError = nil
+    homeMachineSaving = true
+    defer { homeMachineSaving = false }
+    if let key = option.machineKey, !option.isLive {
+      machineFleet.keepLive(machineKey: key)
+    }
+    do {
+      try await syncService.setCtoHomeMachine(machineKey: option.machineKey, name: option.name)
+      await reload()
+      ADEHaptics.light()
+    } catch {
+      homeMachineError = error.localizedDescription
+    }
+  }
+
   // MARK: - Identity
 
   @ViewBuilder
@@ -141,13 +226,10 @@ struct CtoSettingsScreen: View {
       } label: {
         HStack(spacing: 12) {
           Image(systemName: "cpu")
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(ADEColor.ctoAccent)
+            .font(.system(size: 14, weight: .regular))
+            .foregroundStyle(ADEColor.textSecondary)
             .frame(width: 32, height: 32)
-            .background(
-              ADEColor.ctoAccent.opacity(0.12),
-              in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-            )
+            .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
 
           VStack(alignment: .leading, spacing: 2) {
             Text(prettyWorkChatModelName(currentModelId))
@@ -177,7 +259,7 @@ struct CtoSettingsScreen: View {
       .buttonStyle(.plain)
       .disabled(modelUpdateInFlight)
       .accessibilityLabel("Change CTO model")
-      .adeListCard(padding: 0)
+      .adeKitCard(padding: nil)
     }
   }
 
@@ -263,15 +345,16 @@ struct CtoSettingsScreen: View {
           connected: linearStatus?.connected == true
         )
       }
-      .adeListCard(padding: 0)
+      .adeKitCard(padding: nil)
     }
   }
 
   private var linearSubtitle: String {
     guard let linearStatus else { return "Manage in ADE" }
     if linearStatus.connected {
-      if let name = linearStatus.viewerName, !name.isEmpty { return "Connected · \(name)" }
-      return "Connected"
+      // The trailing status already says "Connected".
+      if let name = linearStatus.viewerName, !name.isEmpty { return name }
+      return "Linear workspace"
     }
     if let message = linearStatus.message, !message.isEmpty { return message }
     return "Not connected"
@@ -470,7 +553,7 @@ private struct CtoMemoryCard: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .adeListCard()
+    .adeKitCard()
   }
 
   private func briefFields(_ fields: [CtoMemoryLayout.BriefField]) -> some View {
@@ -578,11 +661,7 @@ private struct CtoMemoryCard: View {
       }
       .frame(maxHeight: 180)
       .padding(10)
-      .background(ADEColor.recessedBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-      )
+      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
   }
 }
@@ -611,16 +690,8 @@ private struct IdentityCard: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .center, spacing: 12) {
         ZStack {
-          RoundedRectangle(cornerRadius: 13, style: .continuous)
-            .fill(
-              LinearGradient(
-                colors: [ADEColor.ctoAccent.opacity(0.35), ADEColor.accentDeep.opacity(0.55)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-              )
-            )
-          RoundedRectangle(cornerRadius: 13, style: .continuous)
-            .stroke(ADEColor.ctoAccent.opacity(0.3), lineWidth: 0.5)
+          RoundedRectangle(cornerRadius: 11, style: .continuous)
+            .fill(ADEKit.track)
           // The mark, not a letter: the same drawing as the desktop rail and
           // the tab icon, and it does not change when the CTO is renamed.
           Image("CtoMark")
@@ -645,15 +716,8 @@ private struct IdentityCard: View {
 
         Spacer(minLength: 8)
 
-        Button(action: onEdit) {
-          Text("Edit")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.ctoAccent)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(ADEColor.ctoAccent.opacity(0.14), in: Capsule())
-        }
-        .buttonStyle(.plain)
+        Button("Edit", action: onEdit)
+          .buttonStyle(ADEKitButtonStyle())
       }
 
       Text(summaryText)
@@ -662,13 +726,9 @@ private struct IdentityCard: View {
         .lineSpacing(2)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
-        .background(ADEColor.recessedBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-        )
+        .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
-    .adeListCard()
+    .adeKitCard()
   }
 
   private var providerModelText: String {
@@ -695,14 +755,15 @@ private struct IntegrationRow: View {
 
   var body: some View {
     HStack(spacing: 10) {
-      ZStack {
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-          .fill(ADEColor.glassBackground)
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-        Text(String(name.prefix(1)))
-          .font(.system(size: 11, weight: .heavy))
-          .foregroundStyle(ADEColor.textSecondary)
+      Group {
+        if name == "Linear" {
+          LinearMark(size: 16)
+            .foregroundStyle(LinearBrand.primary)
+        } else {
+          Image(systemName: "puzzlepiece.extension")
+            .font(.system(size: 13))
+            .foregroundStyle(ADEColor.textSecondary)
+        }
       }
       .frame(width: 26, height: 26)
 
@@ -717,10 +778,12 @@ private struct IntegrationRow: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
 
-      ADEStatusPill(
-        text: connected ? "connected" : "off",
-        tint: connected ? ADEColor.success : ADEColor.textSecondary
-      )
+      HStack(spacing: 5) {
+        ADEKitDot(tone: connected ? .ok : .neutral)
+        Text(connected ? "Connected" : "Off")
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textSecondary)
+      }
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 11)

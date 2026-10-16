@@ -44,7 +44,7 @@ export function MacDesktopFullscreenView({
         data-testid="mac-desktop-fullscreen-chrome"
         className={cn(
           WORK_TOOL_CHROME_ROW,
-          "relative z-10 shrink-0 flex-nowrap gap-1 border-b border-white/[0.06] px-3",
+          "relative z-10 shrink-0 flex-nowrap gap-1 border-b border-fg/[0.06] px-3",
         )}
       >
         {renderChromeRow("fullscreen")}

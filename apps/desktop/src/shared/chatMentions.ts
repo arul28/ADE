@@ -15,6 +15,26 @@
 import type { ChatMentionDetail, ChatMentionKind } from "./types/chatMentions";
 
 /**
+ * Drag payload a chat or terminal row carries, so dropping it on a composer
+ * inserts an @-mention of it. JSON `{ kind, id, title }`.
+ */
+export const CHAT_MENTION_DND_MIME = "application/x-ade-chat-mention";
+
+export type ChatMentionDragPayload = { kind: ChatMentionKind; id: string; title: string };
+
+export function parseChatMentionDragPayload(raw: string): ChatMentionDragPayload | null {
+  try {
+    const value = JSON.parse(raw) as Partial<ChatMentionDragPayload>;
+    if ((value.kind !== "chat" && value.kind !== "terminal" && value.kind !== "lane") || typeof value.id !== "string" || !value.id) {
+      return null;
+    }
+    return { kind: value.kind, id: value.id, title: typeof value.title === "string" && value.title.trim() ? value.title.trim() : value.id };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Chip token prefix per kind. `term` and `mac` are deliberately short for
  * typing. iOS (`WorkChatMentionDetector`) mirrors this table; keep them equal.
  */
@@ -246,7 +266,11 @@ function neutralizeMentionPreviewBody(body: string): string {
  * Render one `<ade-mention>` block. The closing tag is on its own line so a
  * multi-line preview can never be confused with the block boundary.
  */
-export function renderChatMentionBlock(detail: ChatMentionDetail): string {
+export function renderChatMentionBlock(
+  // A model chip renders through the same block with kind "model" (see
+  // modelMentions.ts), so the kind is widened to any string here.
+  detail: Omit<ChatMentionDetail, "kind"> & { kind: ChatMentionDetail["kind"] | "model" },
+): string {
   const attrs = [
     ["kind", detail.kind],
     ["id", detail.id],

@@ -118,6 +118,8 @@ export type AppleStreamRelay = {
   }): AppleStreamTicket;
   /** The ticket id in `/apple/stream/<id>`, or null when the url is not ours. */
   ticketFromUrl(url: string | null | undefined): string | null;
+  /** True while this relay holds the unexpired, unused ticket. */
+  hasTicket(ticket: string): boolean;
   /**
    * Take over a freshly upgraded socket. Resolves false when the ticket is
    * unknown, expired, already used, or the token does not match — the caller
@@ -476,6 +478,11 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
       };
     },
 
+    hasTicket(ticket) {
+      pruneTickets();
+      return tickets.has(ticket);
+    },
+
     ticketFromUrl(url) {
       if (typeof url !== "string" || !url.startsWith(APPLE_STREAM_PATH_PREFIX)) return null;
       const withoutQuery = url.split("?")[0] ?? "";
@@ -487,7 +494,11 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
       pruneTickets();
       const pending = tickets.get(ticket);
       if (!pending || !token || !constantTimeEquals(pending.token, token)) {
-        debug("apple.stream_ticket_rejected", { hasTicket: Boolean(pending) });
+        // A warning, not a debug line: the viewer only says "the stream pass
+        // expired", and this line is the one place that says why.
+        warn("apple.stream_ticket_rejected", {
+          reason: !pending ? "unknown_or_used_ticket" : !token ? "missing_token" : "token_mismatch",
+        });
         try {
           socket.close(4401, "invalid stream ticket");
         } catch {

@@ -1814,7 +1814,8 @@ describe("PrsContext — warm detail cache", () => {
     });
 
     expect(staleSnapshots).toHaveBeenCalledTimes(1);
-    expect(staleSnapshots).toHaveBeenCalledWith({});
+    // The warm-up asks only for open/draft PRs, by id — never every snapshot.
+    expect(staleSnapshots).toHaveBeenCalledWith({ prIds: ["pr-1"] });
     expect(screen.getByTestId("status").textContent).toBe("open");
   });
 

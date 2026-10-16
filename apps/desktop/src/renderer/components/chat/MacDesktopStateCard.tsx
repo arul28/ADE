@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Monitor } from "@phosphor-icons/react";
+import { Monitor, type Icon } from "@phosphor-icons/react";
 
 import { cn } from "../ui/cn";
 
@@ -19,17 +19,20 @@ export const MAC_DESKTOP_ELAPSED_AFTER_MS = 5_000;
 /** The secondary button beside `WORK_TOOL_PRIMARY_BUTTON`. */
 export const MAC_DESKTOP_SECONDARY_BUTTON = cn(
   "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] px-3",
-  "border border-white/[0.10] bg-white/[0.04]",
+  "border border-fg/[0.10] bg-fg/[0.04]",
   "font-sans text-[12px] font-medium text-fg/85 transition-colors duration-[120ms] ease-out",
-  "hover:bg-white/[0.08] hover:text-fg focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+  "hover:bg-fg/[0.08] hover:text-fg focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
   "disabled:pointer-events-none disabled:opacity-40",
 );
 
 export type MacDesktopStateCardTone = "idle" | "busy" | "error";
 
-function useElapsedSeconds(active: boolean): number | null {
-  const [startedAt] = useState(() => Date.now());
-  const [now, setNow] = useState(startedAt);
+function useElapsedSeconds(active: boolean, since?: number | null): number | null {
+  const [mountedAt] = useState(() => Date.now());
+  // A wait the host started before this card mounted (a sign-in still running
+  // when the pane is reopened) counts from its own start, not from the mount.
+  const startedAt = since ?? mountedAt;
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!active) return undefined;
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
@@ -46,6 +49,9 @@ export function MacDesktopStateCard({
   detail,
   actions,
   footer,
+  icon: StateIcon = Monitor,
+  since = null,
+  children,
 }: {
   testId: string;
   tone: MacDesktopStateCardTone;
@@ -55,10 +61,16 @@ export function MacDesktopStateCard({
   actions?: ReactNode;
   /** Short notes under the actions, such as the apps a stop left open. */
   footer?: ReactNode;
+  /** The tool's own glyph. App Control uses this card too. */
+  icon?: Icon;
+  /** A form between the detail and the actions (App Control's Launch). */
+  children?: ReactNode;
+  /** When the wait began, if before this card mounted (epoch ms). */
+  since?: number | null;
 }) {
   const busy = tone === "busy";
   const failed = tone === "error";
-  const elapsedSeconds = useElapsedSeconds(busy);
+  const elapsedSeconds = useElapsedSeconds(busy, since);
   return (
     <div
       data-testid={testId}
@@ -67,7 +79,7 @@ export function MacDesktopStateCard({
       className="ade-tool-picker-static relative flex size-full min-h-0 items-center justify-center overflow-auto rounded-[10px] px-6 py-10"
     >
       <div className="ade-tool-card flex w-full min-w-0 max-w-sm flex-col items-center gap-3 p-6 text-center">
-        <Monitor
+        <StateIcon
           size={40}
           weight="duotone"
           aria-hidden="true"
@@ -84,13 +96,18 @@ export function MacDesktopStateCard({
             ) : null}
             <p className="min-w-0 break-words font-sans text-sm font-medium text-fg">{title}</p>
             {elapsedSeconds != null ? (
-              <span className="shrink-0 font-sans text-xs tabular-nums text-muted-fg">{elapsedSeconds}s</span>
+              <span className="shrink-0 font-sans text-xs tabular-nums text-muted-fg">
+                {elapsedSeconds >= 60
+                  ? `${Math.floor(elapsedSeconds / 60)}m ${String(elapsedSeconds % 60).padStart(2, "0")}s`
+                  : `${elapsedSeconds}s`}
+              </span>
             ) : null}
           </div>
           {detail ? (
             <p className="min-w-0 break-words font-sans text-xs leading-5 text-muted-fg">{detail}</p>
           ) : null}
         </div>
+        {children}
         {actions ? <div className="flex flex-wrap items-center justify-center gap-2">{actions}</div> : null}
         {footer}
       </div>

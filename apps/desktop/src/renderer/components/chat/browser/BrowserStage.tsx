@@ -11,7 +11,7 @@
  * rather than butting a rounded pane against a square document — which is the
  * single cheapest thing that separates a premium browser from an iframe.
  */
-import { useState, type MutableRefObject, type PointerEvent } from "react";
+import { useEffect, useRef, useState, type MutableRefObject, type PointerEvent } from "react";
 import {
   ArrowsLeftRight,
   ClipboardText,
@@ -87,6 +87,8 @@ export type BrowserStageProps = {
   launchpadGroups: BrowserLaunchpadGroup[];
   letterboxed: boolean;
   emulation: BuiltInBrowserEmulationState | null;
+  /** The fixed layout of a recording tab, when no preset is on. */
+  agentViewport?: { width: number; height: number } | null;
   busy: string | null;
   onRotateEmulation: () => void;
 };
@@ -104,10 +106,10 @@ function LaunchpadThumb({ label }: { label: string | null }) {
       aria-hidden="true"
       className={cn(
         "flex h-[30px] w-12 shrink-0 flex-col overflow-hidden rounded-[5px]",
-        "bg-white/[0.06] ring-1 ring-inset ring-white/[0.10]",
+        "bg-fg/[0.06] ring-1 ring-inset ring-fg/[0.10]",
       )}
     >
-      <span className="flex h-[9px] shrink-0 items-center gap-[2px] bg-white/[0.07] pl-[3px]">
+      <span className="flex h-[9px] shrink-0 items-center gap-[2px] bg-fg/[0.07] pl-[3px]">
         <span className="h-[3px] w-[3px] rounded-full bg-[#ff6b65]" />
         <span className="h-[3px] w-[3px] rounded-full bg-[#f4c047]" />
         <span className="h-[3px] w-[3px] rounded-full bg-[#45cf77]" />
@@ -146,7 +148,7 @@ function LaunchpadGlyph({
   return (
     <span
       aria-hidden="true"
-      className="flex h-[30px] w-12 shrink-0 items-center justify-center rounded-[5px] bg-white/[0.04] ring-1 ring-inset ring-white/[0.07]"
+      className="flex h-[30px] w-12 shrink-0 items-center justify-center rounded-[5px] bg-fg/[0.04] ring-1 ring-inset ring-fg/[0.07]"
     >
       {showFavicon && faviconUrl ? (
         <img
@@ -182,7 +184,7 @@ function LaunchpadGroup({ group }: { group: BrowserLaunchpadGroup }) {
             onClick={group.onClear.run}
             className={cn(
               "ml-auto shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-muted-fg/60",
-              "hover:bg-white/[0.06] hover:text-fg/85",
+              "hover:bg-fg/[0.06] hover:text-fg/85",
               TOOLBAR_MOTION,
               TOOLBAR_FOCUS,
             )}
@@ -192,13 +194,13 @@ function LaunchpadGroup({ group }: { group: BrowserLaunchpadGroup }) {
         ) : null}
       </div>
       {/* One container, hairline-divided rows — not six floating cards. */}
-      <div className="min-w-0 overflow-hidden rounded-xl ring-1 ring-inset ring-white/[0.07]">
+      <div className="min-w-0 overflow-hidden rounded-xl ring-1 ring-inset ring-fg/[0.07]">
         {group.rows.map((row, index) => (
           <div
             key={row.key}
             className={cn(
               "group/row relative flex min-w-0 items-center gap-3",
-              index > 0 ? "border-t border-white/[0.05]" : null,
+              index > 0 ? "border-t border-fg/[0.05]" : null,
             )}
           >
             <button
@@ -206,7 +208,7 @@ function LaunchpadGroup({ group }: { group: BrowserLaunchpadGroup }) {
               onClick={row.onSelect}
               className={cn(
                 "flex min-w-0 flex-1 items-center gap-3 p-3 text-left",
-                "transition-colors duration-[120ms] ease-out hover:bg-white/[0.04]",
+                "transition-colors duration-[120ms] ease-out hover:bg-fg/[0.04]",
                 TOOLBAR_FOCUS,
               )}
             >
@@ -236,7 +238,7 @@ function LaunchpadGroup({ group }: { group: BrowserLaunchpadGroup }) {
                 aria-label={`Forget ${row.title}`}
                 className={cn(
                   "mr-2 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
-                  "text-muted-fg/50 opacity-0 hover:bg-white/[0.07] hover:text-fg/85",
+                  "text-muted-fg/50 opacity-0 hover:bg-fg/[0.07] hover:text-fg/85",
                   "group-hover/row:opacity-100 focus-visible:opacity-100",
                   TOOLBAR_MOTION,
                   TOOLBAR_FOCUS,
@@ -274,9 +276,21 @@ export function BrowserStage({
   launchpadGroups,
   letterboxed,
   emulation,
+  agentViewport = null,
   busy,
   onRotateEmulation,
 }: BrowserStageProps) {
+  /*
+    The frame the viewport last committed. Coming from nothing (the stage not
+    measured yet, as on every mount) the frame snaps instead of growing: the
+    native view follows this element, and growing it from 0×0 resized the page
+    every frame for the length of the animation, which painted it black.
+  */
+  const committedFrameRef = useRef<BrowserViewFrame | null>(null);
+  const fromNothing = !(committedFrameRef.current && committedFrameRef.current.width > 0 && committedFrameRef.current.height > 0);
+  useEffect(() => {
+    committedFrameRef.current = viewFrame;
+  }, [viewFrame]);
   return (
     /*
       The native view is a rectangle the compositor puts on top of this
@@ -289,7 +303,7 @@ export function BrowserStage({
       ref={surfaceRef}
       className="relative flex min-h-[160px] min-w-0 flex-1 flex-col p-2"
     >
-      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] bg-[var(--color-surface)] ring-1 ring-inset ring-white/[0.08]">
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] bg-[var(--color-surface)] ring-1 ring-inset ring-fg/[0.08]">
         <div ref={stageRef} className="relative min-h-0 min-w-0 flex-1">
           <motion.div
             ref={viewportRef}
@@ -309,7 +323,7 @@ export function BrowserStage({
               width: viewFrame.width,
               height: viewFrame.height,
             }}
-            transition={reduceMotion ? { duration: 0 } : revealTransition}
+            transition={reduceMotion || fromNothing ? { duration: 0 } : revealTransition}
             onAnimationComplete={onViewportAnimationComplete}
           >
             <AnimatePresence initial={false}>
@@ -417,14 +431,15 @@ export function BrowserStage({
           It lives inside the same framed card, so the frame stays one object.
         */}
         {letterboxed ? (
-          <div className="flex h-[26px] shrink-0 select-none items-center justify-center gap-2 border-t border-white/[0.06]">
+          <div className="flex h-[26px] shrink-0 select-none items-center justify-center gap-2 border-t border-fg/[0.06]">
             <span
               data-testid="browser-emulation-caption"
               className="font-mono text-[10px] tracking-[0.02em] text-muted-fg/75"
             >
-              {emulationCaption(emulation, viewFrame.scale)}
+              {emulationCaption(emulation ?? agentViewport, viewFrame.scale)}
             </span>
-            <button
+            {/* Rotating is a device's; the agent's desktop size is not the person's to turn. */}
+            {emulation ? <button
               type="button"
               onClick={onRotateEmulation}
               disabled={busy === "emulation"}
@@ -432,13 +447,13 @@ export function BrowserStage({
               aria-label="Rotate the emulated device"
               className={cn(
                 "inline-flex h-[18px] w-[18px] items-center justify-center rounded-[5px] text-muted-fg/60",
-                "hover:bg-white/[0.06] hover:text-fg/85 disabled:opacity-40",
+                "hover:bg-fg/[0.06] hover:text-fg/85 disabled:opacity-40",
                 TOOLBAR_MOTION,
                 TOOLBAR_FOCUS,
               )}
             >
               <ArrowsLeftRight size={11} />
-            </button>
+            </button> : null}
           </div>
         ) : null}
       </div>

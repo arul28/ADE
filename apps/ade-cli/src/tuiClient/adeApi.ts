@@ -23,18 +23,21 @@ import type {
   AgentChatResolveUnprocessedMessageResult,
   AgentChatResumeUsageLimitNowResult,
   AgentChatContinueUsageLimitOnAlternateResult,
+  AgentChatSwitchAccountResult,
   AgentChatCodexSandbox,
   AgentChatContextUsage,
   AgentChatCursorConfigValue,
   AgentChatDispatchSteerMode,
   AgentChatDispatchSteerResult,
   AgentChatDroidPermissionMode,
+  AgentChatMusePermissionMode,
   AgentChatEventEnvelope,
   AgentChatMainTranscriptArgs,
   AgentChatEventHistoryPage,
   AgentChatFileRef,
   AgentChatInteractionMode,
   AgentChatInterruptResult,
+  AgentChatRestartSessionResult,
   AgentChatRestoreCancelledQueueResult,
   AgentChatStopMode,
   AgentChatKillDroidWorkerArgs,
@@ -43,6 +46,7 @@ import type {
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
   AgentChatModelInfo,
+  AgentChatLaunchDefaults,
   AgentChatOpenCodePermissionMode,
   AgentChatPermissionMode,
   AgentChatProvider,
@@ -69,8 +73,10 @@ import type {
 } from "../../../desktop/src/shared/types/config";
 import type { DiffLineStats, GitBranchSummary } from "../../../desktop/src/shared/types/git";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import type { ArchiveSummary, ArchiveSummaryArgs } from "../../../desktop/src/shared/types/archive";
 import type { WorkToolsLaneState } from "../../../desktop/src/shared/types/workTools";
 import type { PrLaneSummary } from "../../../desktop/src/shared/types/prs";
+import type { PrChatWatchSummary, PrWatchMode } from "../../../desktop/src/shared/prWatch";
 import {
   buildPtyContinuationLaunchFields,
   type PtyContinuationLaunchFields,
@@ -428,6 +434,13 @@ export async function getScheduledWorkState(
   });
 }
 
+export async function getArchiveSummary(
+  connection: AdeCodeConnection,
+  args: ArchiveSummaryArgs = {},
+): Promise<ArchiveSummary> {
+  return await connection.action<ArchiveSummary>("archive", "summary", args);
+}
+
 export async function archiveChatSession(
   connection: AdeCodeConnection,
   sessionId: string,
@@ -456,10 +469,12 @@ const CHAT_BACKED_TERMINAL_TOOL_TYPES = new Set([
   "cursor",
   "droid-chat",
   "pi-chat",
+  "muse-chat",
   "qwen-chat",
   "kimi-chat",
   "grok-chat",
   "copilot-chat",
+  "devin-chat",
 ]);
 
 const TRACKED_CLI_PROVIDERS = new Set<AdeCodeProvider>([
@@ -469,6 +484,7 @@ const TRACKED_CLI_PROVIDERS = new Set<AdeCodeProvider>([
   "droid",
   "opencode",
   "pi",
+  "muse",
   "qwen",
   "kimi",
   "grok",
@@ -494,6 +510,7 @@ export function trackedCliTerminalProvider(session: ChatTerminalSession): AdeCod
   if (toolType.startsWith("droid")) return "droid";
   if (toolType.startsWith("opencode")) return "opencode";
   if (toolType.startsWith("pi")) return "pi";
+  if (toolType.startsWith("muse")) return "muse";
   if (toolType.startsWith("claude")) return "claude";
   if (toolType.startsWith("qwen")) return "qwen";
   if (toolType.startsWith("kimi")) return "kimi";
@@ -532,7 +549,8 @@ export async function writeTerminal(
   terminalId: string,
   data: string,
 ): Promise<void> {
-  await connection.action("terminal", "write", { terminalId, data });
+  // Only ADE Code's own keystrokes come through here, so they are the user's.
+  await connection.action("terminal", "write", { terminalId, data, fromUser: true });
 }
 
 export async function resizeTerminal(
@@ -555,7 +573,7 @@ export async function signalTerminal(
 /** Provider CLIs the TUI can launch as tracked terminal sessions. */
 export type CliTerminalProvider = Extract<
   AdeCodeProvider,
-  "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "qwen" | "kimi" | "grok" | "copilot"
+  "claude" | "codex" | "muse" | "cursor" | "droid" | "opencode" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin"
 >;
 
 export type StartCliTerminalSessionResult = {
@@ -788,6 +806,22 @@ export function discoverProjectSlashCommands(workspaceRoot: string): AgentChatSl
   return discoverAllProjectSlashCommands(workspaceRoot);
 }
 
+/** The machine's last-used chat model and settings; null when none or an older brain. */
+export async function getLaunchDefaults(connection: AdeCodeConnection): Promise<AgentChatLaunchDefaults | null> {
+  try {
+    const value = await connection.action<unknown>("chat", "getLaunchDefaults", {});
+    // Only a well-formed record counts; anything else (an older brain, a
+    // proxy's default reply) leaves the TUI on its own last choice.
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Partial<AgentChatLaunchDefaults>;
+    return typeof record.modelId === "string" && record.modelId.trim() && typeof record.provider === "string"
+      ? record as AgentChatLaunchDefaults
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function getAvailableModels(
   connection: AdeCodeConnection,
   provider: AgentChatProvider,
@@ -804,8 +838,9 @@ export async function getAvailableModels(
     // The four ACP providers are here too, but they never spawn an agent for a
     // model list: `activateRuntime` only forces a fresh CLI auth pass, which is
     // what gates their curated rows (see loadAvailableModels in
-    // agentChatService).
+    // agentChatService). Muse answers MSP `model/list` from its live host.
     activateRuntime: provider === "cursor"
+      || provider === "muse"
       || provider === "droid"
       || provider === "pi"
       || provider === "qwen"
@@ -875,6 +910,7 @@ export async function createChatSession(args: {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
 }): Promise<CreatedChat> {
@@ -891,7 +927,9 @@ export async function createChatSession(args: {
         ? "auto"
         : provider === "droid"
           ? (getDefaultModelDescriptor("droid")?.providerModelId ?? "claude-sonnet-4-5-20250929")
-          : "gpt-6-astra";
+          : provider === "muse"
+            ? "muse-spark-1.3"
+            : "gpt-6-astra";
   const reasoningEffort = args.reasoningEffort
     ?? (provider === "codex" ? descriptor?.defaultReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT : null);
   return await args.connection.action<AgentChatSession>("chat", "createSession", {
@@ -904,13 +942,14 @@ export async function createChatSession(args: {
     ...(args.fastMode === true ? { fastMode: true } : {}),
     ...launchIdentityFields(resolveLaunchIdentity(args)),
     ...(args.permissionMode ? { permissionMode: args.permissionMode } : {}),
-    ...(provider === "claude" && args.interactionMode ? { interactionMode: args.interactionMode } : {}),
+    ...((provider === "claude" || provider === "muse") && args.interactionMode ? { interactionMode: args.interactionMode } : {}),
     ...(provider === "claude" && args.claudePermissionMode ? { claudePermissionMode: args.claudePermissionMode } : {}),
     ...(provider === "codex" && args.codexApprovalPolicy ? { codexApprovalPolicy: args.codexApprovalPolicy } : {}),
     ...(provider === "codex" && args.codexSandbox ? { codexSandbox: args.codexSandbox } : {}),
     ...(provider === "codex" && args.codexConfigSource ? { codexConfigSource: args.codexConfigSource } : {}),
     ...(provider === "opencode" && args.opencodePermissionMode ? { opencodePermissionMode: args.opencodePermissionMode } : {}),
     ...(provider === "droid" && args.droidPermissionMode ? { droidPermissionMode: args.droidPermissionMode } : {}),
+    ...(provider === "muse" && args.musePermissionMode ? { musePermissionMode: args.musePermissionMode } : {}),
     ...(provider === "cursor" && args.cursorModeId !== undefined ? { cursorModeId: args.cursorModeId } : {}),
     ...(provider === "cursor" && args.cursorConfigValues ? { cursorConfigValues: args.cursorConfigValues } : {}),
     surface: "work",
@@ -922,6 +961,7 @@ export async function sendChatMessage(
   sessionId: string,
   text: string,
   attachments: AgentChatFileRef[] = [],
+  options: { compactFirst?: boolean } = {},
 ): Promise<void> {
   // Object form: chat message actions re-derive their trusted provenance from
   // the caller's bound identity, and the host rejects the positional form so
@@ -931,6 +971,7 @@ export async function sendChatMessage(
     sessionId,
     text,
     ...(attachments.length ? { attachments } : {}),
+    ...(options.compactFirst ? { compactFirst: true } : {}),
   });
 }
 
@@ -1073,6 +1114,46 @@ export async function interruptChat(
     mode,
     cancelledQueuedCount: 0,
   };
+}
+
+/**
+ * Restart the chat's agent session: a fresh provider process, same
+ * conversation. The host refuses while a turn runs ("A turn is running…")
+ * unless `stopFirst` is set.
+ */
+export async function restartChatSession(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  stopFirst = false,
+): Promise<AgentChatRestartSessionResult> {
+  return await connection.action<AgentChatRestartSessionResult>(
+    "chat",
+    "restartSession",
+    { sessionId, ...(stopFirst ? { stopFirst: true } : {}) },
+  );
+}
+
+/** Off / Watch / Ship for one of the chat's pull requests (`mode: null` stops). */
+export async function setChatPrWatch(
+  connection: AdeCodeConnection,
+  args: { prId: string; sessionId: string; mode: PrWatchMode | null },
+): Promise<PrChatWatchSummary | null> {
+  const result = await connection.action<PrChatWatchSummary | null>("pr", "setChatWatch", {
+    prId: args.prId,
+    sessionId: args.sessionId,
+    mode: args.mode,
+    armedBy: "user",
+  });
+  return result && typeof result === "object" ? result : null;
+}
+
+/** The chat's live PR watches. An older host without the action reads as none. */
+export async function getChatPrWatches(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<PrChatWatchSummary[]> {
+  const result = await connection.action<PrChatWatchSummary[] | null>("pr", "getChatWatches", { sessionId });
+  return Array.isArray(result) ? result : [];
 }
 
 export async function restoreCancelledQueue(
@@ -1253,6 +1334,22 @@ export async function continueUsageLimitOnAlternate(
 }
 
 /**
+ * Move a Claude or Codex chat to another signed-in account of its provider.
+ * Same chat and thread; the host refuses while a turn runs.
+ */
+export async function switchChatAccount(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  instanceId: string,
+): Promise<AgentChatSwitchAccountResult> {
+  return await connection.action<AgentChatSwitchAccountResult>(
+    "chat",
+    "switchAccount",
+    { sessionId, instanceId },
+  );
+}
+
+/**
  * Per-chat auto-resume switch — `false` is the "Don't continue" the desktop
  * popover offers, `true` the "Turn on" that re-arms an opted-out or twice-paused
  * chat. Same `chat.updateSession` field every client writes.
@@ -1293,6 +1390,7 @@ export async function updateChatModel(args: {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
 }): Promise<AgentChatSession> {
@@ -1309,6 +1407,7 @@ export async function updateChatModel(args: {
     ...(args.codexConfigSource !== undefined ? { codexConfigSource: args.codexConfigSource } : {}),
     ...(args.opencodePermissionMode !== undefined ? { opencodePermissionMode: args.opencodePermissionMode } : {}),
     ...(args.droidPermissionMode !== undefined ? { droidPermissionMode: args.droidPermissionMode } : {}),
+    ...(args.musePermissionMode !== undefined ? { musePermissionMode: args.musePermissionMode } : {}),
     ...(args.cursorModeId !== undefined ? { cursorModeId: args.cursorModeId } : {}),
     ...(args.cursorConfigValues !== undefined ? { cursorConfigValues: args.cursorConfigValues } : {}),
   });

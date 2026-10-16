@@ -28,28 +28,26 @@ import type {
   AppResourceUsageSnapshot,
   LaneCleanupConfig,
   LaneReclaimRisk,
+  OpenProjectBinding,
 } from "../../../shared/types";
-import { SettingsCard, SettingsGroup, SettingsNumber } from "./primitives";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { ModernRow, ModernRows, ModernSection, SettingsNumber } from "./primitives";
+import "./machineSettings.css";
 import { showToast, type ToastTone } from "../app/toast/toastStore";
-import { SettingsDashboardPage } from "./primitives/SettingsDashboardPage";
 import { relativeWhen } from "../../lib/format";
-import { appResourcePressureLevel, getAppResourceUsageCoalesced } from "../../lib/resourcePressure";
+import { getAppResourceUsageCoalesced } from "../../lib/resourcePressure";
 import {
   COLORS,
   SANS_FONT,
-  LABEL_STYLE,
-  inlineBadge,
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
-import { SettingsSectionShell } from "./settingsSectionUi";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import {
   StorageCleanupDialog,
   StorageDialogFrame,
   type SafeCleanupPlanConfig,
 } from "./storage/StorageCleanupDialog";
-import { PANEL_STYLE, STORAGE_BRAND } from "./storage/storageUiConstants";
 import { DiagnosticsStrip, TrendArrow } from "./storage/StorageDiagnostics";
 import { MaintenanceJournal } from "./storage/StorageMaintenanceJournal";
 import { AppleRecordingsWarning } from "./AppleRecordingsWarning";
@@ -78,8 +76,8 @@ import {
 /** One storage result at a time: a new outcome replaces the last in place. */
 const STORAGE_TOAST_ID = "settings-storage-result";
 
-type CompressNow = () => Promise<{ filesCompressed: number; savedBytes: number }>;
-type RunMaintenanceNow = () => Promise<MaintenanceRunReport>;
+type CompressNow = (pin?: OpenProjectBinding | null) => Promise<{ filesCompressed: number; savedBytes: number }>;
+type RunMaintenanceNow = (pin?: OpenProjectBinding | null) => Promise<MaintenanceRunReport>;
 type GetRuntimeHealth = () => Promise<RuntimeHealthSnapshot>;
 
 function getCompressNow(): CompressNow | undefined {
@@ -122,209 +120,129 @@ function formatAgeHours(ageHours: number | null | undefined): string {
 // Building blocks
 // ---------------------------------------------------------------------------
 
+const SAFETY_TONE: Record<StorageItem["safety"], "ok" | "warn" | undefined> = {
+  safe_to_remove: "ok",
+  compressible: undefined,
+  review_first: "warn",
+  protected: undefined,
+};
+
 function SafetyBadge({ safety }: { safety: StorageItem["safety"] }) {
-  const meta = SAFETY_META[safety];
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        padding: "2px 8px",
-        borderRadius: 6,
-        fontFamily: SANS_FONT,
-        fontSize: 10.5,
-        fontWeight: 600,
-        color: meta.color,
-        background: `color-mix(in srgb, ${meta.color} 14%, transparent)`,
-        border: `1px solid color-mix(in srgb, ${meta.color} 26%, transparent)`,
-        whiteSpace: "nowrap",
-      }}
-    >
-      {meta.label}
-    </span>
-  );
+  return <span className="kit-tag" data-tone={SAFETY_TONE[safety]}>{SAFETY_META[safety].label}</span>;
 }
 
 function PolicyChip({ label }: { label: string }) {
-  return (
-    <span
-      style={inlineBadge(COLORS.textSecondary, {
-        fontSize: 10.5,
-        padding: "2px 8px",
-        background: "color-mix(in srgb, var(--color-fg) 6%, transparent)",
-        border: `1px solid ${COLORS.borderMuted}`,
-        color: COLORS.textSecondary,
-      })}
-    >
-      {label}
-    </span>
-  );
+  return <span className="kit-tag">{label}</span>;
 }
 
+/** What each category takes, as one stacked bar and a legend. */
 function BreakdownBar({ categories }: { categories: StorageCategorySnapshot[] }) {
   const present = categories.filter((category) => category.bytes > 0);
   const legend = [...present].sort((a, b) => b.bytes - a.bytes);
   if (present.length === 0) {
-    return (
-      <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
-        ADE is not storing anything for this project yet.
-      </div>
-    );
+    // The "ADE data" figure above already says so.
+    return null;
   }
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div
-        style={{
-          display: "flex",
-          height: 14,
-          borderRadius: 7,
-          overflow: "hidden",
-          background: "color-mix(in srgb, var(--color-fg) 7%, transparent)",
-        }}
-      >
+    <div className="ade-st-breakdown">
+      <div className="ade-st-bar" role="img" aria-label="What ADE stores, by category">
         {legend.map((category) => (
-          <div
+          <span
             key={category.id}
             title={`${CATEGORY_META[category.id].name} · ${formatBytes(category.bytes)}`}
-            style={{
-              flexGrow: category.bytes,
-              flexBasis: 0,
-              minWidth: 5,
-              background: CATEGORY_META[category.id].hue,
-            }}
+            style={{ flexGrow: category.bytes, background: CATEGORY_META[category.id].hue }}
           />
         ))}
       </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 16px" }}>
+      <div className="ade-st-legend">
         {legend.map((category) => (
-          <div key={category.id} style={{ display: "flex", alignItems: "center", gap: 7 }}>
-            <span
-              style={{
-                width: 9,
-                height: 9,
-                borderRadius: 3,
-                background: CATEGORY_META[category.id].hue,
-                flexShrink: 0,
-              }}
-            />
-            <span style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textSecondary }}>
-              {CATEGORY_META[category.id].name}
-            </span>
-            <span style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted, fontVariantNumeric: "tabular-nums" }}>
-              {formatBytes(category.bytes)}
-            </span>
-          </div>
+          <span key={category.id} className="kit-legend">
+            <i style={{ background: CATEGORY_META[category.id].hue }} />
+            {CATEGORY_META[category.id].name}
+            <b>{formatBytes(category.bytes)}</b>
+          </span>
         ))}
       </div>
     </div>
   );
 }
 
-function pressureTone(state: DiskPressureSnapshot["state"] | undefined): string {
-  if (state && isUrgentDiskPressure(state)) return COLORS.danger;
-  if (state === "warning") return COLORS.warning;
-  return COLORS.textMuted;
-}
-
-function DiskGauge({
-  snapshot,
-  pressureState,
-}: {
-  snapshot: StorageSnapshot;
-  pressureState: DiskPressureSnapshot["state"] | undefined;
-}) {
-  const { freeBytes, totalBytes } = snapshot.volume;
-  const used = Math.max(0, totalBytes - freeBytes);
-  const adeUsed = Math.min(snapshot.totalAdeBytes, used);
-  const otherUsed = Math.max(0, used - adeUsed);
-  const toneColor = pressureTone(pressureState);
-  const freeTone = pressureState && pressureState !== "normal" ? toneColor : COLORS.textSecondary;
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <div style={{ fontFamily: SANS_FONT, fontSize: 15, fontWeight: 600, color: COLORS.textPrimary }}>
-        ADE is using {formatBytes(snapshot.totalAdeBytes)}
-        <span style={{ color: freeTone, fontWeight: 500 }}> · {formatBytes(freeBytes)} free on this disk</span>
-      </div>
-      <div
-        style={{
-          display: "flex",
-          height: 8,
-          borderRadius: 5,
-          overflow: "hidden",
-          background: "color-mix(in srgb, var(--color-fg) 6%, transparent)",
-        }}
-      >
-        {adeUsed > 0 ? <div style={{ flexGrow: adeUsed, flexBasis: 0, minWidth: 3, background: COLORS.accent }} /> : null}
-        {otherUsed > 0 ? (
-          <div style={{ flexGrow: otherUsed, flexBasis: 0, background: "color-mix(in srgb, var(--color-fg) 24%, transparent)" }} />
-        ) : null}
-        {freeBytes > 0 ? <div style={{ flexGrow: freeBytes, flexBasis: 0 }} /> : null}
-      </div>
-    </div>
-  );
+function pressureLevel(state: DiskPressureSnapshot["state"] | undefined): "warn" | "crit" | undefined {
+  if (state && isUrgentDiskPressure(state)) return "crit";
+  if (state === "warning") return "warn";
+  return undefined;
 }
 
 /**
- * The body of the disk-usage dashboard. The panel chrome, the title and the
- * scope chip come from `SettingsDashboardPage` at the call site, so this draws
- * only the picture: the gauge, the actions, and the category breakdown.
+ * The disk-usage figures: what ADE keeps, what is free, what can go, and when
+ * it was measured — then the category breakdown.
  */
-function Hero({
+function DiskOverview({
   snapshot,
   pressureState,
-  refreshing,
   reclaimableBytes,
-  onRescan,
-  onCleanSafely,
 }: {
   snapshot: StorageSnapshot;
   pressureState: DiskPressureSnapshot["state"] | undefined;
-  refreshing: boolean;
   reclaimableBytes: number;
-  onRescan: () => void;
-  onCleanSafely: (() => void) | null;
 }) {
+  const { freeBytes, totalBytes } = snapshot.volume;
+  const used = Math.max(0, totalBytes - freeBytes);
+  const usedPct = totalBytes > 0 ? Math.min(100, (used / totalBytes) * 100) : 0;
+  const adeShare = used > 0 ? Math.min(100, (Math.min(snapshot.totalAdeBytes, used) / used) * 100) : 0;
+  const level = pressureLevel(pressureState);
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
-        <DiskGauge snapshot={snapshot} pressureState={pressureState} />
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-            {onCleanSafely && reclaimableBytes > 0 ? (
-              <button type="button" onClick={onCleanSafely} style={primaryButton({ height: 32 })}>
-                <Broom size={14} />
-                Clean up safely · {formatApproxBytes(reclaimableBytes)}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={onRescan}
-              disabled={refreshing}
-              style={{ ...outlineButton({ height: 32 }), opacity: refreshing ? 0.7 : 1 }}
-            >
-              <ArrowClockwise size={14} className={refreshing ? "animate-spin" : undefined} />
-              {refreshing ? "Rescanning" : "Rescan"}
-            </button>
-          </div>
-          <div style={{ fontFamily: SANS_FONT, fontSize: 10.5, color: COLORS.textMuted }}>
-            Scanned {relativeWhen(snapshot.generatedAt)}
-          </div>
+    <>
+      <div className="ade-modern-stats">
+        <div className="ade-modern-stat">
+          <span className="kit-eyebrow">ADE data</span>
+          <span className="ade-modern-stat-value">
+            <span className="kit-stat kit-num">{formatBytes(snapshot.totalAdeBytes)}</span>
+          </span>
+          <div className="kit-meter" aria-hidden><span style={{ width: `${snapshot.totalAdeBytes > 0 ? Math.max(adeShare, 1) : 0}%` }} /></div>
+          <span className="ade-modern-stat-sub">
+            {snapshot.totalAdeBytes <= 0
+              ? "Nothing stored for this project yet"
+              : `${adeShare < 1 ? "Under 1%" : `${Math.round(adeShare)}%`} of what's used on this disk`}
+          </span>
+        </div>
+        <div className="ade-modern-stat">
+          <span className="kit-eyebrow">Free on disk</span>
+          <span className="ade-modern-stat-value">
+            <span className="kit-stat kit-num" style={level ? { color: level === "crit" ? "var(--kit-crit)" : "var(--kit-warn)" } : undefined}>
+              {formatBytes(freeBytes)}
+            </span>
+          </span>
+          <div className="kit-meter" data-level={level} aria-hidden><span style={{ width: `${usedPct}%` }} /></div>
+          <span className="ade-modern-stat-sub">{Math.round(usedPct)}% of {formatBytes(totalBytes)} used</span>
+        </div>
+        <div className="ade-modern-stat">
+          <span className="kit-eyebrow">Safe to reclaim</span>
+          <span className="ade-modern-stat-value">
+            <span className="kit-stat kit-num">{reclaimableBytes > 0 ? formatApproxBytes(reclaimableBytes) : "0 B"}</span>
+          </span>
+          <span className="ade-modern-stat-sub">Files ADE can rebuild or no longer needs</span>
+        </div>
+        <div className="ade-modern-stat">
+          <span className="kit-eyebrow">Scanned</span>
+          <span className="ade-modern-stat-value">
+            <span className="kit-stat" style={{ fontSize: 17 }}>{relativeWhen(snapshot.generatedAt)}</span>
+          </span>
           {snapshot.lifecycle ? (
-            <div style={{ fontFamily: SANS_FONT, fontSize: 10.5, color: COLORS.textDim, textAlign: "right", lineHeight: 1.45 }}>
-              Safety scan: {snapshot.lifecycle.lastScanAt ? relativeWhen(snapshot.lifecycle.lastScanAt) : "not run yet"}
-              <br />
-              Next: {snapshot.lifecycle.nextScanAt ? relativeWhen(snapshot.lifecycle.nextScanAt) : "disabled"}
-            </div>
+            <span className="ade-modern-stat-sub">
+              Safety scan {snapshot.lifecycle.lastScanAt ? relativeWhen(snapshot.lifecycle.lastScanAt) : "not run yet"}
+              {" · "}next {snapshot.lifecycle.nextScanAt ? relativeWhen(snapshot.lifecycle.nextScanAt) : "disabled"}
+            </span>
           ) : null}
         </div>
       </div>
       <BreakdownBar categories={snapshot.categories} />
       {snapshot.truncated ? (
-        <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+        <p className="ade-modern-muted">
           Some items were skipped to keep this scan fast, so sizes may be slightly under-counted.
-        </div>
+        </p>
       ) : null}
-    </div>
+    </>
   );
 }
 
@@ -345,29 +263,18 @@ function CardShell({
 }) {
   const meta = CATEGORY_META[categoryId];
   return (
-    <section style={{ ...PANEL_STYLE, gridColumn: span ? "1 / -1" : undefined, display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
-          <span style={{ width: 10, height: 10, borderRadius: 3, background: meta.hue, flexShrink: 0 }} />
-          <h3 style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 13.5, fontWeight: 650, color: COLORS.textPrimary }}>
-            {meta.name}
-          </h3>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          {headerExtra}
-          <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textSecondary, fontVariantNumeric: "tabular-nums" }}>
-            {formatBytes(category.bytes)}
-          </span>
-        </div>
+    <section className="ade-st-cat" style={span ? { gridColumn: "1 / -1" } : undefined}>
+      <div className="ade-st-cat-head">
+        <span className="ade-st-swatch" style={{ background: meta.hue }} aria-hidden />
+        <h3>{meta.name}</h3>
+        <span style={{ flex: 1 }} />
+        {headerExtra}
+        <span className="ade-st-cat-size kit-num">{formatBytes(category.bytes)}</span>
       </div>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-        <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 11.5, lineHeight: 1.45, color: COLORS.textMuted }}>
-          {meta.description}
-        </p>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {policyChip ? <PolicyChip label={policyChip} /> : null}
-          <SafetyBadge safety={category.safety} />
-        </div>
+      <p className="ade-modern-muted">{meta.description}</p>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <SafetyBadge safety={category.safety} />
+        {policyChip ? <PolicyChip label={policyChip} /> : null}
       </div>
       {children}
     </section>
@@ -386,12 +293,7 @@ function ActionButton({
   disabled?: boolean;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      style={{ ...outlineButton({ height: 30, fontSize: 11.5 }), opacity: disabled ? 0.6 : 1, cursor: disabled ? "not-allowed" : "pointer" }}
-    >
+    <button type="button" onClick={onClick} disabled={disabled} className="ade-modern-btn" data-size="sm">
       {icon}
       {label}
     </button>
@@ -414,35 +316,14 @@ function ItemRow({
   action?: React.ReactNode;
 }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 12,
-        padding: "8px 10px",
-        borderRadius: 9,
-        border: `1px solid ${COLORS.borderMuted}`,
-        background: "color-mix(in srgb, var(--color-fg) 2.5%, transparent)",
-        opacity: muted ? 0.72 : 1,
-      }}
-    >
-      <div style={{ minWidth: 0 }}>
+    <div className="ade-st-item" data-muted={muted || undefined}>
+      <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-          <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>{label}</span>
-          <span style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted, fontVariantNumeric: "tabular-nums" }}>{size}</span>
+          <span className="ade-st-item-label">{label}</span>
+          <span className="ade-st-item-size kit-num">{size}</span>
         </div>
-        {detail ? (
-          <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted, marginTop: 2 }}>{detail}</div>
-        ) : null}
-        {path ? (
-          <div
-            style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textDim, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-            title={path}
-          >
-            {path}
-          </div>
-        ) : null}
+        {detail ? <div className="ade-st-item-detail">{detail}</div> : null}
+        {path ? <div className="ade-st-item-path" title={path}>{path}</div> : null}
       </div>
       {action ? <div style={{ flexShrink: 0 }}>{action}</div> : null}
     </div>
@@ -450,11 +331,7 @@ function ItemRow({
 }
 
 function GroupLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <div style={{ ...LABEL_STYLE, textTransform: "uppercase", letterSpacing: 0.8, fontSize: 10, marginTop: 4 }}>
-      {children}
-    </div>
-  );
+  return <div className="kit-eyebrow" style={{ marginTop: 4 }}>{children}</div>;
 }
 
 function laneDetail(item: StorageItem, archivedAt: string | null | undefined): string {
@@ -521,18 +398,7 @@ function LanesCard({
       <button
         type="button"
         onClick={() => setExpanded((value) => !value)}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          background: "transparent",
-          border: "none",
-          padding: 0,
-          cursor: "pointer",
-          fontFamily: SANS_FONT,
-          fontSize: 11.5,
-          color: COLORS.textSecondary,
-        }}
+        className="ade-st-toggle"
         aria-expanded={expanded}
       >
         {expanded ? <CaretDown size={13} /> : <CaretRight size={13} />}
@@ -540,7 +406,7 @@ function LanesCard({
       </button>
 
       {expanded ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div className="ade-st-items">
           {archived.length > 0 ? (
             <>
               <GroupLabel>Archived lanes</GroupLabel>
@@ -612,9 +478,9 @@ function DatabaseCard({
     // No breakdown available (older daemon) — keep the protected framing.
     return (
       <CardShell categoryId="database" category={category} policyChip={policyChip}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted }}>
-          <ShieldCheck size={15} style={{ color: COLORS.success }} />
-          This is your project's live data. ADE protects it automatically.
+        <div className="ade-st-item-detail" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <ShieldCheck size={14} style={{ color: "var(--kit-ok)" }} />
+          This is your project&apos;s live data. ADE protects it automatically.
         </div>
       </CardShell>
     );
@@ -628,27 +494,15 @@ function DatabaseCard({
       headerExtra={trend ? <TrendArrow trend={trend} /> : undefined}
       span
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div className="ade-st-items">
         {rows.map((row) => (
-          <div
-            key={row.table}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-              padding: "9px 11px",
-              borderRadius: 9,
-              border: `1px solid ${COLORS.borderMuted}`,
-              background: "color-mix(in srgb, var(--color-fg) 2.5%, transparent)",
-            }}
-          >
-            <div style={{ minWidth: 0 }}>
+          <div key={row.table} className="ade-st-item">
+            <div style={{ minWidth: 0, flex: 1 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>{row.label}</span>
+                <span className="ade-st-item-label">{row.label}</span>
                 {row.isProtected ? (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontFamily: SANS_FONT, fontSize: 10.5, color: COLORS.success }}>
-                    <ShieldCheck size={12} weight="fill" /> Protected
+                  <span className="kit-tag" data-tone="ok">
+                    <ShieldCheck size={11} weight="fill" style={{ marginRight: 4 }} />Protected
                   </span>
                 ) : null}
                 {row.isPending ? (
@@ -657,33 +511,22 @@ function DatabaseCard({
                     side="top"
                     content={{ label: "Waiting to compact", description: DB_COMPACTION_PENDING_HINT }}
                   >
-                    <span style={inlineBadge(COLORS.info, { fontSize: 10, padding: "1px 7px" })}>Waiting to compact</span>
+                    <span className="kit-tag">Waiting to compact</span>
                   </SmartTooltip>
                 ) : null}
               </div>
-              <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted, marginTop: 2 }}>{row.hint}</div>
+              <div className="ade-st-item-detail">{row.hint}</div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-              <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.textSecondary, fontVariantNumeric: "tabular-nums" }}>
-                {row.size}
-              </span>
+              <span className="ade-st-item-size kit-num">{row.size}</span>
               {row.actionLabel && runMaintenance ? (
                 <button
                   type="button"
                   onClick={runMaintenance}
                   disabled={maintenanceBusy}
-                  style={{
-                    fontFamily: SANS_FONT,
-                    fontSize: 11,
-                    fontWeight: 600,
-                    color: COLORS.accent,
-                    background: "transparent",
-                    border: "none",
-                    padding: "2px 4px",
-                    cursor: maintenanceBusy ? "not-allowed" : "pointer",
-                    opacity: maintenanceBusy ? 0.6 : 1,
-                    whiteSpace: "nowrap",
-                  }}
+                  className="ade-modern-btn"
+                  data-size="sm"
+                  data-variant="ghost"
                 >
                   {row.actionLabel}
                 </button>
@@ -728,84 +571,66 @@ function StoragePolicyPanel({
     const shown = local ?? inherited ?? 0;
     const isInherited = local == null;
     return (
-      <div key={key} style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
-        <span style={{ fontFamily: SANS_FONT, fontSize: 11.5, fontWeight: 650, color: COLORS.textPrimary }}>
-          {label}
-        </span>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <SettingsNumber
-            ariaLabel={label}
-            value={shown}
-            min={0}
-            suffix={suffix}
-            sentinelLabel={sentinelLabel}
-            sentinelValue={0}
-            onChange={(next) => onChange({ ...value, [key]: Math.max(0, Math.floor(next)) })}
-          />
-          {isInherited ? (
-            <span style={{ fontFamily: SANS_FONT, fontSize: 10.5, color: COLORS.textDim }}>Inherited</span>
-          ) : (
-            <button
-              type="button"
-              onClick={() => onChange({ ...value, [key]: undefined })}
-              style={{
-                fontFamily: SANS_FONT,
-                fontSize: 10.5,
-                color: COLORS.textDim,
-                background: "none",
-                border: "none",
-                padding: 0,
-                cursor: "pointer",
-                textDecoration: "underline",
-              }}
-            >
-              Reset to inherited
-            </button>
-          )}
-        </div>
-        <span style={{ fontFamily: SANS_FONT, fontSize: 10.5, lineHeight: 1.45, color: COLORS.textMuted }}>{help}</span>
-      </div>
+      <ModernRow
+        key={key}
+        title={label}
+        hint={help}
+        control={(
+          <>
+            {isInherited ? (
+              <span className="kit-tag">Inherited</span>
+            ) : (
+              <button
+                type="button"
+                className="ade-modern-btn"
+                data-variant="link"
+                style={{ fontSize: 11.5 }}
+                onClick={() => onChange({ ...value, [key]: undefined })}
+              >
+                Reset to inherited
+              </button>
+            )}
+            <SettingsNumber
+              ariaLabel={label}
+              value={shown}
+              min={0}
+              suffix={suffix}
+              sentinelLabel={sentinelLabel}
+              sentinelValue={0}
+              onChange={(next) => onChange({ ...value, [key]: Math.max(0, Math.floor(next)) })}
+            />
+          </>
+        )}
+      />
     );
   };
 
-  // The rules are an editable policy, so they are a preference page: one
-  // `SettingsCard` owning the `lane-storage-rules` anchor. The card draws the
-  // title, the description and — crucially — the scope chip, which used to be
-  // a hand-passed scope that could drift from
-  // the manifest. The four fields stay one control cluster inside it, because
-  // splitting them into four cards would mint four anchors the manifest does
-  // not know and settings search would hide them.
+  // The rules are an editable policy: one section owning the
+  // `lane-storage-rules` anchor. The four fields stay rows of one panel,
+  // because four anchors the manifest does not know would be hidden by
+  // settings search.
   return (
-    <SettingsGroup title="Lane storage rules">
-      <SettingsCard
-        anchor="lane-storage-rules"
-        title="Lane storage rules"
-        description="ADE can archive lanes when they are safely idle. It never removes lane folders in the background."
-        control={
-          busy ? (
-            <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim, whiteSpace: "nowrap" }}>
-              Saving…
-            </span>
-          ) : undefined
-        }
-      >
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14 }}>
-            {field("maxActiveLanes", "Maximum active lanes", "Only clean, merged, idle lanes can be archived.", "No limit", "lanes")}
-            {field("autoArchiveAfterHours", "Archive after inactivity", "Hours without lane activity before ADE may archive it.", "Never", "hours")}
-            {field("cleanupIntervalHours", "Check every", "Hours between safety scans. A scan only archives eligible lanes and updates the review list.", "Disabled", "hours")}
-            {field("reclaimArchivedAfterHours", "Review archived files after", "Hours before archived lane folders are marked ready for review. ADE still waits for confirmation.", "Never", "hours")}
-          </div>
-          <details style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-            <summary style={{ cursor: "pointer", color: COLORS.textSecondary }}>What counts as safe?</summary>
-            <div style={{ marginTop: 8, lineHeight: 1.55 }}>
-              The lane must be ADE-managed, clean, merged, not protected, not part of a PR group, and have no running chat, terminal, or watcher.
-              Attached folders and the primary lane are always left alone.
-            </div>
-          </details>
-        </div>
-      </SettingsCard>
-    </SettingsGroup>
+    <ModernSection
+      group="Lane storage"
+      anchor="lane-storage-rules"
+      title="Archive idle lanes"
+      hint="ADE can archive lanes when they are safely idle. It never removes lane folders in the background."
+      actions={busy ? <span className="ade-modern-muted">Saving…</span> : undefined}
+    >
+      <ModernRows>
+        {field("maxActiveLanes", "Maximum active lanes", "Only clean, merged, idle lanes can be archived.", "No limit", "lanes")}
+        {field("autoArchiveAfterHours", "Archive after inactivity", "Hours without lane activity before ADE may archive it.", "Never", "hours")}
+        {field("cleanupIntervalHours", "Check every", "Hours between safety scans. A scan only archives eligible lanes and updates the review list.", "Disabled", "hours")}
+        {field("reclaimArchivedAfterHours", "Review archived files after", "Hours before archived lane folders are marked ready for review. ADE still waits for confirmation.", "Never", "hours")}
+      </ModernRows>
+      <details className="ade-st-details">
+        <summary>What counts as safe?</summary>
+        <p className="ade-modern-muted">
+          The lane must be ADE-managed, clean, merged, not protected, not part of a PR group, and have no running chat, terminal, or watcher.
+          Attached folders and the primary lane are always left alone.
+        </p>
+      </details>
+    </ModernSection>
   );
 }
 
@@ -898,12 +723,12 @@ function ReclaimConfirmDialog({
           />
         </label>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
-          <button type="button" onClick={onClose} disabled={busy} style={outlineButton({ height: 32 })}>Cancel</button>
+          <button type="button" onClick={onClose} disabled={busy} style={outlineButton()}>Cancel</button>
           <button
             type="button"
             onClick={onConfirm}
             disabled={busy || blocked || dirtyNotConfirmed || value !== "RECLAIM"}
-            style={{ ...primaryButton({ height: 32 }), opacity: busy || blocked || dirtyNotConfirmed || value !== "RECLAIM" ? 0.55 : 1 }}
+            style={{ ...primaryButton(), opacity: busy || blocked || dirtyNotConfirmed || value !== "RECLAIM" ? 0.55 : 1 }}
           >
             {busy
               ? "Reclaiming…"
@@ -940,22 +765,23 @@ function StorageReviewPanel({
       .map((item) => ({ categoryId: category.id, item })),
   );
   return (
-    <section style={{ ...PANEL_STYLE, display: "flex", flexDirection: "column", gap: 12 }}>
-      <div>
-        <h3 style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 14, color: COLORS.textPrimary }}>Review files before cleanup</h3>
-        <p style={{ margin: "5px 0 0", fontFamily: SANS_FONT, fontSize: 11.5, lineHeight: 1.5, color: COLORS.textMuted }}>
-          Sizes are estimates. ADE checks every path again after you confirm and reports anything it could not remove.
-        </p>
-      </div>
+    <ModernSection
+      group="Review files"
+      title="Review files before cleanup"
+      hint="Sizes are estimates. ADE checks every path again after you confirm and reports anything it could not remove."
+    >
       {rows.length === 0 ? (
-        <div style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted }}>Nothing needs review right now.</div>
+        <div className="ade-modern-note">
+          <ShieldCheck size={14} />
+          <span>Nothing needs review right now.</span>
+        </div>
       ) : (
-        <div style={{ overflowX: "auto", border: `1px solid ${COLORS.borderMuted}`, borderRadius: 10 }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760, fontFamily: SANS_FONT }}>
+        <div className="ade-st-table-wrap">
+          <table className="ade-st-table">
             <thead>
-              <tr style={{ background: COLORS.recessedBg, color: COLORS.textMuted, fontSize: 10.5, textAlign: "left" }}>
+              <tr>
                 {["Item", "Type", "Owner", "Age", "Can reclaim", "Why blocked", ""].map((label) => (
-                  <th key={label} style={{ padding: "9px 10px", fontWeight: 650 }}>{label}</th>
+                  <th key={label}>{label}</th>
                 ))}
               </tr>
             </thead>
@@ -966,17 +792,17 @@ function StorageReviewPanel({
                 const reclaimFailed = item.reclaimState === "failed";
                 const reclaimed = item.laneStatus === "archived" && item.bytes === 0 && !reclaimFailed;
                 return (
-                  <tr key={`${categoryId}:${item.id}`} style={{ borderTop: `1px solid ${COLORS.borderMuted}`, color: COLORS.textSecondary, fontSize: 11 }}>
-                    <td style={{ padding: "10px", color: COLORS.textPrimary, fontWeight: 600 }}>
-                      {item.label}
-                      <div title={item.path} style={{ marginTop: 2, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: COLORS.textDim, fontSize: 9.5 }}>{item.path}</div>
+                  <tr key={`${categoryId}:${item.id}`}>
+                    <td>
+                      <span className="ade-st-item-label">{item.label}</span>
+                      <div className="ade-st-item-path" title={item.path} style={{ maxWidth: 260 }}>{item.path}</div>
                     </td>
-                    <td style={{ padding: "10px" }}>{item.laneStatus === "archived" ? "Archived lane" : item.laneStatus === "orphaned" ? "Leftover worktree" : "Build output"}</td>
-                    <td style={{ padding: "10px" }}>{item.ownership ?? "ADE-managed"}</td>
-                    <td style={{ padding: "10px" }}>{formatAgeHours(item.ageHours)}</td>
-                    <td style={{ padding: "10px", fontVariantNumeric: "tabular-nums" }}>{formatBytes(item.reclaimableBytes ?? item.bytes)}</td>
-                    <td style={{ padding: "10px", maxWidth: 250 }}>{item.blockedReasons?.join(" ") || "Ready for review"}</td>
-                    <td style={{ padding: "10px", textAlign: "right" }}>
+                    <td>{item.laneStatus === "archived" ? "Archived lane" : item.laneStatus === "orphaned" ? "Leftover worktree" : "Build output"}</td>
+                    <td>{item.ownership ?? "ADE-managed"}</td>
+                    <td>{formatAgeHours(item.ageHours)}</td>
+                    <td className="kit-num">{formatBytes(item.reclaimableBytes ?? item.bytes)}</td>
+                    <td style={{ maxWidth: 250 }}>{item.blockedReasons?.join(" ") || "Ready for review"}</td>
+                    <td style={{ textAlign: "right" }}>
                       {reclaimed && laneId ? (
                         <ActionButton label="Restore lane" icon={<ArrowClockwise size={13} />} onClick={() => onRestore(laneId)} />
                       ) : item.laneStatus === "archived" && laneId ? (
@@ -1002,7 +828,7 @@ function StorageReviewPanel({
           </table>
         </div>
       )}
-    </section>
+    </ModernSection>
   );
 }
 
@@ -1011,6 +837,10 @@ function StorageReviewPanel({
 // ---------------------------------------------------------------------------
 
 export function StorageSection() {
+  // Which machine's disk this is. Runtime actions carry `pin`; the plain-IPC
+  // reads (disk pressure, app resource usage, runtime health) only ever reach
+  // This computer, so they are skipped for any other machine.
+  const { pin, isThisMachine } = useSettingsMachineScope();
   const [snapshot, setSnapshot] = React.useState<StorageSnapshot | null>(null);
   const [pressureState, setPressureState] = React.useState<DiskPressureSnapshot["state"] | undefined>();
   const [laneIdByKey, setLaneIdByKey] = React.useState<Map<string, string>>(new Map());
@@ -1035,8 +865,12 @@ export function StorageSection() {
   const policySaveTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const compressNow = React.useMemo(() => getCompressNow(), []);
-  const runMaintenanceNow = React.useMemo(() => getRunMaintenanceNow(), []);
-  const runtimeHealthFn = React.useMemo(() => getRuntimeHealthFn(), []);
+  const runMaintenanceNowBridge = React.useMemo(() => getRunMaintenanceNow(), []);
+  const runMaintenanceNow = React.useMemo<(() => Promise<MaintenanceRunReport>) | undefined>(
+    () => (runMaintenanceNowBridge ? () => runMaintenanceNowBridge(pin) : undefined),
+    [pin, runMaintenanceNowBridge],
+  );
+  const runtimeHealthFn = React.useMemo(() => (isThisMachine ? getRuntimeHealthFn() : undefined), [isThisMachine]);
 
   const notify = React.useCallback((message: string, tone: ToastTone = "success") => {
     showToast({ id: STORAGE_TOAST_ID, title: message, tone, durationMs: 4500 });
@@ -1051,10 +885,10 @@ export function StorageSection() {
     setError(null);
     try {
       const [snap, pressure, lanes, config] = await Promise.all([
-        window.ade.storage.getSnapshot({ forceRefresh: opts.force }),
-        window.ade.storage.getPressure().catch(() => null),
-        window.ade.lanes?.list?.({ includeArchived: true }).catch(() => []) ?? Promise.resolve([]),
-        window.ade.projectConfig.get(),
+        window.ade.storage.getSnapshot({ forceRefresh: opts.force }, pin),
+        isThisMachine ? window.ade.storage.getPressure().catch(() => null) : Promise.resolve(null),
+        window.ade.lanes?.list?.({ includeArchived: true }, pin).catch(() => []) ?? Promise.resolve([]),
+        window.ade.projectConfig.get(pin),
       ]);
       const ids = new Map<string, string>();
       const archivedAt = new Map<string, string | null>();
@@ -1079,17 +913,17 @@ export function StorageSection() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [isThisMachine, pin]);
 
   const loadDiagnostics = React.useCallback(async () => {
     const [nextUsage, nextHealth] = await Promise.all([
-      getAppResourceUsageCoalesced(),
+      isThisMachine ? getAppResourceUsageCoalesced() : Promise.resolve(null),
       runtimeHealthFn ? runtimeHealthFn().catch(() => null) : Promise.resolve(null),
     ]);
     setUsage(nextUsage);
     setUsageReady(true);
     setRuntimeHealth(nextHealth);
-  }, [runtimeHealthFn]);
+  }, [isThisMachine, runtimeHealthFn]);
 
   React.useEffect(() => {
     void load();
@@ -1104,7 +938,7 @@ export function StorageSection() {
     if (!compressNow) return;
     setCompressing(true);
     try {
-      const result = await compressNow();
+      const result = await compressNow(pin);
       notify(`Compressed ${result.filesCompressed} ${result.filesCompressed === 1 ? "file" : "files"}, freed ${formatBytes(result.savedBytes)}`);
       void load({ force: true, silent: true });
     } catch (err) {
@@ -1112,7 +946,7 @@ export function StorageSection() {
     } finally {
       setCompressing(false);
     }
-  }, [compressNow, load, notify]);
+  }, [compressNow, load, notify, pin]);
 
   const runMaintenanceInline = React.useCallback(async () => {
     if (!runMaintenanceNow || maintenanceBusy) return;
@@ -1132,18 +966,18 @@ export function StorageSection() {
   const savePolicy = React.useCallback(async (next: LaneCleanupConfig) => {
     setPolicyBusy(true);
     try {
-      const current = await window.ade.projectConfig.get();
+      const current = await window.ade.projectConfig.get(pin);
       await window.ade.projectConfig.save({
         shared: current.shared,
         local: { ...current.local, laneCleanup: next },
-      });
+      }, pin);
       void load({ force: true, silent: true });
     } catch (err) {
       notify(err instanceof Error ? err.message : "Could not save storage rules", "error");
     } finally {
       setPolicyBusy(false);
     }
-  }, [load, notify]);
+  }, [load, notify, pin]);
 
   /**
    * Storage rules save as you edit — there is no Save button anywhere in
@@ -1161,14 +995,14 @@ export function StorageSection() {
 
   const openReclaim = React.useCallback(async (laneId: string) => {
     try {
-      const risk = await window.ade.lanes.getReclaimRisk({ laneId });
+      const risk = await window.ade.lanes.getReclaimRisk({ laneId }, pin);
       setReclaimConfirm("");
       setDiscardDirtyConfirmed(false);
       setReclaimRisk(risk);
     } catch (err) {
       notify(err instanceof Error ? err.message : "Could not review this lane", "error");
     }
-  }, [notify]);
+  }, [notify, pin]);
 
   const confirmReclaim = React.useCallback(async () => {
     if (!reclaimRisk || reclaimConfirm !== "RECLAIM" || (reclaimRisk.dirty && !discardDirtyConfirmed)) return;
@@ -1178,7 +1012,7 @@ export function StorageSection() {
         laneId: reclaimRisk.laneId,
         confirmation: "RECLAIM",
         ...(reclaimRisk.dirty && discardDirtyConfirmed ? { forceDirty: true } : {}),
-      });
+      }, pin);
       notify(`Reclaimed about ${formatBytes(result.reclaimedBytes)}. The lane, branch, and chats were kept.`);
       setReclaimRisk(null);
       setReclaimConfirm("");
@@ -1189,11 +1023,13 @@ export function StorageSection() {
     } finally {
       setReclaimBusy(false);
     }
-  }, [discardDirtyConfirmed, load, reclaimConfirm, reclaimRisk, notify]);
+  }, [discardDirtyConfirmed, load, reclaimConfirm, reclaimRisk, notify, pin]);
 
   const restoreLane = React.useCallback(async (laneId: string) => {
     try {
-      const result = await window.ade.lanes.unarchive({ laneId });
+      // The lane lives on the machine this page shows; its id only means
+      // something there.
+      const result = await window.ade.lanes.unarchive({ laneId }, pin);
       notify(
         result.setupWarning
           ? `Lane restored. Setup needs attention: ${result.setupWarning}`
@@ -1204,7 +1040,7 @@ export function StorageSection() {
     } catch (err) {
       notify(err instanceof Error ? err.message : "Could not restore this lane", "error");
     }
-  }, [load, notify]);
+  }, [load, notify, pin]);
 
   const onCleaned = React.useCallback((_result: StorageCleanupResult) => {
     void load({ force: true, silent: true });
@@ -1255,57 +1091,70 @@ export function StorageSection() {
     };
   }, [snapshot, laneIdByKey, runMaintenanceNow, notifyMaintenance]);
 
-  const description = "What ADE keeps on this computer for this project, and what you can safely clear.";
+  const reclaimableBytes = runMaintenanceNow ? (safeConfig?.plan.estimatedBytes ?? 0) : reclaimable;
+  const hint = snapshot
+    ? `ADE is using ${formatBytes(snapshot.totalAdeBytes)} · ${formatBytes(snapshot.volume.freeBytes)} free on this disk.`
+    : "What ADE keeps on this computer for this project, and what you can safely clear.";
 
   return (
-    // The `storage` anchor now lives on the disk-usage dashboard rather than on
-    // this shell, so a `#storage` deeplink lands on the figures instead of the
-    // page heading — and so the shell and the dashboard can't both claim the id.
-    // It is rendered in every state (loading, error, loaded) so the anchor is
-    // there for a deeplink that arrives before the scan finishes.
-    <SettingsSectionShell title="Storage" description={description} icon={HardDrives} brandColor={STORAGE_BRAND}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-        <SettingsDashboardPage anchor="storage" title="Disk usage">
-          {loading && !snapshot ? (
-            <StorageSkeleton />
-          ) : error && !snapshot ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, alignItems: "flex-start" }}>
-              <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary }}>ADE couldn't measure storage right now.</div>
-              <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>{error}</div>
-              <button type="button" onClick={() => void load({ force: true })} style={outlineButton({ height: 32 })}>
-                <ArrowClockwise size={14} /> Try again
-              </button>
-            </div>
-          ) : snapshot ? (
-            <Hero
-              snapshot={snapshot}
-              pressureState={pressureState}
-              refreshing={refreshing}
-              reclaimableBytes={runMaintenanceNow ? (safeConfig?.plan.estimatedBytes ?? 0) : reclaimable}
-              onRescan={() => void load({ force: true })}
-              onCleanSafely={safeConfig ? () => setSafeOpen(true) : null}
-            />
-          ) : null}
-        </SettingsDashboardPage>
-
-        {snapshot ? (
+    // The `storage` anchor lives on the disk-usage section, so a `#storage`
+    // deeplink lands on the figures. It is rendered in every state (loading,
+    // error, loaded) so the anchor is there for a deeplink that arrives
+    // before the scan finishes.
+    <div className="ade-modern-sections">
+      <ModernSection
+        group="Disk usage"
+        anchor="storage"
+        title="Disk usage"
+        hint={hint}
+        actions={snapshot ? (
           <>
-            <StoragePolicyPanel
-              value={policy}
-              effectiveValue={effectivePolicy}
-              busy={policyBusy}
-              onChange={commitPolicy}
-            />
+            <button
+              type="button"
+              onClick={() => void load({ force: true })}
+              disabled={refreshing}
+              className="ade-modern-btn"
+              data-variant="ghost"
+            >
+              <ArrowClockwise size={13} className={refreshing ? "animate-spin" : undefined} />
+              {refreshing ? "Rescanning" : "Rescan"}
+            </button>
+            {safeConfig && reclaimableBytes > 0 ? (
+              <button type="button" onClick={() => setSafeOpen(true)} className="ade-modern-btn" data-tone="primary">
+                <Broom size={13} />
+                Clean up safely · {formatApproxBytes(reclaimableBytes)}
+              </button>
+            ) : null}
+          </>
+        ) : undefined}
+      >
+        {loading && !snapshot ? (
+          <StorageSkeleton />
+        ) : error && !snapshot ? (
+          <div className="ade-modern-note" data-tone="crit">
+            <HardDrives size={14} />
+            <div className="ade-modern-note-body">
+              <strong style={{ fontWeight: 600, color: "var(--color-fg)" }}>ADE couldn&apos;t measure storage right now.</strong>
+              <span>{error}</span>
+            </div>
+            <button type="button" onClick={() => void load({ force: true })} className="ade-modern-btn" data-size="sm">
+              <ArrowClockwise size={12} /> Try again
+            </button>
+          </div>
+        ) : snapshot ? (
+          <DiskOverview snapshot={snapshot} pressureState={pressureState} reclaimableBytes={reclaimableBytes} />
+        ) : null}
+      </ModernSection>
 
-            <StorageReviewPanel
-              snapshot={snapshot}
-              laneIdByKey={laneIdByKey}
-              onCleanup={setCleanup}
-              onReclaim={(laneId) => void openReclaim(laneId)}
-              onRestore={(laneId) => void restoreLane(laneId)}
-            />
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14 }}>
+      {snapshot ? (
+        <>
+          {snapshot.categories.some((category) => byId.has(category.id) && CATEGORY_ORDER.includes(category.id)) ? (
+          <ModernSection
+            group="What ADE keeps"
+            title="What ADE keeps"
+            hint="ADE never removes lane folders, build output, or leftovers in the background. Files stay until you review and confirm cleanup."
+          >
+            <div className="ade-st-grid">
               {CATEGORY_ORDER.map((categoryId) => {
                 const category = byId.get(categoryId);
                 if (!category) return null;
@@ -1352,65 +1201,77 @@ export function StorageSection() {
                 );
               })}
             </div>
+          </ModernSection>
+          ) : null}
 
-            <DiagnosticsStrip
-              extras={extras}
-              usage={usage}
-              usageReady={usageReady}
-              runtimeHealth={runtimeHealth}
-              runtimeHealthAvailable={Boolean(runtimeHealthFn)}
-            />
+          <StorageReviewPanel
+            snapshot={snapshot}
+            laneIdByKey={laneIdByKey}
+            onCleanup={setCleanup}
+            onReclaim={(laneId) => void openReclaim(laneId)}
+            onRestore={(laneId) => void restoreLane(laneId)}
+          />
 
-            <AppleRecordingsWarning projectRoot={snapshot.projectRoot} />
+          <StoragePolicyPanel
+            value={policy}
+            effectiveValue={effectivePolicy}
+            busy={policyBusy}
+            onChange={commitPolicy}
+          />
 
+          <DiagnosticsStrip
+            extras={extras}
+            usage={usage}
+            usageReady={usageReady}
+            runtimeHealth={runtimeHealth}
+            runtimeHealthAvailable={Boolean(runtimeHealthFn)}
+          >
+            {/* Reads through unpinned simulator/file calls, so only for the tab's machine. */}
+            {pin ? null : <AppleRecordingsWarning projectRoot={snapshot.projectRoot} />}
             <MaintenanceJournal extras={extras} />
+          </DiagnosticsStrip>
+        </>
+      ) : null}
 
-            <div style={{ fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.55, color: COLORS.textMuted }}>
-              ADE never removes lane folders, build output, or leftovers in the background. It can archive a safe idle lane, but files stay until you review and confirm cleanup.
-            </div>
-          </>
-        ) : null}
+      <StorageCleanupDialog
+        open={cleanup != null}
+        title={cleanup?.title ?? ""}
+        intro={cleanup?.intro}
+        targets={cleanup?.targets ?? EMPTY_TARGETS}
+        onClose={() => setCleanup(null)}
+        onCleaned={onCleaned}
+      />
 
+      {safeConfig ? (
         <StorageCleanupDialog
-          open={cleanup != null}
-          title={cleanup?.title ?? ""}
-          intro={cleanup?.intro}
-          targets={cleanup?.targets ?? EMPTY_TARGETS}
-          onClose={() => setCleanup(null)}
+          open={safeOpen}
+          title="Clean up safely"
+          intro="ADE will reclaim space it can rebuild or no longer needs. Your chats, projects, and active lanes stay untouched, and the newest recovery backup is always kept."
+          targets={safeConfig.targets}
+          plan={safeConfig.plan}
+          onClose={() => setSafeOpen(false)}
           onCleaned={onCleaned}
         />
+      ) : null}
 
-        {safeConfig ? (
-          <StorageCleanupDialog
-            open={safeOpen}
-            title="Clean up safely"
-            intro="ADE will reclaim space it can rebuild or no longer needs. Your chats, projects, and active lanes stay untouched, and the newest recovery backup is always kept."
-            targets={safeConfig.targets}
-            plan={safeConfig.plan}
-            onClose={() => setSafeOpen(false)}
-            onCleaned={onCleaned}
-          />
-        ) : null}
-
-        {reclaimRisk ? (
-          <ReclaimConfirmDialog
-            risk={reclaimRisk}
-            busy={reclaimBusy}
-            value={reclaimConfirm}
-            discardDirtyConfirmed={discardDirtyConfirmed}
-            onChange={setReclaimConfirm}
-            onDiscardDirtyChange={setDiscardDirtyConfirmed}
-            onClose={() => {
-              if (!reclaimBusy) {
-                setReclaimRisk(null);
-                setDiscardDirtyConfirmed(false);
-              }
-            }}
-            onConfirm={() => void confirmReclaim()}
-          />
-        ) : null}
-      </div>
-    </SettingsSectionShell>
+      {reclaimRisk ? (
+        <ReclaimConfirmDialog
+          risk={reclaimRisk}
+          busy={reclaimBusy}
+          value={reclaimConfirm}
+          discardDirtyConfirmed={discardDirtyConfirmed}
+          onChange={setReclaimConfirm}
+          onDiscardDirtyChange={setDiscardDirtyConfirmed}
+          onClose={() => {
+            if (!reclaimBusy) {
+              setReclaimRisk(null);
+              setDiscardDirtyConfirmed(false);
+            }
+          }}
+          onConfirm={() => void confirmReclaim()}
+        />
+      ) : null}
+    </div>
   );
 }
 
@@ -1440,8 +1301,8 @@ function CategoryCardBody({
     return (
       <CardShell categoryId={categoryId} category={category} policyChip={policyChip}>
         {compressible > 0 && compressNow ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <div style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textSecondary }}>
+          <div className="ade-st-items">
+            <div className="ade-st-item-detail">
               About {formatBytes(compressible)} of older history can be compressed without losing anything.
             </div>
             <div>
@@ -1449,7 +1310,8 @@ function CategoryCardBody({
                 type="button"
                 onClick={onCompress}
                 disabled={compressing}
-                style={{ ...outlineButton({ height: 30, fontSize: 11.5 }), opacity: compressing ? 0.7 : 1 }}
+                className="ade-modern-btn"
+                data-size="sm"
               >
                 <FileZip size={13} className={compressing ? "animate-spin" : undefined} />
                 {compressing ? "Compressing…" : "Compress old history"}
@@ -1457,9 +1319,7 @@ function CategoryCardBody({
             </div>
           </div>
         ) : (
-          <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-            Kept so you can reopen past chats and terminals.
-          </div>
+          <div className="ade-st-item-detail">Kept so you can reopen past chats and terminals.</div>
         )}
       </CardShell>
     );
@@ -1530,7 +1390,7 @@ function CategoryCardBody({
     return (
       <CardShell categoryId={categoryId} category={category} policyChip={policyChip}>
         {category.bytes > 0 ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div className="ade-st-items">
             {cleanable.map((entry) => (
               <ItemRow
                 key={entry.item.id}
@@ -1554,7 +1414,7 @@ function CategoryCardBody({
               />
             ))}
             {cleanable.length === 0 ? (
-              <div style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted, lineHeight: 1.45 }}>
+              <div className="ade-st-item-detail">
                 Proof storage is in use but cannot be removed from here. Open the proof drawer in a chat to delete individual items.
               </div>
             ) : null}
@@ -1570,7 +1430,7 @@ function CategoryCardBody({
     return (
       <CardShell categoryId={categoryId} category={category} policyChip={policyChip}>
         {category.items.length > 0 ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div className="ade-st-items">
             {category.items.map((item) => (
               <ItemRow
                 key={item.id}
@@ -1609,27 +1469,23 @@ function CategoryCardBody({
 }
 
 function EmptyLine({ label = "Nothing stored yet." }: { label?: string }) {
-  return <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>{label}</div>;
+  return <div className="ade-st-item-detail">{label}</div>;
 }
 
 function StorageSkeleton() {
-  const shimmer: React.CSSProperties = {
-    ...PANEL_STYLE,
-    height: 96,
-    background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
-  };
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ ...PANEL_STYLE, height: 132, display: "flex", alignItems: "center", gap: 10, color: COLORS.textMuted }}>
-        <HardDrives size={18} className="animate-pulse" />
-        <span style={{ fontFamily: SANS_FONT, fontSize: 12 }}>Measuring what ADE is storing…</span>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14 }}>
-        <div style={shimmer} />
-        <div style={shimmer} />
-        <div style={shimmer} />
-        <div style={shimmer} />
-      </div>
+    <div className="ade-modern-stats" aria-busy="true">
+      {["ADE data", "Free on disk", "Safe to reclaim", "Scanned"].map((label, index) => (
+        <div key={label} className="ade-modern-stat">
+          <span className="kit-eyebrow">{label}</span>
+          <span className="ade-st-shimmer" />
+          {index === 0 ? (
+            <span className="ade-modern-stat-sub" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <HardDrives size={12} className="animate-pulse" /> Measuring what ADE is storing…
+            </span>
+          ) : null}
+        </div>
+      ))}
     </div>
   );
 }

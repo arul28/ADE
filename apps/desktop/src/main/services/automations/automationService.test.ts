@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
 import initSqlJs from "sql.js";
 import type { Database, SqlJsStatic } from "sql.js";
 import {
@@ -14,6 +15,7 @@ import {
   triggerMatches,
 } from "./automationService";
 import { openKvDb } from "../state/kvDb";
+import { advanceLaneToPrHead, resolvePrBranchLane } from "./automationPrBranchLane";
 import { buildLinearAutomationDispatches } from "./linearAutomationDispatch";
 import { SessionTurnAbandonedError } from "../chat/sessionTurnLimits";
 import type { LinearIngressEventRecord } from "../../../shared/types/linearSync";
@@ -171,6 +173,157 @@ describe("triggerMatches", () => {
       trigger.branch,
       trigger.laneName,
     )).toBe(false);
+  });
+
+  it.each([
+    ["the exact bot login", ["dependabot[bot]"], "dependabot[bot]", true],
+    ["the bot name without [bot]", ["dependabot"], "dependabot[bot]", true],
+    ["an @-prefixed, mixed-case login", ["@Dependabot"], "dependabot[bot]", true],
+    ["one of several authors", ["renovate[bot]", "dependabot[bot]"], "dependabot[bot]", true],
+    ["a person when only the bot is allowed", ["dependabot[bot]"], "octocat", false],
+    ["a different bot", ["dependabot"], "renovate[bot]", false],
+  ])("matches a PR author filter against %s", (_label, authors, author, expected) => {
+    const trigger = {
+      triggerType: "github.pr_opened" as const,
+      pr: { number: 7, title: "Bump @openai/codex", author, repo: "acme/ade" },
+    };
+    expect(triggerMatches({ type: "github.pr_opened", authors }, trigger, undefined, undefined)).toBe(expected);
+  });
+});
+
+describe("advanceLaneToPrHead", () => {
+  const git = (cwd: string, ...args: string[]) => {
+    return execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).trim();
+  };
+  /** An origin with PR #7's head at `refs/pull/7/head`, and a lane cloned at its first commit. */
+  const setup = () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pr-advance-"));
+    const origin = path.join(root, "origin.git");
+    const seed = path.join(root, "seed");
+    const lane = path.join(root, "lane");
+    git(root, "init", "-q", "--bare", origin);
+    git(root, "init", "-q", seed);
+    fs.writeFileSync(path.join(seed, "a.txt"), "one\n");
+    git(seed, "add", ".");
+    git(seed, "commit", "-q", "-m", "one");
+    git(seed, "push", "-q", origin, "HEAD:refs/heads/bump", "HEAD:refs/pull/7/head");
+    git(root, "clone", "-q", "--branch", "bump", origin, lane);
+    // The bot pushes again.
+    fs.writeFileSync(path.join(seed, "a.txt"), "two\n");
+    git(seed, "commit", "-q", "-am", "two");
+    git(seed, "push", "-q", origin, "HEAD:refs/heads/bump", "+HEAD:refs/pull/7/head");
+    return { root, seed, lane, prHead: git(seed, "rev-parse", "HEAD") };
+  };
+
+  it("moves a clean lane to the PR's latest commit", async () => {
+    const { root, lane, prHead } = setup();
+    try {
+      await advanceLaneToPrHead(lane, "Bump", 7);
+      expect(git(lane, "rev-parse", "HEAD")).toBe(prHead);
+      expect(fs.readFileSync(path.join(lane, "a.txt"), "utf8")).toBe("two\n");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["has uncommitted changes", (lane: string) => fs.writeFileSync(path.join(lane, "a.txt"), "local edit\n"), /uncommitted changes/],
+    ["has diverged from the PR", (lane: string) => {
+      fs.writeFileSync(path.join(lane, "b.txt"), "lane-only\n");
+      git(lane, "add", ".");
+      git(lane, "commit", "-q", "-m", "lane only");
+    }, /diverged from PR #7/],
+  ] as const)("leaves a lane that %s where it is and fails the run", async (_label, prepare, message) => {
+    const { root, lane } = setup();
+    try {
+      prepare(lane);
+      const before = git(lane, "rev-parse", "HEAD");
+      await expect(advanceLaneToPrHead(lane, "Bump", 7)).rejects.toThrow(message);
+      expect(git(lane, "rev-parse", "HEAD")).toBe(before);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resolvePrBranchLane", () => {
+  const pr = { number: 7, title: "Bump", repo: "acme/ade", url: "https://github.com/acme/ade/pull/7" };
+  const lane = { id: "lane-7", name: "Bump", branchRef: "dependabot/npm/codex" };
+  const preflight = (block: Record<string, unknown> | null, canCreate = !block) => ({
+    preflight: { canCreate, blockingConflict: block, headBranch: "dependabot/npm/codex" },
+    lane: null,
+    pr: null,
+  });
+
+  it("reuses the lane already linked to the PR, so a second event runs where the first did", async () => {
+    const createLaneFromPrBranch = vi.fn();
+    const advanceLaneToPrHead = vi.fn(async () => {});
+    const result = await resolvePrBranchLane({
+      pr,
+      triggerLane: null,
+      laneName: "",
+      prService: {
+        preflightCreateLaneFromPrBranch: vi.fn(async () => preflight({ code: "already_mapped", message: "linked", laneId: "lane-7" })),
+        createLaneFromPrBranch,
+      } as never,
+      listActiveLanes: async () => [lane],
+      advanceLaneToPrHead,
+    });
+    expect(result).toEqual(lane);
+    expect(createLaneFromPrBranch).not.toHaveBeenCalled();
+    // A bot may have pushed since: the reused lane moves to the PR's head first.
+    expect(advanceLaneToPrHead).toHaveBeenCalledWith(lane, 7);
+  });
+
+  it("imports the PR's branch by its URL with the rule's lane name when no lane is linked", async () => {
+    const createLaneFromPrBranch = vi.fn(async () => ({ lane, pr: {}, preflight: {} }));
+    const result = await resolvePrBranchLane({
+      pr,
+      triggerLane: null,
+      laneName: "Dependabot: Bump",
+      prService: { preflightCreateLaneFromPrBranch: vi.fn(async () => preflight(null)), createLaneFromPrBranch } as never,
+      listActiveLanes: async () => [],
+      advanceLaneToPrHead: async () => {},
+    });
+    expect(result).toEqual(lane);
+    expect(createLaneFromPrBranch).toHaveBeenCalledWith({ prUrlOrNumber: pr.url, laneName: "Dependabot: Bump" });
+  });
+
+  it("uses the lane a racing event just imported instead of failing", async () => {
+    const preflightCreateLaneFromPrBranch = vi.fn()
+      .mockResolvedValueOnce(preflight(null))
+      .mockResolvedValueOnce(preflight({ code: "already_mapped", message: "linked", laneId: "lane-7" }));
+    const result = await resolvePrBranchLane({
+      pr,
+      triggerLane: null,
+      laneName: "",
+      prService: {
+        preflightCreateLaneFromPrBranch,
+        createLaneFromPrBranch: vi.fn(async () => { throw new Error("worktree already exists"); }),
+      } as never,
+      listActiveLanes: async () => [lane],
+      advanceLaneToPrHead: async () => {},
+    });
+    expect(result).toEqual(lane);
+    expect(preflightCreateLaneFromPrBranch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["the linked lane is archived", { pr, block: { code: "already_mapped", message: "PR #7 is linked to 'Old'.", laneId: "lane-old" } }, /archived/],
+    ["the linked lane is on another branch", { pr, block: { code: "already_mapped", message: "linked", laneId: "lane-main" } }, /not on the PR's branch 'dependabot\/npm\/codex'/],
+    ["the import is blocked", { pr, block: { code: "branch_owned", message: "Branch is checked out in another lane." } }, /checked out in another lane/],
+    ["the trigger carries no PR", { pr: null, block: null }, /trigger has no pull request/],
+  ] as const)("fails without falling back to another lane when %s", async (_label, { pr: triggerPr, block }, message) => {
+    const createLaneFromPrBranch = vi.fn();
+    await expect(resolvePrBranchLane({
+      pr: triggerPr,
+      triggerLane: null,
+      laneName: "",
+      prService: { preflightCreateLaneFromPrBranch: vi.fn(async () => preflight(block, false)), createLaneFromPrBranch } as never,
+      listActiveLanes: async () => [lane, { id: "lane-main", name: "Primary", branchRef: "refs/heads/main" }],
+      advanceLaneToPrHead: async () => {},
+    })).rejects.toThrow(message);
+    expect(createLaneFromPrBranch).not.toHaveBeenCalled();
   });
 });
 
@@ -3619,5 +3772,243 @@ describe("scopeAutomationAdeActionArgs", () => {
     const args = { controllerId: "c", holderId: "h" };
     scopeAutomationAdeActionArgs("lane", args, "rule-1");
     expect(args).toEqual({ controllerId: "c", holderId: "h" });
+  });
+});
+
+describe("run values and test runs", () => {
+  const builtInRule = (id: string, actions: any[], extra: Record<string, unknown> = {}) => normalizeRuntimeRule({
+    id,
+    name: id,
+    enabled: true,
+    mode: "review",
+    triggers: [{ type: "git.commit" }],
+    trigger: { type: "git.commit" },
+    execution: { kind: "built-in", builtIn: { actions } },
+    executor: { mode: "automation-bot" },
+    reviewProfile: "quick",
+    toolPalette: [],
+    contextSources: [],
+    guardrails: {},
+    outputs: { disposition: "comment-only", createArtifact: true },
+    verification: { verifyBeforePublish: false, mode: "intervention" },
+    billingCode: `auto:${id}`,
+    actions,
+    ...extra,
+  });
+
+  /** The ADE action registry at its process boundary: records what each step was called with. */
+  function recordingRegistry() {
+    const calls: Array<{ domain: string; action: string; args: Record<string, unknown> }> = [];
+    const service = (domain: string) => new Proxy({}, {
+      get: (_target, action: string) => async (args: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        return { ok: true };
+      },
+    }) as Record<string, unknown>;
+    return {
+      calls,
+      registry: {
+        isAllowed: () => true,
+        getService: (domain: string) => service(domain),
+        listDomains: () => [],
+        listActions: () => [],
+      },
+    };
+  }
+
+  /** Resolves once `count` runs of these rules have ended. */
+  function runsEnded(raw: Database, count: number) {
+    let resolve!: () => void;
+    const done = new Promise<void>((r) => { resolve = r; });
+    const check = () => {
+      const rows = mapExecRows(raw.exec("select id from automation_runs where ended_at is not null"));
+      if (rows.length >= count) resolve();
+    };
+    return { done, onEvent: check };
+  }
+
+  it("keeps each rule's {{run.*}} values apart when one event starts several rules", async () => {
+    const { db, raw } = createInMemoryAdeDb();
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-run-values-"));
+    // A step that awaits before the probe, as a real run does, so both runs are in flight together.
+    const rules = ["rule-a", "rule-b"].map((id) => builtInRule(id, [
+      { type: "run-command", command: "echo first", timeoutMs: 10_000 },
+      { type: "ade-action", adeAction: { domain: "probe", action: "record", args: { runId: "{{run.id}}", rule: id } } },
+    ]));
+    const { calls, registry } = recordingRegistry();
+    const ended = runsEnded(raw, 2);
+    const service = createAutomationService({
+      db: db as any,
+      logger: createLogger(),
+      projectId: "proj",
+      projectRoot,
+      laneService: {
+        list: async () => [{ id: "lane1", laneType: "primary", branchRef: "main" }],
+        getLaneWorktreePath: () => projectRoot,
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot }),
+      } as any,
+      projectConfigService: { get: () => ({ trust: { sharedHash: "", localHash: "" }, effective: { automations: rules, providerMode: "guest" } }) } as any,
+      adeActionRegistry: registry,
+      onEvent: ended.onEvent,
+    });
+    try {
+      service.onHeadChanged({ laneId: "lane1", preHeadSha: null, postHeadSha: "abc", reason: "test" });
+      await ended.done;
+      const runIdByRule = new Map(
+        mapExecRows(raw.exec("select id, automation_id from automation_runs")).map((row) => [String(row.automation_id), String(row.id)]),
+      );
+      expect(runIdByRule.size).toBe(2);
+      expect(calls).toHaveLength(2);
+      for (const call of calls) {
+        expect(call.args.runId).toBe(runIdByRule.get(String(call.args.rule)));
+      }
+      expect(calls[0]!.args.runId).not.toBe(calls[1]!.args.runId);
+    } finally {
+      service.dispose();
+    }
+  });
+
+  function safeTestService(projectRoot: string, rule: any) {
+    const lanes = new Map<string, { id: string; name: string; branchRef: string; laneType: string }>();
+    const deleted: string[] = [];
+    const service = createAutomationService({
+      db: createInMemoryAdeDb().db as any,
+      logger: createLogger(),
+      projectId: "proj",
+      projectRoot,
+      laneService: {
+        list: async () => [...lanes.values()],
+        create: async (args: Record<string, unknown>) => {
+          const lane = { id: `lane-test-${lanes.size + 1}`, name: String(args.name), branchRef: String(args.branchName), laneType: "worktree" };
+          lanes.set(lane.id, lane);
+          return lane;
+        },
+        delete: async ({ laneId }: { laneId: string }) => {
+          deleted.push(laneId);
+          lanes.delete(laneId);
+        },
+        getLaneWorktreePath: () => projectRoot,
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot }),
+      } as any,
+      projectConfigService: { get: () => ({ trust: { sharedHash: "", localHash: "" }, effective: { automations: [rule], providerMode: "guest" } }) } as any,
+    });
+    return { service, lanes, deleted };
+  }
+
+  it.each([
+    ["git push origin HEAD", "would-run"],
+    ["git -C ../other push origin HEAD", "would-run"],
+    ["cd src && git -c push.default=current push", "would-run"],
+    ["gh -R owner/repo pr create --fill", "would-run"],
+    ["npm publish", "would-run"],
+    ["curl -X POST https://example.com/hook", "would-run"],
+    ["git status --short && npm test", "runs"],
+    ["echo push", "runs"],
+  ])("a safe test plans `%s` as %s", async (command, effect) => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-safe-plan-"));
+    const rule = builtInRule("plan-check", [{ type: "run-command", command, timeoutMs: 10_000 }]);
+    const { service, lanes } = safeTestService(projectRoot, rule);
+    try {
+      const plan = await service.planTest({ id: rule.id, mode: "safe" });
+      expect(plan.problems).toEqual([]);
+      expect(plan.steps).toHaveLength(1);
+      expect(plan.steps[0]!.effect).toBe(effect);
+      // Planning makes nothing.
+      expect(lanes.size).toBe(0);
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("refuses a safe test and removes its lane when pushes from the lane cannot be blocked", async () => {
+    // Not a git repo, so the push block cannot be written.
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-safe-noblock-"));
+    const rule = builtInRule("noblock", [{ type: "run-command", command: "echo hi", timeoutMs: 10_000 }]);
+    const { service, lanes, deleted } = safeTestService(projectRoot, rule);
+    try {
+      await expect(service.runTest({ id: rule.id, mode: "safe" })).rejects.toThrow(/Could not block pushes/);
+      expect(deleted).toEqual(["lane-test-1"]);
+      expect(lanes.size).toBe(0);
+      expect(service.listRuns({ automationId: rule.id })).toEqual([]);
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("runs a safe test in a throwaway lane, reports outward steps, and cleans up only its own lane", async () => {
+    const { db, raw } = createInMemoryAdeDb();
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-safe-test-"));
+    // A real repo: the safe test refuses to start when it cannot block pushes.
+    execFileSync("git", ["init", "-q"], { cwd: projectRoot });
+    const lanes = new Map<string, { id: string; name: string; branchRef: string; laneType: string }>([
+      ["lane-real", { id: "lane-real", name: "Real lane", branchRef: "feature", laneType: "worktree" }],
+    ]);
+    const created: Array<Record<string, unknown>> = [];
+    const deleted: string[] = [];
+    const laneService = {
+      list: async () => [...lanes.values()],
+      create: async (args: Record<string, unknown>) => {
+        created.push(args);
+        const lane = { id: `lane-test-${created.length}`, name: String(args.name), branchRef: String(args.branchName), laneType: "worktree" };
+        lanes.set(lane.id, lane);
+        return lane;
+      },
+      delete: async ({ laneId }: { laneId: string }) => {
+        deleted.push(laneId);
+        lanes.delete(laneId);
+      },
+      getLaneWorktreePath: () => projectRoot,
+      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "feature", worktreePath: projectRoot }),
+    };
+    // Disabled, and its one run is spent on nothing yet: a test must use none of it.
+    const rule = builtInRule("safe-check", [
+      { type: "run-command", command: "echo ran-locally", timeoutMs: 10_000 },
+      { type: "run-command", command: "git push origin HEAD", timeoutMs: 10_000 },
+      { type: "ade-action", adeAction: { domain: "attention", action: "sendNotification", args: { title: "Done in {{run.laneId}}" } } },
+      { type: "ade-action", adeAction: { domain: "lanes", action: "archive", args: { laneId: "lane-real" } } },
+    ], { enabled: false, maxRuns: 1 });
+    const { calls, registry } = recordingRegistry();
+    const ended = runsEnded(raw, 1);
+    const service = createAutomationService({
+      db: db as any,
+      logger: createLogger(),
+      projectId: "proj",
+      projectRoot,
+      laneService: laneService as any,
+      projectConfigService: { get: () => ({ trust: { sharedHash: "", localHash: "" }, effective: { automations: [rule], providerMode: "guest" } }) } as any,
+      adeActionRegistry: registry,
+      onEvent: ended.onEvent,
+    });
+    try {
+      const run = await service.runTest({ id: rule.id, mode: "safe", event: { laneId: "lane-real" } });
+      await ended.done;
+      const testLane = created[0];
+      expect(created).toHaveLength(1);
+      expect(String(testLane?.branchName)).toMatch(/^ade-test\//);
+
+      const detail = await service.getRunDetail({ runId: run.id });
+      const byIndex = new Map((detail?.actions ?? []).map((action) => [action.actionIndex, action]));
+      expect(byIndex.get(0)?.status).toBe("succeeded");
+      expect(byIndex.get(0)?.output).toContain("ran-locally");
+      expect(byIndex.get(1)?.status).toBe("skipped");
+      expect(byIndex.get(1)?.output).toMatch(/^Test: would run `git push origin HEAD`/);
+      expect(byIndex.get(3)?.status).toBe("skipped");
+      // Only the notification reached the outside, marked as a test, opening the test lane.
+      expect(calls).toEqual([{ domain: "attention", action: "sendNotification", args: { title: "[Test] Done in lane-test-1" } }]);
+      expect(detail?.run.triggerMetadata?.test).toMatchObject({ mode: "safe", lanes: [{ id: "lane-test-1" }], cleanedUpAt: null });
+
+      // The rule's one real run is still there.
+      await expect(service.triggerManually({ id: rule.id })).resolves.toMatchObject({ automationId: rule.id });
+
+      await expect(service.cleanUpTestRun({ runId: run.id })).resolves.toEqual({
+        removed: [{ id: "lane-test-1", name: testLane?.name }],
+        failed: [],
+      });
+      expect(deleted).toEqual(["lane-test-1"]);
+      expect(lanes.has("lane-real")).toBe(true);
+      await expect(service.cleanUpTestRun({ runId: run.id })).resolves.toEqual({ removed: [], failed: [] });
+    } finally {
+      service.dispose();
+    }
   });
 });

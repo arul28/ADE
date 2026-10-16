@@ -1,8 +1,30 @@
-export const CHAT_OUTPUT_CONTEXT_CHIP_LABEL = "Chat context";
+export const CHAT_OUTPUT_CONTEXT_CHIP_LABEL = "Quote";
 export const CHAT_OUTPUT_CONTEXT_OPEN = "<ade-chat-context>";
 export const CHAT_OUTPUT_CONTEXT_CLOSE = "</ade-chat-context>";
+/**
+ * Tells the agent what the quote is AND that the prose after the block is the
+ * user's reply to it. Without the second half, three quotes and three replies
+ * read as one ramble, and the agent has to guess which reply goes with which.
+ */
 export const CHAT_OUTPUT_CONTEXT_PREAMBLE =
-  "The user highlighted the following text from your previous output and added it as context:";
+  "The user quoted this from your earlier output. The text that follows this block, up to the next quote, is their reply to it:";
+const CHAT_CONTEXT_REPLY_CLAUSE = "The text that follows this block, up to the next quote, is their reply to it:";
+/**
+ * A quote from somewhere other than the agent's own output (a pull request's
+ * description, a review thread) names where it is from in the same sentence.
+ * One line, so it strips as one line when the message renders.
+ */
+const SOURCED_CHAT_CONTEXT_PREAMBLE = /^The user quoted this from [^\n]+\. The text that follows this block, up to the next quote, is their reply to it:(?=\n|$)/;
+
+function sourcedChatContextPreamble(source: string): string {
+  const where = source.replace(/\s+/g, " ").replace(/[.:]+$/, "").trim();
+  return `The user quoted this from ${where}. ${CHAT_CONTEXT_REPLY_CLAUSE}`;
+}
+
+/** Preambles older messages were sent with. Still stripped when they render. */
+const LEGACY_CHAT_OUTPUT_CONTEXT_PREAMBLES = [
+  "The user highlighted the following text from your previous output and added it as context:",
+];
 export const MAX_CHAT_OUTPUT_CONTEXT_CHARS = 16_384;
 
 export type ChatOutputContextMatch = {
@@ -38,9 +60,11 @@ export function extractChatOutputContextQuote(block: string): string {
     .slice(open + CHAT_OUTPUT_CONTEXT_OPEN.length, close)
     .replace(/^\n/, "")
     .replace(/\n$/, "");
-  if (inner.startsWith(CHAT_OUTPUT_CONTEXT_PREAMBLE)) {
-    return inner.slice(CHAT_OUTPUT_CONTEXT_PREAMBLE.length).replace(/^\n+/, "");
+  for (const preamble of [CHAT_OUTPUT_CONTEXT_PREAMBLE, ...LEGACY_CHAT_OUTPUT_CONTEXT_PREAMBLES]) {
+    if (inner.startsWith(preamble)) return inner.slice(preamble.length).replace(/^\n+/, "");
   }
+  const sourced = SOURCED_CHAT_CONTEXT_PREAMBLE.exec(inner);
+  if (sourced) return inner.slice(sourced[0].length).replace(/^\n+/, "");
   return inner;
 }
 
@@ -55,11 +79,16 @@ function clipChatOutputContextQuote(text: string): string {
   return text.slice(0, end);
 }
 
-export function formatChatOutputContextBlock(selectedText: string): string | null {
+/**
+ * The quote block a composer takes. `source` says where the text is from when
+ * it is not the agent's own output: "the description of pull request #12".
+ */
+export function formatChatOutputContextBlock(selectedText: string, source?: string | null): string | null {
   const clipped = neutralizeChatOutputContextText(normalizeNewlines(selectedText).trim());
   if (!clipped) return null;
   const quote = clipChatOutputContextQuote(clipped);
-  return `${CHAT_OUTPUT_CONTEXT_OPEN}\n${CHAT_OUTPUT_CONTEXT_PREAMBLE}\n\n${quote}\n${CHAT_OUTPUT_CONTEXT_CLOSE}`;
+  const preamble = source?.trim() ? sourcedChatContextPreamble(neutralizeChatOutputContextText(source)) : CHAT_OUTPUT_CONTEXT_PREAMBLE;
+  return `${CHAT_OUTPUT_CONTEXT_OPEN}\n${preamble}\n\n${quote}\n${CHAT_OUTPUT_CONTEXT_CLOSE}`;
 }
 
 export function parseChatOutputContextBlocks(text: string): ChatOutputContextMatch[] {

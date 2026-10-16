@@ -3,8 +3,8 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { PortalContainerContext } from "../ui/portalContainer";
 
 const OVERLAY_CLASS = "fixed inset-0 z-[80] flex items-center justify-center bg-black/55 p-6";
-const PANEL_CLASS = "rounded-xl border border-white/[0.08] bg-[var(--color-bg)] shadow-2xl outline-none";
-const CLOSE_BUTTON_CLASS = "rounded-md border border-white/[0.08] px-3 py-1.5 font-sans text-[11px] text-fg/70";
+const PANEL_CLASS = "rounded-xl border border-fg/[0.08] bg-[var(--color-bg)] shadow-2xl outline-none";
+const CLOSE_BUTTON_CLASS = "rounded-md border border-fg/[0.08] px-3 py-1.5 font-sans text-[11px] text-fg/70";
 
 /**
  * One handoff dialog shell. Radix gives Escape, outside-press dismiss, and focus
@@ -57,17 +57,11 @@ export function ChatHandoffDialogs({
   localOpen,
   localContent,
   onCloseLocal,
-  remoteNoticeOpen,
-  machineName,
-  onCloseRemoteNotice,
 }: {
   localOpen: boolean;
   /** The local handoff form, or null when this chat cannot hand off. */
   localContent: ReactNode | null;
   onCloseLocal: () => void;
-  remoteNoticeOpen: boolean;
-  machineName: string;
-  onCloseRemoteNotice: () => void;
 }) {
   return (
     <>
@@ -75,31 +69,16 @@ export function ChatHandoffDialogs({
         open={localOpen}
         onClose={onCloseLocal}
         title="Local handoff"
-        className="flex h-[min(720px,86vh)] w-[min(460px,94vw)] flex-col overflow-hidden"
+        className="flex max-h-[min(720px,86vh)] w-[min(460px,94vw)] flex-col overflow-hidden"
       >
         {localContent ?? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+          <div className="flex flex-col items-center justify-center gap-3 px-6 py-10 text-center">
             <p className="font-sans text-[13px] text-fg/50">Handoff is not available for this chat.</p>
             <button type="button" className={CLOSE_BUTTON_CLASS} onClick={onCloseLocal}>
               Close
             </button>
           </div>
         )}
-      </HandoffDialog>
-      <HandoffDialog
-        open={remoteNoticeOpen}
-        onClose={onCloseRemoteNotice}
-        title="Handoff to remote machine"
-        className="w-[min(420px,94vw)] px-5 py-4"
-      >
-        <p className="font-sans text-[13px] leading-5 text-fg/75">
-          This chat runs on {machineName}. Open that machine&rsquo;s project to start a cross-machine handoff.
-        </p>
-        <div className="mt-4 flex justify-end">
-          <button type="button" className={CLOSE_BUTTON_CLASS} onClick={onCloseRemoteNotice}>
-            Close
-          </button>
-        </div>
       </HandoffDialog>
     </>
   );

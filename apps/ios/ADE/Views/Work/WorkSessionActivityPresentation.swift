@@ -46,7 +46,7 @@ func workSessionIsPlanning(summary: AgentChatSessionSummary?) -> Bool {
       return summary.cursorModeId == "plan"
     }
     return workCursorPlanningModeId(summary.cursorModeSnapshot) == "plan"
-  case "droid":
+  case "droid", "muse":
     return summary.interactionMode == "plan"
   case "opencode":
     return summary.opencodePermissionMode == "plan"
@@ -61,37 +61,52 @@ func workSessionIsPlanning(summary: AgentChatSessionSummary?) -> Bool {
   }
 }
 
-/// A current, agent-reported detail that refines a running Work row's one
-/// status slot. Foreground chat reports must belong to the current turn; a
-/// tracked CLI row has no chat turn marker, so its explicit report is the best
+/// Mirrors `SESSION_ACTIVITY_VALUES` plus `SESSION_SYSTEM_ACTIVITY_VALUES` in
+/// `apps/desktop/src/shared/types/sessions.ts`.
+let workSessionActivityValues: Set<String> = [
+  "planning", "exploring", "implementing", "testing", "debugging", "reviewing", "shipping", "monitoring",
+  "recording", "compacting", "compaction_failed",
+]
+
+/// The activity detail that refines a running Work row's one status slot:
+/// detected by the host from the turn's tool calls, or reported by the agent.
+/// Mirrors `currentActivityReport` in `sessionStatusPresentation.ts`: an agent
+/// report must belong to the current turn, a detected one may carry across a
+/// continuation turn (the host clears it whenever the user engages). A tracked
+/// CLI row has no chat turn marker, so its explicit report is the best
 /// available signal.
 func workSessionActivityDetailPresentation(
   session: TerminalSessionSummary,
   phase: CanonicalSessionPhase,
   currentTurnStartedAt: String?
 ) -> WorkSessionStatusPresentation? {
-  guard phase == .running else { return nil }
+  guard phase == .running || session.activityStatus?.value == "compaction_failed" else { return nil }
 
   let hasLiveChatTurn = !isWorkChatToolType(session.toolType)
     || currentTurnStartedAt.flatMap(workParsedDate) != nil
-  guard hasLiveChatTurn,
+  guard (hasLiveChatTurn || session.activityStatus?.value == "compaction_failed"),
         let activityStatus = session.activityStatus,
-        activityStatus.source == "agent",
-        ["planning", "implementing", "testing", "reviewing", "debugging", "monitoring"].contains(activityStatus.value),
+        activityStatus.source == "agent" || activityStatus.source == "detected",
+        workSessionActivityValues.contains(activityStatus.value),
         let updatedAt = workParsedDate(activityStatus.updatedAt)
   else { return nil }
 
-  let isStaleForTurn = currentTurnStartedAt
+  let reportAt = activityStatus.reportedAt ?? activityStatus.updatedAt
+  let isStaleForTurn = activityStatus.source == "agent" && (currentTurnStartedAt
     .flatMap(workParsedDate)
-    .map { updatedAt < $0 } ?? false
+    .map { (workParsedDate(reportAt) ?? updatedAt) < $0 } ?? false)
   guard !isStaleForTurn else { return nil }
 
+  let failed = activityStatus.value == "compaction_failed"
+  let compacting = activityStatus.value == "compacting"
+  let tokens = activityStatus.contextTokens.map { " · \(workAbbreviateCount($0))" } ?? ""
   let isPlanning = activityStatus.value == "planning"
+  let isRecording = activityStatus.value == "recording"
   return WorkSessionStatusPresentation(
-    label: activityStatus.value.capitalized,
-    tone: isPlanning ? .violet : .blue,
-    glyph: ActivityGlyph(rawValue: activityStatus.value) ?? .working,
-    showsElapsed: true,
+    label: failed ? "Compaction failed" : compacting ? "Compacting…" + tokens : activityStatus.value.capitalized,
+    tone: failed ? .amber : isRecording ? .red : isPlanning ? .violet : .blue,
+    glyph: failed ? .failed : ActivityGlyph(rawValue: activityStatus.value) ?? .working,
+    showsElapsed: !failed,
     prominent: false,
     kind: nil,
     activityReportUpdatedAt: activityStatus.updatedAt

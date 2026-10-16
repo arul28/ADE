@@ -1,0 +1,24 @@
+/* A custom provider's request options row (compression, prompt caching). */
+
+.ade-custom-provider-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.ade-custom-provider-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--kit-text-3);
+}
+
+.ade-custom-provider-option .kit-input {
+  height: 24px;
+  padding: 0 6px;
+  font-size: 11px;
+}

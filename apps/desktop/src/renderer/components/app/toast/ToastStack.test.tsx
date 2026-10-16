@@ -5,14 +5,12 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ToastStack } from "./ToastStack";
-import { ToastViewport, toastViewportLift } from "./ToastViewport";
+import { ToastViewport } from "./ToastViewport";
 import { dismissToast, getToasts, showToast, updateToast } from "./toastStore";
-import { publishCornerObstacle, resetCornerObstacleForTests } from "./toastViewportInsets";
 
 afterEach(() => {
   cleanup();
   for (const toast of getToasts()) dismissToast(toast.id);
-  resetCornerObstacleForTests();
   vi.useRealTimers();
 });
 
@@ -147,18 +145,6 @@ describe("ToastViewport", () => {
     const viewport = screen.getByTestId("toast-viewport");
     const text = viewport.textContent ?? "";
     expect(text.indexOf("Store toast")).toBeLessThan(text.indexOf("Launches"));
-  });
-
-  it("lifts the stack above a HUD in its column and not otherwise", () => {
-    const container = { right: 1000, bottom: 800 };
-    expect(toastViewportLift(container, 380, null)).toBe(0);
-    // HUD pinned to the same corner, 60px tall: stack sits 8px above it.
-    const lift = toastViewportLift(container, 380, { top: 728, bottom: 788, left: 800, right: 988 });
-    expect(800 - 12 - lift).toBe(728 - 8);
-    // Dragged to the left half of the window: no overlap, no lift.
-    expect(toastViewportLift(container, 380, { top: 728, bottom: 788, left: 100, right: 300 })).toBe(0);
-    // Dragged up away from the corner: no lift.
-    expect(toastViewportLift(container, 380, { top: 100, bottom: 160, left: 800, right: 988 })).toBe(0);
   });
 
 });

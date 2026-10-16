@@ -44,22 +44,9 @@ func lastPathComponent(_ path: String) -> String {
   pathComponents(path).last ?? path
 }
 
+/// File glyphs stay neutral: colour is for status (change badges), not type.
 func fileTint(for name: String) -> Color {
-  let icon = fileIcon(for: name)
-  switch icon {
-  case "chevron.left.forwardslash.chevron.right":
-    return .blue
-  case "doc.badge.gearshape":
-    return .orange
-  case "doc.text":
-    return .yellow
-  case "photo":
-    return .pink
-  case "doc.zipper":
-    return .red
-  default:
-    return ADEColor.textSecondary
-  }
+  ADEColor.textSecondary
 }
 
 func changeStatusTint(_ changeStatus: String) -> Color {
@@ -95,10 +82,3 @@ func relativeDateDescription(from isoTimestamp: String?) -> String? {
   return filesRelativeTimeFormatter.localizedString(for: date, relativeTo: Date())
 }
 
-extension View {
-  func filesListRow() -> some View {
-    listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-      .listRowBackground(Color.clear)
-      .listRowSeparator(.hidden)
-  }
-}

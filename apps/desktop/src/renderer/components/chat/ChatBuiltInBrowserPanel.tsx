@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import {
   Check,
   WarningCircle,
@@ -56,9 +56,20 @@ import {
   urlLockKind,
 } from "../../lib/browserUrl";
 import { claimAppMenuCommands } from "../../lib/appMenuCommands";
+import { findTargetIsElsewhere } from "../../lib/findScope";
 import { isTypingTarget } from "../../lib/typingTarget";
 import { claimAppZoomCommands } from "../../lib/appZoomCommands";
-import { getLinkOpenMode, refreshLinkOpenMode, setLinkOpenMode } from "../../lib/openExternal";
+import {
+  ADE_OPEN_BUILT_IN_BROWSER_EVENT,
+  getLinkOpenMode,
+  refreshLinkOpenMode,
+  setLinkOpenMode,
+  type OpenBuiltInBrowserDetail,
+} from "../../lib/openExternal";
+import { takeHeldBrowserLinkOpens } from "../../lib/pendingBrowserLinkOpens";
+import { useLaneDevServers } from "../../lib/laneDevServers";
+import { pinKey } from "../../state/pinKey";
+import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { showToast } from "../app/toast/toastStore";
 import { useChatMachineLanes, useChatRuntimeScope, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import {
@@ -75,6 +86,7 @@ import {
 } from "../../../shared/remoteLoopbackUrl";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import type { BuiltInBrowserRemoteRequest } from "../../../shared/types/builtInBrowserRemote";
+import type { BrowserTabMentionTarget } from "../../../shared/browserTabMention";
 import { useAppStore, type WorkProjectViewState } from "../../state/appStore";
 import {
   commitTunnelApproval,
@@ -133,6 +145,8 @@ import {
   cropBrowserScreenshot,
   pointerToCapturePoint,
 } from "./browser/browserCapture";
+import { isInParkedSurface } from "../../lib/parkedSurface";
+import { useAgentChatApi } from "./agentChatApi";
 
 /**
  * The preload's declared browser namespace, with presence relaxed.
@@ -187,11 +201,15 @@ type PendingTunnelApproval = {
 
 type ChatBuiltInBrowserPanelProps = {
   sessionId: string | null;
+  /** Page hosts already supply their outer frame. */
+  flush?: boolean;
   /** Override project tab routing. `null` selects the personal-chat tab collection. */
   projectRootOverride?: string | null;
   onAddContext?: (item: BuiltInBrowserContextItem) => void;
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
   onInsertDraft?: (text: string) => void;
+  /** "Attach to chat" on a tab. Absent where there is no chat to attach to. */
+  onAttachTab?: (tab: BrowserTabMentionTarget) => void;
   runtimePin?: OpenProjectBinding | null;
   /**
    * Lane whose tabs lead the strip, and the group a tab opened from this pane
@@ -199,6 +217,15 @@ type ChatBuiltInBrowserPanelProps = {
    * prop: the pane is not inside the chat's runtime scope.
    */
   groupLaneId?: string | null;
+  /**
+   * The host's own controls at the toolbar's far right, in place of the Work
+   * pane's preview toggle and maximize. Those two only mean something inside
+   * the Work tools pane; a host that is a page of its own (the Browser tab)
+   * draws what it needs here instead.
+   */
+  toolbarEnd?: ReactNode;
+  /** How many toolbar controls `toolbarEnd` is as wide as, so the omnibox is priced around it. */
+  toolbarEndControlCount?: number;
 };
 
 type MessageTone = "info" | "error";
@@ -261,13 +288,13 @@ function panelOwnsAppCommands(panel: HTMLElement | null, hasTab: boolean): boole
   /*
     A mounted panel is not necessarily a visible one.
 
-    The three `active` chains above unmount it today, but the app's habit is to
-    keep hidden surfaces MOUNTED behind `inert` + `opacity: 0`, and "focus is
-    nowhere in the DOM" is as true of a hidden pane as of one just clicked into.
-    If any of those guards ever becomes a CSS hide, this is what stops a parked
-    browser eating the app's chords.
+    The three `active` chains above unmount it today, but the app keeps hidden
+    surfaces MOUNTED and parked (lib/parkedSurface), and "focus is nowhere in
+    the DOM" is as true of a hidden pane as of one just clicked into. If any of
+    those guards ever becomes a CSS hide, this is what stops a parked browser
+    eating the app's chords.
   */
-  if (panel.closest("[inert]")) return false;
+  if (isInParkedSurface(panel)) return false;
   const active = document.activeElement;
   if (active == null) return true;
   if (panel.contains(active)) return true;
@@ -275,6 +302,18 @@ function panelOwnsAppCommands(panel: HTMLElement | null, hasTab: boolean): boole
   // rather than a widget: `<body>`, the pane root, the tool `<aside>`.
   return active.contains(panel);
 }
+
+/**
+ * ⌘F only: "focus is nowhere" also follows a click on plain text elsewhere (a
+ * chat reply, a diff line). While this window still has focus — so the page,
+ * a separate WebContents, is not what the user clicked into — the find scope
+ * they are in owns find (`lib/findScope`).
+ */
+function findBelongsElsewhere(panel: HTMLElement | null): boolean {
+  if (!panel || typeof document === "undefined" || !document.hasFocus()) return false;
+  return findTargetIsElsewhere(panel);
+}
+
 
 /**
  * The browser window belongs to ONE computer: it is a view owned by that
@@ -293,13 +332,20 @@ function panelOwnsAppCommands(panel: HTMLElement | null, hasTab: boolean): boole
  */
 export function ChatBuiltInBrowserPanel({
   sessionId,
+  flush = false,
   projectRootOverride,
   onAddContext,
   onAddAttachment,
   onInsertDraft,
+  onAttachTab,
   runtimePin = null,
   groupLaneId = null,
+  toolbarEnd,
+  toolbarEndControlCount = 1,
 }: ChatBuiltInBrowserPanelProps) {
+  // Screenshots go to the surrounding chat's attachment store: a personal
+  // chat's own, not the active project's.
+  const agentChatApi = useAgentChatApi();
   // Also rendered from the Work sidebar and the personal-chats page, so the
   // scope is derived from the pin this panel is handed.
   const chatScope = useChatRuntimeScopeForPin(runtimePin, null);
@@ -745,7 +791,7 @@ export function ChatBuiltInBrowserPanel({
     const screenshotDataUrl = item.screenshotDataUrl ?? null;
     if (screenshotDataUrl && !attachmentPath && onAddAttachment) {
       try {
-        const saved = await window.ade.agentChat.saveTempAttachment({
+        const saved = await agentChatApi.saveTempAttachment({
           data: stripDataUrlPrefix(screenshotDataUrl),
           filename: item.kind === "built_in_browser_capture" ? "built-in-browser-capture.png" : "built-in-browser-selection.png",
         }, ...(runtimePin ? [runtimePin] as const : []));
@@ -784,7 +830,7 @@ export function ChatBuiltInBrowserPanel({
     }
     setMessage({ tone: "info", text: messageText });
     return contextItem;
-  }, [onAddAttachment, onAddContext, runtimePin, sessionId]);
+  }, [agentChatApi, onAddAttachment, onAddContext, runtimePin, sessionId]);
 
   /**
    * Capture the frame the underlay paints, without touching the UI.
@@ -1007,6 +1053,12 @@ export function ChatBuiltInBrowserPanel({
           pin,
         ).catch(() => {});
       };
+      // `ade browser panel` with no URL: the pane is on screen (Work opened it
+      // for this request), and there is nothing to load.
+      if (!request.url.trim()) {
+        await acknowledge({ accepted: true, reason: null });
+        return;
+      }
       /*
         The requester gives up after 5 seconds, and nobody answers an approval
         bar in 5 seconds. So the moment a bar goes up the desktop says "I took
@@ -1035,6 +1087,11 @@ export function ChatBuiltInBrowserPanel({
               ...(request.openPanel ? { openPanel: true } : {}),
               ...(request.laneId ? { laneId: request.laneId } : {}),
               ...(request.chatSessionId ? { chatSessionId: request.chatSessionId } : {}),
+              // Which tab, as the agent asked: its named tab, a new one, or
+              // the one this chat already owns. An older daemon sends none.
+              ...(request.tabId ? { tabId: request.tabId } : {}),
+              ...(request.newTab ? { newTab: true } : {}),
+              ...(request.reuseOwnedTab ? { reuseOwnedTab: true } : {}),
             }),
             pin,
           );
@@ -1057,6 +1114,8 @@ export function ChatBuiltInBrowserPanel({
       if (!awaitingAcked || !accepted) await acknowledge({ accepted, reason });
     };
     const unsubscribe = api.onRemoteRequest((request) => {
+      // Meant for the desktop the user is talking from, not this one.
+      if (!isAddressedToThisDesktop(request.targetClientId)) return;
       void handleRequest(request);
     }, pin);
     // Work holds the triggering request when this pane is unmounted (Git
@@ -1172,6 +1231,53 @@ export function ChatBuiltInBrowserPanel({
   }, [navigateToUrl]);
 
   /**
+   * A `localhost` link clicked in a chat or terminal on this pane's machine.
+   *
+   * The plain browser call would tunnel it too, but only this pane can keep the
+   * clicked address in the URL bar and mark the tab as the other machine's. A
+   * click is a person asking, so it needs no approval bar.
+   */
+  const openLinkInNewTab = useCallback((url: string) => {
+    void runBusy("navigate", async () => {
+      if (captureModeRef.current) restoreLiveBrowserView();
+      const api = requireBrowserApi();
+      const prepared = await prepareRemoteNavigation(url, { human: true });
+      if (!prepared.ok) {
+        setMessage({ tone: "error", text: prepared.reason ?? "Navigation was not allowed." });
+        return;
+      }
+      const next = await api.navigate(withBrowserScope({
+        url,
+        newTab: true,
+        ...(activeGroupLaneId ? { groupLaneId: activeGroupLaneId } : {}),
+      }), runtimePinRef.current);
+      if (prepared.tunnel) {
+        rememberTabTunnel(next?.activeTabId ?? statusRef.current?.activeTabId ?? null, prepared.tunnel);
+      }
+      await refreshStatus();
+    });
+  }, [activeGroupLaneId, prepareRemoteNavigation, refreshStatus, rememberTabTunnel, restoreLiveBrowserView, runBusy, withBrowserScope]);
+
+  useEffect(() => {
+    if (!remotePin) return undefined;
+    const paneKey = pinKey(remotePin);
+    const handleOpen = (rawEvent: Event) => {
+      const event = rawEvent as CustomEvent<OpenBuiltInBrowserDetail>;
+      const url = event.detail?.url;
+      if (event.defaultPrevented || !url || !parseLoopbackUrl(url)) return;
+      // A null pin is the window's machine. Only take links meant for this pane's machine.
+      const linkBinding = event.detail.runtimePin ?? activeProjectBinding ?? null;
+      if (!linkBinding || pinKey(linkBinding) !== paneKey) return;
+      event.preventDefault();
+      openLinkInNewTab(url);
+    };
+    window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, handleOpen);
+    // Links clicked while this pane was not mounted; the click is what revealed it.
+    for (const link of takeHeldBrowserLinkOpens(remotePin)) openLinkInNewTab(link.url);
+    return () => window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, handleOpen);
+  }, [activeProjectBinding, openLinkInNewTab, remotePin]);
+
+  /**
    * `+` opens an empty tab, not a page.
    *
    * A new tab is a question ("where to?"), so it lands on the launchpad with
@@ -1232,6 +1338,41 @@ export function ChatBuiltInBrowserPanel({
     return true;
   }, [handleCloseTab]);
 
+  /**
+   * "Attach to chat": hand the chat a tab's id, title and URL so its agent can
+   * claim it. The URL is the one the human sees — the remote origin behind a
+   * tunnel — which is what an agent on that machine can make sense of.
+   */
+  const handleAttachTab = useCallback((tabId: string) => {
+    const tab = statusRef.current?.tabs.find((candidate) => candidate.id === tabId);
+    if (!onAttachTab || !tab) return;
+    try {
+      onAttachTab({
+        tabId: tab.id,
+        title: tab.title?.trim() || null,
+        url: tunnelAwareUrl(tab.url ?? "", tabTunnelsRef.current[tab.id] ?? null) || null,
+        // The chat's agent is on the pinned machine; the tab is on this one.
+        ...(remotePinRef.current ? { onUserMachine: true } : {}),
+      });
+    } catch (error) {
+      setMessage({ tone: "error", text: errorMessage(error) });
+      return;
+    }
+    // Attaching is handing the tab over: move its lease to this chat (or drop
+    // it, for a draft), so another chat's lease cannot refuse the claim.
+    void getBrowserApi()?.handTabToChat?.(withBrowserScope({
+      tabId: tab.id,
+      chatSessionId: sessionId ?? null,
+      laneId: contextLaneId ?? null,
+    })).catch((error: unknown) => {
+      setMessage({ tone: "error", text: errorMessage(error) });
+    });
+  }, [contextLaneId, onAttachTab, sessionId, withBrowserScope]);
+  const handleAttachActiveTab = useCallback(() => {
+    const tabId = statusRef.current?.activeTabId ?? null;
+    if (tabId) handleAttachTab(tabId);
+  }, [handleAttachTab]);
+
   const handleHandBack = useCallback((endedBy: "human" | "auto-offer") => {
     void runBusy("hand-back", async () => {
       const api = requireBrowserApi();
@@ -1239,8 +1380,8 @@ export function ChatBuiltInBrowserPanel({
         throw new Error("This ADE build does not support handing the browser back.");
       }
       // Deliberately un-pinned. The handed-off tab is THIS Electron process's
-      // own WebContentsView; the daemon round trip cannot reach it, and the
-      // bridge refuses a user client for having no chat capability. Preload
+      // own WebContentsView, which the daemon round trip cannot reach, and
+      // hand-back is the person's move, not on the bridge at all. Preload
       // routes this one call straight to local IPC.
       await api.endHandoff(withBrowserScope({ endedBy }));
       setHandoffOfferSilencedOrigin(null);
@@ -1358,7 +1499,7 @@ export function ChatBuiltInBrowserPanel({
 
     let attachmentPath: string | null = null;
     if (onAddAttachment) {
-      const saved = await window.ade.agentChat.saveTempAttachment({
+      const saved = await agentChatApi.saveTempAttachment({
         data: stripDataUrlPrefix(crop.dataUrl),
         filename: "built-in-browser-capture.png",
       }, ...(runtimePin ? [runtimePin] as const : []));
@@ -1449,7 +1590,7 @@ export function ChatBuiltInBrowserPanel({
       label: domItem ? "Browser capture + DOM attached." : "Browser capture attached.",
     });
     restoreLiveBrowserView();
-  }, [attachBrowserContextItem, captureBase, onAddAttachment, onAddContext, restoreLiveBrowserView, runtimePin, sessionId, withBrowserScope]);
+  }, [agentChatApi, attachBrowserContextItem, captureBase, onAddAttachment, onAddContext, restoreLiveBrowserView, runtimePin, sessionId, withBrowserScope]);
 
   const handleBrowserCapturePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (!captureImageDataUrl || !captureBase?.width || !captureBase.height) return;
@@ -2086,6 +2227,10 @@ export function ChatBuiltInBrowserPanel({
     return claimAppMenuCommands((command) => {
       if (!panelOwnsAppCommands(panelRef.current, hasTabRef.current)) return false;
       if (command === "find") {
+        // Focus "nowhere" also follows a click on plain text elsewhere (a chat
+        // reply, a diff line). When this window still has focus — so the page
+        // is not what the user clicked into — the text they pressed wins.
+        if (findBelongsElsewhere(panelRef.current)) return false;
         openFind();
         return true;
       }
@@ -2153,17 +2298,25 @@ export function ChatBuiltInBrowserPanel({
     };
   }, [deviceMenuOpen]);
 
+  /*
+    The lane's servers as the shared store sees them, from the lane's machine.
+    Only its identity is used here: it changes when that machine says a server
+    started or stopped, which is the cue to re-read the full list below. For a
+    lane on another machine that is the only way the chips can change.
+  */
+  const laneDevServers = useLaneDevServers(contextLaneId, browserRuntimePin, Boolean(contextLaneId));
+
   /**
    * The real dev servers, asked for rather than guessed at.
    *
-   * The service knows which ports are listening and which command opened them,
-   * so the launchpad can say "npm run dev · :5173" instead of offering a
-   * hardcoded `localhost:3000` that is usually nothing. An older main process
-   * has no such list, so the port probe below stays as the fallback.
+   * The lane's machine knows which ports are listening and which command
+   * opened them, so the launchpad can say "npm run dev · :5173" instead of
+   * offering a hardcoded `localhost:3000` that is usually nothing. An older
+   * build has no such list, so the port probe below stays as the fallback.
    */
   useEffect(() => {
     const api = getBrowserApi();
-    if (!api?.getDevServers || remotePin) return undefined;
+    if (!api?.getDevServers) return undefined;
     let cancelled = false;
     // `Promise.resolve(...)`, not a bare `.then`: the declared return type is
     // what a CURRENT main process sends. A stub namespace or an older build that
@@ -2171,7 +2324,7 @@ export function ChatBuiltInBrowserPanel({
     // inside the effect body, which React does not treat as a rejection — it
     // unmounts the subtree, so the pane blanks instead of falling back to the
     // port probe below.
-    void Promise.resolve(api.getDevServers({ laneId: contextLaneId }))
+    void Promise.resolve(api.getDevServers({ laneId: contextLaneId }, runtimePinRef.current))
       .then((value) => {
         if (cancelled) return;
         const discovered = normalizeDevServers(value);
@@ -2185,14 +2338,15 @@ export function ChatBuiltInBrowserPanel({
     return () => {
       cancelled = true;
     };
-  }, [contextLaneId, remotePin]);
+  }, [contextLaneId, laneDevServers, remotePin]);
 
   /*
     The port probe, as a fallback rather than an alternative.
 
-    `getDevServers` only knows the servers ADE's own PTYs started, so a `npm run
-    dev` the human launched in iTerm before opening ADE made the launchpad claim
-    there was nothing to open while :5173 was serving. An empty answer is now
+    `getDevServers` knows what ADE terminals and agents printed and what runs
+    from a lane's worktree, so a `npm run dev` the human launched in iTerm from
+    some other folder made the launchpad claim there was nothing to open while
+    :5173 was serving. An empty answer is now
     treated the same as no answer at all: probe the usual ports, and label what
     comes back "localhost:5173" — the honest thing to say about a port nobody
     can name a command for.
@@ -2200,14 +2354,16 @@ export function ChatBuiltInBrowserPanel({
   useEffect(() => {
     const api = getBrowserApi();
     if (api?.getDevServers && !discoveryEmpty) return undefined;
-    if (remotePin) return undefined;
     const probePort = window.ade?.localhost?.probePort;
     if (!probePort) return undefined;
+    // On a remote lane the probe runs on that machine: its ports are the ones
+    // this pane's `localhost` means.
+    const pin = runtimePinRef.current;
     let cancelled = false;
     void (async () => {
       for (const port of DEV_SERVER_PROBE_PORTS) {
         if (cancelled) return;
-        const listening = await probePort(port).catch(() => false);
+        const listening = await probePort(port, pin).catch(() => false);
         if (listening && !cancelled) {
           setDevServers((previous) => mergeDevServer(previous, {
             url: `http://localhost:${port}`,
@@ -2394,14 +2550,15 @@ export function ChatBuiltInBrowserPanel({
   // so Inspect, Attach and "screenshot to chat" are not shown here rather than
   // shown broken.
   const canAttachContext = Boolean(onAddContext);
+  const hostToolbarEnd = toolbarEnd !== undefined;
   const toolbar = useMemo(() => browserToolbarLayout(paneWidth, {
     hasSelection,
     canAttachContext,
     recording: isRecording,
-    // The pane always draws two fixed controls at the far right (preview
-    // toggle + maximize); price them so the omnibox is not clipped by them.
-    extraRightControlCount: 2,
-  }), [canAttachContext, hasSelection, isRecording, paneWidth]);
+    // The pane draws two fixed controls at the far right (preview toggle +
+    // maximize), or the host's own; price them so the omnibox is not clipped.
+    extraRightControlCount: hostToolbarEnd ? toolbarEndControlCount : 2,
+  }), [canAttachContext, hasSelection, hostToolbarEnd, isRecording, paneWidth, toolbarEndControlCount]);
   /**
    * `status != null` matters: before the first status lands the panel knows
    * nothing, and flashing the launchpad there would both blink the surface and
@@ -2449,8 +2606,14 @@ export function ChatBuiltInBrowserPanel({
     urlDisplay,
     urlInput,
   ]);
-  const emulationWidth = emulation?.width && emulation.width > 0 ? emulation.width : null;
-  const emulationHeight = emulation?.height && emulation.height > 0 ? emulation.height : null;
+  // A recording tab is laid out at a fixed desktop size by
+  // main (`agentViewport`); it letterboxes exactly like a device preset, so a
+  // narrow pane shows the whole page shrunk rather than a page reflowed into a
+  // strip. An explicit preset wins.
+  const agentViewport = emulation ? null : activeTab?.agentViewport ?? null;
+  const layoutSize = emulation ?? agentViewport;
+  const emulationWidth = layoutSize?.width && layoutSize.width > 0 ? layoutSize.width : null;
+  const emulationHeight = layoutSize?.height && layoutSize.height > 0 ? layoutSize.height : null;
   const emulationSize = useMemo(
     () => (emulationWidth && emulationHeight ? { width: emulationWidth, height: emulationHeight } : null),
     [emulationHeight, emulationWidth],
@@ -2625,7 +2788,7 @@ export function ChatBuiltInBrowserPanel({
           onChange={(event) => setResponsiveWidth(event.target.value)}
           inputMode="numeric"
           aria-label="Responsive width"
-          className="h-6 w-[58px] rounded-[5px] border border-white/[0.08] bg-black/25 px-1.5 text-center font-mono text-[10.5px] text-fg/85 outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
+          className="h-6 w-[58px] rounded-[5px] border border-fg/[0.08] bg-black/25 px-1.5 text-center font-mono text-[10.5px] text-fg/85 outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
         />
         <span aria-hidden="true" className="text-[10px] text-muted-fg/60">×</span>
         <input
@@ -2633,7 +2796,7 @@ export function ChatBuiltInBrowserPanel({
           onChange={(event) => setResponsiveHeight(event.target.value)}
           inputMode="numeric"
           aria-label="Responsive height"
-          className="h-6 w-[58px] rounded-[5px] border border-white/[0.08] bg-black/25 px-1.5 text-center font-mono text-[10.5px] text-fg/85 outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
+          className="h-6 w-[58px] rounded-[5px] border border-fg/[0.08] bg-black/25 px-1.5 text-center font-mono text-[10.5px] text-fg/85 outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
         />
         <button
           type="button"
@@ -2688,10 +2851,11 @@ export function ChatBuiltInBrowserPanel({
     <div
       ref={panelRef}
       data-testid="browser-panel"
+      data-ade-find-scope="browser"
       onKeyDownCapture={handlePanelKeyDown}
       className="flex h-full min-h-0 min-w-0 flex-col font-sans text-[12px] text-fg/75"
     >
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-md border border-white/[0.08] bg-[var(--color-bg)]">
+      <div className={cn("ade-browser-frame flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--color-bg)]", !flush && "rounded-md border border-fg/[0.08]")}>
         <BrowserTabStrip
           stripRef={tabStripRef}
           tabs={orderedBrowserTabs}
@@ -2708,6 +2872,7 @@ export function ChatBuiltInBrowserPanel({
           onSwitchTab={handleSwitchTab}
           onCloseTab={handleCloseTab}
           onNewTab={handleNewTab}
+          onAttachTab={onAttachTab ? handleAttachTab : undefined}
         />
 
         {pendingApproval ? (
@@ -2760,6 +2925,7 @@ export function ChatBuiltInBrowserPanel({
               onOpenFind={openFind}
               onNewTab={handleNewTab}
               onCloseTab={hasTab ? handleCloseActiveTab : null}
+              onAttachTab={hasTab && onAttachTab ? handleAttachActiveTab : null}
               devToolsOpen={devToolsOpen}
               onToggleDevTools={handleToggleDevTools}
               networkLogging={networkLogging}
@@ -2779,7 +2945,9 @@ export function ChatBuiltInBrowserPanel({
               selectionFrame={selectionFrame}
             />
           )}
-          previewControls={<WorkToolPreviewControls tool="browser" chatSessionId={sessionId} />}
+          previewControls={hostToolbarEnd
+            ? toolbarEnd
+            : <WorkToolPreviewControls tool="browser" chatSessionId={sessionId} />}
         />
 
         <BrowserFindBar
@@ -2807,7 +2975,7 @@ export function ChatBuiltInBrowserPanel({
         {message ? (
           <div
             className={cn(
-              "flex shrink-0 items-start gap-2 border-b border-white/[0.07] px-2.5 py-1.5 text-[11.5px]",
+              "flex shrink-0 items-start gap-2 border-b border-fg/[0.07] px-2.5 py-1.5 text-[11.5px]",
               message.tone === "error" ? "text-rose-200/85" : "text-fg/75",
             )}
             role={message.tone === "error" ? "alert" : "status"}
@@ -2859,6 +3027,7 @@ export function ChatBuiltInBrowserPanel({
           launchpadGroups={launchpadGroups}
           letterboxed={letterboxed}
           emulation={emulation}
+          agentViewport={agentViewport}
           busy={busy}
           onRotateEmulation={handleRotateEmulation}
         />

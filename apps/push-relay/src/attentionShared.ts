@@ -43,6 +43,29 @@ export type OwnedAttentionDeviceRow = AttentionDeviceRow & {
   ownership_epoch: number;
 };
 
+export type ActivityBoardColumn = "needs_you" | "working" | "waiting" | "done";
+export type ActivityWaitingReason = "snoozed" | "ci" | "review" | "scheduled" | "subagent";
+
+export const ACTIVITY_BOARD_COLUMNS: readonly ActivityBoardColumn[] = [
+  "needs_you",
+  "working",
+  "waiting",
+  "done",
+];
+
+export function isActivityBoardColumn(value: unknown): value is ActivityBoardColumn {
+  return typeof value === "string"
+    && (ACTIVITY_BOARD_COLUMNS as readonly string[]).includes(value);
+}
+
+export function isActivityWaitingReason(value: unknown): value is ActivityWaitingReason {
+  return value === "snoozed"
+    || value === "ci"
+    || value === "review"
+    || value === "scheduled"
+    || value === "subagent";
+}
+
 export type ParsedAttentionItem = Record<string, unknown> & {
   contractVersion: 1;
   id: string;
@@ -55,6 +78,11 @@ export type ParsedAttentionItem = Record<string, unknown> & {
   // so "planning" could not be added to it; the publisher stamps this instead.
   // Absent means "not planning" — planning is NEVER inferred from a phase.
   chatActivityMode?: "planning";
+  // Optional and additive: the Work-board column the publishing brain computed
+  // for an agent item, and why it waits. Absent from older publishers; readers
+  // then derive a column from the phase (`activityBoardColumn`).
+  boardColumn?: ActivityBoardColumn;
+  waitingReason?: ActivityWaitingReason;
   kind: "agent" | "pull_request";
   eventKind: string;
   phase: string;
@@ -399,4 +427,36 @@ export async function countAndGuard(options: {
     .bind(options.userId)
     .first<{ count: number }>();
   return (existing?.count ?? 0) + options.adding > options.ceiling;
+}
+
+/**
+ * The newest settings and vault change for an account, piggybacked on the
+ * machine's publish response. A brain pulls settings or vault only when one of
+ * these moved, instead of polling both every 30 s. Writes and deletes both
+ * stamp a server-side updated_at, so tombstones move the mark too.
+ *
+ * A mark is `<max updated_at>#<rows at that instant>`: two requests can land
+ * in the same millisecond, and the pull cursor orders by (updated_at, key), so
+ * the count makes the second one move the mark too. Both parts are seeks on
+ * (user_id, updated_at), reading only the rows at the newest instant.
+ */
+export async function accountChangeMarks(
+  env: AttentionRelayEnv,
+  userId: string,
+): Promise<{ accountUserId: string; settings: string | null; vault: string | null }> {
+  // `order by … desc limit 1`, not `max()`: inside a subquery D1 does not
+  // apply the min/max shortcut and reads every row the user has (measured:
+  // 1,001 rows for 1,000 settings, against 3 this way).
+  const row = await env.DB.prepare(`
+    select
+      (select newest || '#' || (select count(*) from account_settings
+                                 where user_id = ? and updated_at = newest)
+         from (select updated_at as newest from account_settings
+                where user_id = ? order by updated_at desc limit 1)) as settings,
+      (select newest || '#' || (select count(*) from account_vault_items
+                                 where user_id = ? and updated_at = newest)
+         from (select updated_at as newest from account_vault_items
+                where user_id = ? order by updated_at desc limit 1)) as vault
+  `).bind(userId, userId, userId, userId).first<{ settings: string | null; vault: string | null }>();
+  return { accountUserId: userId, settings: row?.settings ?? null, vault: row?.vault ?? null };
 }

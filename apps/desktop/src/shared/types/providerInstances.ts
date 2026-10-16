@@ -1,3 +1,5 @@
+import type { ClaudePromptCacheTtl } from "../claudePromptCache";
+import type { ProviderCompactionSettings } from "../compactionSettings";
 /**
  * Provider accounts ("instances").
  *
@@ -38,6 +40,7 @@ export const PROVIDER_INSTANCE_ENV_KEY: Record<ProviderInstanceProvider, string>
 
 /** One local account for one provider. */
 export type ProviderInstance = {
+  compaction?: ProviderCompactionSettings;
   /** Stable machine-local id. The default instance's id IS the provider slug. */
   id: string;
   provider: ProviderInstanceProvider;
@@ -52,12 +55,67 @@ export type ProviderInstance = {
   createdAt: string;
   /** Read out of the config home by `refreshAccounts()`; absent until then. */
   account?: { email?: string; plan?: string };
-  /** True when the config home holds a usable login (email or plan resolved). */
+  /**
+   * True when the config home names an account (email or plan resolved) and
+   * the usage poller has not found its saved login broken.
+   */
   signedIn: boolean;
+  /**
+   * The config home names an account, but its saved login no longer works
+   * (the provider CLI cleared it). `signedIn` is false; the account needs a
+   * new sign-in. Absent when the login works or was never read.
+   */
+  loginBroken?: boolean;
+  /**
+   * Another account of this provider is signed in to the same email: this one
+   * is a copy of that login and quota. Names the account that owns it (the
+   * default first, then creation order). Smart balance skips copies.
+   */
+  sameLoginAs?: string;
+  /**
+   * The login this config home held before a different one replaced it — a
+   * sign-in outside ADE, such as `claude /login` in a shell for the default
+   * account. Absent once any account holds that email again, or once dismissed.
+   */
+  replacedAccount?: ProviderInstanceReplacedAccount;
+  /**
+   * Claude only. The user chose the 1-hour prompt cache for this account's
+   * subagents, workflows and helper requests. Absent means ADE states nothing
+   * and Claude Code applies its own default (5 minutes).
+   */
+  subagentPromptCacheTtl?: "1h";
+  /**
+   * Claude only. The prompt cache lifetime the user chose for this account's
+   * main conversation. Absent means ADE states nothing and Claude Code decides:
+   * 1 hour on a subscription within its limits, 5 minutes otherwise.
+   */
+  mainPromptCacheTtl?: ClaudePromptCacheTtl;
+  /**
+   * Claude only. `"stop"` means ADE stops a turn when Claude reports that the
+   * turn draws on extra usage (billed past the plan limit). Absent means the
+   * turn continues, which is what Claude Code does by itself.
+   */
+  onExtraUsage?: "stop";
 };
+
+export type ProviderInstanceReplacedAccount = {
+  email: string;
+  plan?: string;
+  replacedAt: string;
+};
+
+/**
+ * The config home names an account, whether or not its login works now.
+ * Use it where the question is "which accounts did the user add", not "which
+ * account can run a chat right now" (that one is `signedIn`).
+ */
+export function providerInstanceHasAccount(instance: Pick<ProviderInstance, "signedIn" | "loginBroken">): boolean {
+  return instance.signedIn || instance.loginBroken === true;
+}
 
 /** Per-provider settings that are about the set of accounts, not one account. */
 export type ProviderInstanceSettings = {
+  compaction?: ProviderCompactionSettings;
   /**
    * Spread new chats across signed-in accounts instead of always using the
    * default. Stored here; the scheduler that reads it lands with the UI.
@@ -120,8 +178,10 @@ export type ProviderInstanceRemoveArgs = {
 
 export type ProviderInstanceRemoveResult = {
   removed: boolean;
-  /** The config home left on disk; removing an account never deletes credentials. */
+  /** The config home left on disk; removing an account never deletes the directory. */
   configHome: string;
+  /** Why the sign-out before the removal failed; the login is still in `configHome`. */
+  signOutError?: string;
 };
 
 export type ProviderInstanceRenameArgs = {
@@ -130,6 +190,10 @@ export type ProviderInstanceRenameArgs = {
 };
 
 export type ProviderInstanceSetDefaultArgs = {
+  id: string;
+};
+
+export type ProviderInstanceDismissReplacedArgs = {
   id: string;
 };
 
@@ -144,16 +208,86 @@ export type ProviderInstanceGetSettingsArgs = {
 };
 
 export type ProviderInstanceSetSettingsArgs = {
+  /** Account override; null compaction restores provider inheritance. */
+  instanceId?: string;
   provider: ProviderInstanceProvider;
-  settings: Partial<ProviderInstanceSettings>;
+  settings: ProviderInstanceSettingsPatch;
 };
+
+/**
+ * `compaction`, the two prompt cache lifetimes and `onExtraUsage` are account
+ * settings: they need an `instanceId`, a missing key leaves the stored value
+ * alone, and null clears it.
+ */
+export type ProviderInstanceSettingsPatch = Omit<Partial<ProviderInstanceSettings>, "compaction"> & {
+  compaction?: ProviderCompactionSettings | null;
+  subagentPromptCacheTtl?: "1h" | null;
+  mainPromptCacheTtl?: ClaudePromptCacheTtl | null;
+  onExtraUsage?: "stop" | null;
+};
+
+/** The env var Claude Code reads for the prompt cache TTL outside the main conversation. */
+export const CLAUDE_SUBAGENT_PROMPT_CACHE_TTL_ENV = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
+/** The env var Claude Code reads for the prompt cache TTL of the main conversation. */
+export const CLAUDE_MAIN_PROMPT_CACHE_TTL_ENV = "CLAUDE_CODE_PROMPT_CACHE_TTL";
 
 export type ProviderInstanceLoginCommandArgs = {
   id: string;
 };
 
+/**
+ * One sign-in ADE runs for an account: the provider's own login command in a
+ * private PTY on the account's machine, read for the link it prints and the
+ * code it may ask for. No terminal session or Work row is created.
+ */
+export type ProviderLoginState = "running" | "verifying" | "succeeded" | "failed" | "cancelled";
+
+export type ProviderLoginStatus = {
+  loginId: string;
+  instanceId: string;
+  provider: ProviderInstanceProvider;
+  state: ProviderLoginState;
+  /** The sign-in link the CLI printed, once it has. */
+  url: string | null;
+  /** The CLI is asking for a code pasted from the browser. */
+  awaitingCode: boolean;
+  /** A device sign-in's one-time code, typed into the sign-in page. */
+  deviceCode?: string;
+  /** The CLI's output so far, without terminal escapes; the last few KB. */
+  output: string;
+  /** The account's email once the login is verified. */
+  email?: string;
+  /** Why a failed sign-in failed, in one sentence. */
+  message?: string;
+  startedAt: string;
+  endedAt?: string;
+};
+
+/** A sign-in that has not ended: its CLI still runs, or its result is being checked. */
+export function isProviderLoginLive(login: Pick<ProviderLoginStatus, "state"> | null | undefined): boolean {
+  return login?.state === "running" || login?.state === "verifying";
+}
+
+export type ProviderLoginStartArgs = {
+  id: string;
+  /**
+   * Sign in with a one-time code typed into the sign-in page (Codex
+   * `--device-auth`), for a machine other than the one with the browser:
+   * Codex's normal sign-in returns to a localhost port on the account's
+   * machine, which a browser on another computer cannot reach.
+   */
+  deviceAuth?: boolean;
+};
+export type ProviderLoginRefArgs = { loginId: string };
+export type ProviderLoginSubmitCodeArgs = { loginId: string; code: string };
+
 export type ProviderInstanceRefreshArgs = {
   provider?: ProviderInstanceProvider;
+  /**
+   * Re-read this account's saved login now, even when it is not marked
+   * signed out — the account a sign-in just finished for.
+   */
+  instanceId?: string;
 };
 
 /** `#rrggbb` only — the renderer renders it raw, so anything else is rejected. */

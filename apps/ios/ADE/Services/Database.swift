@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import os
 
 private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 private let localDeleteColumnId = "-1"
@@ -248,8 +249,26 @@ final class DatabaseService {
   private let accessQueue = DispatchQueue(label: "com.ade.database", qos: .userInitiated)
 
   private func withLock<T>(_ body: () throws -> T) rethrows -> T {
-    try accessQueue.sync(execute: body)
+    guard Thread.isMainThread, DatabaseService.mainThreadWaitReporter != nil else {
+      return try accessQueue.sync(execute: body)
+    }
+    // Diagnostics: how long the main thread waited for the queue (a
+    // background changeset apply holds it for a whole batch).
+    let start = CFAbsoluteTimeGetCurrent()
+    var waitedMs = 0.0
+    let result = try accessQueue.sync { () throws -> T in
+      waitedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+      return try body()
+    }
+    if waitedMs > 8 {
+      let caller = Thread.callStackSymbols.dropFirst(2).prefix(2).joined(separator: " | ")
+      DatabaseService.mainThreadWaitReporter?(waitedMs, String(caller.prefix(300)))
+    }
+    return result
   }
+
+  /// Set by scroll diagnostics; nil (the default) costs nothing.
+  nonisolated(unsafe) static var mainThreadWaitReporter: ((Double, String) -> Void)?
 
   private var db: OpaquePointer?
   private let encoder = JSONEncoder()
@@ -259,7 +278,14 @@ final class DatabaseService {
   private let dbURL: URL
   private let siteIdURL: URL
   private let bootstrapSQLOverride: String?
-  private var localDbVersion = 0
+  private var localDbVersion = 0 {
+    didSet { publishedDbVersion.withLock { $0 = localDbVersion } }
+  }
+  /// `localDbVersion`, readable without the access queue. A changeset apply
+  /// holds that queue for the whole batch, and the main actor reads the
+  /// version on every relay tick and heartbeat: through the queue it waited
+  /// for the apply (55-120 ms frames).
+  private let publishedDbVersion = OSAllocatedUnfairLock(initialState: 0)
   private var cachedSiteIdHex = ""
   private var cachedSiteIdBlob = Data()
   private var shouldCaptureLocalChanges = true
@@ -318,7 +344,7 @@ final class DatabaseService {
   }
 
   func currentDbVersion() -> Int {
-    withLock { localDbVersion }
+    publishedDbVersion.withLock { $0 }
   }
 
   func exportChangesSince(version: Int) -> [CrsqlChangeRow] {
@@ -1393,14 +1419,20 @@ final class DatabaseService {
       }
       let hydratablePrs = payload.prs.filter { availableLaneIds.contains($0.laneId) }
       let hydratablePrIds = Set(hydratablePrs.map(\.id))
+      // A bounded refresh (open PRs and live lanes only) says nothing about
+      // the snapshots it left out; clearing those would wipe every merged PR's
+      // cached detail on each hydration.
+      let snapshotClearPrIds = payload.coversEveryListedSnapshot
+        ? hydratablePrIds
+        : hydratablePrIds.intersection(payload.snapshots.map(\.prId))
 
-      if !hydratablePrIds.isEmpty {
-        let placeholders = Array(repeating: "?", count: hydratablePrIds.count).joined(separator: ", ")
+      if !snapshotClearPrIds.isEmpty {
+        let placeholders = Array(repeating: "?", count: snapshotClearPrIds.count).joined(separator: ", ")
         _ = try execute("""
           delete from pull_request_snapshots
            where pr_id in (\(placeholders))
         """) { statement in
-          for (index, prId) in hydratablePrIds.sorted().enumerated() {
+          for (index, prId) in snapshotClearPrIds.sorted().enumerated() {
             try bindText(prId, to: statement, index: Int32(index + 1))
           }
         }
@@ -2045,6 +2077,7 @@ final class DatabaseService {
       chatSessionId: row.chatSessionId,
       pendingInputItemId: row.pendingInputItemId,
       orchestrationParentSessionId: row.resumeMetadata?.orchestrationParentSessionId,
+      launchedBySessionId: row.resumeMetadata?.launchedBySessionId,
       spawnKind: row.resumeMetadata?.spawnKind
     )
   }
@@ -2056,6 +2089,7 @@ final class DatabaseService {
     guard var metadata = session.resumeMetadata else { return nil }
     metadata.orchestrationParentSessionId =
       session.orchestrationParentSessionId ?? metadata.orchestrationParentSessionId
+    metadata.launchedBySessionId = session.launchedBySessionId ?? metadata.launchedBySessionId
     metadata.spawnKind = session.spawnKind ?? metadata.spawnKind
     return metadata
   }
@@ -2201,13 +2235,31 @@ final class DatabaseService {
   }
 
   func fetchComputerUseArtifacts(ownerKind: String, ownerId: String) -> [ComputerUseArtifactSummary] {
-    withLock { fetchComputerUseArtifactsLocked(ownerKind: ownerKind, ownerId: ownerId) }
+    withLock { fetchComputerUseArtifactsLocked(filter: .owner(kind: ownerKind, id: ownerId)) }
   }
 
-  private func fetchComputerUseArtifactsLocked(ownerKind: String, ownerId: String) -> [ComputerUseArtifactSummary] {
+  /// One proof record by id, from any owner in the current project. An answer
+  /// can cite proof another chat in the same project filed.
+  func fetchComputerUseArtifact(id artifactId: String) -> ComputerUseArtifactSummary? {
+    withLock { fetchComputerUseArtifactsLocked(filter: .artifact(id: artifactId)).first }
+  }
+
+  private enum ComputerUseArtifactFilter {
+    case owner(kind: String, id: String)
+    case artifact(id: String)
+  }
+
+  private func fetchComputerUseArtifactsLocked(filter: ComputerUseArtifactFilter) -> [ComputerUseArtifactSummary] {
     let projectIds = currentProjectScopeIds()
     guard !projectIds.isEmpty else { return [] }
     let projectPlaceholders = Array(repeating: "?", count: projectIds.count).joined(separator: ", ")
+    let filterClause: String
+    switch filter {
+    case .owner:
+      filterClause = "and l.owner_kind = ? and l.owner_id = ?"
+    case .artifact:
+      filterClause = "and a.id = ?"
+    }
 
     let sql = """
       select a.id, a.artifact_kind, a.backend_style, a.backend_name, a.source_tool_name, a.original_type,
@@ -2217,8 +2269,7 @@ final class DatabaseService {
         inner join computer_use_artifact_links l on l.artifact_id = a.id
        where a.project_id in (\(projectPlaceholders))
          and l.project_id in (\(projectPlaceholders))
-         and l.owner_kind = ?
-         and l.owner_id = ?
+         \(filterClause)
        order by a.created_at asc
     """
 
@@ -2232,9 +2283,14 @@ final class DatabaseService {
         try self.bindText(projectId, to: statement, index: index)
         index += 1
       }
-      try self.bindText(ownerKind, to: statement, index: index)
-      index += 1
-      try self.bindText(ownerId, to: statement, index: index)
+      switch filter {
+      case .owner(let kind, let id):
+        try self.bindText(kind, to: statement, index: index)
+        index += 1
+        try self.bindText(id, to: statement, index: index)
+      case .artifact(let id):
+        try self.bindText(id, to: statement, index: index)
+      }
     }, map: { statement in
       ComputerUseArtifactRow(
         id: stringValue(statement, index: 0) ?? "",
@@ -2364,6 +2420,13 @@ final class DatabaseService {
       // Every column the select names must be proven before it is spliced in.
       && tableHasColumn(tableName: "pull_request_chat_sessions", columnName: "project_id")
 
+    // Unlink tombstones arrived with stack-link offers; an older host has no
+    // table, and every PR then falls back exactly as it did before.
+    let hasChatSessionDismissals = hasTable(named: "pull_request_chat_session_dismissals")
+      && tableHasColumn(tableName: "pull_request_chat_session_dismissals", columnName: "pr_id")
+      && tableHasColumn(tableName: "pull_request_chat_session_dismissals", columnName: "session_id")
+      && tableHasColumn(tableName: "pull_request_chat_session_dismissals", columnName: "project_id")
+
     let hasIntegrationWorkflowContext = hasTable(named: "integration_proposals")
       && tableHasColumn(tableName: "integration_proposals", columnName: "linked_pr_id")
       && tableHasColumn(tableName: "integration_proposals", columnName: "workflow_display_state")
@@ -2390,12 +2453,12 @@ final class DatabaseService {
       ? """
              ip.workflow_display_state,
              ip.cleanup_state,
-             ip.linked_group_id
+             ip.linked_group_id,
       """
       : """
              null as workflow_display_state,
              null as cleanup_state,
-             null as linked_group_id
+             null as linked_group_id,
       """
 
     // A correlated scalar subquery rather than a join: `pr_group_members` above
@@ -2411,6 +2474,38 @@ final class DatabaseService {
       """
       : """
              null as chat_session_ids,
+      """
+
+    let dismissedSessionSelect = hasChatSessionDismissals
+      ? """
+             (select group_concat(pcs.session_id, char(10))
+                from pull_request_chat_session_dismissals pcs
+               where pcs.project_id = pr.project_id
+                 and pcs.pr_id = pr.id),
+      """
+      : """
+             null as dismissed_chat_session_ids,
+      """
+
+    // Linked chats that live on another lane (a stack coordinator linking every
+    // layer). Mirrors `PrSummary.crossLaneChatSessionIds`: those links do not
+    // take the PR away from the chats on its own lane. The edge's `lane_id` is
+    // the PR's lane, so the chat's lane comes from its session row.
+    let crossLaneSessionSelect = hasChatSessionLinks
+      && hasTable(named: "terminal_sessions")
+      && tableHasColumn(tableName: "terminal_sessions", columnName: "id")
+      && tableHasColumn(tableName: "terminal_sessions", columnName: "lane_id")
+      ? """
+             (select group_concat(pcs.session_id, char(10))
+                from pull_request_chat_sessions pcs
+                join terminal_sessions ts on ts.id = pcs.session_id
+               where pcs.project_id = pr.project_id
+                 and pcs.pr_id = pr.id
+                 and ts.lane_id is not null
+                 and ts.lane_id <> pr.lane_id)
+      """
+      : """
+             null as cross_lane_chat_session_ids
       """
 
     let prGroupJoins = hasPrGroupContext
@@ -2459,6 +2554,8 @@ final class DatabaseService {
     \(chatSessionSelect)
     \(prGroupSelect)
     \(integrationSelect)
+    \(dismissedSessionSelect)
+    \(crossLaneSessionSelect)
         from pull_requests pr
         left join lanes l on l.id = pr.lane_id and l.project_id = pr.project_id
         left join pull_request_stack_snapshots stack_snapshot on stack_snapshot.pr_id = pr.id
@@ -2553,11 +2650,9 @@ final class DatabaseService {
         ),
         checksReason: stringValue(statement, index: 20),
         checksMissingRequired: decodeJson(stringValue(statement, index: 21), as: [String].self),
-        chatSessionIds: (stringValue(statement, index: 22)?
-          .split(separator: "\n")
-          .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-          .filter { !$0.isEmpty })
-          .flatMap { $0.isEmpty ? nil : $0 }
+        chatSessionIds: newlineSeparatedIds(statement, index: 22),
+        dismissedChatSessionIds: newlineSeparatedIds(statement, index: 31),
+        crossLaneChatSessionIds: newlineSeparatedIds(statement, index: 32)
       )
     }
   }
@@ -2832,6 +2927,7 @@ final class DatabaseService {
       "pull_request_snapshots",
       "pull_request_ai_summaries",
       "pull_request_chat_sessions",
+      "pull_request_chat_session_dismissals",
       "pr_group_members",
     ] where hasTable(named: tableName) && tableHasColumn(tableName: tableName, columnName: "pr_id") {
       try exec("""
@@ -3128,6 +3224,18 @@ final class DatabaseService {
     try exec("create index if not exists idx_pull_request_chat_sessions_session on pull_request_chat_sessions(project_id, session_id)")
     try exec("create index if not exists idx_pull_request_chat_sessions_lane on pull_request_chat_sessions(project_id, lane_id)")
     try exec("""
+      create table if not exists pull_request_chat_session_dismissals (
+        id text primary key,
+        project_id text not null,
+        pr_id text not null,
+        session_id text not null,
+        created_at text not null,
+        updated_at text not null
+      )
+    """)
+    try exec("create index if not exists idx_pull_request_chat_session_dismissals_pr on pull_request_chat_session_dismissals(project_id, pr_id)")
+    try exec("create index if not exists idx_pull_request_chat_session_dismissals_session on pull_request_chat_session_dismissals(project_id, session_id)")
+    try exec("""
       create table if not exists pull_request_snapshots (
         pr_id text primary key,
         detail_json text,
@@ -3241,6 +3349,7 @@ final class DatabaseService {
       "pull_request_stack_snapshots",
       "pull_request_ai_summaries",
       "pull_request_chat_sessions",
+      "pull_request_chat_session_dismissals",
       "pr_group_members",
     ]
 
@@ -3418,6 +3527,9 @@ final class DatabaseService {
     if hasTable(named: "session_github_issues") {
       _ = try execute("delete from session_github_issues where session_id in (\(placeholders))", bind: bindSessionIds)
     }
+    if hasTable(named: "session_jira_issues") {
+      _ = try execute("delete from session_jira_issues where session_id in (\(placeholders))", bind: bindSessionIds)
+    }
     if hasTable(named: "session_deltas") {
       _ = try execute("delete from session_deltas where session_id in (\(placeholders))", bind: bindSessionIds)
     }
@@ -3429,6 +3541,9 @@ final class DatabaseService {
     }
     if hasTable(named: "pull_request_chat_sessions") {
       _ = try execute("delete from pull_request_chat_sessions where session_id in (\(placeholders))", bind: bindSessionIds)
+    }
+    if hasTable(named: "pull_request_chat_session_dismissals") {
+      _ = try execute("delete from pull_request_chat_session_dismissals where session_id in (\(placeholders))", bind: bindSessionIds)
     }
     _ = try execute("delete from terminal_sessions where id in (\(placeholders))", bind: bindSessionIds)
     return retiredSessionIds.count
@@ -4081,6 +4196,15 @@ final class DatabaseService {
   private func stringValue(_ statement: OpaquePointer, index: Int32) -> String? {
     guard let raw = sqlite3_column_text(statement, index) else { return nil }
     return String(cString: raw)
+  }
+
+  /// A `group_concat(..., char(10))` column as trimmed ids; nil when empty.
+  private func newlineSeparatedIds(_ statement: OpaquePointer, index: Int32) -> [String]? {
+    let ids = (stringValue(statement, index: index) ?? "")
+      .split(separator: "\n")
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+    return ids.isEmpty ? nil : ids
   }
 
   private func columnIsNull(_ statement: OpaquePointer, index: Int32) -> Bool {

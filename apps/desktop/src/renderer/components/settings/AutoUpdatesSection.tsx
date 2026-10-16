@@ -3,14 +3,13 @@ import {
   DEFAULT_AUTO_UPDATE_PREFERENCES,
   type AutoUpdatePreferences,
 } from "../../../shared/types";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
-import { SettingsCard, SettingsGroup, SettingsToggle } from "./primitives";
+import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 
 /**
- * The two update-install preferences, as cards.
+ * The two update-install preferences, as rows of one panel.
  *
  * `AboutSection` embeds this under its own "Updates" group, so the controls
- * carry the cards and the caller carries the group heading — the same split
+ * carry the rows and the caller carries the group heading — the same split
  * `AppearanceSection` uses.
  */
 export function AutoUpdatesControls() {
@@ -52,11 +51,11 @@ export function AutoUpdatesControls() {
   const current = preferences ?? DEFAULT_AUTO_UPDATE_PREFERENCES;
 
   return (
-    <>
-      <SettingsCard
+    <ModernRows>
+      <ModernRow
         anchor="auto-updates"
         title="Install ADE updates automatically"
-        description="ADE shows a cancelable countdown before restarting. Leave this off to install updates from the top-right control."
+        hint="ADE shows a cancelable countdown before restarting. Leave this off to install updates from the top-right control."
         control={
           <SettingsToggle
             label="Install ADE updates automatically"
@@ -66,20 +65,16 @@ export function AutoUpdatesControls() {
           />
         }
       >
-        {error ? (
-          <p role="alert" style={{ margin: 0, color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 11 }}>
-            {error}
-          </p>
-        ) : null}
-      </SettingsCard>
+        {error ? <p role="alert" className="ade-modern-error">{error}</p> : null}
+      </ModernRow>
 
       {/* Only meaningful once automatic installs are on — it qualifies when the
           countdown may start, and there is no countdown otherwise. */}
       {current.automaticInstall ? (
-        <SettingsCard
+        <ModernRow
           anchor="auto-updates-only-when-idle"
           title="Wait until active work finishes"
-          description="Start the restart countdown only when there are no active agent turns or work sessions."
+          hint="Start the restart countdown only when there are no active agent turns or work sessions."
           control={
             <SettingsToggle
               label="Wait until active work finishes"
@@ -90,14 +85,14 @@ export function AutoUpdatesControls() {
           }
         />
       ) : null}
-    </>
+    </ModernRows>
   );
 }
 
 export function AutoUpdatesSection() {
   return (
-    <SettingsGroup title="Updates" description="Choose whether ADE installs downloaded updates automatically.">
+    <ModernSection group="Updates" title="Updates" hint="Choose whether ADE installs downloaded updates automatically.">
       <AutoUpdatesControls />
-    </SettingsGroup>
+    </ModernSection>
   );
 }

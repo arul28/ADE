@@ -145,7 +145,13 @@ describe("createProjectSecretService", () => {
     const projectRoot = makeProjectRoot();
     addOrigin(projectRoot);
     const vault = makeVaultMock();
-    const service = createProjectSecretService(projectRoot, { getAccountVault: () => vault });
+    // A signed-in user is part of this fixture because the vault store itself
+    // drops every mutation made while signed out, and the service now reports
+    // the destination it can honour rather than the one that was asked for.
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
     service.set({ name: "MOVE_ME", value: "account-value", storage: "account" });
     vault.set.mockClear();
 
@@ -314,5 +320,209 @@ describe("project secret .env formatting", () => {
     expect(() => parseProjectSecretEnv("GOOD=value\nnot-an-assignment")).toThrow(/line 2/);
     expect(() => parseProjectSecretEnv("EMPTY=")).toThrow(/empty value on line 1/);
     expect(() => parseProjectSecretEnv("# only comments")).toThrow(/does not contain any variables/);
+  });
+});
+
+/**
+ * The pull is how an account-scoped secret reaches a second machine, and the
+ * account is the authority for one. These cover what it takes from the vault,
+ * what it must never take, and what it must never write back.
+ */
+describe("pullFromAccount", () => {
+  const VAULT_SCOPE = "repo:github.com/acme/project";
+
+  function stubVaultRows(
+    vault: ReturnType<typeof makeVaultMock>,
+    rows: Array<Record<string, unknown>>,
+  ): void {
+    vault.list.mockResolvedValue({ ok: true, value: rows });
+  }
+
+  it.each([
+    { storage: "account" as const, expected: 1, kept: false },
+    { storage: "device" as const, expected: 0, kept: true },
+  ])("applies a delete from another machine to a $storage copy", async ({ storage, expected, kept }) => {
+    const projectRoot = makeProjectRoot();
+    addOrigin(projectRoot);
+    const vault = makeVaultMock();
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
+    service.set({ name: "SHARED", value: "value", storage });
+
+    stubVaultRows(vault, [{
+      scope: VAULT_SCOPE,
+      kind: "project_secret",
+      key: "SHARED",
+      value: null,
+      updatedAt: "2026-07-17T00:00:00.000Z",
+      deleted: true,
+    }]);
+    const result = await service.pullFromAccount();
+
+    expect(result.state).toBe("pulled");
+    expect(result.state === "pulled" ? result.removed : -1).toBe(expected);
+    if (kept) {
+      expect(service.get({ name: "SHARED" }).value).toBe("value");
+    } else {
+      expect(service.list().secrets).toEqual([]);
+    }
+  });
+
+  it("takes the account's value even when this machine's clock ran ahead", async () => {
+    const projectRoot = makeProjectRoot();
+    addOrigin(projectRoot);
+    const vault = makeVaultMock();
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
+    service.set({ name: "SHARED", value: "typed-here", storage: "account" });
+    // A vault stamp behind this machine's clock used to look like an older edit.
+    stubVaultRows(vault, [{
+      scope: VAULT_SCOPE,
+      kind: "project_secret",
+      key: "SHARED",
+      value: "edited-elsewhere",
+      updatedAt: "2020-01-01T00:00:00.000Z",
+    }]);
+
+    const result = await service.pullFromAccount();
+
+    expect(service.get({ name: "SHARED" }).value).toBe("edited-elsewhere");
+    expect(result.state === "pulled" ? result.updated : -1).toBe(1);
+    expect(service.list().secrets[0]?.storage).toBe("account");
+  });
+
+  it("never writes to the vault, so a local value cannot out-stamp the account's", async () => {
+    const projectRoot = makeProjectRoot();
+    addOrigin(projectRoot);
+    const vault = makeVaultMock();
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
+    service.set({ name: "SHARED", value: "typed-here", storage: "account" });
+    vault.set.mockClear();
+    stubVaultRows(vault, [{
+      scope: VAULT_SCOPE,
+      kind: "project_secret",
+      key: "SHARED",
+      value: "edited-elsewhere",
+      updatedAt: "2020-01-01T00:00:00.000Z",
+    }]);
+
+    await service.pullFromAccount();
+
+    expect(vault.set).not.toHaveBeenCalled();
+    expect(vault.remove).not.toHaveBeenCalled();
+  });
+
+  it("reports a settled repository as unchanged on the next pull", async () => {
+    const projectRoot = makeProjectRoot();
+    addOrigin(projectRoot);
+    const vault = makeVaultMock();
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
+    stubVaultRows(vault, [{
+      scope: VAULT_SCOPE,
+      kind: "project_secret",
+      key: "FROM_ACCOUNT",
+      value: "account-value",
+      updatedAt: "2026-07-16T00:00:00.000Z",
+    }]);
+
+    const first = await service.pullFromAccount();
+    const second = await service.pullFromAccount();
+
+    expect(first).toEqual({ state: "pulled", added: 1, updated: 0, removed: 0 });
+    expect(second).toEqual({ state: "pulled", added: 0, updated: 0, removed: 0 });
+    expect(service.get({ name: "FROM_ACCOUNT" }).value).toBe("account-value");
+  });
+});
+
+/**
+ * Reads by name, lists, and Pull ask the account before answering, so a secret
+ * saved on another machine moments ago is found instead of "not found".
+ */
+describe("fresh reads", () => {
+  const VAULT_SCOPE = "repo:github.com/acme/project";
+
+  function linkedService() {
+    const projectRoot = makeProjectRoot();
+    addOrigin(projectRoot);
+    const vault = makeVaultMock() as ReturnType<typeof makeVaultMock> & {
+      sync: ReturnType<typeof vi.fn>;
+      pendingKeys?: ReturnType<typeof vi.fn>;
+    };
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
+    return { vault, service };
+  }
+
+  it("finds a secret another machine saved once the account answers, and Pull always asks", async () => {
+    const { vault, service } = linkedService();
+    // The brain's cache only holds the row after the sync it was asked for.
+    vault.sync.mockImplementation(async () => {
+      vault.list.mockResolvedValue({
+        ok: true,
+        value: [{ scope: VAULT_SCOPE, kind: "project_secret", key: "NEW_KEY", value: "from-laptop", updatedAt: "2026-10-09T00:00:22.618Z" }],
+      });
+      return { ok: true, value: "ready" };
+    });
+
+    expect(() => service.get({ name: "NEW_KEY" })).toThrow();
+    const found = await service.getFresh({ name: "NEW_KEY" });
+
+    expect(found).toMatchObject({ name: "NEW_KEY", value: "from-laptop", storage: "account" });
+    expect(vault.sync).toHaveBeenLastCalledWith({ maxAgeMs: expect.any(Number) });
+    await service.pullFromAccount();
+    expect(vault.sync).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it.each([
+    { label: "the account was checked", sync: async () => ({ ok: true, value: "ready" }), says: /in your account/ },
+    { label: "the account refused", sync: async () => ({ ok: true, value: "failed" }), says: /could not reach your account/ },
+    { label: "the account is slow", sync: () => new Promise(() => {}), says: /could not reach your account/ },
+  ])("says why a name is missing when $label", async ({ sync, says }) => {
+    vi.useFakeTimers();
+    try {
+      const { vault, service } = linkedService();
+      vault.sync.mockImplementation(sync);
+      const outcome = service.getFresh({ name: "MISSING" }).then(
+        () => null,
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      );
+      // A hung relay must not hold the read past the wait cap.
+      await vi.advanceTimersByTimeAsync(5_000);
+      const message = await outcome;
+      expect(message).toMatch(/MISSING/);
+      expect(message).toMatch(says);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("marks account secrets still waiting to upload, and only those", async () => {
+    const { vault, service } = linkedService();
+    vault.sync.mockResolvedValue({ ok: true, value: "ready" });
+    vault.pendingKeys = vi.fn(async () => ({ ok: true as const, value: ["QUEUED", "LOCAL_ONLY"] }));
+    service.set({ name: "QUEUED", value: "a", storage: "account" });
+    service.set({ name: "UPLOADED", value: "b", storage: "account" });
+    service.set({ name: "LOCAL_ONLY", value: "c", storage: "device" });
+
+    const listed = await service.listFresh();
+
+    expect(listed.secrets.map((secret) => [secret.name, secret.storage, secret.uploadPending === true])).toEqual([
+      ["LOCAL_ONLY", "device", false],
+      ["QUEUED", "account", true],
+      ["UPLOADED", "account", false],
+    ]);
+    expect(vault.pendingKeys).toHaveBeenCalledWith(VAULT_SCOPE, "project_secret");
   });
 });

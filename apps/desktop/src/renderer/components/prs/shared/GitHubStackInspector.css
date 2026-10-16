@@ -1,0 +1,270 @@
+/*
+ * The GitHub stack strip above a stacked PR's detail in the PRs tab. It belongs
+ * to the detail header, so it is flat with a hairline under it rather than a
+ * floating card. Narrowing keys on the strip's own width (the detail column
+ * shrinks with the list beside it): the section is the container, and the
+ * rules change its body, since a query never matches its own container.
+ */
+
+.ade-stack-strip {
+  container-type: inline-size;
+  container-name: stack-strip;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--kit-rule);
+  font-family: var(--font-sans);
+}
+
+.ade-stack-strip-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 18px;
+}
+
+.ade-stack-strip-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ade-stack-strip-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-fg);
+}
+
+.ade-stack-strip-title > svg {
+  color: var(--kit-text-3);
+}
+
+.ade-stack-strip-count {
+  font-weight: 400;
+  color: var(--kit-text-3);
+}
+
+.ade-stack-rail {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 2px 0;
+  list-style: none;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.ade-stack-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.ade-stack-rail > li {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+
+/* The line between two layers. */
+.ade-stack-rail > li + li::before {
+  content: "";
+  width: 14px;
+  height: 1px;
+  margin: 0 2px;
+  background: var(--kit-rule);
+}
+
+.ade-stack-rail-base {
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--kit-text-3);
+}
+
+.ade-stack-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  color: var(--kit-text-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background-color 100ms ease, border-color 100ms ease;
+}
+
+.ade-stack-chip:hover:not(:disabled) {
+  background: var(--kit-active);
+  color: var(--color-fg);
+}
+
+.ade-stack-chip:disabled {
+  cursor: default;
+}
+
+.ade-stack-chip[data-selected="true"] {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  color: var(--color-fg);
+}
+
+.ade-stack-chip[data-terminal="true"] {
+  opacity: 0.7;
+}
+
+.ade-stack-strip-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.ade-stack-strip-summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--kit-text-2);
+}
+
+.ade-stack-strip-summary > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The layer list, top of the stack first, as GitHub draws it. */
+.ade-stack-layers {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px -8px 0;
+}
+
+/* On `button.kit-row`, which brings the row padding, hover and reset. Doubled
+   class so the grid wins over `.kit-row`'s flex whatever the load order. */
+.kit-row.ade-stack-layer {
+  display: grid;
+  grid-template-columns: 18px 16px minmax(0, 1fr) auto;
+  gap: 8px;
+  min-height: 34px;
+}
+
+.ade-stack-layer:disabled {
+  cursor: default;
+}
+
+.ade-stack-layer:disabled:hover {
+  background: transparent;
+}
+
+.ade-stack-layer[data-selected="true"] {
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.ade-stack-layer-position {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--kit-text-3);
+  text-align: right;
+}
+
+.ade-stack-layer-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ade-stack-layer-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.ade-stack-layer-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--kit-text-3);
+}
+
+.ade-stack-layer-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--kit-text-2);
+  white-space: nowrap;
+}
+
+.ade-stack-manage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
+}
+
+.ade-stack-manage-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ade-stack-manage-label {
+  font-size: 11px;
+  color: var(--kit-text-2);
+}
+
+.ade-stack-manage-input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
+  color: var(--color-fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  outline: none;
+}
+
+.ade-stack-manage-input:focus {
+  border-color: color-mix(in srgb, var(--color-fg) 30%, transparent);
+}
+
+.ade-stack-manage-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--kit-text-3);
+}
+
+/* A narrow panel drops the title's count and the layer lane names. */
+@container stack-strip (max-width: 460px) {
+  .ade-stack-strip-body {
+    padding-inline: 12px;
+  }
+
+  .ade-stack-strip-count,
+  .ade-stack-layer-lane {
+    display: none;
+  }
+}

@@ -22,6 +22,7 @@ import { TerminalView } from "../../terminals/TerminalView";
 import { openExternalUrl } from "../../../lib/openExternal";
 import { Dialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice/Banner";
+import type { OpenProjectBinding, TerminalToolType } from "../../../../shared/types";
 
 /**
  * Poll cadence for "are we signed in yet".
@@ -59,6 +60,11 @@ export type ProviderSignInModalProps = {
   providerLabel: string;
   /** The command the terminal runs, e.g. `kimi login`. */
   command: string;
+  /**
+   * The terminal's tool type. `shell` by default; Muse passes `muse` so the PTY
+   * host swaps its pinned binary in for the bare `muse` word.
+   */
+  toolType?: TerminalToolType;
   /** Lane to open the terminal in. Resolved by the caller; null asks for the primary lane. */
   laneId?: string | null;
   /** Re-read auth status. Resolves true once this provider is signed in. */
@@ -66,17 +72,31 @@ export type ProviderSignInModalProps = {
   onClose: () => void;
   /** Called once, after a successful sign-in, so the caller can refresh its own view. */
   onSignedIn?: () => void;
+  /**
+   * The machine to sign in on: the machine the Settings page is showing, or a
+   * chat's machine for its sign-in card. Null is the tab's bound machine.
+   */
+  runtimePin: OpenProjectBinding | null;
 };
 
 export function ProviderSignInModal({
   providerId,
   providerLabel,
   command,
+  toolType = "shell",
   laneId,
   checkSignedIn,
   onClose,
   onSignedIn,
+  // The login runs on the caller's machine: its lane, its shell, its
+  // credential store.
+  runtimePin: pin,
 }: ProviderSignInModalProps) {
+  // Effects key on the pin's identity, not the object: a chat's pin can be
+  // rebuilt with the same key, which must not restart the login shell.
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinIdentity = pin?.key ?? null;
   const [terminal, setTerminal] = useState<{ ptyId: string; sessionId: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [signedIn, setSignedIn] = useState(false);
@@ -89,13 +109,17 @@ export function ProviderSignInModal({
   // ── Open the PTY ──
   useEffect(() => {
     let cancelled = false;
+    const pin = pinRef.current;
+    // A new machine gets a new login shell; the old one's terminal is gone.
+    setTerminal(null);
+    openedUrlRef.current = null;
     void (async () => {
       try {
         if (!window.ade?.pty?.create) throw new Error("Terminals are not available in this window.");
         const lanes = await window.ade.lanes.list({
           includeArchived: false,
           includeStatus: false,
-        });
+        }, pin);
         const resolvedLaneId = laneId ?? lanes.find((lane) => lane.laneType === "primary")?.id
           ?? lanes[0]?.id
           ?? null;
@@ -108,11 +132,11 @@ export function ProviderSignInModal({
           // Not tracked: this is a one-shot login shell, not an agent session,
           // and tracking it would put a phantom row in Work.
           tracked: false,
-          toolType: "shell",
+          toolType,
           startupCommand: command,
-        });
+        }, pin);
         if (cancelled) {
-          void window.ade.pty.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+          void window.ade.pty.dispose({ ptyId: created.ptyId, sessionId: created.sessionId }, pin);
           return;
         }
         terminalRef.current = { ptyId: created.ptyId, sessionId: created.sessionId };
@@ -124,18 +148,22 @@ export function ProviderSignInModal({
     return () => {
       cancelled = true;
     };
-  }, [command, laneId, title]);
+  }, [command, laneId, pinIdentity, title, toolType]);
 
   // ── Dispose on unmount, always ──
-  useEffect(() => () => {
-    const open = terminalRef.current;
-    terminalRef.current = null;
-    if (open) void window.ade?.pty?.dispose({ ptyId: open.ptyId, sessionId: open.sessionId });
-  }, []);
+  useEffect(() => {
+    const pin = pinRef.current;
+    return () => {
+      const open = terminalRef.current;
+      terminalRef.current = null;
+      if (open) void window.ade?.pty?.dispose({ ptyId: open.ptyId, sessionId: open.sessionId }, pin);
+    };
+  }, [pinIdentity]);
 
   // ── Open the first sign-in URL we see, once ──
   useEffect(() => {
     if (!terminal || !window.ade?.pty?.onData) return;
+    const pin = pinRef.current;
     const unsubscribe = window.ade.pty.onData((event) => {
       if (event.ptyId !== terminal.ptyId) return;
       if (openedUrlRef.current) return;
@@ -143,9 +171,9 @@ export function ProviderSignInModal({
       if (!url) return;
       openedUrlRef.current = url;
       openExternalUrl(url);
-    });
+    }, pin);
     return unsubscribe;
-  }, [terminal]);
+  }, [pinIdentity, terminal]);
 
   // ── Watch for the auth status flipping green ──
   useEffect(() => {
@@ -208,7 +236,13 @@ export function ProviderSignInModal({
         />
       ) : null}
 
-      <div style={{ flex: 1, minHeight: 320, display: "flex", flexDirection: "column" }}>
+      {/*
+        A definite height, not just a min-height: TerminalView fills its parent
+        with `h-full`, which resolves to 0 against a box sized only by
+        min-height. A 0-height host counts as hidden, so the terminal never
+        subscribed to its PTY's output and the dialog stayed blank.
+      */}
+      <div style={{ flex: "1 1 auto", height: "clamp(320px, 56vh, 520px)", minHeight: 320, display: "flex", flexDirection: "column" }}>
         {error ? (
           <Banner
             layout="inline"
@@ -220,6 +254,7 @@ export function ProviderSignInModal({
             key={`${providerId}:${terminal.sessionId}`}
             ptyId={terminal.ptyId}
             sessionId={terminal.sessionId}
+            runtimePin={pin}
             isActive
             className="h-full w-full"
           />

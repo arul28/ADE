@@ -7,6 +7,10 @@ import { LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE } from "../../../shared/runt
 import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../../shared/types/recovery";
 import type { Logger } from "../logging/logger";
 import {
+  ProjectRegistry,
+  assertLocalProjectDataAvailable,
+} from "../../../../../ade-cli/src/services/projects/projectRegistry";
+import {
   createProjectRecoveryService,
   type ProjectRecoveryConnectionPool,
   type ProjectRecoveryServiceDeps,
@@ -67,6 +71,7 @@ function pool(statusValue = status()): ProjectRecoveryConnectionPool {
     callSync: vi.fn(async () => ({ pong: true })) as unknown as ProjectRecoveryConnectionPool["callSync"],
     ensureProject: vi.fn(async () => ({ projectId: "project-1" } as any)),
     callActionForRoot: vi.fn(async () => ({ result: [] } as any)),
+    removeProject: vi.fn(async () => {}),
   };
 }
 
@@ -180,8 +185,8 @@ describe("ProjectRecoveryService.diagnose", () => {
       },
     },
     {
-      name: "brain still quiet long after its install began (not starting any more)",
-      expected: "brain_crash_looping",
+      name: "brain still quiet long after its install began (installed, not running)",
+      expected: "brain_not_running",
       canAutoRepair: true,
       overrides: {
         connectionPool: pool(status({
@@ -191,6 +196,23 @@ describe("ProjectRecoveryService.diagnose", () => {
             attemptStartedAt: new Date(NOW - 10 * 60_000).toISOString(),
           },
           serviceHealth: { state: "installed", installed: true, running: false, path: null, message: null, checkedAt: null },
+        })),
+      },
+    },
+    {
+      name: "macOS has ADE switched off under Allow in the Background",
+      expected: "background_blocked",
+      canAutoRepair: false,
+      overrides: {
+        connectionPool: pool(status({
+          serviceInstall: {
+            state: "failed", attempted: true, path: null, message: "blocked", exitCode: null,
+            updatedAt: null, failureStep: "background_item_blocked",
+          },
+          serviceHealth: {
+            state: "installed", installed: true, running: false, path: null, message: null, checkedAt: null,
+            backgroundItem: "requires_approval",
+          },
         })),
       },
     },
@@ -476,7 +498,7 @@ describe("ProjectRecoveryService.repair", () => {
     expect(report.failureCode).toBe("migration_unknown_state");
     expect(report.steps[3]).toMatchObject({ id: "resolve_migrations", status: "failed" });
     expect(report.steps.slice(4).every((step) => step.status === "skipped")).toBe(true);
-    expect(report.nextAction).toContain("nothing has been deleted");
+    expect(report.nextAction).toContain("Nothing was deleted");
   });
 });
 
@@ -533,7 +555,7 @@ describe("ProjectRecoveryService.restartBrain", () => {
 
   it("explains a deliberate skip in user copy instead of the installer's log line", async () => {
     // Forcing past the skip would downgrade a newer running brain, so the
-    // remedy is to relaunch ADE — and the log line never becomes the sentence.
+    // remedy is to restart ADE — and the log line never becomes the sentence.
     const connectionPool = installStatusPool(
       "skipped",
       "Skipped ADE service install because a newer ADE brain is already running.",
@@ -546,7 +568,7 @@ describe("ProjectRecoveryService.restartBrain", () => {
     );
 
     expect(rejection.message).toBe(
-      "A newer ADE runtime is already running — quit and reopen ADE instead.",
+      "A newer version of ADE is already running. Restart ADE to switch to it.",
     );
     expect(connectionPool.callSync).not.toHaveBeenCalled();
   });
@@ -558,6 +580,21 @@ describe("ProjectRecoveryService.restartBrain", () => {
     await expect(service.restartBrain()).rejects.toThrow(LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE);
   });
 
+  it("tells the person to turn ADE back on in System Settings when macOS blocks it", async () => {
+    // A failed install whose step is background_item_blocked short-circuits the
+    // restart budget: waiting it out only delays the one sentence that helps.
+    const connectionPool = pool(status({
+      serviceInstall: {
+        state: "failed", attempted: true, path: null, message: "blocked", exitCode: null,
+        updatedAt: null, failureStep: "background_item_blocked",
+      },
+    }));
+    const service = createProjectRecoveryService(deps({ connectionPool }));
+
+    await expect(service.restartBrain()).rejects.toThrow(/Allow in the Background/);
+    expect(connectionPool.callSync).not.toHaveBeenCalled();
+  });
+
   it("throws when the replacement brain never rebinds the socket", async () => {
     const connectionPool = installedPool();
     const service = createProjectRecoveryService(deps({
@@ -565,7 +602,7 @@ describe("ProjectRecoveryService.restartBrain", () => {
       waitForSocketState: vi.fn(async () => false),
     }));
 
-    await expect(service.restartBrain()).rejects.toThrow("did not come back");
+    await expect(service.restartBrain()).rejects.toThrow("didn't start again");
     expect(connectionPool.callSync).not.toHaveBeenCalled();
   });
 
@@ -656,5 +693,105 @@ describe("ProjectRecoveryService.restartBrain", () => {
 
     await expect(restart).rejects.toThrow("launchctl bootstrap failed");
     await expect(repair).resolves.toMatchObject({ ok: true });
+  });
+});
+
+// Missing project data, end to end through the service: a real registry and
+// identity file under a temporary ADE home, and the Trash inside a temporary
+// home directory. Only the connection pool and the window close are faked.
+// Not on Windows: its Recycle Bin is `<drive>\$Recycle.Bin`, which a test
+// cannot place in a temporary folder; recycleBinRecord.test.ts pins its record
+// format.
+describe.skipIf(process.platform === "win32")("ProjectRecoveryService project data", () => {
+  function machine() {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-data-"));
+    roots.push(home);
+    // The Trash lives under the user's home: never let a test reach the real one.
+    vi.spyOn(os, "homedir").mockReturnValue(home);
+    vi.stubEnv("XDG_DATA_HOME", path.join(home, ".local", "share"));
+    vi.stubEnv("ADE_HOME", path.join(home, ".ade-machine"));
+    const trash = process.platform === "darwin"
+      ? path.join(home, ".Trash")
+      : path.join(home, ".local", "share", "Trash", "files");
+    fs.mkdirSync(trash, { recursive: true });
+    const projectRoot = fs.realpathSync(fs.mkdtempSync(path.join(home, "project-")));
+    const adeDir = path.join(projectRoot, ".ade");
+    fs.mkdirSync(path.join(adeDir, "secrets"), { recursive: true });
+    fs.writeFileSync(path.join(adeDir, "ade.db"), "original database");
+    fs.writeFileSync(path.join(adeDir, "secrets", "machine-key"), "original key");
+    const record = new ProjectRegistry().add(projectRoot);
+    const connectionPool = pool();
+    const closeProject = vi.fn(async () => {});
+    const service = createProjectRecoveryService(deps({ connectionPool, closeProject }));
+    return { trash, projectRoot, adeDir, record, connectionPool, closeProject, service };
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("restores trashed data the original way round and lets go of the project", async () => {
+    const { trash, projectRoot, adeDir, record, connectionPool, closeProject, service } = machine();
+    fs.renameSync(adeDir, path.join(trash, ".ade"));
+    // ADE wrote a new key while the data was gone.
+    fs.mkdirSync(path.join(adeDir, "secrets"), { recursive: true });
+    fs.writeFileSync(path.join(adeDir, "secrets", "machine-key"), "key written meanwhile");
+
+    const diagnosis = await service.diagnose(projectRoot);
+    expect(diagnosis).toMatchObject({ state: "data_missing", code: "project_data_missing", restoreAvailable: true });
+
+    await expect(service.restoreProjectData(projectRoot)).resolves.toEqual({ restored: true });
+    expect(fs.readFileSync(path.join(adeDir, "ade.db"), "utf8")).toBe("original database");
+    expect(fs.readFileSync(path.join(adeDir, "secrets", "machine-key"), "utf8")).toBe("original key");
+    expect(fs.readFileSync(path.join(trash, ".ade", "secrets", "machine-key.created-while-missing"), "utf8"))
+      .toBe("key written meanwhile");
+    expect(closeProject).toHaveBeenCalledWith(projectRoot);
+    expect(connectionPool.removeProject).toHaveBeenCalledWith(projectRoot, record.projectId);
+  });
+
+  it("leaves no empty trashed folder behind when the restore needed no merge clashes", async () => {
+    const { trash, projectRoot, adeDir, service } = machine();
+    fs.renameSync(adeDir, path.join(trash, ".ade"));
+    // Only a folder git brought back; nothing clashes.
+    fs.mkdirSync(adeDir);
+
+    await expect(service.restoreProjectData(projectRoot)).resolves.toEqual({ restored: true });
+    expect(fs.readFileSync(path.join(adeDir, "ade.db"), "utf8")).toBe("original database");
+    expect(fs.existsSync(path.join(trash, ".ade"))).toBe(false);
+  });
+
+  it("starts fresh even when the background service keeps the project's record", async () => {
+    const { projectRoot, adeDir, record, connectionPool, closeProject, service } = machine();
+    fs.rmSync(adeDir, { recursive: true });
+
+    expect(await service.diagnose(projectRoot)).toMatchObject({ state: "data_missing", restoreAvailable: false });
+    await service.startFresh(projectRoot);
+
+    expect(closeProject).toHaveBeenCalledWith(projectRoot);
+    expect(connectionPool.removeProject).toHaveBeenCalledWith(projectRoot, record.projectId);
+    // The faked pool removed nothing, so the record survives; the project
+    // still opens with new data.
+    expect(new ProjectRegistry().get(record.projectId)).not.toBeNull();
+    expect(fs.existsSync(adeDir)).toBe(true);
+    expect(() => assertLocalProjectDataAvailable(projectRoot)).not.toThrow();
+    expect((await service.diagnose(projectRoot)).state).not.toBe("data_missing");
+  });
+
+  it("never recreates a project folder that is gone", async () => {
+    const { projectRoot, connectionPool, closeProject, service } = machine();
+    fs.rmSync(projectRoot, { recursive: true });
+
+    expect(await service.diagnose(projectRoot)).toMatchObject({
+      state: "data_missing",
+      projectFolderMissing: true,
+      restoreAvailable: false,
+    });
+    await expect(service.restoreProjectData(projectRoot)).resolves.toMatchObject({ restored: false });
+    await expect(service.startFresh(projectRoot)).rejects.toThrow();
+    await expect(service.repair(projectRoot)).resolves.toMatchObject({ ok: false, failureCode: "project_data_missing" });
+
+    expect(fs.existsSync(projectRoot)).toBe(false);
+    expect(closeProject).not.toHaveBeenCalled();
+    expect(connectionPool.removeProject).not.toHaveBeenCalled();
   });
 });

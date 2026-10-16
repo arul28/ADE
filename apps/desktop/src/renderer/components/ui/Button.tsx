@@ -3,14 +3,18 @@ import { cn } from "./cn";
 
 type Variant = "primary" | "outline" | "ghost" | "danger";
 type Size = "sm" | "md";
+/** "upper" is ADE's mono label style; "sentence" is for surfaces that match an
+ * external product's sentence-case UI, such as the Linear pane. */
+type Casing = "upper" | "sentence";
 
 export const Button = React.forwardRef<
   HTMLButtonElement,
-  React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: Size }
+  React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: Size; casing?: Casing }
 >(function Button(
   {
     variant = "outline",
     size = "md",
+    casing = "upper",
     className,
     style: styleProp,
     ...rest
@@ -18,33 +22,31 @@ export const Button = React.forwardRef<
   ref
 ) {
   const base =
-    "inline-flex items-center justify-center gap-2 font-mono text-[10px] font-bold uppercase tracking-[1px] transition-all duration-100 disabled:opacity-40 disabled:pointer-events-none";
+    "inline-flex items-center justify-center gap-2 transition-all duration-100 disabled:opacity-40 disabled:pointer-events-none";
+  const casings: Record<Casing, string> = {
+    upper: "font-mono text-[10px] font-bold uppercase tracking-[1px]",
+    sentence: "rounded-md text-[12px] font-medium",
+  };
 
   const sizes = size === "sm" ? "h-7 px-3" : "h-8 px-4";
 
+  // Theme tokens, so every variant reads on light themes as well as dark.
   const variants: Record<Variant, string> = {
     primary:
-      "text-[#0F0D14] hover:brightness-110",
+      "bg-accent text-accent-fg hover:brightness-110",
     outline:
-      "text-[#A1A1AA] hover:text-[#FAFAFA] hover:border-[#A78BFA50]",
+      "border border-border bg-transparent text-secondary-fg hover:text-fg hover:border-accent/30",
     ghost:
-      "text-[#71717A] hover:text-[#FAFAFA] hover:bg-[#1A1720]",
+      "bg-transparent text-muted-fg hover:text-fg hover:bg-muted",
     danger:
-      "text-[#EF4444] hover:brightness-110",
-  };
-
-  const variantStyles: Record<Variant, React.CSSProperties> = {
-    primary: { background: "#A78BFA" },
-    outline: { background: "transparent", border: "1px solid #27272A" },
-    ghost: { background: "transparent" },
-    danger: { background: "#EF444418", border: "1px solid #EF444430" },
+      "border border-error/20 bg-error/10 text-error hover:brightness-110",
   };
 
   return (
     <button
       ref={ref}
-      className={cn(base, sizes, variants[variant], className)}
-      style={{ ...variantStyles[variant], ...styleProp }}
+      className={cn(base, casings[casing], sizes, variants[variant], className)}
+      style={styleProp}
       {...rest}
     />
   );

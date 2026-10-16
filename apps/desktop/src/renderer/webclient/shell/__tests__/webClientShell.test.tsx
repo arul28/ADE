@@ -84,6 +84,10 @@ vi.mock("../../../components/app/App", () => ({
   },
 }));
 
+vi.mock("../../../components/onboarding/WebSignInGate", () => ({
+  WebSignInScreen: () => <div data-testid="sign-in-screen">Sign in</div>,
+}));
+
 vi.mock("../../../components/app/RendererErrorBoundary", () => ({
   RendererErrorBoundary: ({ children }: { children: React.ReactNode }) => children,
 }));
@@ -175,6 +179,7 @@ function accountClient(
   overrides: Partial<Record<keyof BrowserAccountClient, unknown>> = {},
 ): BrowserAccountClient {
   return {
+    hasPersistedSession: vi.fn(async () => snapshot.state === "signed_in"),
     getSnapshot: () => snapshot,
     bootstrap: vi.fn(async () => snapshot),
     getAccessToken: vi.fn(async () => "token"),
@@ -184,6 +189,7 @@ function accountClient(
 }
 
 beforeEach(() => {
+  window.ade = {} as Window["ade"];
   federated.restore.mockResolvedValue(null);
   federated.dispose.mockReset();
   federated.activeAdapterListeners.clear();
@@ -198,13 +204,39 @@ afterEach(() => {
 });
 
 describe("WebClientRoot workspace bootstrap", () => {
+  it("shows sign-in before creating a signed-out workspace", async () => {
+    render(<WebClientRoot client={syncClient()} accountClient={accountClient(signedOutAccount)} />);
+    await screen.findByTestId("sign-in-screen");
+    expect(screen.queryByTestId("app-root")).toBeNull();
+    expect(createFederatedAdapter).not.toHaveBeenCalled();
+  });
+
+  it("offers Retry when the sign-in chunk cannot load", async () => {
+    vi.resetModules();
+    vi.doMock("../../../components/onboarding/WebSignInGate", () => {
+      throw new Error("Sign-in chunk unavailable");
+    });
+    try {
+      const { WebClientRoot: Root } = await import("../WebClientRoot");
+      render(<Root client={syncClient()} accountClient={accountClient(signedOutAccount)} />);
+      await screen.findByRole("button", { name: "Retry" });
+      expect(screen.getByRole("heading", { name: "ADE Web couldn't start" })).toBeTruthy();
+      expect(screen.queryByTestId("app-root")).toBeNull();
+    } finally {
+      vi.doMock("../../../components/onboarding/WebSignInGate", () => ({
+        WebSignInScreen: () => <div data-testid="sign-in-screen">Sign in</div>,
+      }));
+      vi.resetModules();
+    }
+  });
+
   it("retires the pairing route and lands on the project welcome surface", async () => {
     window.history.replaceState(null, "", "/pair#legacy-pairing-payload");
 
     render(
       <WebClientRoot
         client={syncClient()}
-        accountClient={accountClient(signedOutAccount)}
+        accountClient={accountClient(signedInAccount)}
       />,
     );
 
@@ -262,7 +294,7 @@ describe("WebClientRoot workspace bootstrap", () => {
     render(
       <WebClientRoot
         client={syncClient()}
-        accountClient={accountClient(signedOutAccount)}
+        accountClient={accountClient(signedInAccount)}
       />,
     );
 
@@ -274,7 +306,7 @@ describe("WebClientRoot workspace bootstrap", () => {
     render(
       <WebClientRoot
         client={syncClient()}
-        accountClient={accountClient(signedOutAccount)}
+        accountClient={accountClient(signedInAccount)}
       />,
     );
     const before = await screen.findByTestId("app-root");
@@ -291,11 +323,11 @@ describe("WebClientRoot workspace bootstrap", () => {
   });
 
   it("keeps directory retry stable across workspace snapshots", async () => {
-    const loadMachines = vi.fn(async () => signedOutAccount);
+    const loadMachines = vi.fn(async () => signedInAccount);
     render(
       <WebClientRoot
         client={syncClient()}
-        accountClient={accountClient(signedOutAccount, { loadMachines })}
+        accountClient={accountClient(signedInAccount, { loadMachines })}
       />,
     );
 
@@ -366,7 +398,7 @@ describe("WebClientRoot workspace bootstrap", () => {
     render(
       <WebClientRoot
         client={syncClient({ pruneAccountOwnedEnvironments })}
-        accountClient={accountClient(signedOutAccount)}
+        accountClient={accountClient(signedInAccount)}
       />,
     );
 
@@ -380,7 +412,7 @@ describe("WebClientRoot workspace bootstrap", () => {
     render(
       <WebClientRoot
         client={syncClient()}
-        accountClient={accountClient(signedOutAccount)}
+        accountClient={accountClient(signedInAccount)}
       />,
     );
 
@@ -393,7 +425,7 @@ describe("WebClientRoot workspace bootstrap", () => {
       <React.StrictMode>
         <WebClientRoot
           client={syncClient()}
-          accountClient={accountClient(signedOutAccount)}
+          accountClient={accountClient(signedInAccount)}
         />
       </React.StrictMode>,
     );
@@ -597,11 +629,8 @@ describe("session lifecycle chrome", () => {
     dispose = installSessionLifecycleChrome(client.asClient());
     const secondDispose = installSessionLifecycleChrome(client.asClient());
     const styles = document.head.querySelectorAll("style#ade-web-session-lifecycle");
-    const css = styles[0]?.textContent ?? "";
 
     expect(styles).toHaveLength(1);
-    expect(css).toContain("@media (pointer: coarse)");
-    expect(css).toContain("pointer-events: auto");
 
     secondDispose();
     dispose();

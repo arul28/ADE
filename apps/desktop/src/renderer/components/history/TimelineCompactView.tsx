@@ -3,6 +3,7 @@ import { CaretUp, CaretDown } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import type { ColumnConfig, TimelineColumn, TimelineEvent } from "./timelineTypes";
 import { CATEGORY_META } from "./eventTaxonomy";
+import { EventMachineChip, isEventMachineOffline } from "./EventMachineChip";
 import { relativeWhen, formatDate, formatDurationMs } from "../../lib/format";
 
 /* ------------------------------------------------------------------ */
@@ -154,7 +155,7 @@ export function TimelineCompactView({
   return (
     <div className="flex flex-1 flex-col min-h-0">
       {/* ---- header ---- */}
-      <div className="flex items-center border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-xl px-2">
+      <div className="flex items-center border-b border-fg/[0.06] bg-fg/[0.02] backdrop-blur-xl px-2">
         {activeColumns.map((col) => {
           const active = sortField === col.field;
           const SortIcon = sortDir === "asc" ? CaretUp : CaretDown;
@@ -195,8 +196,9 @@ export function TimelineCompactView({
                 "flex h-7 w-full items-center border-l-2 border-l-transparent px-2",
                 "transition-colors duration-75",
                 selected
-                  ? "border-l-accent bg-white/[0.05]"
-                  : "hover:bg-white/[0.03]",
+                  ? "border-l-accent bg-fg/[0.05]"
+                  : "hover:bg-fg/[0.03]",
+                isEventMachineOffline(ev) && "opacity-50",
               )}
             >
               {activeColumns.map((col) => (
@@ -251,8 +253,9 @@ function CompactCell({
       );
     case "lane":
       return (
-        <span className="w-[90px] shrink-0 truncate px-1 font-mono text-[10px] text-muted-fg/60">
-          {event.laneName ?? "—"}
+        <span className="flex w-[90px] shrink-0 items-center gap-1 overflow-hidden px-1 font-mono text-[10px] text-muted-fg/60">
+          <span className="min-w-0 truncate">{event.laneName ?? "—"}</span>
+          <EventMachineChip event={event} compact />
         </span>
       );
     case "author":

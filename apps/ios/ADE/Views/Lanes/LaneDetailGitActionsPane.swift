@@ -42,13 +42,18 @@ struct LaneDetailGitActionsPane: View {
   let onForcePush: () -> Void
   let onOpenLinkedPullRequest: (PullRequestListItem) -> Void
   let onCreateLaneFromChanges: () -> Void
+  /// Reads the lane's branch changes; nil when the host predates branch diffs.
+  var loadBranchChanges: (() async throws -> BranchDiffChanges)? = nil
+  var onOpenBranchDiff: ((FileChange) -> Void)? = nil
 
   @State private var pullMode: String = "rebase"
-  @State private var showMoreActions = false
   @State private var pendingCommitConfirmation: CommitHistoryConfirmation?
   @State private var filesDisclosure = LaneSectionDisclosure()
   @State private var stashesDisclosure = LaneSectionDisclosure()
   @State private var historyDisclosure = LaneSectionDisclosure()
+  @State private var branchDisclosure = LaneSectionDisclosure()
+  @State private var branchChanges: BranchDiffChanges?
+  @State private var branchError: String?
   @FocusState private var commitFieldFocused: Bool
 
   private var stagedFiles: [FileChange] { detail.diffChanges?.staged ?? [] }
@@ -61,21 +66,21 @@ struct LaneDetailGitActionsPane: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       headerSection
-      Divider()
-        .overlay(ADEColor.border.opacity(0.55))
-        .padding(.bottom, 10)
       actionToolbar
-      if showMoreActions {
-        moreActionsSection
-      }
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 14) {
           filesSection
+          if loadBranchChanges != nil {
+            branchSection
+          }
           stashesSection
           historySection
         }
         .padding(EdgeInsets(top: 12, leading: 0, bottom: 20, trailing: 0))
       }
+      // Scroll under the home indicator instead of stopping short of it.
+      .contentMargins(.bottom, 24, for: .scrollContent)
+      .ignoresSafeArea(.container, edges: .bottom)
     }
     .onAppear { applyAutoDisclosure() }
     .onChange(of: stagedFiles.count) { _, _ in applyAutoDisclosure() }
@@ -101,28 +106,16 @@ struct LaneDetailGitActionsPane: View {
 
   private var headerSection: some View {
     VStack(alignment: .leading, spacing: 8) {
-      HStack(alignment: .top, spacing: 8) {
-        Circle()
-          .fill(laneAccentColor)
-          .frame(width: 8, height: 8)
-          .padding(.top, 6)
-        Text(snapshot.lane.name)
-          .font(.headline.weight(.bold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .fixedSize(horizontal: false, vertical: true)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
-
-      branchBadge
-
-      LaneChipFlowLayout(spacing: 6, lineSpacing: 6) {
+      // The name is in the screen's top bar; the branch leads the fact row.
+      LaneChipFlowLayout(spacing: 8, lineSpacing: 6) {
+        branchBadge
+          .frame(minHeight: 18)
         cleanBadge
         if snapshot.lane.status.ahead > 0 || snapshot.lane.status.behind > 0 {
-          LaneMicroChip(
-            icon: "arrow.up.arrow.down",
-            text: "base ↑\(snapshot.lane.status.ahead) ↓\(snapshot.lane.status.behind)",
-            tint: ADEColor.textMuted
-          )
+          Text("↑\(snapshot.lane.status.ahead) ↓\(snapshot.lane.status.behind) vs base")
+            .font(.adeMono(11))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(minHeight: 18)
         }
         linkedPullRequestBadge
         if let issue = primaryLaneLinearIssue(for: snapshot.lane) {
@@ -130,21 +123,22 @@ struct LaneDetailGitActionsPane: View {
         }
         if let origin = originLabel {
           Text(origin)
-            .font(.caption2)
+            .font(.system(size: 11.5))
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)
+            .frame(minHeight: 18)
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
 
-      if let conflictStatus = detail.conflictStatus {
+      if let conflictStatus = detail.conflictStatus, !conflictSummary(conflictStatus).isEmpty {
         Text(conflictSummary(conflictStatus))
-          .font(.caption2)
-          .foregroundStyle(ADEColor.textSecondary)
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textMuted)
           .lineLimit(2)
       }
     }
-    .padding(EdgeInsets(top: 4, leading: 0, bottom: 10, trailing: 0))
+    .padding(EdgeInsets(top: 2, leading: 2, bottom: 12, trailing: 0))
   }
 
   private func applyAutoDisclosure() {
@@ -153,45 +147,34 @@ struct LaneDetailGitActionsPane: View {
     historyDisclosure.syncAuto(hasContent: !detail.recentCommits.isEmpty)
   }
 
-  private var laneAccentColor: Color {
-    laneSurfaceTint(forHex: snapshot.lane.color).text ?? ADEColor.accent
-  }
-
   private var branchBadge: some View {
-    HStack(spacing: 4) {
+    HStack(spacing: 5) {
       Image(systemName: "arrow.triangle.branch")
-        .font(.system(size: 9, weight: .bold))
+        .font(.system(size: 10, weight: .medium))
       Text(normalizedPrBranchName(snapshot.lane.branchRef))
-        .font(.system(.caption2, design: .monospaced))
+        .font(.adeMono(12))
         .lineLimit(1)
+        .truncationMode(.middle)
     }
-    .foregroundStyle(ADEColor.accent)
-    .padding(.horizontal, 8)
-    .padding(.vertical, 4)
-    .background(ADEColor.accent.opacity(0.14), in: Capsule())
+    .foregroundStyle(ADEColor.textSecondary)
   }
 
   private var cleanBadge: some View {
     let dirty = snapshot.lane.status.dirty || !stagedFiles.isEmpty || !unstagedFiles.isEmpty
-    return Text(dirty ? "DIRTY" : "CLEAN")
-      .font(.system(.caption2, design: .monospaced).weight(.bold))
-      .foregroundStyle(dirty ? ADEColor.warning : ADEColor.success)
-      .padding(.horizontal, 8)
-      .padding(.vertical, 4)
-      .background((dirty ? ADEColor.warning : ADEColor.success).opacity(0.14), in: Capsule())
+    return ADEKitTag(text: dirty ? "Dirty" : "Clean", tone: dirty ? .warn : .ok)
   }
 
   @ViewBuilder
   private var linkedPullRequestBadge: some View {
     if linkedPullRequests.count == 1, let pr = linkedPullRequests.first {
       Button { onOpenLinkedPullRequest(pr) } label: {
-        LaneTypeBadge(text: "PR #\(pr.githubPrNumber)", tint: lanePullRequestTint(pr.state))
+        ADEKitTag(text: "PR #\(pr.githubPrNumber)", color: lanePullRequestTint(pr.state))
       }
       .buttonStyle(.plain)
     } else if linkedPullRequests.count > 1 {
       ForEach(linkedPullRequests.prefix(3)) { pr in
         Button { onOpenLinkedPullRequest(pr) } label: {
-          LaneTypeBadge(text: "#\(pr.githubPrNumber)", tint: lanePullRequestTint(pr.state))
+          ADEKitTag(text: "#\(pr.githubPrNumber)", color: lanePullRequestTint(pr.state))
         }
         .buttonStyle(.plain)
       }
@@ -209,72 +192,57 @@ struct LaneDetailGitActionsPane: View {
   // MARK: - Toolbar
 
   private var actionToolbar: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 6) {
-        TextField("Commit message", text: $commitMessage, axis: .vertical)
-          .lineLimit(1...3)
-          .font(.system(.subheadline, design: .monospaced))
-          .padding(.horizontal, 10)
-          .padding(.vertical, 8)
-          .frame(maxWidth: .infinity)
-          .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-          .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-              .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
-          )
-          .focused($commitFieldFocused)
-          .disabled(!canRunLiveActions || busyAction != nil)
-
-        gitToolbarButton(title: "Commit", tint: ADEColor.accent, emphasize: true) {
-          onCommit()
+    VStack(alignment: .leading, spacing: 10) {
+      // The message field only when there is something to commit (or an
+      // amend): a clean lane's toolbar is its sync actions alone.
+      if hasCommittableWork {
+        HStack(alignment: .bottom, spacing: 8) {
+          TextField("Commit message", text: $commitMessage, axis: .vertical)
+            .lineLimit(1...3)
+            .font(.system(size: 14))
+            .padding(.horizontal, 11)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 36)
+            .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .focused($commitFieldFocused)
+            .disabled(!canRunLiveActions || busyAction != nil)
+          Button("Commit") { onCommit() }
+            .buttonStyle(ADEKitButtonStyle(prominent: true))
+            .frame(minHeight: 36)
+            .disabled(!canRunLiveActions || busyAction != nil || (!amendCommit && stagedFiles.isEmpty))
         }
-        .disabled(!canRunLiveActions || busyAction != nil || (!amendCommit && stagedFiles.isEmpty))
       }
-
-      LaneChipFlowLayout(spacing: 6, lineSpacing: 6) {
-        gitToolbarButton(
-          title: amendCommit ? "Amend on" : "Amend",
-          tint: amendCommit ? ADEColor.warning : ADEColor.textSecondary,
-          emphasize: amendCommit
-        ) {
-          amendCommit.toggle()
-        }
-        .disabled(!canRunLiveActions || busyAction != nil)
-        gitToolbarButton(title: pullMode == "merge" ? "Merge" : "Rebase", tint: ADEColor.textSecondary) {
-          pullMode = pullMode == "merge" ? "rebase" : "merge"
-        }
-        gitToolbarButton(title: "Pull", tint: shouldPull ? ADEColor.warning : ADEColor.textPrimary, emphasize: shouldPull) {
-          onPull(pullMode)
-        }
-        .disabled(!canRunLiveActions || busyAction != nil || !shouldPull)
-        gitToolbarButton(title: pushTitle, tint: shouldPush ? ADEColor.success : ADEColor.textPrimary, emphasize: shouldPush) {
-          onPush(false)
-        }
-        .disabled(!canRunLiveActions || busyAction != nil || !shouldPush || (syncStatus?.diverged ?? false))
-        gitToolbarButton(title: showMoreActions ? "More ▴" : "More ▾", tint: showMoreActions ? ADEColor.accent : ADEColor.textMuted) {
-          withAnimation(.smooth(duration: 0.2)) { showMoreActions.toggle() }
-        }
+      HStack(spacing: 6) {
+        Button(amendCommit ? "Amend on" : "Amend") { amendCommit.toggle() }
+          .buttonStyle(ADEKitButtonStyle(tone: amendCommit ? .warn : .neutral))
+          .disabled(!canRunLiveActions || busyAction != nil)
+        Button("Pull") { onPull(pullMode) }
+          .buttonStyle(ADEKitButtonStyle(tone: shouldPull ? .warn : .neutral))
+          .disabled(!canRunLiveActions || busyAction != nil || !shouldPull)
+          .accessibilityHint("Pulls with \(pullMode)")
+        Button(pushTitle) { onPush(false) }
+          .buttonStyle(ADEKitButtonStyle(tone: shouldPush ? .ok : .neutral))
+          .disabled(!canRunLiveActions || busyAction != nil || !shouldPush || (syncStatus?.diverged ?? false))
+        moreActionsMenu
+        Spacer(minLength: 0)
         Button(action: onRefresh) {
           Image(systemName: "arrow.clockwise")
             .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(ADEColor.textMuted)
-            .frame(width: 34, height: 34)
-            .background(ADEColor.surfaceBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 30, height: 30)
+            .background(ADEKit.track, in: Circle())
         }
         .buttonStyle(.plain)
         .disabled(busyAction != nil)
         .accessibilityLabel("Refresh git state")
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .padding(.vertical, 10)
-    .padding(.horizontal, 10)
-    .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.16), lineWidth: 0.5)
-    )
-    .padding(.bottom, 10)
+    .adeKitCard(padding: 12)
+    .padding(.bottom, 4)
+  }
+
+  private var hasCommittableWork: Bool {
+    amendCommit || !stagedFiles.isEmpty || !unstagedFiles.isEmpty || !commitMessage.isEmpty
   }
 
   private var shouldPull: Bool {
@@ -291,78 +259,49 @@ struct LaneDetailGitActionsPane: View {
     syncStatus?.hasUpstream == false ? "Publish" : "Push"
   }
 
-  @ViewBuilder
-  private func gitToolbarButton(
-    title: String,
-    tint: Color,
-    emphasize: Bool = false,
-    action: @escaping () -> Void
-  ) -> some View {
-    Button(action: action) {
-      Text(title.uppercased())
-        .font(.system(size: 10, weight: .bold, design: .monospaced))
-        .foregroundStyle(tint)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(
-          (emphasize ? tint.opacity(0.16) : ADEColor.surfaceBackground.opacity(0.45)),
-          in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .stroke(tint.opacity(emphasize ? 0.35 : 0.14), lineWidth: 0.5)
-        )
-    }
-    .buttonStyle(.plain)
-  }
-
   // MARK: - More actions
 
-  private var moreActionsSection: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      moreActionRow("Fetch only", symbol: "arrow.down.circle") { onFetch() }
-      moreActionRow("Switch branch", symbol: "arrow.triangle.branch") { onSwitchBranch() }
-      moreActionRow("Stash changes", symbol: "tray.and.arrow.down") {
-        onStashPush("")
+  /// The rest of the git actions as a plain system menu.
+  private var moreActionsMenu: some View {
+    Menu {
+      Section("Pull with") {
+        Picker("Pull with", selection: $pullMode) {
+          Label("Rebase", systemImage: "arrow.triangle.branch").tag("rebase")
+          Label("Merge", systemImage: "arrow.triangle.merge").tag("merge")
+        }
       }
-      moreActionRow("Rebase lane", symbol: "arrow.triangle.branch") { onRebaseLane() }
-      moreActionRow("Rebase + descendants", symbol: "arrow.triangle.branch") { onRebaseDescendants() }
-      moreActionRow("Rebase and push", symbol: "arrow.up.and.down.text.horizontal") { onRebaseAndPush() }
-      moreActionRow("Force push (lease)", symbol: "arrow.up.forward.circle.fill", tint: ADEColor.warning) {
-        onForcePush()
+      Button { onFetch() } label: { Label("Fetch only", systemImage: "arrow.down.circle") }
+      Button { onSwitchBranch() } label: { Label("Switch branch", systemImage: "arrow.triangle.branch") }
+      Button { onStashPush("") } label: { Label("Stash changes", systemImage: "tray.and.arrow.down") }
+      Divider()
+      Button { onRebaseLane() } label: { Label("Rebase lane", systemImage: "arrow.triangle.branch") }
+      Button { onRebaseDescendants() } label: { Label("Rebase + descendants", systemImage: "arrow.triangle.branch") }
+      Button { onRebaseAndPush() } label: { Label("Rebase and push", systemImage: "arrow.up.and.down.text.horizontal") }
+      Button(role: .destructive) { onForcePush() } label: { Label("Force push (lease)", systemImage: "arrow.up.forward.circle") }
+    } label: {
+      HStack(spacing: 4) {
+        Text("More")
+        Image(systemName: "chevron.down")
+          .font(.system(size: 9, weight: .semibold))
       }
+      .font(.system(size: 13, weight: .semibold))
+      .foregroundStyle(ADEColor.textPrimary)
+      .padding(.horizontal, 12)
+      .frame(minHeight: 30)
+      .background(ADEKit.track, in: Capsule(style: .continuous))
     }
-    .padding(10)
-    .background(ADEColor.surfaceBackground.opacity(0.28), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .padding(.bottom, 10)
-  }
-
-  private func moreActionRow(_ title: String, symbol: String, tint: Color = ADEColor.textPrimary, action: @escaping () -> Void) -> some View {
-    Button(action: action) {
-      HStack(spacing: 10) {
-        Image(systemName: symbol)
-          .font(.system(size: 12, weight: .semibold))
-          .foregroundStyle(tint)
-          .frame(width: 20)
-        Text(title)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Spacer(minLength: 0)
-      }
-      .padding(.vertical, 6)
-    }
-    .buttonStyle(.plain)
     .disabled(!canRunLiveActions || busyAction != nil)
-    .opacity(canRunLiveActions ? 1 : 0.55)
+    .accessibilityLabel("More git actions")
   }
 
   // MARK: - Files
 
   private var filesSection: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    sectionCard(expanded: filesDisclosure.expanded) {
       disclosureHeader(
         title: "Files",
         badge: stagedFiles.count + unstagedFiles.count,
+        emptyLabel: "No changes",
         expanded: filesDisclosure.expanded,
         onToggle: { withAnimation(.smooth(duration: 0.2)) { filesDisclosure.toggle() } }
       ) {
@@ -370,19 +309,18 @@ struct LaneDetailGitActionsPane: View {
           Button("New lane with changes") {
             onCreateLaneFromChanges()
           }
-          .font(.caption2.weight(.bold))
-          .foregroundStyle(ADEColor.accent)
+          .font(.system(size: 12.5, weight: .medium))
+          .foregroundStyle(ADEColor.textSecondary)
         }
       }
-      if filesDisclosure.expanded {
-        filesContent
-      }
+    } content: {
+      filesContent
     }
   }
 
   @ViewBuilder
   private var filesContent: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: 14) {
       if stagedFiles.isEmpty && unstagedFiles.isEmpty {
         Text("No changed files.")
           .font(.caption)
@@ -445,19 +383,88 @@ struct LaneDetailGitActionsPane: View {
     }
   }
 
+  // MARK: - Branch
+
+  /// Everything the lane changed since its base, read-only: the files a
+  /// committed lane's PR is made of, which "Files" cannot show once the work
+  /// is committed.
+  private var branchSection: some View {
+    sectionCard(expanded: branchDisclosure.expanded) {
+      disclosureHeader(
+        title: branchChanges.map { "Branch vs \($0.baseRef)" } ?? "Branch",
+        badge: branchChanges?.files.count ?? 0,
+        emptyLabel: branchChanges == nil ? nil : "No changes",
+        expanded: branchDisclosure.expanded,
+        onToggle: { withAnimation(.smooth(duration: 0.2)) { branchDisclosure.toggle() } }
+      )
+    } content: {
+        VStack(alignment: .leading, spacing: 8) {
+          if let branchError {
+            Text(branchError).font(.caption).foregroundStyle(ADEColor.textSecondary)
+          } else if let branchChanges {
+            Text("+\(branchChanges.additions) −\(branchChanges.deletions) · \(branchChanges.files.count) file\(branchChanges.files.count == 1 ? "" : "s")")
+              .font(.caption.monospacedDigit())
+              .foregroundStyle(ADEColor.textSecondary)
+            if branchChanges.files.isEmpty {
+              Text("No changes since \(branchChanges.baseRef).").font(.caption).foregroundStyle(ADEColor.textSecondary)
+            }
+            ForEach(branchChanges.files) { file in
+              Button {
+                onOpenBranchDiff?(file)
+              } label: {
+                HStack(spacing: 8) {
+                  Text(file.path)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(ADEColor.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                  Spacer(minLength: 6)
+                  if let additions = file.additions, additions > 0 {
+                    Text("+\(additions)").font(.caption2.monospacedDigit()).foregroundStyle(ADEColor.success)
+                  }
+                  if let deletions = file.deletions, deletions > 0 {
+                    Text("−\(deletions)").font(.caption2.monospacedDigit()).foregroundStyle(ADEColor.danger)
+                  }
+                }
+                .contentShape(Rectangle())
+              }
+              .buttonStyle(.plain)
+            }
+          } else {
+            ProgressView().frame(maxWidth: .infinity)
+          }
+        }
+        .task(id: "\(detail.recentCommits.first?.sha ?? ""):\(stagedFiles.count):\(unstagedFiles.count)") {
+          await reloadBranchChanges()
+        }
+    }
+  }
+
+  private func reloadBranchChanges() async {
+    guard let loadBranchChanges else { return }
+    do {
+      branchChanges = try await loadBranchChanges()
+      branchError = nil
+    } catch {
+      // A newer reload replaced this one (`.task(id:)` cancels it); that is not a failure.
+      if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled { return }
+      branchError = error.localizedDescription
+    }
+  }
+
   // MARK: - Stashes
 
   private var stashesSection: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    sectionCard(expanded: stashesDisclosure.expanded) {
       disclosureHeader(
-        title: "Branch stashes",
+        title: "Stashes",
         badge: detail.stashes.count,
+        emptyLabel: "None",
         expanded: stashesDisclosure.expanded,
         onToggle: { withAnimation(.smooth(duration: 0.2)) { stashesDisclosure.toggle() } }
       )
-      if stashesDisclosure.expanded {
-        stashesContent
-      }
+    } content: {
+      stashesContent
     }
   }
 
@@ -473,7 +480,7 @@ struct LaneDetailGitActionsPane: View {
           Button("Save changes") {
             onStashPush(stashMessage)
           }
-          .font(.caption.weight(.semibold))
+          .buttonStyle(ADEKitButtonStyle())
           .disabled(!canRunLiveActions || busyAction != nil)
         }
       } else {
@@ -484,16 +491,15 @@ struct LaneDetailGitActionsPane: View {
               .foregroundStyle(ADEColor.textPrimary)
               .lineLimit(2)
             HStack(spacing: 8) {
-              LaneActionButton(title: "Apply", symbol: "tray.and.arrow.down") { onStashApply(stash.ref) }
+              ADEKitActionButton(title: "Apply", symbol: "tray.and.arrow.down") { onStashApply(stash.ref) }
                 .disabled(!canRunLiveActions || busyAction != nil)
-              LaneActionButton(title: "Pop", symbol: "tray.and.arrow.up") { onStashPop(stash.ref) }
+              ADEKitActionButton(title: "Pop", symbol: "tray.and.arrow.up") { onStashPop(stash.ref) }
                 .disabled(!canRunLiveActions || busyAction != nil)
-              LaneActionButton(title: "Drop", symbol: "trash", tint: ADEColor.danger) { onStashDrop(stash.ref) }
+              ADEKitActionButton(title: "Drop", symbol: "trash", tint: ADEColor.danger) { onStashDrop(stash.ref) }
                 .disabled(!canRunLiveActions || busyAction != nil)
             }
           }
-          .padding(10)
-          .background(ADEColor.surfaceBackground.opacity(0.28), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+          .padding(.vertical, 4)
         }
       }
     }
@@ -502,16 +508,15 @@ struct LaneDetailGitActionsPane: View {
   // MARK: - History
 
   private var historySection: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    sectionCard(expanded: historyDisclosure.expanded) {
       disclosureHeader(
         title: "History",
         badge: detail.recentCommits.count,
         expanded: historyDisclosure.expanded,
         onToggle: { withAnimation(.smooth(duration: 0.2)) { historyDisclosure.toggle() } }
       )
-      if historyDisclosure.expanded {
-        historyContent
-      }
+    } content: {
+      historyContent
     }
   }
 
@@ -532,26 +537,24 @@ struct LaneDetailGitActionsPane: View {
             )
           }
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 6)
-        .background(ADEColor.surfaceBackground.opacity(0.28), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, 2)
       }
     }
   }
 
   private func historyRow(commit: GitCommitSummary, isHead: Bool, isLast: Bool) -> some View {
     let isMerge = commit.parents.count > 1
-    let dotColor: Color = isHead ? ADEColor.success : (isMerge ? ADEColor.accent : ADEColor.textMuted)
+    let dotColor: Color = isHead ? ADEColor.success : ADEColor.textMuted
 
     return HStack(alignment: .top, spacing: 8) {
       VStack(spacing: 0) {
         Circle()
           .strokeBorder(dotColor, lineWidth: isHead || isMerge ? 2 : 1.5)
-          .background(Circle().fill(isHead ? ADEColor.success : (isMerge ? ADEColor.accent.opacity(0.35) : ADEColor.pageBackground)))
+          .background(Circle().fill(isHead ? ADEColor.success : ADEKit.surface))
           .frame(width: 9, height: 9)
         if !isLast {
           Rectangle()
-            .fill(ADEColor.border.opacity(0.45))
+            .fill(ADEKit.rule)
             .frame(width: 1)
             .frame(maxHeight: .infinity)
             .padding(.vertical, 2)
@@ -562,16 +565,20 @@ struct LaneDetailGitActionsPane: View {
       VStack(alignment: .leading, spacing: 2) {
         HStack(spacing: 4) {
           Text(commit.shortSha)
-            .font(.system(size: 11, weight: .medium, design: .monospaced))
-            .foregroundStyle(isHead ? ADEColor.success : ADEColor.textMuted)
+            .font(.adeMono(11, weight: .medium))
+            .foregroundStyle(ADEColor.textMuted)
           if isHead {
-            historyBadge("HEAD", tint: ADEColor.success)
+            ADEKitTag(text: "Head", tone: .ok)
           }
           if isMerge {
-            historyBadge("MERGE", tint: ADEColor.accent)
+            ADEKitTag(text: "Merge")
           }
           if commit.pushed {
-            historyBadge("REMOTE", tint: ADEColor.accent)
+            // On the remote: a quiet glyph rather than a tag on every row.
+            Image(systemName: "icloud")
+              .font(.system(size: 10, weight: .medium))
+              .foregroundStyle(ADEColor.textMuted)
+              .accessibilityLabel("Pushed")
           }
           Spacer(minLength: 0)
           Text(relativeTimestampCompact(commit.authoredAt))
@@ -580,7 +587,7 @@ struct LaneDetailGitActionsPane: View {
             .lineLimit(1)
         }
         Text(commit.subject)
-          .font(.caption)
+          .font(.system(size: 13))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
           .truncationMode(.tail)
@@ -616,19 +623,27 @@ struct LaneDetailGitActionsPane: View {
     }
   }
 
-  private func historyBadge(_ text: String, tint: Color) -> some View {
-    Text(text)
-      .font(.system(size: 8, weight: .bold, design: .monospaced))
-      .foregroundStyle(tint)
-      .padding(.horizontal, 4)
-      .padding(.vertical, 1)
-      .background(tint.opacity(0.14), in: Capsule())
+  /// A collapsible kit card: the disclosure head, a hairline, then the body.
+  private func sectionCard<Body: View>(expanded: Bool, @ViewBuilder head: () -> some View, @ViewBuilder content: () -> Body) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      head()
+        .padding(.horizontal, ADEKit.inset)
+        .frame(minHeight: 44)
+      if expanded {
+        Rectangle().fill(ADEKit.rule).frame(height: 0.75)
+        content()
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(12)
+      }
+    }
+    .adeKitCard(padding: nil)
   }
 
   @ViewBuilder
   private func disclosureHeader<Trailing: View>(
     title: String,
     badge: Int,
+    emptyLabel: String? = nil,
     expanded: Bool,
     onToggle: @escaping () -> Void,
     @ViewBuilder trailing: () -> Trailing = { EmptyView() }
@@ -637,22 +652,25 @@ struct LaneDetailGitActionsPane: View {
       Button(action: onToggle) {
         HStack(spacing: 8) {
           Image(systemName: "chevron.right")
-            .font(.system(size: 10, weight: .bold))
+            .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(ADEColor.textMuted)
             .rotationEffect(.degrees(expanded ? 90 : 0))
-          Text(title.uppercased())
-            .font(.caption.weight(.bold))
-            .tracking(0.7)
-            .foregroundStyle(ADEColor.textMuted)
+            .frame(width: 12)
+          Text(title)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
           if badge > 0 {
             Text("\(badge)")
-              .font(.caption2.weight(.bold))
-              .foregroundStyle(ADEColor.accent)
-              .padding(.horizontal, 6)
-              .padding(.vertical, 2)
-              .background(ADEColor.accent.opacity(0.14), in: Capsule())
+              .font(.adeMono(11.5))
+              .foregroundStyle(ADEColor.textMuted)
+          } else if let emptyLabel {
+            Text(emptyLabel)
+              .font(.system(size: 12))
+              .foregroundStyle(ADEColor.textMuted)
           }
         }
+        .frame(maxHeight: .infinity)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)

@@ -1,4 +1,11 @@
-import type { CtoVoiceMicrophoneBlockKind } from "../../../shared/types/ctoVoice";
+/**
+ * Why the microphone would not open, as far as the OS gate can tell.
+ *
+ * `dev-build` exists because macOS gives an unsigned `com.github.Electron` no
+ * TCC identity: `askForMediaAccess` returns false without prompting, and the
+ * System Settings entry the user sees belongs to the packaged app.
+ */
+export type MicrophoneBlockKind = "os-denied" | "dev-build";
 
 export type MicrophoneAccessStatus =
   | "granted"
@@ -29,7 +36,7 @@ export type MicrophoneAccessOptions = {
 export type MicrophoneAccessResult = {
   status: MicrophoneAccessStatus;
   /** Null when access was granted. The reason a caller can act on otherwise. */
-  block: CtoVoiceMicrophoneBlockKind | null;
+  block: MicrophoneBlockKind | null;
   /**
    * What a denial on THIS build means, whether or not one happened.
    *
@@ -38,7 +45,7 @@ export type MicrophoneAccessResult = {
    * user can grant. Answering it here keeps `isPackaged` out of the renderer
    * rather than shipping a second copy of the same judgement.
    */
-  deniedBlock: CtoVoiceMicrophoneBlockKind;
+  deniedBlock: MicrophoneBlockKind;
 };
 
 /**
@@ -79,7 +86,7 @@ export async function requestMicrophoneAccess(
   }
 
   /** Whoever can actually undo a refusal on this build. */
-  const deniedBlock: CtoVoiceMicrophoneBlockKind = options.isPackaged ? "os-denied" : "dev-build";
+  const deniedBlock: MicrophoneBlockKind = options.isPackaged ? "os-denied" : "dev-build";
   /** A settled macOS refusal, attributed to them. */
   const refused = (status: MicrophoneAccessStatus): MicrophoneAccessResult => ({
     status,

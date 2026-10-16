@@ -58,7 +58,6 @@ struct FilesDirectoryScreen: View {
     .adeNavigationGlass()
     .navigationTitle(parentPath.isEmpty ? "Root" : lastPathComponent(parentPath))
     .toolbar {
-      ADERootToolbarLeadingItems()
       ToolbarItem(placement: .topBarTrailing) {
         Button {
           Task { await refreshDirectory() }

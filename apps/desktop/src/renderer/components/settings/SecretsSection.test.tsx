@@ -35,6 +35,7 @@ function installAdeMock() {
       })),
       importEnv,
       exportEnv,
+      pullFromAccount: vi.fn(async () => ({ state: "pulled" as const, added: 0, updated: 0, removed: 0 })),
     },
   };
   return { get, set, importEnv, exportEnv, writeClipboardText };
@@ -53,7 +54,11 @@ describe("SecretsSection env import and export", () => {
     render(<SecretsSection />);
 
     await screen.findByText("EXISTING");
-    expect(screen.getByText("Account")).toBeTruthy();
+    // The storage chip lives in the saved-secrets list; the add form also has
+    // an "Account" destination, so scope the query to the list section.
+    const listSection = screen.getByText("Saved secrets").closest("section");
+    expect(listSection).toBeTruthy();
+    expect(within(listSection as HTMLElement).getByText("Account")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Import .env" }));
 
     const dialog = await screen.findByRole("dialog", { name: /Import secrets from \.env\.local/ });
@@ -93,7 +98,7 @@ describe("SecretsSection env import and export", () => {
     const { exportEnv } = installAdeMock();
     render(<SecretsSection />);
 
-    expect(await screen.findByText(/Export writes an unencrypted \.env file containing all project secret values/)).toBeTruthy();
+    expect(await screen.findByText(/Writes every value, unencrypted/)).toBeTruthy();
     const button = await screen.findByRole("button", { name: "Export .env" });
     fireEvent.click(button);
     expect(exportEnv).not.toHaveBeenCalled();
@@ -146,5 +151,24 @@ describe("SecretsSection env import and export", () => {
     expect(screen.queryByText("Copied EXISTING.")).toBeNull();
     // The row's own confirmation must stay un-checked too.
     expect(screen.getByRole("button", { name: "Copy EXISTING" })).toBeTruthy();
+  });
+});
+
+describe("SecretsSection pull", () => {
+  it("clears a revealed value, because a pull can replace it", async () => {
+    installAdeMock();
+    render(<SecretsSection />);
+    await screen.findByText("EXISTING");
+
+    fireEvent.click(screen.getByRole("button", { name: "Reveal EXISTING" }));
+    expect(await screen.findByText("old")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Pull from account" }));
+
+    // The revealed value was fetched before the pull. Leaving it on screen would
+    // show, and copy, whatever the account held a moment ago.
+    await waitFor(() => expect(screen.queryByText("old")).toBeNull());
+    expect(await screen.findByText("Account secrets are already up to date on this machine.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reveal EXISTING" })).toBeTruthy();
   });
 });

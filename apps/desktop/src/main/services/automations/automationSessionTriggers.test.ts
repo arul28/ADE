@@ -329,6 +329,60 @@ describe("{{trigger.session.*}} placeholders", () => {
   });
 });
 
+describe("variables the step editor offers for every trigger", () => {
+  // The context keeps the run's lane flat (`laneId` / `laneName`), and
+  // `{{date}}` / `{{time}}` read the scheduled time (local, as in lane names).
+  const trigger: TriggerContext = {
+    triggerType: "lane.merged",
+    laneId: "ce3acd58-0736-4316-af65-1dd2dcaf2bba",
+    laneName: "Activity overhaul",
+    scheduledAt: "2026-10-08T09:30:00",
+  };
+
+  it.each([
+    ["{{trigger.lane.id}}", "ce3acd58-0736-4316-af65-1dd2dcaf2bba"],
+    ["ade://lane/{{trigger.lane.id}}", "ade://lane/ce3acd58-0736-4316-af65-1dd2dcaf2bba"],
+    ["{{trigger.lane.name}} / {{trigger.laneName}}", "Activity overhaul / Activity overhaul"],
+    ["Merged on {{date}} at {{time}}", "Merged on 2026-10-08 at 09:30"],
+    ["{{date}}", "2026-10-08"],
+  ])("resolves %s", (template, expected) => {
+    expect(resolvePlaceholders(template, trigger)).toBe(expected);
+  });
+});
+
+describe("webhook request placeholders", () => {
+  const trigger: TriggerContext = {
+    triggerType: "webhook",
+    summary: "issues.opened",
+    webhook: {
+      hookId: "wh-abc",
+      method: "POST",
+      headers: { "x-github-event": "issues" },
+      query: { env: "prod" },
+      body: { action: "opened", issue: { number: 112, title: "Export drops a row" } },
+    },
+  };
+
+  it.each([
+    ["{{trigger.body.issue.number}}", 112],
+    ["#{{trigger.body.issue.number}}: {{trigger.body.issue.title}}", "#112: Export drops a row"],
+    ["{{trigger.headers.x-github-event}}", "issues"],
+    ["{{trigger.query.env}}", "prod"],
+    ["{{trigger.method}}", "POST"],
+    ["{{trigger.summary}}", "issues.opened"],
+    ["[{{trigger.body.issue.missing}}]", "[]"],
+  ])("resolves %s", (template, expected) => {
+    expect(resolvePlaceholders(template, trigger)).toEqual(expected);
+  });
+
+  it("reads the whole body and leaves non-webhook triggers' fields alone", () => {
+    expect(resolvePlaceholders("{{trigger.body}}", trigger)).toEqual(trigger.webhook!.body);
+    const session: TriggerContext = { triggerType: "session.failed", session: { sessionId: "chat-1" } };
+    expect(resolvePlaceholders("[{{trigger.body.action}}]", session)).toBe("[]");
+    expect(resolvePlaceholders("{{trigger.session.sessionId}}", session)).toBe("chat-1");
+  });
+});
+
 describe("handoff action", () => {
   const handoffAction: AutomationAction = {
     type: "handoff",
@@ -903,6 +957,25 @@ describe("session.ended_without_pr", () => {
       execution: { kind: "built-in", builtIn: { actions: [{ type: "predict-conflicts", condition: "false" }] } },
     });
   }
+
+  it("a session.settled rule runs for a settled chat, and only for a provider it names", async () => {
+    const settledRule = makeRule({
+      id: "after-settle",
+      triggers: [{ type: "session.settled", providers: ["claude"] }],
+      trigger: { type: "session.settled", providers: ["claude"] },
+      execution: { kind: "built-in", builtIn: { actions: [{ type: "predict-conflicts", condition: "false" }] } },
+    });
+    const { service, store } = createService({ rules: [settledRule] });
+    const runs = () => store.db.all<{ trigger_type: string; trigger_metadata: string | null }>(
+      "select trigger_type, trigger_metadata from automation_runs",
+    );
+    service.onSessionSettled({ laneId: "lane-1", sessionId: "chat-codex", provider: "codex" });
+    service.onSessionSettled({ laneId: "lane-1", sessionId: "chat-claude", provider: "claude" });
+    await vi.waitFor(() => expect(runs().map((row) => row.trigger_type)).toEqual(["session.settled"]));
+    expect(JSON.stringify(runs())).toContain("chat-claude");
+    expect(JSON.stringify(runs())).not.toContain("chat-codex");
+    service.dispose();
+  });
 
   it("fires when the lane has no open PR", async () => {
     const { service, store } = createService({ rules: [endedRule()] });

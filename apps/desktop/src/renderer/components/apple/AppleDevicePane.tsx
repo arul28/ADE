@@ -1,3 +1,5 @@
+import { confirmDialog } from "../ui/dialog";
+import { remoteAgentHolderLabel } from "../../../shared/runtimeClientNames";
 import React, {
   Suspense,
   useCallback,
@@ -8,8 +10,11 @@ import React, {
 } from "react";
 import { AppleLogo } from "../ui/appleIcons";
 import type {
+  AppleDeviceCleanupResult,
+  AppleNewDeviceSpec,
   AppleDeviceOrientation,
   AppleDeviceStartArgs,
+  AppleHardwareButtonName,
   AppleLaneDevice,
   IosElementContextItem,
   IosSimulatorStatus,
@@ -17,10 +22,18 @@ import type {
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
+import { Banner } from "../ui/notice";
 import { AppleDeviceStage, isWebCodecsAvailable } from "./AppleDeviceStage";
-import type { AppleDevice3DFailure } from "./AppleDevice3DView";
+import type { AppleDevice3DFailure, AppleDeviceDuoProps } from "./AppleDevice3DView";
+import {
+  appleDeviceSupportsDuo,
+  createAppleDuoState,
+  nearestAppleDuoStance,
+  reduceAppleDuoState,
+} from "./appleDuo";
 import { AppleDeviceLoadingCard, type AppleLoadingStage } from "./AppleDeviceLoadingCard";
 import { AppleDevicePicker } from "./AppleDevicePicker";
+import { showToast } from "../app/toast/toastStore";
 import { AppleDeviceRail } from "./AppleDeviceRail";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import {
@@ -56,6 +69,7 @@ import { useAppleLaneDeviceList } from "./useAppleLaneDeviceList";
 import { useAppleInspect } from "./useAppleInspect";
 import { openAppleMiniPlayer } from "./appleMiniPlayerStore";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
+import { isInParkedSurface } from "../../lib/parkedSurface";
 
 /**
  * The Apple device, as the body of the Work tools pane's Apple tab.
@@ -100,6 +114,31 @@ function helperAvailable(status: IosSimulatorStatus | null): boolean {
   return helper ? helper.available : true;
 }
 
+/** The Clean up toast's tone and words: what happened, per docs/design/notices.md. */
+function cleanupNotice(input: { listUnreadable: boolean; deviceErrors: number; summary: string | null }): {
+  tone: "success" | "warning" | "error";
+  title: string;
+  message?: string;
+} {
+  if (input.listUnreadable) {
+    return { tone: "error", title: "Could not read the simulator list", message: "Nothing was cleaned up. The ADE log has the details." };
+  }
+  if (input.deviceErrors) {
+    return {
+      tone: input.summary ? "warning" : "error",
+      title: input.summary ?? "Simulators were not cleaned up",
+      message: `${input.deviceErrors} could not be cleaned up yet. The ADE log has the details.`,
+    };
+  }
+  return { tone: "success", title: input.summary ?? "No simulators to clean up" };
+}
+
+/** Why Clean up powered nothing off, in the words the toast uses. */
+const CLEANUP_SKIP_REASON: Record<NonNullable<AppleDeviceCleanupResult["powerOffSkipped"]>, string> = {
+  "simulator-app-open": "Simulator.app is open, so nothing was powered off.",
+  "process-list-unavailable": "ADE could not check what uses the devices, so nothing was powered off.",
+};
+
 export function AppleDevicePane({
   sessionId,
   laneId,
@@ -118,6 +157,7 @@ export function AppleDevicePane({
   const [loadingStage, setLoadingStage] = useState<AppleLoadingStage>("starting");
   const [startError, setStartError] = useState<unknown>(null);
   const [error, setError] = useState<unknown>(null);
+  const [endingRemoteSession, setEndingRemoteSession] = useState(false);
 
   /**
    * §A2: ONE toggle, 3D by default, remembered per project. A forced fallback
@@ -139,6 +179,12 @@ export function AppleDevicePane({
    * described as portrait until something rotates it.
    */
   const [orientation, setOrientation] = useState<AppleDeviceOrientation>("portrait");
+  /**
+   * The foldable body's posture. It only ever reaches the 3D view for a device
+   * the simulator record reports as foldable; the state exists for every device
+   * but does nothing when `duoCapable` is false.
+   */
+  const [duoState, setDuoState] = useState(() => createAppleDuoState());
   const [rotating, setRotating] = useState(false);
   const [preview, setPreview] = useState<AppleRenderedPreview | null>(null);
   const [confirmSwitch, setConfirmSwitch] = useState(false);
@@ -153,8 +199,14 @@ export function AppleDevicePane({
     laneDevice,
     owners,
     disk,
+    ownership,
     measuringDisk,
+    runtimes,
+    defaultNewDevice,
     refreshing,
+    listLoaded,
+    listFailed,
+    listError,
     bootedRead,
     refreshList,
     dropLaneDevice,
@@ -214,7 +266,9 @@ export function AppleDevicePane({
       observer = new IntersectionObserver((entries) => {
         const entry = entries[0];
         if (!entry) return;
-        offScreen = !entry.isIntersecting;
+        // A parked surface (another project or tab on screen) reports as not
+        // intersecting, but keeps its stream so switching back shows it live.
+        offScreen = !entry.isIntersecting && !isInParkedSurface(node);
         apply();
       });
       observer.observe(node);
@@ -465,9 +519,49 @@ export function AppleDevicePane({
     start({ laneId, chatSessionId: sessionId, udid }, udid);
   }, [laneId, sessionId, start]);
 
-  const createDevice = useCallback((sourceUdid: string) => {
-    start({ laneId, chatSessionId: sessionId, create: { sourceUdid } }, "create");
+  // What Create asked for, so the loading card can name it before it exists.
+  const creatingSpecRef = useRef<AppleNewDeviceSpec | null>(null);
+  const createDevice = useCallback((spec: AppleNewDeviceSpec) => {
+    creatingSpecRef.current = spec;
+    start({ laneId, chatSessionId: sessionId, create: { runtime: spec.runtime, deviceType: spec.deviceType } }, "create");
   }, [laneId, sessionId, start]);
+
+  /**
+   * The storage section's Clean up: the cleanup pass, plus powering off every
+   * idle ADE device. The toast says what it did; the list is re-read after.
+   */
+  const [cleaning, setCleaning] = useState(false);
+  const cleanupDevices = useCallback(() => {
+    setCleaning(true);
+    void window.ade.iosSimulator
+      .deviceCleanup({ ...(laneId ? { laneId } : {}), powerOffIdle: true }, runtimePinRef.current)
+      .then((result) => {
+        const parts = [
+          result.deleted.length ? `deleted ${result.deleted.length}` : null,
+          result.poweredOff.length ? `powered off ${result.poweredOff.length}` : null,
+          result.released.length ? `released ${result.released.length}` : null,
+        ].filter(Boolean);
+        const listUnreadable = result.errors.some((entry) => entry.udid === null);
+        const deviceErrors = result.errors.filter((entry) => entry.udid !== null).length;
+        const skippedWhy = result.powerOffSkipped ? CLEANUP_SKIP_REASON[result.powerOffSkipped] : null;
+        // Counts only. The raw simctl errors are in the log, not in the toast.
+        const summary = parts.length ? `Cleaned up simulators: ${parts.join(", ")}` : null;
+        const notice = cleanupNotice({ listUnreadable, deviceErrors, summary });
+        const message = [notice.message, skippedWhy].filter(Boolean).join(" ");
+        showToast({
+          id: "apple-device-cleanup",
+          tone: notice.tone,
+          title: notice.title,
+          ...(message ? { message } : {}),
+          ...(notice.tone === "success" ? {} : { durationMs: 18_000 }),
+        });
+      })
+      .catch((cause: unknown) => setError(cause))
+      .finally(() => {
+        setCleaning(false);
+        refreshList();
+      });
+  }, [laneId, refreshList]);
 
   /**
    * Delete a simulator from the picker's per-device menu.
@@ -558,6 +652,18 @@ export function AppleDevicePane({
     if (!appleInputAllowed(state)) return;
     void window.ade.iosSimulator
       .pressButton({ name: "home", laneId, deviceUdid }, runtimePinRef.current)
+      .catch((cause: unknown) => setError(cause));
+  }, [deviceUdid, laneId, state]);
+
+  /**
+   * The device's other physical buttons. Same guard and same service call as
+   * Home — `pressButton` dispatches by name, so this is one callback rather
+   * than one per key.
+   */
+  const pressHardwareButton = useCallback((name: AppleHardwareButtonName) => {
+    if (!appleInputAllowed(state)) return;
+    void window.ade.iosSimulator
+      .pressButton({ name, laneId, deviceUdid }, runtimePinRef.current)
       .catch((cause: unknown) => setError(cause));
   }, [deviceUdid, laneId, state]);
 
@@ -653,11 +759,34 @@ export function AppleDevicePane({
   /*
    * The lane device row carries no CoreSimulator type, so read it off the
    * installed entry with the same udid. That entry is Apple's own record; the
-   * lane device's NAME is whatever ADE or a person called the clone.
+   * lane device's NAME is whatever ADE or a person called the device.
    */
   const deviceTypeIdentifier = laneDevice
     ? installed.find((entry) => entry.udid === laneDevice.udid)?.deviceTypeIdentifier ?? null
     : null;
+  /*
+   * The Duo mode is capability-gated on the CoreSimulator type identifier only.
+   * Only a device whose simulator record reports foldable gets the procedural
+   * two-panel body and the fold controls; every other device — and every host
+   * with no Duo runtime — keeps the unchanged single-display path and does no
+   * Duo work.
+   *
+   * `deviceName` is deliberately NOT passed to the matcher: it is the lane
+   * device's display name ("ADE · <lane>" for an ADE device), not Apple's device-type
+   * name, so a lane called "duo-hinge" would otherwise mark an iPhone 17 as
+   * foldable and render the Duo body on a rigid device.
+   */
+  const duoCapable = appleDeviceSupportsDuo({ deviceTypeIdentifier });
+  const duoControlsEnabled = duoCapable && canUse3d;
+  const duoProps: AppleDeviceDuoProps | undefined = duoControlsEnabled
+    ? {
+        enabled: true,
+        angle: duoState.pose.angle,
+        lowerFlat: duoState.pose.lowerFlat,
+        onHingeChange: (angle) =>
+          setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle })),
+      }
+    : undefined;
   const inputConnected = state === "live";
 
   const viewport = renderViewport();
@@ -679,6 +808,29 @@ export function AppleDevicePane({
           />
         );
       case "no-device":
+        // Until a list read answers, "no device" only means "not known yet":
+        // the picker's empty card would claim no simulators are installed.
+        if (!listLoaded) {
+          return listFailed ? (
+            <div data-apple-list-failed="" className="flex size-full items-start justify-center px-4 py-6">
+              <div className="w-full max-w-sm">
+                <Banner
+                  layout="inline"
+                  model={{
+                    id: "apple-device-list",
+                    tone: "error",
+                    title: "Couldn't load this lane's simulators.",
+                    detail: describeAppleError(listError).sentence,
+                    busy: refreshing,
+                    actions: [{ label: "Retry", onClick: refreshList, disabled: refreshing }],
+                  }}
+                />
+              </div>
+            </div>
+          ) : (
+            <PaneMessage title="Loading simulators…" description={null} />
+          );
+        }
         return (
           <AppleDevicePicker
             installed={installed}
@@ -686,11 +838,15 @@ export function AppleDevicePane({
             laneDevice={laneDevice}
             disk={disk}
             measuringDisk={measuringDisk}
+            runtimes={runtimes}
+            defaultNewDevice={defaultNewDevice}
+            ownership={ownership}
             pending={pendingStart}
-            lastUsedUdid={laneDevice?.templateUdid ?? null}
             refreshing={refreshing}
             onStart={startInstalled}
             onCreate={createDevice}
+            onCleanup={cleanupDevices}
+            cleaning={cleaning}
             onDelete={deleteInstalled}
             onRefresh={refreshList}
             playing={!hidden}
@@ -699,10 +855,11 @@ export function AppleDevicePane({
       case "starting":
         return (
           <AppleDeviceLoadingCard
-            name={pendingStart === "create" ? "New simulator" : startingName()}
+            name={startingName()}
             runtime={startingRuntime()}
             model={startingIdentity().model}
             family={startingIdentity().family}
+            isNew={pendingStart === "create"}
             /* Without a start in flight the device is already up and only the
                video is connecting; "Booting device" there read as ADE powering
                the simulator on by itself. */
@@ -750,7 +907,18 @@ export function AppleDevicePane({
               deviceTypeIdentifier={deviceTypeIdentifier}
               orientation={orientation}
               devicePointSize={stream.devicePointSize}
-              interactive={appleInputAllowed(state)}
+              /*
+               * §A4: while Inspect owns the pointer, so does the overlay.
+               *
+               * In FLAT that gesture layer IS the container the overlay is
+               * drawn inside, and its pointer-down calls `setPointerCapture`,
+               * which retargets the click to the container — so a layer left
+               * live swallowed every click the overlay was there to receive.
+               * The input hook already refuses to send while inspecting
+               * (`enabled` above); this is the other half of that gate.
+               */
+              interactive={appleInputAllowed(state) && !inspectOn}
+              duo={duoProps}
               onDeviceInput={input.send}
               onDeviceScroll={input.scroll}
               onDeviceKey={input.key}
@@ -786,13 +954,26 @@ export function AppleDevicePane({
     }
   }
 
+  /** The runtime and model Create asked for, by name, while that device is being made. */
+  function creatingNames(): { runtime: string | null; model: string | null; family: AppleDeviceFamilyId } | null {
+    const spec = pendingStart === "create" ? creatingSpecRef.current : null;
+    if (!spec) return null;
+    const runtime = runtimes.find((entry) => entry.identifier === spec.runtime) ?? null;
+    const type = runtime?.deviceTypes.find((entry) => entry.identifier === spec.deviceType) ?? null;
+    return { runtime: runtime?.name ?? null, model: type?.name ?? null, family: type?.family ?? "iphone" };
+  }
+
   function startingName(): string {
+    const creating = creatingNames();
+    if (creating) return creating.model ? `new ${creating.model}` : "new simulator";
     if (laneDevice) return laneDevice.name;
     const match = installed.find((entry) => entry.udid === pendingStart);
     return match?.name ?? "Simulator";
   }
 
   function startingRuntime(): string | null {
+    const creating = creatingNames();
+    if (creating) return creating.runtime;
     if (laneDevice) return laneDevice.runtime;
     return installed.find((entry) => entry.udid === pendingStart)?.runtime ?? null;
   }
@@ -804,12 +985,59 @@ export function AppleDevicePane({
    * fixed.
    */
   function startingIdentity(): { family: AppleDeviceFamilyId; model: string | null } {
+    const creating = creatingNames();
+    // The name already says the model.
+    if (creating) return { family: creating.family, model: null };
     const record = installed.find(
       (entry) => entry.udid === (laneDevice?.udid ?? pendingStart),
     );
     if (!record) return { family: familyOf(laneDevice), model: null };
     const identity = appleDeviceIdentity(record);
     return { family: identity.family, model: identity.renamed ? identity.model : null };
+  }
+
+  // Only this pane's lane: the status read falls back across lanes.
+  const remoteHolder = status?.remoteHolder
+    && (!status.activeSession?.laneId || !laneId || status.activeSession.laneId === laneId)
+    ? status.remoteHolder
+    : null;
+  // "An agent on Mac mini": the wording the phone's owner ribbon uses too.
+  const remoteHolderLabel = remoteHolder
+    ? remoteAgentHolderLabel(remoteHolder.machineName, { sentenceStart: true })
+    : null;
+  async function freeDeviceFromRemoteAgent(): Promise<void> {
+    const holderSessionId = status?.activeSession?.chatSessionId ?? null;
+    if (!holderSessionId) return;
+    const confirmed = await confirmDialog({
+      title: "Free this device?",
+      message: `${remoteHolderLabel} is driving this device. Freeing it ends that agent's session here and stops its live view. If the agent is still working, it can take the device again.`,
+      confirmLabel: "Free device",
+      destructive: true,
+    });
+    if (!confirmed) return;
+    setEndingRemoteSession(true);
+    try {
+      // The service checks that the same agent still holds the device and
+      // ends it in one step, so a session that changed hands while the dialog
+      // was open is never ended by mistake.
+      const result = await window.ade.iosSimulator.shutdown(
+        { laneId: laneId ?? null, ignoreOwnership: true, expectedChatSessionId: holderSessionId },
+        runtimePinRef.current,
+      );
+      if (!result.released) {
+        showToast({
+          tone: "info",
+          title: result.previousSession
+            ? "Another session took the device first; nothing was freed."
+            : "The agent already let go of this device.",
+        });
+      }
+      refreshList();
+    } catch (cause: unknown) {
+      setError(cause);
+    } finally {
+      setEndingRemoteSession(false);
+    }
   }
 
   const strip = error != null
@@ -841,6 +1069,18 @@ export function AppleDevicePane({
             onSecondaryAction={chooseAnotherDevice}
           />
         )
+        /* An agent on another machine (`ade apple … --machine`) holds this
+           device. Said here, on the pane the person is looking at, so the
+           simulator moving on its own has a reason; ending it asks first. */
+        : remoteHolder && state !== "no-device"
+          ? (
+            <AppleDeviceNoticeStrip
+              sentence={`${remoteHolderLabel} is driving this device.`}
+              actionLabel="Free device"
+              onAction={() => { void freeDeviceFromRemoteAgent(); }}
+              busy={endingRemoteSession}
+            />
+          )
         /* §A1: the ONE sentence a fallback to flat is allowed to say. */
         : threeFailure
           ? (
@@ -883,6 +1123,18 @@ export function AppleDevicePane({
               recording={Boolean(recordingActive)}
               screenshotPending={screenshotPending}
               onHome={pressHome}
+              onHardwareButton={pressHardwareButton}
+              duo={duoControlsEnabled
+                ? {
+                    capable: true,
+                    angle: duoState.pose.angle,
+                    stance: nearestAppleDuoStance(duoState.pose.angle),
+                  }
+                : undefined}
+              onDuoStance={(stance) =>
+                setDuoState((current) => reduceAppleDuoState(current, { type: "stance", stance }))}
+              onDuoNudge={(delta) =>
+                setDuoState((current) => reduceAppleDuoState(current, { type: "nudge", delta }))}
               orientation={orientation}
               orientationPending={rotating}
               onOrientation={rotateTo}

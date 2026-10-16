@@ -32,6 +32,7 @@ struct LinearIssueDetailScreen: View {
       .padding(.bottom, 96)
     }
     .scrollContentBackground(.hidden)
+    .background(ADEColor.pageBackground.ignoresSafeArea())
     .navigationTitle(issue.identifier)
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
@@ -89,8 +90,8 @@ struct LinearIssueDetailScreen: View {
               .foregroundStyle(ADEColor.textSecondary)
               .padding(.horizontal, 8)
               .padding(.vertical, 3)
-              .background(ADEColor.surfaceBackground, in: Capsule())
-              .overlay(Capsule().stroke(ADEColor.glassBorder, lineWidth: 0.5))
+              .background(ADEKit.track, in: Capsule())
+              .overlay(Capsule().stroke(ADEKit.edge, lineWidth: 0.5))
           }
         }
       }
@@ -113,41 +114,56 @@ struct LinearIssueDetailScreen: View {
       }
       LinearPropertyRow(
         label: "Branch",
-        value: linearIssueBranchName(identifier: issue.identifier, title: issue.title),
+        value: linearIssueBranchName(for: issue),
         monospaced: true
       )
       if issue.hasOpenBlockers == true {
-        LinearPropertyRow(label: "Blockers", value: "Has open blockers", tint: ADEColor.warning)
+        LinearPropertyRow(label: "Blocked", value: "Has open blockers", tint: ADEColor.warning)
       }
     }
-    .adeGlassCard()
+    .adeKitCard(padding: 16)
   }
 
-  // MARK: Sub-issues
+  // MARK: Relations
+
+  private var relationGroups: [(title: String, issues: [NormalizedLinearIssueChild])] {
+    [
+      ("Parent", issue.parentIssue.map { [$0] } ?? []),
+      ("Blocked by", issue.blockedByIssues ?? []),
+      ("Blocks", issue.blockingIssues ?? []),
+      ("Related", issue.relatedIssues ?? []),
+      ("Sub-issues", issue.childIssues ?? []),
+    ].filter { !$0.issues.isEmpty }
+  }
 
   @ViewBuilder
   private var subIssues: some View {
-    if let children = issue.childIssues, !children.isEmpty {
-      VStack(alignment: .leading, spacing: 8) {
-        Text("Sub-issues")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-        ForEach(children) { child in
-          HStack(spacing: 8) {
-            LinearStateIcon(stateType: child.stateType, size: 13)
-            Text(child.identifier)
+    let groups = relationGroups
+    if !groups.isEmpty {
+      VStack(alignment: .leading, spacing: 12) {
+        ForEach(groups, id: \.title) { group in
+          VStack(alignment: .leading, spacing: 8) {
+            Text(group.title)
               .font(.caption.weight(.semibold))
-              .foregroundStyle(ADEColor.textMuted)
-            Text(child.title)
-              .font(.caption)
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-            Spacer()
+              .foregroundStyle(ADEColor.textSecondary)
+            ForEach(group.issues) { related in
+              HStack(spacing: 8) {
+                LinearStateIcon(stateType: related.stateType, size: 13)
+                Text(related.identifier)
+                  .font(.caption.weight(.semibold))
+                  .foregroundStyle(ADEColor.textMuted)
+                Text(related.title)
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textPrimary)
+                  .lineLimit(1)
+                Spacer()
+              }
+            }
           }
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      .adeGlassCard()
+      .adeKitCard(padding: 16)
     }
   }
 
@@ -268,7 +284,7 @@ struct LinearPropertyRow: View {
     }
     .padding(.vertical, 7)
     .overlay(alignment: .bottom) {
-      Divider().overlay(ADEColor.glassBorder.opacity(0.5))
+      Divider().overlay(ADEKit.edge.opacity(0.5))
     }
   }
 }
@@ -291,8 +307,7 @@ struct LinearCommentRow: View {
         .foregroundStyle(ADEColor.textPrimary)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .padding(11)
-    .background(ADEColor.surfaceBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .adeKitCard(padding: 11)
   }
 }
 
@@ -313,12 +328,15 @@ private let linearDisplayFormatter: DateFormatter = {
   return formatter
 }()
 
-func linearFormatDate(_ raw: String?) -> String? {
+/// An ISO 8601 timestamp from Linear or GitHub, with or without fractions.
+func issueISODate(_ raw: String?) -> Date? {
   guard let raw, !raw.isEmpty else { return nil }
   for parser in linearISOParsers {
-    if let date = parser.date(from: raw) {
-      return linearDisplayFormatter.string(from: date)
-    }
+    if let date = parser.date(from: raw) { return date }
   }
   return nil
+}
+
+func linearFormatDate(_ raw: String?) -> String? {
+  issueISODate(raw).map { linearDisplayFormatter.string(from: $0) }
 }

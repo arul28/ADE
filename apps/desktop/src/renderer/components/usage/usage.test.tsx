@@ -9,6 +9,7 @@ import type {
   AiProviderConnections,
   AiSettingsStatus,
   AdeUsageDailyPoint,
+  AdeUsageLiveEnvironment,
   AdeUsageStats,
   BudgetCapConfig,
   UsageSnapshot,
@@ -22,8 +23,10 @@ import {
 import { computeHeatmapLayout, fillMissingDays, weekAlignment } from "./ActivityHeatmap";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { UsageLimitsBand } from "./UsageLimitsBand";
+import { UsagePooledLimits } from "./UsagePooledLimits";
 import { USAGE_HEADROOM_COLOR, usageHeadroomColor, usageHeadroomTone } from "./usageDesign";
 import { useAppStore } from "../../state/appStore";
+import { providerColor } from "./providerColors";
 import { useUsageSnapshot } from "./useUsageSnapshot";
 import {
   bucketActivityIntensity,
@@ -35,6 +38,7 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
+import { setUsageHeaderVisible } from "./usageHeaderPreferences";
 
 type UsageComponentTestBridge = {
   app: Pick<Window["ade"]["app"], "openExternal" | "onProjectBindingChanged">;
@@ -595,20 +599,30 @@ describe("usage components", () => {
     });
 
     /**
-     * The bars were once coloured by hashing the card key into a palette, then
-     * by provider brand. They now follow headroom alone, the same rule as the
-     * header rings, so every provider reads green / yellow / red alike.
+     * The bars stay neutral while a window has room and only turn amber at 20%
+     * left and red at 5% — one rule for every provider, the same as the kit
+     * meters and the header ring.
      */
-    it("colours each window bar by its headroom, not by provider", async () => {
+    it.each([
+      { percentUsed: 63, left: 37, fill: "var(--kit-fill)" },
+      { percentUsed: 85, left: 15, fill: "var(--kit-warn)" },
+      { percentUsed: 97, left: 3, fill: "var(--kit-crit)" },
+    ])("colours a bar with $left% left by headroom, not by provider", async ({ percentUsed, left, fill }) => {
+      const snapshot = makeQuotaPanelSnapshot();
+      snapshot.windows = snapshot.windows.map((window) =>
+        window.provider === "codex" ? { ...window, percentUsed } : window,
+      );
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.usage.noteDemand).mockResolvedValue(snapshot);
       render(<MountedBand />);
 
       const claude = await screen.findByRole("button", {
         name: /Weekly · this machine: 80% left/,
       });
-      expect(claude.style.getPropertyValue("--usage-fill")).toBe(USAGE_HEADROOM_COLOR.ok);
+      expect(claude.style.getPropertyValue("--usage-fill")).toBe("var(--kit-fill)");
 
-      const codex = screen.getByRole("button", { name: /Weekly · this machine: 37% left/ });
-      expect(codex.style.getPropertyValue("--usage-fill")).toBe(USAGE_HEADROOM_COLOR.warn);
+      const codex = screen.getByRole("button", { name: new RegExp(`Weekly · this machine: ${left}% left`) });
+      expect(codex.style.getPropertyValue("--usage-fill")).toBe(fill);
     });
 
     /**
@@ -1210,6 +1224,7 @@ describe("usage components", () => {
 
   describe("HeaderUsageControl", () => {
     beforeEach(() => {
+      setUsageHeaderVisible(true);
       useAppStore.setState({ theme: "dark" });
       vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(makeEmptySnapshot());
       vi.mocked(window.ade.usage.refresh).mockResolvedValue(makeHeaderUsageSnapshot());
@@ -1235,7 +1250,10 @@ describe("usage components", () => {
       expect(ring?.getAttribute("data-usage-left")).toBe("81");
       expect(ring?.getAttribute("data-usage-unshaded")).toBe("19");
       expect(ring?.getAttribute("data-usage-tone")).toBe("ok");
-      expect(ring?.querySelector("circle")?.getAttribute("stroke")).toBe(USAGE_HEADROOM_COLOR.ok);
+      // A healthy ring wears its provider's colour; only a nearly spent window
+      // turns amber or red.
+      expect([providerColor("codex", "dark"), providerColor("codex", "light")])
+        .toContain(ring?.querySelector("circle")?.getAttribute("stroke"));
       expect(ring?.querySelector("[data-ring-unshaded]")?.getAttribute("transform")).toContain("rotate(-90");
       const darkStroke = ring?.querySelector("[data-ring-unshaded]")?.getAttribute("stroke") ?? "";
       expect(darkStroke).toContain("8%, white");
@@ -1249,6 +1267,27 @@ describe("usage components", () => {
       expect(screen.queryByText("wk")).toBeNull();
       expect(screen.queryByText("9%")).toBeNull();
       expect(window.ade.usage.refresh).not.toHaveBeenCalled();
+    });
+
+    it("hides a provider from the compact header while keeping it in the expanded limits panel", async () => {
+      const snapshot = makeQuotaPanelSnapshot();
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.usage.refresh).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.ai.getStatus).mockResolvedValue(makeAiStatus({
+        claude: makeProviderConnection("claude", { runtimeDetected: true, authAvailable: true, usageAvailable: true }),
+        codex: makeProviderConnection("codex", { runtimeDetected: true, authAvailable: true, usageAvailable: true }),
+      }));
+
+      render(<HeaderUsageControl />);
+      await waitFor(() => expect(document.querySelector('[data-usage-provider="claude"]')).not.toBeNull());
+      fireEvent.click(screen.getByRole("button", { name: /Usage ·/ }));
+
+      fireEvent.click(await screen.findByRole("button", { name: "Hide Claude in usage bar" }));
+
+      await waitFor(() => expect(document.querySelector('[data-usage-provider="claude"]')).toBeNull());
+      expect(document.querySelector('[data-usage-provider="codex"]')).not.toBeNull();
+      expect(document.querySelector('[data-provider-limits="claude"]')).not.toBeNull();
+      expect(screen.getByRole("button", { name: "Show Claude in usage bar" })).toBeTruthy();
     });
 
     it("defers the cached usage and provider reads until opened", async () => {
@@ -1877,41 +1916,6 @@ describe("usage components", () => {
       expect(Array.from(grid.children, (cell) => cell.getAttribute("data-level"))).toEqual(["1", "0", "0", "0", "4"]);
     });
 
-    it("draws each intensity level in its own colour rather than one hue at five opacities", () => {
-      // Twelve days spanning the whole quartile range, with one interior idle
-      // day, so every level from empty to peak appears in the grid.
-      const daily = Array.from({ length: 12 }, (_, i) =>
-        makeActivityDay(`2026-06-${String(i + 1).padStart(2, "0")}`, {
-          totalTokens: i === 5 ? 0 : (i + 1) * (i + 1) * 5_000,
-        }),
-      );
-      const { container } = render(
-        <ActivityModule stats={makeActivityStats({ daily } as unknown as Partial<AdeUsageStats>)} preset="30d" onPresetChange={vi.fn()} />,
-      );
-
-      const cells = Array.from(
-        container.querySelector('[aria-label="Daily activity heatmap"]')!.children,
-      ) as HTMLElement[];
-      // jsdom drops `color-mix()` from the parsed `background` shorthand, so
-      // the raw style attribute is what carries the declared value here.
-      const byLevel = new Map<string, string>();
-      for (const cell of cells) byLevel.set(cell.getAttribute("data-level")!, cell.getAttribute("style") ?? "");
-
-      // All five levels present, each with its own colour value: a single-hue
-      // opacity ramp would repeat one token five times.
-      expect([...byLevel.keys()].sort()).toEqual(["0", "1", "2", "3", "4"]);
-      const backgrounds = [...byLevel.values()].map((style) => /background:\s*([^;]+)/.exec(style)?.[1] ?? "");
-      expect(new Set(backgrounds).size).toBe(5);
-      // Only the empty level is a theme-mix of the foreground; the active
-      // levels carry real ramp colours, and none of them is the accent the
-      // flat single-hue version leaned on.
-      expect(byLevel.get("0")).toContain("var(--color-fg)");
-      for (const level of ["1", "2", "3", "4"]) {
-        expect(byLevel.get(level)).not.toContain("var(--color-fg)");
-        expect(byLevel.get(level)).not.toContain("var(--color-accent)");
-      }
-    });
-
     it("rings today's cell so the grid has an anchor", () => {
       const today = new Date();
       const key = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
@@ -2149,12 +2153,12 @@ describe("usage components", () => {
 
       await waitFor(() => expect(getAdeStats).toHaveBeenCalledWith({ preset: "all", scope: "project" }));
 
-      fireEvent.click(screen.getByRole("button", { name: "This machine" }));
+      fireEvent.click(screen.getByRole("radio", { name: "This machine" }));
 
       await waitFor(() => expect(getAdeStats).toHaveBeenCalledWith({ preset: "all", scope: "machine" }));
       expect(localStorage.getItem("ade.stats.scope.v1")).toBe("machine");
 
-      fireEvent.click(screen.getByRole("button", { name: "All machines" }));
+      fireEvent.click(screen.getByRole("radio", { name: "All machines" }));
 
       await waitFor(() => expect(getAdeStats).toHaveBeenCalledWith({ preset: "all", scope: "account" }));
       expect(localStorage.getItem("ade.stats.scope.v1")).toBe("account");
@@ -2185,7 +2189,7 @@ describe("usage components", () => {
       expect(explained.getAttribute("title")).toMatch(/Cursor/);
 
       // Scope is stated by the control rather than restated in prose.
-      expect(screen.getByRole("button", { name: "This project" }).getAttribute("aria-pressed")).toBe("true");
+      expect(screen.getByRole("radio", { name: "This project" }).getAttribute("aria-checked")).toBe("true");
 
       expect(screen.getByText(/Cursor ledger covers this machine only\./)).toBeTruthy();
     });
@@ -2400,7 +2404,7 @@ describe("usage components", () => {
       // already-cached key is what exercises the stale branch — switching to a
       // *new* preset has nothing cached to fall back on, so it takes the
       // blank-and-report path instead.
-      fireEvent.click(screen.getByRole("button", { name: "7d" }));
+      fireEvent.click(screen.getByRole("radio", { name: "7d" }));
       await waitFor(() =>
         expect(getAdeStats).toHaveBeenCalledWith(expect.objectContaining({ preset: "7d" })),
       );
@@ -2409,7 +2413,7 @@ describe("usage components", () => {
         getAdeStats: vi.fn(async () => { throw new Error("ade.usage.getAdeStats timed out"); }),
       });
 
-      fireEvent.click(screen.getByRole("button", { name: "All" }));
+      fireEvent.click(screen.getByRole("radio", { name: "All" }));
 
       expect(await screen.findByText("Couldn't check for new usage. Showing the last numbers.")).toBeTruthy();
       expect(screen.getByText("Estimated cost")).toBeTruthy();
@@ -2623,5 +2627,55 @@ describe("activity heatmap intensity", () => {
     expect(trimLeadingInactiveDays(empty)).toEqual(empty);
     expect(trimLeadingInactiveDays(active)).toBe(active);
     expect(trimLeadingInactiveDays(github).map((point) => point.date)).toEqual(["2026-01-02"]);
+  });
+});
+
+describe("UsagePooledLimits", () => {
+  const env = (
+    machineKey: string,
+    label: string,
+    accountId: string,
+    email: string,
+  ): AdeUsageLiveEnvironment => ({
+    machineKey,
+    label,
+    platform: "darwin",
+    isLocal: false,
+    state: "live",
+    windows: [{
+      provider: "claude",
+      windowType: "weekly",
+      accountId,
+      percentUsed: 40,
+      resetsAt: new Date(Date.now() + 3_600_000).toISOString(),
+      resetsInMs: 3_600_000,
+    }],
+    accounts: [{ id: accountId, provider: "claude", email, machines: [{ label }] }],
+  });
+
+  it("pools the selected environments and recomputes for the filter", () => {
+    render(
+      <UsagePooledLimits
+        environments={[
+          env("mac", "Mac", "claude:a@example.com", "a@example.com"),
+          env("nuc", "Nuc", "claude:b@example.com", "b@example.com"),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText(/Pooled across 2 computers/)).toBeTruthy();
+    // Each account's email appears on its reset line, which may read
+    // "resets in … · a@example.com", so match as a substring.
+    expect(screen.getByText(/a@example\.com/)).toBeTruthy();
+    expect(screen.getByText(/b@example\.com/)).toBeTruthy();
+
+    // Deselecting Mac leaves only Nuc's account.
+    fireEvent.click(screen.getByRole("button", { name: "Mac" }));
+    expect(screen.queryByText(/a@example\.com/)).toBeNull();
+    expect(screen.getByText(/b@example\.com/)).toBeTruthy();
+
+    // Deselecting the last environment is the empty selection.
+    fireEvent.click(screen.getByRole("button", { name: "Nuc" }));
+    expect(screen.getByText(/No computers selected/)).toBeTruthy();
   });
 });

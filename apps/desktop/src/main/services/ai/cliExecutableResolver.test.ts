@@ -6,10 +6,27 @@ import {
   augmentPathWithKnownCliDirs,
   augmentProcessPathWithShellAndKnownCliDirs,
   getPathEnvValue,
+  refreshWindowsPersistedPathDirs,
   resolveExecutableCandidatesFromKnownLocations,
   resolveExecutableFromKnownLocations,
   setPathEnvValue,
 } from "./cliExecutableResolver";
+
+type ExecFileCallback = (error: Error | null) => void;
+const childProcessMock = vi.hoisted(() => ({
+  execFile: null as null | ((command: string, args: string[], options: unknown, callback: ExecFileCallback) => void),
+}));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    execFile: (...args: unknown[]) =>
+      childProcessMock.execFile
+        ? childProcessMock.execFile(...(args as [string, string[], unknown, ExecFileCallback]))
+        : (actual.execFile as (...inner: unknown[]) => unknown)(...args),
+  };
+});
 
 const originalPlatform = process.platform;
 const originalPathDelimiter = path.delimiter;
@@ -51,6 +68,8 @@ describe("cliExecutableResolver", () => {
   let tempRoot: string | null = null;
 
   afterEach(() => {
+    childProcessMock.execFile = null;
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
     setPlatform(originalPlatform);
     setPathDelimiter(originalPathDelimiter);
@@ -182,6 +201,30 @@ describe("cliExecutableResolver", () => {
     ]);
   });
 
+  // Windows reads no login shell, so there is no probe to retry or reuse.
+  it.skipIf(process.platform === "win32")("retries a login-shell PATH probe that failed and reuses one that answered", () => {
+    tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-shell-probe-"));
+    const answers = path.join(tempRoot, "shell-answers");
+    const fakeShell = path.join(tempRoot, "fake-login-shell");
+    fs.writeFileSync(
+      fakeShell,
+      `#!/bin/sh\n[ -f "${answers}" ] || exit 1\nexport PATH="/fake/login/bin:$PATH"\nexec /bin/sh "$@"\n`,
+      "utf8",
+    );
+    fs.chmodSync(fakeShell, 0o755);
+    const env = { SHELL: fakeShell, HOME: tempRoot, PATH: `/usr/bin${currentPathDelimiter()}/bin` };
+    const probe = () => augmentProcessPathWithShellAndKnownCliDirs({ env }).split(currentPathDelimiter());
+
+    // A shell that fails (a timeout under load, a broken rc file) is not remembered...
+    expect(probe()).not.toContain("/fake/login/bin");
+    fs.writeFileSync(answers, "", "utf8");
+    // ...so the next agent env asks again and gets the login PATH.
+    expect(probe()).toContain("/fake/login/bin");
+    // An answer is reused instead of spawning a shell per turn.
+    fs.rmSync(answers);
+    expect(probe()).toContain("/fake/login/bin");
+  });
+
   it("augments PATH with known CLI dirs on Windows", () => {
     setPlatform("win32");
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-path-"));
@@ -255,6 +298,13 @@ describe("cliExecutableResolver", () => {
       err.code = "ENOENT";
       throw err;
     }) as typeof fs.statSync);
+    const realReaddirSync = fs.readdirSync.bind(fs);
+    vi.spyOn(fs, "readdirSync").mockImplementation(((directory: fs.PathLike, options?: any) => {
+      if (path.normalize(String(directory)).toLowerCase() === path.normalize(scoopShims).toLowerCase()) {
+        return ["codex.CMD"] as any;
+      }
+      return realReaddirSync(directory, options);
+    }) as typeof fs.readdirSync);
 
     const nextPath = augmentPathWithKnownCliDirs("C:\\Windows\\System32", {
       HOME: gitBashHome,
@@ -274,9 +324,9 @@ describe("cliExecutableResolver", () => {
       USERPROFILE: userProfile,
       PATH: "C:\\Windows\\System32",
     })).toEqual({
-      // statSync is stubbed and the directory does not exist, so the resolver
-      // cannot read the real on-disk spelling and reports the probed name.
-      path: path.join(scoopShims, "codex.cmd"),
+      // The listing and stat mocks model the case-insensitive Windows lookup
+      // while preserving the executable's spelling on disk.
+      path: path.join(scoopShims, "codex.CMD"),
       source: "known-dir",
     });
   });
@@ -314,5 +364,43 @@ describe("cliExecutableResolver", () => {
     });
     expect(resolved?.source).toBe("path");
     expect(resolved?.path.toLowerCase()).toBe(executablePath.toLowerCase());
+  });
+
+  it("reads the persisted machine and user Path from `reg export`, including non-ASCII folders", async () => {
+    setPlatform("win32");
+    vi.stubEnv("ADE_DISABLE_OFF_THREAD_SPAWN", "1");
+    vi.stubEnv("SystemRoot", String.raw`C:\Windows`);
+    // `reg export` writes UTF-16 with a BOM: REG_EXPAND_SZ as `hex(2):` bytes
+    // wrapped with `\` continuations, REG_SZ as a quoted string with `\\` escapes.
+    const machinePath = String.raw`%SYSTEMROOT%\system32;C:\Users\José\bin;C:\ツール`;
+    const hexBytes = [...Buffer.from(`${machinePath}\0`, "utf16le")].map((byte) => byte.toString(16).padStart(2, "0"));
+    const hexLines: string[] = [];
+    for (let index = 0; index < hexBytes.length; index += 24) hexLines.push(hexBytes.slice(index, index + 24).join(","));
+    const exports: Record<string, string> = {
+      [String.raw`HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`]:
+        `"ComSpec"="C:\\\\Windows\\\\cmd.exe"\r\n"Path"=hex(2):${hexLines.join(",\\\r\n  ")}\r\n`,
+      [String.raw`HKCU\Environment`]:
+        `"TEMP"="x"\r\n"Path"="C:\\\\Users\\\\José\\\\AppData\\\\Local\\\\cursor-agent;"\r\n`,
+    };
+    childProcessMock.execFile = (_command, args, _options, callback) => {
+      const [, key, file] = args;
+      const body = exports[key!];
+      if (body === undefined) return callback(new Error(`unexpected key ${key}`));
+      fs.writeFileSync(file!, Buffer.from(`\uFEFFWindows Registry Editor Version 5.00\r\n\r\n[${key}]\r\n${body}`, "utf16le"));
+      callback(null);
+    };
+    // Earlier Windows cases start a background refresh; let it settle first.
+    await refreshWindowsPersistedPathDirs();
+
+    await expect(refreshWindowsPersistedPathDirs({ force: true })).resolves.toEqual([
+      String.raw`C:\Windows\system32`,
+      String.raw`C:\Users\José\bin`,
+      String.raw`C:\ツール`,
+      String.raw`C:\Users\José\AppData\Local\cursor-agent`,
+    ]);
+
+    // A failed read keeps the last answer instead of dropping every folder.
+    childProcessMock.execFile = (_command, _args, _options, callback) => callback(new Error("reg failed"));
+    await expect(refreshWindowsPersistedPathDirs({ force: true })).resolves.toHaveLength(4);
   });
 });

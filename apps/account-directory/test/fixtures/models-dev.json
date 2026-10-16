@@ -1,0 +1,73 @@
+{
+ "anthropic": {
+  "id": "anthropic",
+  "name": "Anthropic",
+  "models": {
+   "claude-haiku-4-5": {
+    "id": "claude-haiku-4-5",
+    "name": "Claude Haiku 4.5 (latest)",
+    "cost": {
+     "input": 1,
+     "output": 5,
+     "cache_read": 0.1,
+     "cache_write": 1.25
+    }
+   },
+   "claude-opus-4-5": {
+    "id": "claude-opus-4-5",
+    "name": "Claude Opus 4.5 (latest)",
+    "cost": {
+     "input": 5,
+     "output": 25,
+     "cache_read": 0.5,
+     "cache_write": 6.25
+    }
+   }
+  }
+ },
+ "openai": {
+  "id": "openai",
+  "name": "OpenAI",
+  "models": {
+   "gpt-5.4": {
+    "id": "gpt-5.4",
+    "name": "GPT-5.4",
+    "cost": {
+     "input": 2.5,
+     "output": 15,
+     "cache_read": 0.25,
+     "tiers": [
+      {
+       "input": 5,
+       "output": 22.5,
+       "cache_read": 0.5,
+       "tier": {
+        "type": "context",
+        "size": 272000
+       }
+      }
+     ],
+     "context_over_200k": {
+      "input": 5,
+      "output": 22.5,
+      "cache_read": 0.5
+     }
+    }
+   }
+  }
+ },
+ "mistral": {
+  "id": "mistral",
+  "name": "Mistral",
+  "models": {
+   "open-mistral-nemo": {
+    "id": "open-mistral-nemo",
+    "name": "Open Mistral Nemo",
+    "cost": {
+     "input": 0.15,
+     "output": 0.15
+    }
+   }
+  }
+ }
+}

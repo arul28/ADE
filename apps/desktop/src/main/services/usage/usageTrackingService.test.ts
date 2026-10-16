@@ -24,6 +24,7 @@ const mockState = vi.hoisted(() => ({
   spawn: vi.fn(),
   spawnSync: vi.fn(),
   resolveCodexExecutable: vi.fn(),
+  ptySpawn: vi.fn(),
 }));
 
 const requireForTest = createRequire(path.join(process.cwd(), "usage-test.cjs"));
@@ -33,10 +34,17 @@ vi.mock("node:child_process", () => ({
   spawnSync: (...args: unknown[]) => mockState.spawnSync(...args),
 }));
 
+// The Claude CLI `/usage` probe runs in a pty: the process boundary.
+vi.mock("node-pty", () => {
+  const spawn = (...args: unknown[]) => mockState.ptySpawn(...args);
+  return { spawn, default: { spawn } };
+});
+
 vi.mock("../ai/codexExecutable", () => ({
   resolveCodexExecutable: (...args: unknown[]) => mockState.resolveCodexExecutable(...args),
 }));
 
+import { adeProviderUsageHomes } from "./providerUsageHomes";
 import {
   attachSharedUsageTrackingScope,
   claudePollAllowsKeychain,
@@ -45,6 +53,7 @@ import {
   _testing,
 } from "./usageTrackingService";
 import type { AdeUsageRollup, UsageSnapshot } from "../../../shared/types/usage";
+import type { ProviderInstance } from "../../../shared/types/providerInstances";
 import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
 import type { UsageLedgerScanResult } from "./usageLedgerWorkerClient";
 import { tokenPriceSource, _testing as _pricingTesting } from "./usagePricing";
@@ -195,11 +204,13 @@ function createFakeCodexChild({
   const stdinEmitter = new EventEmitter() as any;
   const written: string[] = [];
 
-  stdinEmitter.write = vi.fn((chunk: string) => {
-    written.push(chunk);
-    return true;
-  });
-  stdinEmitter.end = vi.fn(() => {
+  // A real app-server answers while stdin is still open; it does not wait for
+  // EOF. Model that so a test fails if the code closes stdin before every reply
+  // has been read.
+  let responded = false;
+  const respond = () => {
+    if (responded) return;
+    responded = true;
     queueMicrotask(() => {
       if (stdinError) {
         stdinEmitter.emit("error", stdinError);
@@ -209,6 +220,15 @@ function createFakeCodexChild({
       if (stderr) stderrEmitter.emit("data", Buffer.from(stderr));
       child.emit("close", closeCode);
     });
+  };
+
+  stdinEmitter.write = vi.fn((chunk: string) => {
+    written.push(chunk);
+    respond();
+    return true;
+  });
+  stdinEmitter.end = vi.fn(() => {
+    respond();
   });
 
   child.stdout = stdoutEmitter;
@@ -221,9 +241,13 @@ function createFakeCodexChild({
 
 beforeEach(() => {
   mockState.spawn.mockReset();
+  mockState.ptySpawn.mockReset();
   mockState.spawnSync.mockReset();
   mockState.spawnSync.mockReturnValue({ status: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) });
   mockState.resolveCodexExecutable.mockReset();
+  // Per-account rate-limit memory outlives a poll by design; a test that
+  // exercises a 429 must not hand its cooldown to the next one.
+  _testing.resetAccountRateLimitsForTest();
   // Cost figures price from a real models.dev extract, as they do in the app.
   _pricingTesting.installModelsDevPricingForTest(MODELS_DEV_FIXTURE);
 });
@@ -234,6 +258,54 @@ describe("claudePollAllowsKeychain", () => {
     expect(claudePollAllowsKeychain("user", undefined)).toBe(true);
     expect(claudePollAllowsKeychain("automatic", "/tmp/claude-1028")).toBe(true);
     expect(claudePollAllowsKeychain("automatic", "  ")).toBe(false);
+  });
+});
+
+describe("claudeCliFallbackFitsStatus", () => {
+  it("refuses the CLI fallback for the statuses the account itself caused", () => {
+    // A throttle or a permission refusal is answered the same way for the same
+    // token by `claude /usage`, so the pty fallback would only add a second
+    // request to an account that just asked us to back off.
+    expect(_testing.claudeCliFallbackFitsStatus(429)).toBe(false);
+    expect(_testing.claudeCliFallbackFitsStatus(403)).toBe(false);
+    // Everything else is what the bounded fallback exists for: auth repair,
+    // server faults, transport, and an unrecognized body.
+    expect(_testing.claudeCliFallbackFitsStatus(401)).toBe(true);
+    expect(_testing.claudeCliFallbackFitsStatus(500)).toBe(true);
+    expect(_testing.claudeCliFallbackFitsStatus(0)).toBe(true);
+  });
+});
+
+describe("per-account rate-limit ladder", () => {
+  it("doubles the wait on each failure, honours Retry-After, and resets on success", () => {
+    // The ladder is what stops an account throttled twice from being re-asked
+    // at the base cadence forever: an elapsed wait is not itself a reset, only
+    // a successful read clears the record.
+    const rateLimited = {
+      windows: [] as never[],
+      errors: ["claude: API returned 429"],
+      errorKind: "rate_limited" as const,
+    };
+    _testing.noteAccountPollOutcome("claude:ladder", rateLimited, 0);
+    expect(_testing.accountRateLimitNextAttemptAtMs("claude:ladder", 1)).toBe(120_000);
+    // The gate runs first on every poll, and it runs while the wait has just
+    // elapsed. Reading an elapsed wait as free must not reset the ladder step
+    // before the next failure lands — that would pin every wait at the base.
+    expect(_testing.accountRateLimitNextAttemptAtMs("claude:ladder", 120_001)).toBe(0);
+    _testing.noteAccountPollOutcome("claude:ladder", rateLimited, 120_001);
+    expect(_testing.accountRateLimitNextAttemptAtMs("claude:ladder", 120_002)).toBe(360_001);
+    expect(_testing.accountRateLimitNextAttemptAtMs("claude:ladder", 360_002)).toBe(0);
+    _testing.noteAccountPollOutcome("claude:ladder", rateLimited, 360_002);
+    expect(_testing.accountRateLimitNextAttemptAtMs("claude:ladder", 360_003)).toBe(840_002);
+    // A provider Retry-After longer than the ladder's ceiling wins.
+    _testing.noteAccountPollOutcome("claude:ladder", { ...rateLimited, retryAfterMs: 1_200_000 }, 0);
+    expect(_testing.accountRateLimitNextAttemptAtMs("claude:ladder", 1)).toBe(1_200_000);
+    // A read that produced windows clears the account's record and ladder step.
+    _testing.noteAccountPollOutcome("claude:ladder", {
+      windows: [{ provider: "claude", windowType: "five_hour", percentUsed: 10, resetsAt: "t", resetsInMs: 1 }] as never[],
+      errors: [],
+    }, 0);
+    expect(_testing.accountRateLimitNextAttemptAtMs("claude:ladder", 1)).toBe(0);
   });
 });
 
@@ -1226,6 +1298,13 @@ describe("resolveTokenPrice", () => {
     expect(resolveTokenPrice("gpt-6-sol").input).toBe(2 / 1_000_000);
     expect(resolveTokenPrice("gemini-2.5-pro").input).toBe(0);
     expect(tokenPriceSource("gemini-2.5-pro")).toBe("fallback");
+
+    // A retired row keeps its own rate in the fallback, not the cheaper
+    // successor its alias now resolves to (Haiku 4.5 $1/$5, not 5.5's $0.10/$0.50).
+    expect(resolveTokenPrice("claude-haiku-4-5").input).toBe(1 / 1_000_000);
+    expect(resolveTokenPrice("claude-haiku-4-5").output).toBe(5 / 1_000_000);
+    expect(resolveTokenPrice("claude-4.5-haiku").input).toBe(1 / 1_000_000);
+    expect(tokenPriceSource("claude-haiku-4-5")).toBe("fallback");
   });
 
   it("keeps the Codex list price when another runtime shares the wire id", () => {
@@ -1308,8 +1387,8 @@ describe("resolveTokenPrice", () => {
     expect(resolveTokenPrice("opus").input).toBe(4 / 1_000_000);
     expect(resolveTokenPrice("opus").cacheRead).toBe(0.2 / 1_000_000);
     expect(tokenPriceSource("opus")).toBe("list");
-    expect(resolveTokenPrice("haiku").input).toBe(1 / 1_000_000);
-    expect(resolveTokenPrice("haiku").output).toBe(5 / 1_000_000);
+    expect(resolveTokenPrice("haiku").input).toBe(0.1 / 1_000_000);
+    expect(resolveTokenPrice("haiku").output).toBe(0.5 / 1_000_000);
   });
 
   it("prices every spelling of Sonnet 4.6 at Sonnet 4.6's row, not Sonnet 5's", () => {
@@ -1730,6 +1809,67 @@ describe("pollCodexViaCliRpc", () => {
     expect(result.windows.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(17);
   });
 
+  it("keeps app-server stdin open until a delayed rate-limit reply arrives", async () => {
+    const child = new EventEmitter() as any;
+    const stdoutEmitter = new EventEmitter();
+    const stderrEmitter = new EventEmitter();
+    const stdinEmitter = new EventEmitter() as any;
+    let replyDelivered = false;
+    let stdinEndedBeforeReply = false;
+    let replyTimer: ReturnType<typeof setTimeout> | null = null;
+
+    stdinEmitter.write = vi.fn(() => true);
+    stdinEmitter.end = vi.fn(() => {
+      if (!replyDelivered) {
+        // A real app-server aborts the in-flight request and exits on EOF.
+        stdinEndedBeforeReply = true;
+        if (replyTimer) clearTimeout(replyTimer);
+        child.emit("close", 0);
+      }
+    });
+    child.stdout = stdoutEmitter;
+    child.stderr = stderrEmitter;
+    child.stdin = stdinEmitter;
+    child.kill = vi.fn();
+
+    mockState.resolveCodexExecutable.mockReturnValue({ path: "codex", source: "path" });
+    mockState.spawn.mockReturnValue(child);
+
+    const logger = createLogger();
+    const pending = pollCodexViaCliRpc(logger as any);
+
+    // `initialize` (id 0) answers at once; the rate-limit read (id 1) is a
+    // network round-trip that lands a tick later.
+    stdoutEmitter.emit(
+      "data",
+      Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: 0, result: {} })}\n`),
+    );
+    replyTimer = setTimeout(() => {
+      replyDelivered = true;
+      stdoutEmitter.emit(
+        "data",
+        Buffer.from(`${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            rateLimits: {
+              primary: { usedPercent: 17, resetsAt: 1773446952 },
+              secondary: { usedPercent: 64, resetsAt: 1773853354 },
+            },
+          },
+        })}\n`),
+      );
+      child.emit("close", 0);
+    }, 20);
+
+    const result = await pending;
+
+    expect(stdinEndedBeforeReply).toBe(false);
+    expect(result.errors).toEqual([]);
+    expect(result.windows).toHaveLength(2);
+    expect(result.windows.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(17);
+  });
+
   it("routes stdin EPIPE errors through cleanup and reports a CLI RPC failure", async () => {
     const stdinError = new Error("EPIPE");
     const fake = createFakeCodexChild({ stdinError });
@@ -2137,6 +2277,58 @@ describe("createUsageTrackingService", () => {
     expect(snapshot.lastPolledAt).toBeTruthy();
 
     service.dispose();
+  });
+
+  describe("balance issues on the published snapshot", () => {
+    const signedIn = (id: string, label: string): ProviderInstance => ({
+      id,
+      provider: "claude",
+      label,
+      configHome: `/tmp/${id}`,
+      isDefault: false,
+      createdAt: new Date(0).toISOString(),
+      signedIn: true,
+    });
+
+    const storeWith = (smartBalance: boolean) => ({
+      getProviderSettings: (provider: string) => ({
+        smartBalance: provider === "claude" ? smartBalance : false,
+        autoStartWindows: false,
+      }),
+      list: (provider?: string): ProviderInstance[] => (provider === "claude"
+        ? [signedIn("claude-work", "Work"), signedIn("claude-personal", "Personal")]
+        : []),
+    });
+
+    it("publishes a balance issue when two accounts have no readable readings", () => {
+      const service = createUsageTrackingService({
+        logger: createLogger(),
+        dependencies: { ...createFastDependencies(), providerInstanceStore: storeWith(true) },
+      });
+
+      expect(service.getUsageSnapshot().balanceIssues).toBeUndefined();
+      service.resolveBalancedInstance("claude");
+
+      expect(service.getUsageSnapshot().balanceIssues).toEqual([
+        expect.objectContaining({
+          provider: "claude",
+          kind: "no_usage_data",
+          title: expect.stringContaining("Claude"),
+        }),
+      ]);
+      service.dispose();
+    });
+
+    it("publishes no balance issue while smart balance is off", () => {
+      const service = createUsageTrackingService({
+        logger: createLogger(),
+        dependencies: { ...createFastDependencies(), providerInstanceStore: storeWith(false) },
+      });
+
+      expect(service.resolveBalancedInstance("claude")).toBeNull();
+      expect(service.getUsageSnapshot().balanceIssues).toBeUndefined();
+      service.dispose();
+    });
   });
 
   it("surfaces Codex spend control and accepts it after a cache JSON round-trip", async () => {
@@ -3736,6 +3928,38 @@ describe("scanClaudeLogs (via aggregateCosts)", () => {
     }
   });
 
+  it("marks a Claude fast-mode request and prices it at the fast multiple", async () => {
+    const tmpDir = makeTmpDir();
+    const projectDir = path.join(tmpDir, "projects", "-repo");
+    fs.mkdirSync(projectDir, { recursive: true });
+    try {
+      const line = (speed?: string) => JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-05-29T12:00:00.000Z",
+        cwd: "/repo",
+        message: {
+          id: speed ? "msg-fast" : "msg-std",
+          model: "claude-opus-4-6",
+          usage: { input_tokens: 1_000_000, output_tokens: 0, ...(speed ? { speed } : {}) },
+        },
+      });
+      fs.writeFileSync(path.join(projectDir, "standard.jsonl"), `${line()}\n`);
+      fs.writeFileSync(path.join(projectDir, "fast.jsonl"), `${line("fast")}\n`);
+
+      const entries = await scanClaudeLogs([projectDir]);
+      const byId = new Map(entries.map((entry) => [entry.messageId, entry]));
+      expect(byId.get("msg-fast")?.speed).toBe("fast");
+      expect(byId.get("msg-std")?.speed).toBeUndefined();
+
+      // Fast mode is a 2× multiple on the model's standard rate.
+      const standardCost = aggregateCosts([byId.get("msg-std")!], "claude").last30dCostUsd;
+      const fastCost = aggregateCosts([byId.get("msg-fast")!], "claude").last30dCostUsd;
+      expect(fastCost).toBeCloseTo(standardCost * 2, 1);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("deduplicates Claude message ids across files", async () => {
     const tmpDir = makeTmpDir();
     const projectDir = path.join(tmpDir, "projects", "-repo");
@@ -3937,7 +4161,119 @@ describe("scanClaudeLogs (via aggregateCosts)", () => {
   });
 });
 
+describe("adeProviderUsageHomes", () => {
+  it("hands each provider the account, preset and route homes that hold its history, and no other provider's", () => {
+    const adeDir = makeTmpDir();
+    const originalAdeHome = process.env.ADE_HOME;
+    try {
+      // The registry lives in the same ADE home; pointing ADE_HOME here keeps
+      // the developer's real accounts out of the result.
+      process.env.ADE_HOME = adeDir;
+      const home = (...segments: string[]) => path.join(adeDir, "provider-homes", ...segments);
+      const make = (dir: string, files: string[], dirs: string[]) => {
+        fs.mkdirSync(dir, { recursive: true });
+        for (const file of files) fs.writeFileSync(path.join(dir, file), "{}");
+        for (const sub of dirs) fs.mkdirSync(path.join(dir, sub), { recursive: true });
+      };
+      make(home("claude", "work"), [".claude.json"], ["projects", "sessions"]);
+      make(home("claude", "removed-account"), [], ["projects"]);
+      make(home("codex", "second"), ["config.toml"], ["sessions"]);
+      make(home("preset", "keyed-claude"), [".claude.json"], ["projects"]);
+      make(home("route", "codex-route"), ["auth.json"], ["archived_sessions"]);
+      make(home("claude", "never-used"), [".claude.json"], []);
+
+      const homes = adeProviderUsageHomes(adeDir);
+
+      expect(homes.claude).toEqual([home("claude", "removed-account"), home("claude", "work"), home("preset", "keyed-claude")].sort());
+      expect(homes.codex).toEqual([home("codex", "second"), home("route", "codex-route")].sort());
+    } finally {
+      if (originalAdeHome === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = originalAdeHome;
+      fs.rmSync(adeDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("scanCodexLogs", () => {
+  function codexRollout(lines: Array<Record<string, unknown>>): string {
+    return `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`;
+  }
+  function tokenCount(at: string, total: number): Record<string, unknown> {
+    return {
+      timestamp: at,
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          total_token_usage: { input_tokens: total, output_tokens: 0, total_tokens: total },
+          last_token_usage: { input_tokens: 100, output_tokens: 0, total_tokens: 100 },
+        },
+      },
+    };
+  }
+  function tier(at: string, serviceTier: string): Record<string, unknown> {
+    return { timestamp: at, type: "event_msg", payload: { type: "thread_settings_applied", thread_settings: { service_tier: serviceTier } } };
+  }
+
+  it("prices each response at the service tier the thread was set to then", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    try {
+      process.env.CODEX_HOME = tmpDir;
+      const sessionDir = path.join(tmpDir, "sessions", "2026", "10", "04");
+      fs.mkdirSync(sessionDir, { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, "rollout-tiers.jsonl"), codexRollout([
+        { timestamp: "2026-10-04T12:00:00.000Z", type: "session_meta", payload: { id: "s-tiers", originator: "codex_cli_rs", model: "gpt-6-astra" } },
+        tier("2026-10-04T12:00:01.000Z", "default"),
+        tokenCount("2026-10-04T12:00:02.000Z", 100),
+        tier("2026-10-04T12:00:03.000Z", "priority"),
+        tokenCount("2026-10-04T12:00:04.000Z", 200),
+        tier("2026-10-04T12:00:05.000Z", "ultrafast"),
+        tokenCount("2026-10-04T12:00:06.000Z", 300),
+        tier("2026-10-04T12:00:07.000Z", "flex"),
+        tokenCount("2026-10-04T12:00:08.000Z", 400),
+      ]));
+
+      const entries = await scanCodexLogs();
+
+      expect(entries.map((entry) => entry.speed ?? "standard")).toEqual(["standard", "fast", "ultrafast", "standard"]);
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads the account homes the usage service passes, not only the default home", async () => {
+    const defaultHome = makeTmpDir();
+    const accountHome = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    const originalExtra = process.env.ADE_USAGE_EXTRA_CODEX_HOMES;
+    try {
+      process.env.CODEX_HOME = defaultHome;
+      process.env.ADE_USAGE_EXTRA_CODEX_HOMES = accountHome;
+      for (const [home, id] of [[defaultHome, "s-default"], [accountHome, "s-account"]] as const) {
+        const dir = path.join(home, "sessions", "2026", "10", "04");
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, `rollout-${id}.jsonl`), codexRollout([
+          { timestamp: "2026-10-04T12:00:00.000Z", type: "session_meta", payload: { id, originator: "codex_cli_rs", model: "gpt-5.5" } },
+          tokenCount("2026-10-04T12:00:01.000Z", 100),
+        ]));
+      }
+
+      const entries = await scanCodexLogs();
+
+      expect(entries.map((entry) => entry.messageId.split(":")[1]).sort()).toEqual(["s-account", "s-default"]);
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+      if (originalExtra === undefined) delete process.env.ADE_USAGE_EXTRA_CODEX_HOMES;
+      else process.env.ADE_USAGE_EXTRA_CODEX_HOMES = originalExtra;
+      fs.rmSync(defaultHome, { recursive: true, force: true });
+      fs.rmSync(accountHome, { recursive: true, force: true });
+    }
+  });
+
   it("skips an oversized record and processes the following token record", async () => {
     const tmpDir = makeTmpDir();
     const originalCodexHome = process.env.CODEX_HOME;
@@ -4979,7 +5315,7 @@ describe("buildProviderWindows", () => {
       [],
       null,
       "2026-06-07T00:00:00Z",
-      "oauth",
+      { source: "oauth" },
     );
     expect(result.status.state).toBe("ok");
     expect(result.status.lastSuccessAt).toBe("2026-06-07T00:00:00Z");
@@ -5083,8 +5419,7 @@ describe("buildProviderWindows", () => {
       [],
       null,
       "t",
-      "oauth",
-      "forbidden",
+      { source: "oauth", errorKind: "forbidden" },
     );
     expect(result.status.state).toBe("unauthed");
     expect(result.status.errorKind).toBe("forbidden");
@@ -5977,10 +6312,13 @@ describe("ADE database usage aggregation", () => {
     expect(isMeaningfulUsageAction("chat.createScheduledWork")).toBe(true);
     expect(usageActionFromIpcChannel("ade.agentChat.scheduledWork.cancel")).toBe("chat.cancelScheduledWork");
     expect(isMeaningfulUsageAction("chat.cancelScheduledWork")).toBe(true);
-    expect(usageActionFromIpcChannel("ade.agentChat.promptStashes.create")).toBe("chat.createPromptStash");
-    expect(isMeaningfulUsageAction("chat.createPromptStash")).toBe(true);
-    // The PR draft and auto-merge toggles are mutations on every transport.
-    for (const action of ["setDraft", "setAutoMerge"]) {
+    expect(usageActionFromIpcChannel("ade.agentChat.drafts.create")).toBe("chat.createDraft");
+    expect(isMeaningfulUsageAction("chat.createDraft")).toBe(true);
+    expect(usageActionFromIpcChannel("ade.agentChat.restartSession")).toBe("chat.restartSession");
+    expect(isMeaningfulUsageAction(usageActionFromRpcDomain("chat", "restartSession"))).toBe(true);
+    expect(isMeaningfulUsageAction(usageActionFromRpcDomain("pr", "getChatWatches"))).toBe(false);
+    // The PR draft and auto-merge toggles, and the PR watch, are mutations on every transport.
+    for (const action of ["setDraft", "setAutoMerge", "setChatWatch"]) {
       expect(usageActionFromIpcChannel(`ade.prs.${action}`)).toBe(`prs.${action}`);
       expect(usageActionFromRpcDomain("pr", action)).toBe(`prs.${action}`);
       expect(isMeaningfulUsageAction(`prs.${action}`)).toBe(true);
@@ -6430,6 +6768,55 @@ describe("usage ledger end-to-end accuracy", () => {
     }
   });
 
+  it("counts a lane outside .ade/worktrees in project usage, but not a worktree opened as its own project", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ade-usage-linked-"));
+    try {
+      const projectRoot = path.join(tmp, "repo");
+      // Git's own layout for linked worktrees: `<checkout>/.git` names the admin
+      // directory, and the admin directory's `gitdir` names the checkout back.
+      const linkWorktree = (name: string): string => {
+        const checkout = path.join(tmp, "repo-worktrees", name);
+        const adminDir = path.join(projectRoot, ".git", "worktrees", name);
+        fs.mkdirSync(checkout, { recursive: true });
+        fs.mkdirSync(adminDir, { recursive: true });
+        fs.writeFileSync(path.join(checkout, ".git"), `gitdir: ${adminDir}\n`);
+        fs.writeFileSync(path.join(adminDir, "gitdir"), `${path.join(checkout, ".git")}\n`);
+        return checkout;
+      };
+      const lane = linkWorktree("feature lane");
+      const standalone = linkWorktree("standalone");
+      const { DatabaseSync } = requireForTest("node:sqlite") as { DatabaseSync: new (dbPath: string) => any };
+      for (const root of [projectRoot, standalone]) {
+        fs.mkdirSync(path.join(root, ".ade"), { recursive: true });
+        const db = new DatabaseSync(path.join(root, ".ade", "ade.db"));
+        db.exec("create table lanes (worktree_path text, attached_root_path text, archived_at text)");
+        if (root === projectRoot) {
+          db.prepare("insert into lanes(worktree_path, attached_root_path, archived_at) values (?, null, null)").run(lane);
+        }
+        db.close();
+      }
+      const base = Date.now();
+      const entry = (messageId: string, inputTokens: number, where: { projectPath?: string; projectKey?: string }): TokenEntry => ({
+        messageId, model: "claude-opus-5", inputTokens, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, timestamp: base, ...where,
+      });
+      const costs = buildCostSnapshots(new Map([["claude", [
+        entry("in-root", 1, { projectPath: projectRoot }),
+        entry("in-lane-by-path", 10, { projectPath: path.join(lane, "src") }),
+        entry("in-lane-by-key", 100, { projectKey: lane.replace(/[^A-Za-z0-9]/g, "-") }),
+        entry("in-standalone", 1_000, { projectPath: standalone }),
+        entry("elsewhere", 10_000, { projectPath: path.join(tmp, "unrelated") }),
+      ]]]), "project", projectRoot);
+
+      const claude = costs.find((cost) => cost.provider === "claude");
+      expect(claude, "claude project snapshot").toBeDefined();
+      const allTime = claude!.tokenBreakdownByPreset?.all ?? claude!.tokenBreakdown;
+      const inputTokens = Object.values(allTime).reduce((sum, row) => sum + (row?.input ?? 0), 0);
+      expect(inputTokens).toBe(111);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("gives every day's tokens a provider so the chart series sum to the day total", () => {
     const base = Date.now();
     const costs = buildCostSnapshots(new Map([
@@ -6526,6 +6913,26 @@ describe("per-account quota attribution", () => {
     writeJson(path.join(configHome, ".credentials.json"), {
       claudeAiOauth: { accessToken, expiresAt: Date.now() + 8 * 60 * 60_000 },
     });
+  }
+
+  /**
+   * The ledger-scanner stubs every service in this block needs.
+   *
+   * One factory instead of the nine-entry bag inlined per test: a scanner added
+   * to the service should not require remembering which tests forgot it.
+   */
+  function scannerStubs() {
+    return {
+      scanClaudeLogs: vi.fn(async () => [] as never[]),
+      scanCodexLogs: vi.fn(async () => [] as never[]),
+      scanCursorLogs: vi.fn(async () => [] as never[]),
+      scanCursorAgentLogs: vi.fn(async () => [] as never[]),
+      scanOpenClawLogs: vi.fn(async () => [] as never[]),
+      scanOpenCodeLogs: vi.fn(async () => [] as never[]),
+      scanDroidLogs: vi.fn(async () => [] as never[]),
+      scanCopilotLogs: vi.fn(async () => [] as never[]),
+      scanGeminiLogs: vi.fn(async () => [] as never[]),
+    };
   }
 
   function claudeUsageBody(fiveHourPercent: number) {
@@ -6704,6 +7111,127 @@ describe("per-account quota attribution", () => {
 
     expect(result.errors).toEqual([]);
     expect(result.windows.every((window) => window.accountId === "claude:claude")).toBe(true);
+  });
+
+  /** A fake Claude CLI in its pty that answers `/usage`, recording the home it ran for. */
+  function fakeClaudeCli(spawnedHomes: Array<string | undefined>): void {
+    mockState.ptySpawn.mockImplementation((_command: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => {
+      spawnedHomes.push(options.env.CLAUDE_CONFIG_DIR);
+      let emit: ((chunk: string) => void) | null = null;
+      return {
+        onData: (cb: (chunk: string) => void) => { emit = cb; },
+        onExit: () => undefined,
+        write: (data: string) => {
+          if (data.startsWith("/usage")) {
+            emit?.("Settings: Usage\nCurrent session\n70% left\nResets 5pm\nCurrent week (all models)\n12% used\nResets Jul 12 at 3pm\n");
+          }
+        },
+        kill: () => undefined,
+      };
+    });
+  }
+
+  /** One background poll. It reads real files between its timers, so the fake clock moves one step at a time. */
+  async function backgroundPoll(instances: TestInstance[]) {
+    let settled = false;
+    const pending = _testing.pollClaudeUsage(logger as never, { reason: "automatic" }, instances)
+      .finally(() => { settled = true; });
+    while (!settled) {
+      await new Promise((resolve) => setImmediate(resolve));
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    return await pending;
+  }
+
+  function withPlatform(platform: NodeJS.Platform): () => void {
+    const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...original, value: platform });
+    return () => Object.defineProperty(process, "platform", original);
+  }
+
+  it.each([
+    { name: "a second account", platform: "darwin" as const, base: false, refreshes: true },
+    { name: "the base account off macOS", platform: "linux" as const, base: true, refreshes: true },
+    // Its background poll skips the Keychain and could never read the result.
+    { name: "the base account on macOS", platform: "darwin" as const, base: true, refreshes: false },
+  ])("has the Claude CLI refresh $name's expired login from a background poll, once per allowance", async ({ platform, base, refreshes }) => {
+    // Claude tokens last about eight hours and ADE never refreshes one itself,
+    // and smart balance never sends a chat to an account it has no reading
+    // for, so an idle account's login has no chat coming to refresh it.
+    const instance = base ? defaultInstance() : workInstance();
+    const expired = { accessToken: "stale", refreshToken: "refresh", expiresAt: Date.now() - 60_000 };
+    writeJson(path.join(instance.configHome, ".credentials.json"), { claudeAiOauth: expired });
+    vi.stubEnv("CLAUDE_CODE_EXECUTABLE_PATH", "/fake/claude");
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("an expired token must not be sent");
+    }));
+    const spawnedHomes: Array<string | undefined> = [];
+    fakeClaudeCli(spawnedHomes);
+    const restorePlatform = withPlatform(platform);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    try {
+      const first = await backgroundPoll([instance]);
+      const accountWindows = first.windows.filter((window) => window.accountId === `claude:${instance.id}`);
+      if (!refreshes) {
+        expect(spawnedHomes).toEqual([]);
+        expect(accountWindows).toEqual([]);
+        return;
+      }
+      expect(spawnedHomes).toEqual([instance.configHome]);
+      expect(accountWindows.map((window) => [window.windowType, window.percentUsed]).sort())
+        .toEqual([["five_hour", 30], ["weekly", 12]]);
+
+      // A CLI run that did not fix the login is not repeated on the next tick…
+      await backgroundPoll([instance]);
+      expect(spawnedHomes).toHaveLength(1);
+
+      // …but is once the allowance runs out.
+      vi.setSystemTime(Date.now() + 31 * 60_000);
+      await backgroundPoll([instance]);
+      expect(spawnedHomes).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+      restorePlatform();
+    }
+  });
+
+  it("does not resend a Claude token the usage API rejected, and reads the CLI's replacement", async () => {
+    const credentials = (accessToken: string) => ({
+      claudeAiOauth: { accessToken, refreshToken: "refresh", expiresAt: Date.now() + 60 * 60_000 },
+    });
+    writeJson(path.join(workHome, ".credentials.json"), credentials("rejected"));
+    vi.stubEnv("CLAUDE_CODE_EXECUTABLE_PATH", "/fake/claude");
+    const sent: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { headers: Record<string, string> }) => {
+      const token = init.headers.Authorization.replace("Bearer ", "");
+      sent.push(token);
+      return token === "rejected"
+        ? { ok: false, status: 401, headers: { get: () => null }, json: async () => ({}) }
+        : { ok: true, status: 200, headers: { get: () => null }, json: async () => claudeUsageBody(40) };
+    }));
+    // The CLI cannot refresh it this time.
+    mockState.ptySpawn.mockImplementation(() => {
+      throw new Error("claude is not installed");
+    });
+    const poll = () => _testing.pollClaudeUsage(logger as never, { reason: "automatic" }, [workInstance()]);
+
+    const first = await poll();
+    expect(sent).toEqual(["rejected"]);
+    expect(mockState.ptySpawn).toHaveBeenCalledTimes(1);
+    expect(first.errors).toEqual(["claude: API returned 401"]);
+
+    // The same token is answered locally, with the same error.
+    const second = await poll();
+    expect(sent).toEqual(["rejected"]);
+    expect(second.errors).toEqual(["claude: API returned 401"]);
+
+    // A new token in the login is read and sent.
+    writeJson(path.join(workHome, ".credentials.json"), credentials("renewed"));
+    const third = await poll();
+    expect(sent).toEqual(["rejected", "renewed"]);
+    expect(third.windows.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(40);
+    vi.unstubAllEnvs();
   });
 
   it("keeps a signed-in account's last windows when a background pass cannot read its login", async () => {
@@ -6996,15 +7524,7 @@ describe("per-account quota attribution", () => {
         pollClaudeUsage: vi.fn(async () => ({ windows: [], errors: [] })),
         pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
         listProviderInstances: (provider) => provider === "codex" ? instances : [],
-        scanClaudeLogs: vi.fn(async () => []),
-        scanCodexLogs: vi.fn(async () => []),
-        scanCursorLogs: vi.fn(async () => []),
-        scanCursorAgentLogs: vi.fn(async () => []),
-        scanOpenClawLogs: vi.fn(async () => []),
-        scanOpenCodeLogs: vi.fn(async () => []),
-        scanDroidLogs: vi.fn(async () => []),
-        scanCopilotLogs: vi.fn(async () => []),
-        scanGeminiLogs: vi.fn(async () => []),
+        ...scannerStubs(),
       },
     });
     return { service, workCodexHome, launches, analyticsEvents };
@@ -7024,12 +7544,170 @@ describe("per-account quota attribution", () => {
     await expect(service.consumeResetCredit(undefined as never)).resolves.toEqual({
       ok: false,
       status: "failure",
-      message: "Name the Codex account whose reset credit to spend.",
+      message: "Name the account whose reset credit to spend.",
     });
     await expect(service.consumeResetCredit({ accountId: "  " })).resolves.toMatchObject({
       ok: false,
       status: "failure",
     });
+  });
+
+  it("reads Claude banked resets from the account's own home and spends one", async () => {
+    // Claude's reset read is gated off on macOS (the token lives in the
+    // Keychain), so the non-macOS HTTP path is exercised by presenting the
+    // platform the feature is offered on.
+    const originalPlatform = process.platform;
+    setPlatform("linux");
+    try {
+      writeClaudeCredentials(workHome, "work-token");
+      writeJson(path.join(workHome, ".claude.json"), {
+        oauthAccount: { emailAddress: "work@example.com", organizationUuid: "org-1" },
+      });
+      const calls: Array<{ url: string; method: string }> = [];
+      const analyticsEvents: ProductAnalyticsCapture[] = [];
+      vi.stubGlobal("fetch", vi.fn(async (url: string, init?: { method?: string }) => {
+        calls.push({ url: String(url), method: init?.method ?? "GET" });
+        if (String(url).includes("/api/oauth/usage")) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              cedar_ember: {
+                eligible: true,
+                next_grant_id: "grant_a",
+                grants: [{
+                  id: "grant_a",
+                  resets_left: 2,
+                  usable_now: true,
+                  ends_at: "2099-03-14T02:00:00Z",
+                }],
+              },
+            }),
+          };
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify({ result: "reset" }) };
+      }));
+
+      const service = createUsageTrackingService({
+        logger,
+        dependencies: {
+          captureInternalAnalytics: (input) => analyticsEvents.push(input),
+          pollClaudeUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+          pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+          listProviderInstances: (provider) => provider === "claude"
+            ? [{ id: "work", label: "Work", configHome: workHome, isDefault: true }]
+            : [],
+          ...scannerStubs(),
+        },
+      });
+
+      const snapshot = await service.poll({ reason: "user" });
+      const account = (snapshot.accounts ?? []).find((entry) => entry.id === "claude:work");
+      expect(account?.resetCredits).toEqual({
+        availableCount: 2,
+        nextExpiresAt: "2099-03-14T02:00:00.000Z",
+      });
+
+      await expect(service.consumeResetCredit({ accountId: "claude:work" }))
+        .resolves.toEqual({ ok: true, status: "reset" });
+      expect(calls.find((call) => call.method === "POST")?.url)
+        .toBe("https://api.anthropic.com/api/organizations/org-1/reset_rate_limits");
+      // The event must name the provider whose credit was spent, not Codex.
+      const outcome = analyticsEvents
+        .filter((event) => event.properties?.action === "reset_credit_consumed")
+        .at(-1);
+      expect(outcome?.properties).toMatchObject({ outcome: "completed", provider: "claude" });
+    } finally {
+      setPlatform(originalPlatform);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps a banked Claude credit when a later read fails", async () => {
+    const originalPlatform = process.platform;
+    setPlatform("linux");
+    try {
+      writeClaudeCredentials(workHome, "work-token");
+      let failing = false;
+      vi.stubGlobal("fetch", vi.fn(async () => (failing
+        ? { ok: false, status: 500, text: async () => "{}" }
+        : {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            cedar_ember: {
+              eligible: true,
+              next_grant_id: "grant_a",
+              grants: [{ id: "grant_a", resets_left: 1, usable_now: true }],
+            },
+          }),
+        })));
+
+      await _testing.probeClaudeResetCredits({ logger: logger as never, configHome: workHome, force: true });
+      expect(_testing.readCachedClaudeResetCredits(workHome)?.availableCount).toBe(1);
+
+      // A 500 is not a confirmed zero balance: the live control must survive it.
+      failing = true;
+      await _testing.probeClaudeResetCredits({ logger: logger as never, configHome: workHome, force: true });
+      expect(_testing.readCachedClaudeResetCredits(workHome)?.availableCount).toBe(1);
+    } finally {
+      setPlatform(originalPlatform);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("repeats an unconfirmed Claude claim instead of switching grants", async () => {
+    const originalPlatform = process.platform;
+    setPlatform("linux");
+    try {
+      writeClaudeCredentials(workHome, "work-token");
+      writeJson(path.join(workHome, ".claude.json"), {
+        oauthAccount: { emailAddress: "work@example.com", organizationUuid: "org-1" },
+      });
+      const bodies: Array<{ grant_id: string; request_id: string }> = [];
+      let nextGrant = "grant_a";
+      let claimStatus = 500;
+      vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: { method?: string; body?: string }) => {
+        if (init?.method === "POST") {
+          bodies.push(JSON.parse(String(init.body)));
+          return {
+            ok: claimStatus === 200,
+            status: claimStatus,
+            text: async () => JSON.stringify(claimStatus === 200 ? { result: "reset" } : {}),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            cedar_ember: {
+              eligible: true,
+              next_grant_id: nextGrant,
+              grants: [{ id: nextGrant, resets_left: 1, usable_now: true }],
+            },
+          }),
+        };
+      }));
+
+      await _testing.probeClaudeResetCredits({ logger: logger as never, configHome: workHome, force: true });
+      await expect(_testing.spendClaudeResetCredit({ logger: logger as never, configHome: workHome }))
+        .resolves.toMatchObject({ status: "failure" });
+
+      // A later probe selects a different grant; the retry must still repeat the
+      // original claim, not spend the new grant under a fresh request id.
+      nextGrant = "grant_b";
+      await _testing.probeClaudeResetCredits({ logger: logger as never, configHome: workHome, force: true });
+      claimStatus = 200;
+      await expect(_testing.spendClaudeResetCredit({ logger: logger as never, configHome: workHome }))
+        .resolves.toEqual({ ok: true, status: "reset" });
+
+      expect(bodies).toHaveLength(2);
+      expect(bodies[1]).toEqual(bodies[0]);
+      expect(bodies[1]?.grant_id).toBe("grant_a");
+    } finally {
+      setPlatform(originalPlatform);
+      vi.unstubAllGlobals();
+    }
   });
 
   it("records one analytics outcome per reset-credit verdict", async () => {
@@ -7077,18 +7755,10 @@ describe("per-account quota attribution", () => {
           errors: [] as never[],
         })),
         pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
-        listProviderInstances: (provider) => (provider === "claude"
+        listProviderInstances: (provider: string) => (provider === "claude"
           ? [defaultInstance(), workInstance()]
           : []),
-        scanClaudeLogs: vi.fn(async () => [] as never[]),
-        scanCodexLogs: vi.fn(async () => [] as never[]),
-        scanCursorLogs: vi.fn(async () => [] as never[]),
-        scanCursorAgentLogs: vi.fn(async () => [] as never[]),
-        scanOpenClawLogs: vi.fn(async () => [] as never[]),
-        scanOpenCodeLogs: vi.fn(async () => [] as never[]),
-        scanDroidLogs: vi.fn(async () => [] as never[]),
-        scanCopilotLogs: vi.fn(async () => [] as never[]),
-        scanGeminiLogs: vi.fn(async () => [] as never[]),
+        ...scannerStubs(),
       },
     });
 
@@ -7117,6 +7787,196 @@ describe("per-account quota attribution", () => {
     service.dispose();
   });
 
+  it.each([
+    { name: "the base account", defaultId: "claude" },
+    { name: "a second account", defaultId: "work" },
+  ])("shows one account for two config homes on the same live login, the default ($name), with only its windows", async ({ defaultId }) => {
+    writeClaudeAccount(path.join(tempHome, ".claude"), "shared@example.com");
+    writeClaudeAccount(workHome, "shared@example.com");
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        pollClaudeUsage: vi.fn(async () => ({
+          windows: [
+            {
+              provider: "claude" as const,
+              windowType: "five_hour" as const,
+              accountId: "claude:claude",
+              percentUsed: 20,
+              resetsAt: new Date(Date.now() + 60_000).toISOString(),
+              resetsInMs: 60_000,
+            },
+            {
+              provider: "claude" as const,
+              windowType: "weekly" as const,
+              accountId: "claude:work",
+              percentUsed: 60,
+              resetsAt: new Date(Date.now() + 60_000).toISOString(),
+              resetsInMs: 60_000,
+            },
+          ],
+          errors: [] as never[],
+        })),
+        pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+        listProviderInstances: (provider: string) => (provider === "claude"
+          ? [
+            { ...defaultInstance(), isDefault: defaultId === "claude" },
+            { ...workInstance(), isDefault: defaultId === "work" },
+          ]
+          : []),
+        ...scannerStubs(),
+      },
+    });
+
+    const snapshot = await service.poll({ reason: "user" });
+    const claudeAccounts = (snapshot.accounts ?? []).filter((account) => account.provider === "claude");
+
+    // One login is one quota: the default keeps it, the other home is dropped,
+    // and its windows go with it so balance cannot count the same plan twice.
+    // The registry names the same owner, so balance counts the kept reading.
+    expect(claudeAccounts.map((account) => account.id)).toEqual([`claude:${defaultId}`]);
+    expect(snapshot.windows.map((window) => window.accountId)).toEqual([`claude:${defaultId}`]);
+
+    service.dispose();
+  });
+
+  it("keeps the next-chat preview in sync with Claude's capacity rotation", async () => {
+    writeClaudeAccount(path.join(tempHome, ".claude"), "default@example.com");
+    writeClaudeAccount(workHome, "work@example.com");
+    const signedInInstances = (): ProviderInstance[] => [
+      { ...defaultInstance(), provider: "claude", createdAt: new Date(0).toISOString(), signedIn: true },
+      { ...workInstance(), provider: "claude", createdAt: new Date(0).toISOString(), signedIn: true },
+    ];
+    const dependencies = {
+      pollClaudeUsage: vi.fn(async () => ({
+        windows: [
+          {
+            provider: "claude" as const,
+            windowType: "five_hour" as const,
+            accountId: "claude:claude",
+            percentUsed: 44,
+            resetsAt: new Date(Date.now() + 47 * 60_000).toISOString(),
+            resetsInMs: 47 * 60_000,
+          },
+          {
+            provider: "claude" as const,
+            windowType: "weekly" as const,
+            accountId: "claude:claude",
+            percentUsed: 76,
+            resetsAt: new Date(Date.now() + (2 * 24 + 13) * 60 * 60_000).toISOString(),
+            resetsInMs: (2 * 24 + 13) * 60 * 60_000,
+            windowDurationMs: 7 * 24 * 60 * 60_000,
+          },
+          {
+            provider: "claude" as const,
+            windowType: "five_hour" as const,
+            accountId: "claude:work",
+            percentUsed: 0,
+            resetsAt: new Date(Date.now() + (2 * 60 + 7) * 60_000).toISOString(),
+            resetsInMs: (2 * 60 + 7) * 60_000,
+          },
+        ],
+        errors: [] as never[],
+      })),
+      pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+      listProviderInstances: (provider: string) => (provider === "claude"
+        ? [defaultInstance(), workInstance()]
+        : []),
+      providerInstanceStore: {
+        getProviderSettings: () => ({ smartBalance: true, autoStartWindows: false }),
+        list: (provider?: string) => (provider === "claude" ? signedInInstances() : []),
+      },
+      ...scannerStubs(),
+    };
+    const service = createUsageTrackingService({ logger, dependencies });
+
+    const initial = await service.poll({ reason: "user" });
+
+    // The default has the sooner weekly reset; work has a fresh 100% five-hour
+    // window and no weekly reading, so it receives the third capacity slot.
+    expect(initial.balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
+    expect(service.peekBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
+    expect(service.peekBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
+    expect(service.resolveBalancedInstance("claude")).toMatchObject({
+      instanceId: "claude",
+      reason: "soonest weekly reset",
+    });
+    expect(service.getUsageSnapshot().balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
+
+    // A quota poll recomputes the preview without consuming another slot.
+    const afterPoll = await service.poll({ reason: "user" });
+    expect(afterPoll.balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
+    expect(service.peekBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
+    expect(service.resolveBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
+    expect(service.getUsageSnapshot().balanceNext).toEqual([{ provider: "claude", instanceId: "work" }]);
+
+    const staleCachedSnapshot = service.getUsageSnapshot();
+    expect(staleCachedSnapshot.balanceNext).toEqual([{ provider: "claude", instanceId: "work" }]);
+    expect(service.peekBalancedInstance("claude")).toMatchObject({ instanceId: "work" });
+    expect(service.resolveBalancedInstance("claude")).toMatchObject({
+      instanceId: "work",
+      reason: "higher five-hour headroom",
+    });
+    expect(service.getUsageSnapshot().balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
+    service.dispose();
+
+    const originalVitest = process.env.VITEST;
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalReadFileSync = fs.readFileSync.bind(fs);
+    process.env.NODE_ENV = "production";
+    delete process.env.VITEST;
+    const cacheRead = vi.spyOn(fs, "readFileSync");
+    cacheRead.mockImplementation(((filePath: unknown, ...args: unknown[]) => {
+      if (String(filePath).endsWith("usage-snapshot.json")) {
+        return JSON.stringify({
+          version: _testing.USAGE_SNAPSHOT_CACHE_VERSION,
+          snapshot: staleCachedSnapshot,
+        }) as never;
+      }
+      return Reflect.apply(originalReadFileSync, fs, [filePath, ...args]) as never;
+    }) as typeof fs.readFileSync);
+    let restartedService: ReturnType<typeof createUsageTrackingService> | undefined;
+    try {
+      restartedService = createUsageTrackingService({ logger, dependencies });
+      const reloaded = restartedService.getUsageSnapshot();
+
+      expect(reloaded.balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
+      expect(reloaded.revision).toMatchObject({ producerId: restartedService.producerId, seq: 1 });
+      expect(staleCachedSnapshot.balanceNext).toEqual([{ provider: "claude", instanceId: "work" }]);
+    } finally {
+      restartedService?.dispose();
+      cacheRead.mockRestore();
+      if (originalVitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = originalVitest;
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
+
+  it("leaves a skipped balance pick off the snapshot's next-account mark", async () => {
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        pollClaudeUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+        pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+        listProviderInstances: (provider) => (provider === "claude" ? [defaultInstance()] : []),
+        providerInstanceStore: {
+          getProviderSettings: () => ({ smartBalance: true, autoStartWindows: false }),
+          list: (provider?: string): ProviderInstance[] => (provider === "claude"
+            ? [{ ...defaultInstance(), provider: "claude", createdAt: new Date(0).toISOString(), signedIn: true }]
+            : []),
+        },
+        ...scannerStubs(),
+      },
+    });
+
+    const snapshot = await service.poll({ reason: "user" });
+
+    // One signed-in account is `skip: one_account`, which is not a balance decision.
+    expect(snapshot.balanceNext).toBeUndefined();
+    service.dispose();
+  });
+
   it("names the default account for a window that arrived without attribution", async () => {
     writeClaudeAccount(path.join(tempHome, ".claude"), "solo@example.com");
     const service = createUsageTrackingService({
@@ -7134,15 +7994,7 @@ describe("per-account quota attribution", () => {
         })),
         pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
         listProviderInstances: (provider) => (provider === "claude" ? [defaultInstance()] : []),
-        scanClaudeLogs: vi.fn(async () => [] as never[]),
-        scanCodexLogs: vi.fn(async () => [] as never[]),
-        scanCursorLogs: vi.fn(async () => [] as never[]),
-        scanCursorAgentLogs: vi.fn(async () => [] as never[]),
-        scanOpenClawLogs: vi.fn(async () => [] as never[]),
-        scanOpenCodeLogs: vi.fn(async () => [] as never[]),
-        scanDroidLogs: vi.fn(async () => [] as never[]),
-        scanCopilotLogs: vi.fn(async () => [] as never[]),
-        scanGeminiLogs: vi.fn(async () => [] as never[]),
+        ...scannerStubs(),
       },
     });
 
@@ -7179,6 +8031,263 @@ describe("per-account quota attribution", () => {
       else process.env.FACTORY_HOME_OVERRIDE = originalOverride;
       if (originalFactoryDir === undefined) delete process.env.FACTORY_DIR;
       else process.env.FACTORY_DIR = originalFactoryDir;
+    }
+  });
+
+  it("backs a rate-limited account off without silencing its sibling", async () => {
+    // Dedicated account ids: the cooldown is keyed by account id and outlives
+    // one poll, so reusing "claude"/"work" here would leak it into the tests
+    // around this one.
+    const throttledHome = path.join(tempHome, "provider-homes", "claude", "rx-a");
+    const healthyHome = path.join(tempHome, "provider-homes", "claude", "rx-b");
+    fs.mkdirSync(throttledHome, { recursive: true });
+    fs.mkdirSync(healthyHome, { recursive: true });
+    writeClaudeCredentials(throttledHome, "rx-a-token");
+    writeClaudeCredentials(healthyHome, "rx-b-token");
+    const throttled = { id: "rx-a", label: "A", configHome: throttledHome, isDefault: true };
+    const healthy = { id: "rx-b", label: "B", configHome: healthyHome, isDefault: false };
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { headers: Record<string, string> }) => {
+      const token = init.headers.Authorization.replace("Bearer ", "");
+      seen.push(token);
+      if (token === "rx-a-token") {
+        return {
+          ok: false,
+          status: 429,
+          headers: { get: (name: string) => (name.toLowerCase() === "retry-after" ? "300" : null) },
+          json: async () => ({}),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => claudeUsageBody(60),
+      };
+    }));
+
+    const first = await _testing.pollClaudeUsage(
+      logger as never,
+      { reason: "automatic" },
+      [throttled, healthy],
+    );
+    expect(first.errors).toContain("claude: API returned 429");
+    expect(first.windows.every((window) => window.accountId === "claude:rx-b")).toBe(true);
+    expect(first).toMatchObject({ freshWindowCount: 2 });
+
+    // The next pass asks the healthy account again and does not touch the
+    // throttled one until its own retry-after elapses.
+    const second = await _testing.pollClaudeUsage(
+      logger as never,
+      { reason: "automatic" },
+      [throttled, healthy],
+    );
+    expect(seen.filter((token) => token === "rx-a-token")).toHaveLength(1);
+    expect(seen.filter((token) => token === "rx-b-token")).toHaveLength(2);
+    expect(second.errors).toEqual([]);
+    expect(second.windows.every((window) => window.accountId === "claude:rx-b")).toBe(true);
+    expect(second).toMatchObject({ freshWindowCount: 2 });
+  });
+
+  it("names the throttle on the throttled account instead of a bare No usage yet", async () => {
+    const throttledHome = path.join(tempHome, "provider-homes", "claude", "rx-note-a");
+    const healthyHome = path.join(tempHome, "provider-homes", "claude", "rx-note-b");
+    fs.mkdirSync(throttledHome, { recursive: true });
+    fs.mkdirSync(healthyHome, { recursive: true });
+    writeClaudeCredentials(throttledHome, "rx-note-a-token");
+    writeClaudeCredentials(healthyHome, "rx-note-b-token");
+    const throttled = { id: "rx-note-a", label: "A", configHome: throttledHome, isDefault: true };
+    const healthy = { id: "rx-note-b", label: "B", configHome: healthyHome, isDefault: false };
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { headers: Record<string, string> }) => {
+      const token = init.headers.Authorization.replace("Bearer ", "");
+      if (token === "rx-note-a-token") {
+        return {
+          ok: false,
+          status: 429,
+          headers: { get: (name: string) => (name.toLowerCase() === "retry-after" ? "300" : null) },
+          json: async () => ({}),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => claudeUsageBody(40),
+      };
+    }));
+
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        listProviderInstances: (provider) => (provider === "claude" ? [throttled, healthy] : []),
+        ...scannerStubs(),
+      },
+    });
+
+    const snapshot = await service.poll({ reason: "automatic" });
+    const byId = new Map((snapshot.accounts ?? []).map((account) => [account.id, account]));
+    const throttledAccount = byId.get("claude:rx-note-a");
+    expect(throttledAccount?.notice?.message).toBe("Rate-limited");
+    expect(Date.parse(throttledAccount?.notice?.nextRetryAt ?? "")).toBeGreaterThan(Date.now());
+    // The account with numbers carries no note: a notice means "nothing to
+    // show", not "the provider was mentioned once".
+    expect(byId.get("claude:rx-note-b")?.notice).toBeUndefined();
+
+    service.dispose();
+  });
+
+  it("keeps a skipped default account's last reading while its sibling reads fresh", async () => {
+    const defaultHome = path.join(tempHome, "provider-homes", "claude", "rx-skip-a");
+    const siblingHome = path.join(tempHome, "provider-homes", "claude", "rx-skip-b");
+    fs.mkdirSync(defaultHome, { recursive: true });
+    fs.mkdirSync(siblingHome, { recursive: true });
+    writeClaudeCredentials(defaultHome, "rx-skip-a-token");
+    writeClaudeCredentials(siblingHome, "rx-skip-b-token");
+    const accountDefault = { id: "rx-skip-a", label: "A", configHome: defaultHome, isDefault: true };
+    const sibling = { id: "rx-skip-b", label: "B", configHome: siblingHome, isDefault: false };
+    let throttled = false;
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { headers: Record<string, string> }) => {
+      const token = init.headers.Authorization.replace("Bearer ", "");
+      seen.push(token);
+      if (throttled && token === "rx-skip-a-token") {
+        return {
+          ok: false,
+          status: 429,
+          headers: { get: (name: string) => (name.toLowerCase() === "retry-after" ? "300" : null) },
+          json: async () => ({}),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => claudeUsageBody(30),
+      };
+    }));
+
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        listProviderInstances: (provider) => (provider === "claude" ? [accountDefault, sibling] : []),
+        ...scannerStubs(),
+      },
+    });
+
+    const clean = await service.poll({ reason: "automatic" });
+    expect(clean.windows.filter((window) => window.provider === "claude")).toHaveLength(4);
+
+    // The default is throttled but keeps its carried reading.
+    throttled = true;
+    const degraded = await service.poll({ reason: "automatic" });
+    expect(degraded.windows.filter((window) => window.accountId === "claude:rx-skip-a")).toHaveLength(2);
+
+    // Next pass: the default is inside its own cooldown and its sibling reads
+    // fresh. The skipped account must carry its previous windows, not vanish —
+    // and with numbers on the row there is no throttle notice.
+    const skipped = await service.poll({ reason: "automatic" });
+    expect(skipped.windows.filter((window) => window.accountId === "claude:rx-skip-a")).toHaveLength(2);
+    expect(skipped.accounts?.find((account) => account.id === "claude:rx-skip-a")?.notice).toBeUndefined();
+    expect(seen.filter((token) => token === "rx-skip-a-token")).toHaveLength(2);
+
+    service.dispose();
+  });
+
+  it("does not let carried windows clear the provider's backoff", async () => {
+    const accountAHome = path.join(tempHome, "provider-homes", "claude", "rx-c");
+    const accountBHome = path.join(tempHome, "provider-homes", "claude", "rx-d");
+    fs.mkdirSync(accountAHome, { recursive: true });
+    fs.mkdirSync(accountBHome, { recursive: true });
+    writeClaudeCredentials(accountAHome, "rx-c-token");
+    writeClaudeCredentials(accountBHome, "rx-d-token");
+    const accountA = { id: "rx-c", label: "C", configHome: accountAHome, isDefault: true };
+    const accountB = { id: "rx-d", label: "D", configHome: accountBHome, isDefault: false };
+    let failing = false;
+    // Count only the quota reads: the reset-credit probe hits the same route
+    // with query params, and it runs on Linux (gated off on macOS), so counting
+    // every fetch made this test platform-dependent.
+    const usageCalls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (String(url).endsWith("/api/oauth/usage")) usageCalls.push(String(url));
+      if (!failing) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => claudeUsageBody(30),
+        };
+      }
+      return { ok: false, status: 500, headers: { get: () => null }, json: async () => ({}) };
+    }));
+
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        listProviderInstances: (provider) => (provider === "claude" ? [accountA, accountB] : []),
+        ...scannerStubs(),
+      },
+    });
+
+    const fresh = await service.poll({ reason: "automatic" });
+    expect(fresh.windows.filter((window) => window.provider === "claude")).toHaveLength(4);
+    expect(usageCalls).toHaveLength(2);
+
+    failing = true;
+    const degraded = await service.poll({ reason: "automatic" });
+    // Both accounts answered with an error, so every window on the page is a
+    // carried reading — for the default account too, not just the secondary.
+    expect(degraded.windows.filter((window) => window.provider === "claude")).toHaveLength(4);
+    expect(degraded.errors.filter((entry) => entry.includes("500"))).toHaveLength(2);
+    // Nothing was read live, so the provider must not claim "ok" over carried
+    // numbers: the row keeps them with an explicit stale state.
+    expect(degraded.providerStatus?.claude?.state).toBe("stale");
+    expect(degraded.providerStatus?.claude?.message).toContain("Couldn't refresh Claude");
+    // 500 is retried once per account, so this pass costs four requests.
+    expect(usageCalls).toHaveLength(6);
+
+    // The very next automatic pass must honour the backoff: carried windows are
+    // not evidence that the provider was reached.
+    const skipped = await service.poll({ reason: "automatic" });
+    expect(usageCalls).toHaveLength(6);
+    expect(skipped.windows.filter((window) => window.provider === "claude")).toHaveLength(4);
+
+    service.dispose();
+  });
+
+  it("records a model price or mapping saved or cleared, never the model or the rates", async () => {
+    const originalAdeHome = process.env.ADE_HOME;
+    process.env.ADE_HOME = tempHome;
+    try {
+      const analyticsEvents: ProductAnalyticsCapture[] = [];
+      const service = createUsageTrackingService({
+        logger,
+        dependencies: {
+          captureInternalAnalytics: (input) => analyticsEvents.push(input),
+          pollClaudeUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+          pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+          ...scannerStubs(),
+        },
+      });
+
+      const saved = service.setModelPriceOverride({ model: "Local-X", models: ["local-x-2026"], price: { input: 1, output: 4 } });
+      expect(Object.keys(saved.prices).sort()).toEqual(["local-x", "local-x-2026"]);
+      service.setModelPriceOverride({ model: "local-x", price: null });
+      service.setModelPriceOverride({ model: "my-preview", mapTo: "claude-opus-5-5" });
+      expect(service.getModelPriceOverrides().aliases).toEqual({ "my-preview": "claude-opus-5-5" });
+      expect(fs.existsSync(path.join(tempHome, "usage-price-overrides.json"))).toBe(true);
+
+      const facts = analyticsEvents
+        .filter((event) => event.properties?.feature === "usage" && String(event.properties?.action).startsWith("model_"))
+        .map((event) => [event.properties?.action, event.properties?.outcome]);
+      expect(facts).toEqual([
+        ["model_price_changed", "enabled"],
+        ["model_price_changed", "disabled"],
+        ["model_mapping_changed", "enabled"],
+      ]);
+      expect(JSON.stringify(analyticsEvents)).not.toMatch(/local-x|my-preview|opus/i);
+    } finally {
+      if (originalAdeHome === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = originalAdeHome;
     }
   });
 });

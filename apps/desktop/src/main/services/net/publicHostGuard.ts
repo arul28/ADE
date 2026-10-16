@@ -31,7 +31,10 @@ function isPrivateIpv4(address: string): boolean {
     || (a === 100 && b >= 64 && b <= 127)
     || (a === 169 && b === 254)
     || (a === 172 && b >= 16 && b <= 31)
-    || (a === 192 && (b === 0 || b === 168 || (b === 88 && parts[2] === 99)))
+    // 192.0.0.0/24 (IETF protocol assignments) and 192.0.2.0/24 (TEST-NET-1)
+    // only. The rest of 192.0.0.0/16 is ordinary public space: IANA's own
+    // iana.org is 192.0.43.8.
+    || (a === 192 && ((b === 0 && (parts[2] === 0 || parts[2] === 2)) || b === 168 || (b === 88 && parts[2] === 99)))
     || (a === 198 && (b === 18 || b === 19 || (b === 51 && parts[2] === 100)))
     || (a === 203 && b === 0 && parts[2] === 113)
     || a >= 224;

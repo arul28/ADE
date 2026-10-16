@@ -6,7 +6,8 @@ import {
   createAccountVaultStore,
   type AccountVaultRelay,
 } from "./accountVaultStore";
-import type { AccountVaultItem } from "../push/pushRelayClient";
+import { PushRelayRequestError, type AccountVaultItem } from "../push/pushRelayClient";
+import { recordAccountChangeMarks } from "./accountChangeMarks";
 
 /**
  * The vault cache is the settings cache with one extra duty: what it holds is a
@@ -440,11 +441,217 @@ describe("account vault store", () => {
     expect(store.get("repo:github.com/arul28/ade", "integration", "linear")).toBe("a-repo-token");
   });
 
+  it("keeps the ready tick for local follow-up while the vault mark holds, without pulling", async () => {
+    vi.useFakeTimers();
+    try {
+      const user = "user_vault_marks";
+      accountUserId = user;
+      const store = makeStore();
+      const ticks: string[] = [];
+      const stop = store.startPeriodicSync(30_000, (status) => ticks.push(status));
+      recordAccountChangeMarks(user, { settings: null, vault: "2026-10-07T12:00:00.000Z" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+      expect(ticks).toEqual(["ready"]);
+
+      for (let beat = 0; beat < 3; beat += 1) {
+        recordAccountChangeMarks(user, { settings: "s-moved", vault: "2026-10-07T12:00:00.000Z" });
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      // A settings change does not pull the vault, and every tick still says ready.
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+      expect(ticks).toEqual(["ready", "ready", "ready", "ready"]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A secret saved on one machine is wanted on the next one now: the write
+  // must not sit in the queue until the 30-second tick.
+  it("uploads a local write within a moment and reports it pending until it lands", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = makeStore();
+      const stop = store.startPeriodicSync(30_000);
+      store.set("repo:github.com/acme/app", "project_secret", "STRIPE_KEY", "sk-1");
+      expect(store.pendingKeys("repo:github.com/acme/app", "project_secret")).toEqual(["STRIPE_KEY"]);
+      expect(store.pendingKeys("repo:github.com/acme/other", "project_secret")).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(relay.putAccountVault).toHaveBeenCalledTimes(1);
+      expect(relay.putAccountVault.mock.calls[0]?.[0]).toEqual([
+        expect.objectContaining({ key: "STRIPE_KEY", value: "sk-1" }),
+      ]);
+      expect(store.pendingKeys("repo:github.com/acme/app", "project_secret")).toEqual([]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("answers a read-path sync from the cache while it is fresh and asks the account once it is not", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = makeStore();
+      await expect(store.sync()).resolves.toBe("ready");
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+
+      await expect(store.sync({ maxAgeMs: 10_000 })).resolves.toBe("ready");
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(10_001);
+      await expect(store.sync({ maxAgeMs: 10_000 })).resolves.toBe("ready");
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A relay that refused (its daily budget, a rate limit) must not get the
+  // same request again from every write and every agent read on every machine.
+  it("holds writes and read-path syncs during a 429 backoff, but not an explicit sync or another account", async () => {
+    vi.useFakeTimers();
+    try {
+      relay.putAccountVault.mockRejectedValue(
+        new PushRelayRequestError("putAccountVault", 429, "relay daily budget reached"),
+      );
+      const store = makeStore();
+      const stop = store.startPeriodicSync(30_000);
+      store.set("all", "provider_key", "anthropic", "sk-1");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(relay.putAccountVault).toHaveBeenCalledTimes(1);
+
+      store.set("all", "provider_key", "openai", "sk-2");
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect(store.sync({ maxAgeMs: 0 })).resolves.toBe("failed");
+      expect(relay.putAccountVault).toHaveBeenCalledTimes(1);
+
+      // A person asking explicitly still gets an attempt.
+      await expect(store.sync()).resolves.toBe("failed");
+      expect(relay.putAccountVault).toHaveBeenCalledTimes(2);
+
+      // The backoff belongs to the account that earned it.
+      relay.putAccountVault.mockResolvedValue({ updatedAt: "2026-09-16T00:00:00.000Z" });
+      accountUserId = "user_someone_else";
+      await expect(store.sync({ maxAgeMs: 0 })).resolves.toBe("ready");
+      expect(relay.getAccountVault).toHaveBeenCalled();
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("pulls on the next tick after a purge, instead of reporting the emptied vault ready", async () => {
+    vi.useFakeTimers();
+    try {
+      const user = "user_vault_purge";
+      accountUserId = user;
+      const store = makeStore();
+      // Each "ready" records how many pulls had happened when it was reported.
+      const readyAfterPulls: number[] = [];
+      const stop = store.startPeriodicSync(30_000, (status) => {
+        if (status === "ready") readyAfterPulls.push(relay.getAccountVault.mock.calls.length);
+      });
+      const mark = { settings: null, vault: "2026-10-07T15:00:00.000Z" };
+      recordAccountChangeMarks(user, mark);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+
+      store.purge();
+      const readyBeforePurge = readyAfterPulls.length;
+      recordAccountChangeMarks(user, mark);
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      // The tick after a purge goes back to the relay from the beginning.
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(2);
+      expect(relay.getAccountVault).toHaveBeenLastCalledWith({ since: null });
+      // No "ready" after the purge is reported before the purged vault was pulled again.
+      const readyAfterPurge = readyAfterPulls.slice(readyBeforePurge);
+      expect(readyAfterPurge.length).toBeGreaterThan(0);
+      expect(readyAfterPurge.every((pulls) => pulls >= 2)).toBe(true);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps ticking and notifying when a sync listener throws", async () => {
+    vi.useFakeTimers();
+    try {
+      const user = "user_vault_throwing_listener";
+      accountUserId = user;
+      const store = makeStore();
+      const heard: string[] = [];
+      const stopThrowing = store.startPeriodicSync(30_000, () => {
+        throw new Error("listener bug");
+      });
+      const stopListening = store.startPeriodicSync(30_000, (status) => heard.push(status));
+      const mark = { settings: null, vault: "2026-10-07T16:00:00.000Z" };
+      recordAccountChangeMarks(user, mark);
+      await vi.advanceTimersByTimeAsync(0);
+      for (let beat = 0; beat < 2; beat += 1) {
+        recordAccountChangeMarks(user, mark);
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      // The pull and both skipped ticks still reached the healthy listener.
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+      expect(heard).toEqual(["ready", "ready", "ready"]);
+      stopThrowing();
+      stopListening();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does nothing at all when signed out", async () => {
     accountUserId = null;
     await makeStore().sync();
 
     expect(relay.putAccountVault).not.toHaveBeenCalled();
     expect(relay.getAccountVault).not.toHaveBeenCalled();
+  });
+  it("keeps a delete the relay reports, and lets the key come back when it is written again", async () => {
+    const store = makeStore();
+    store.set("all", "provider_key", "anthropic", "sk-live-abc");
+    relay.getAccountVault.mockResolvedValueOnce({
+      items: [{ ...item("anthropic", null, "2026-09-17T00:00:00.000Z"), deleted: true, writerDeviceId: null }],
+      cursor: null,
+      truncated: false,
+    });
+
+    await store.sync();
+
+    // The tombstone is the only evidence a delete happened, and a value row
+    // cannot carry it: it has to survive the pull to reach the consumer.
+    expect(store.get("all", "provider_key", "anthropic")).toBeNull();
+    expect(store.list("all")).toEqual([
+      expect.objectContaining({ key: "anthropic", deleted: true, readable: false }),
+    ]);
+
+    // Writing the key again is what un-deletes it.
+    expect(store.set("all", "provider_key", "anthropic", "sk-live-xyz")).toBe(true);
+    expect(store.get("all", "provider_key", "anthropic")).toBe("sk-live-xyz");
+    expect(store.list("all")).toEqual([
+      expect.objectContaining({ key: "anthropic", readable: true }),
+    ]);
+  });
+
+  it("does not let a stale tombstone erase a value written after it", async () => {
+    const store = makeStore();
+    store.set("all", "provider_key", "anthropic", "sk-live-abc");
+    relay.getAccountVault.mockResolvedValueOnce({
+      items: [{ ...item("anthropic", null, "2020-01-01T00:00:00.000Z"), deleted: true, writerDeviceId: null }],
+      cursor: null,
+      truncated: false,
+    });
+
+    await store.sync();
+
+    expect(store.get("all", "provider_key", "anthropic")).toBe("sk-live-abc");
+    expect(store.list("all")).toEqual([
+      expect.objectContaining({ key: "anthropic", readable: true }),
+    ]);
   });
 });

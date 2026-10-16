@@ -23,17 +23,21 @@ type ProviderStatusSnapshot = {
     codex?: unknown;
     cursor?: unknown;
     droid?: unknown;
+    muse?: unknown;
     qwen?: unknown;
     kimi?: unknown;
     grok?: unknown;
     copilot?: unknown;
+    devin?: unknown;
   };
   providerConnections?: {
     pi?: ProviderConnectionFlags;
+    muse?: ProviderConnectionFlags;
     qwen?: ProviderConnectionFlags;
     kimi?: ProviderConnectionFlags;
     grok?: ProviderConnectionFlags;
     copilot?: ProviderConnectionFlags;
+    devin?: ProviderConnectionFlags;
   };
   piInstallation?: { sdkAvailable?: boolean; cliAvailable?: boolean; availableModelIds?: string[] };
   opencodeProviders?: Array<{ id: string; connected: boolean }>;
@@ -54,6 +58,7 @@ const ACP_PICKER_FAMILIES = [
   { provider: "kimi", family: "moonshot" },
   { provider: "grok", family: "xai" },
   { provider: "copilot", family: "github-copilot" },
+  { provider: "devin", family: "devin" },
 ] as const satisfies readonly { provider: string; family: ProviderFamily }[];
 
 const EMPTY_AUTH_STATUS: AuthStatusMap = {};
@@ -105,6 +110,14 @@ export function familiesFromStatus(
   out.openai = status.availableProviders?.codex === true ? "ok" : "unauthed";
   out.cursor = status.availableProviders?.cursor === true ? "ok" : "unauthed";
   out.factory = status.availableProviders?.droid === true ? "ok" : "unauthed";
+  // Muse is optional on the wire (an older host has no arm for it), so a host
+  // that never reported it leaves the rail unprobed rather than signed out.
+  const muse = status.providerConnections?.muse;
+  if (status.availableProviders?.muse === true || muse?.runtimeAvailable === true) {
+    out.muse = "ok";
+  } else if (muse || status.availableProviders?.muse === false) {
+    out.muse = "unauthed";
+  }
 
   const opencodeAny =
     Array.isArray(status.opencodeProviders) && status.opencodeProviders.some((p) => p.connected);

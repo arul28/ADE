@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { toneText } from "./laneDesignTokens";
 import {
   WarningCircle,
   Archive,
@@ -33,6 +34,8 @@ import type {
   OpenProjectBinding,
 } from "../../../shared/types";
 import { LaneDialogShell } from "./LaneDialogShell";
+import { LinearMark } from "./linearBrand";
+import { showToast } from "../app/toast/toastStore";
 import {
   LABEL_CLASS_NAME,
   INPUT_CLASS_NAME,
@@ -162,7 +165,7 @@ function ManageLaneRenameControls({
           aria-label="Rename lane"
           title="Rename lane"
           data-tour="lanes.manageDialog.rename"
-          className="inline-flex shrink-0 items-center justify-center rounded-md p-1 text-muted-fg/70 transition hover:bg-white/[0.06] hover:text-fg"
+          className="inline-flex shrink-0 items-center justify-center rounded-md p-1 text-muted-fg/70 transition hover:bg-fg/[0.06] hover:text-fg"
           onClick={() => setEditing(true)}
         >
           <PencilSimple size={14} />
@@ -239,7 +242,7 @@ function ManageLaneHeaderDetails({
               <span className="font-semibold text-fg">{lane.name}</span>
               <BranchIcon size={10} className="shrink-0 text-muted-fg/50" />
               <span className="truncate font-mono text-muted-fg/60">{lane.branchRef}</span>
-              <span className="rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-fg">
+              <span className="rounded-md bg-fg/[0.06] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-fg">
                 {lane.laneType}
               </span>
               {lane.status.dirty ? (
@@ -292,7 +295,7 @@ const TAB_PANEL_TONE_CLASS: Record<ManageLaneTabTone, string> = {
   delete: "border-red-500/25 bg-gradient-to-br from-red-500/[0.1] via-red-950/20 to-transparent",
   accent: "border-accent/25 bg-gradient-to-br from-accent/[0.1] via-accent/[0.02] to-transparent",
   stack: "border-violet-500/25 bg-gradient-to-br from-violet-500/[0.1] via-violet-950/10 to-transparent",
-  neutral: "border-white/[0.08] bg-gradient-to-br from-white/[0.06] via-white/[0.02] to-transparent",
+  neutral: "border-fg/[0.08] bg-gradient-to-br from-fg/[0.06] via-fg/[0.02] to-transparent",
 };
 
 function ManageLaneTabPanel({
@@ -306,7 +309,7 @@ function ManageLaneTabPanel({
 
   return (
     <section className={`relative overflow-hidden rounded-xl border p-4 shadow-card ${toneClass}`}>
-      <div className="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-white/15 to-transparent" />
+      <div className="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-fg/15 to-transparent" />
       {children}
     </section>
   );
@@ -325,7 +328,7 @@ function ManageLaneTabBar({
     <div
       role="tablist"
       aria-label="Manage lane actions"
-      className="grid gap-1 rounded-xl border border-white/[0.08] bg-black/25 p-1"
+      className="grid gap-1 rounded-xl border border-fg/[0.08] bg-black/25 p-1"
       style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}
     >
       {tabs.map((tab) => {
@@ -334,7 +337,7 @@ function ManageLaneTabBar({
         const isDelete = tab.id === "delete";
         let activeStateClass: string;
         if (!isActive) {
-          activeStateClass = "text-muted-fg/80 hover:bg-white/[0.04] hover:text-fg";
+          activeStateClass = "text-muted-fg/80 hover:bg-fg/[0.04] hover:text-fg";
         } else if (isDelete) {
           activeStateClass = "bg-red-500/20 text-red-200 shadow-sm ring-1 ring-red-400/20";
         } else {
@@ -394,7 +397,8 @@ export function ManageLaneDialog({
   laneActionStatus: string | null;
   laneActionError: string | null;
   laneActionKind?: "delete" | "archive" | null;
-  onArchive: () => void;
+  /** Resolves true when every lane was archived. */
+  onArchive: () => Promise<boolean>;
   onDelete: () => void;
   onAppearanceChanged?: () => void | Promise<void>;
   onStackReorganized?: () => void | Promise<void>;
@@ -418,6 +422,32 @@ export function ManageLaneDialog({
   const [reclaimError, setReclaimError] = useState<string | null>(null);
   const [deleteProgress, setDeleteProgress] = useState<LaneDeleteProgress | null>(null);
   const [activeTab, setActiveTab] = useState<ManageLaneTab>("delete");
+  // Archiving a lane whose Linear issue is still open can also cancel the issue.
+  const openLinearIssue = singleLane?.linearIssue
+    && singleLane.linearIssue.stateType !== "completed"
+    && singleLane.linearIssue.stateType !== "canceled"
+    ? singleLane.linearIssue
+    : null;
+  const [cancelLinearIssue, setCancelLinearIssue] = useState(false);
+  useEffect(() => {
+    setCancelLinearIssue(false);
+  }, [singleLaneId]);
+  // Runs only after the archive succeeded.
+  const cancelLinkedIssueIfAsked = async (): Promise<void> => {
+    if (!openLinearIssue || !cancelLinearIssue) return;
+    try {
+      const cancel = window.ade?.cto?.cancelLinearIssue;
+      if (!cancel) throw new Error("Linear is not available in this window.");
+      const result = await cancel(openLinearIssue.id);
+      if (result.canceled) showToast({ tone: "success", title: `${openLinearIssue.identifier} canceled in Linear` });
+    } catch (err) {
+      showToast({
+        tone: "warning",
+        title: `Could not cancel ${openLinearIssue.identifier}`,
+        message: err instanceof Error ? err.message : "Linear request failed. The lane was still archived.",
+      });
+    }
+  };
 
   const tabDefs = React.useMemo((): ManageLaneTabDef[] => {
     return [
@@ -523,6 +553,7 @@ export function ManageLaneDialog({
       await (runtimePin
         ? window.ade.lanes.archiveAndReclaim(args, runtimePin)
         : window.ade.lanes.archiveAndReclaim(args));
+      void cancelLinkedIssueIfAsked();
       await onAppearanceChanged?.();
       onOpenChange(false);
     } catch (error) {
@@ -617,7 +648,7 @@ export function ManageLaneDialog({
       {lanes.length === 0 ? (
         <div className="py-4 text-sm text-muted-fg">Select a lane first.</div>
       ) : allPrimary ? (
-        <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-3 text-sm text-muted-fg">
+        <div className="rounded-lg border border-fg/[0.06] bg-fg/[0.02] px-3 py-3 text-sm text-muted-fg">
           Primary lane cannot be archived or deleted. Close this dialog or pick another lane.
         </div>
       ) : (
@@ -653,8 +684,23 @@ export function ManageLaneDialog({
               <p className="text-xs leading-relaxed text-muted-fg/75">
                 Choose whether to keep the local files or reclaim their disk space. Both choices keep the lane, branch, chats, and metadata.
               </p>
+              {openLinearIssue ? (
+                <label className="mt-3 flex items-center gap-2 rounded-lg border border-fg/[0.08] bg-fg/[0.02] px-3 py-2 text-xs text-muted-fg/80">
+                  <input
+                    type="checkbox"
+                    checked={cancelLinearIssue}
+                    onChange={(event) => setCancelLinearIssue(event.target.checked)}
+                    disabled={laneActionBusy || reclaimBusy}
+                  />
+                  <LinearMark size={12} />
+                  <span>
+                    Also cancel <span className="font-mono text-fg/85">{openLinearIssue.identifier}</span> in Linear
+                    <span className="text-muted-fg/55"> · it is {openLinearIssue.stateName} now</span>
+                  </span>
+                </label>
+              ) : null}
               <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-3">
+                <div className="rounded-xl border border-fg/[0.08] bg-fg/[0.025] p-3">
                   <div className="flex items-center gap-2 text-sm font-semibold text-fg">
                     <Archive size={16} className="text-accent" />
                     Archive
@@ -663,13 +709,21 @@ export function ManageLaneDialog({
                     Hides the lane from active work. Its worktree and generated files stay on disk.
                   </p>
                   <div className="mt-3">
-                    <Button size="sm" variant="outline" data-tour="lanes.manageDialog.archive" disabled={laneActionBusy || reclaimBusy} onClick={onArchive}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      data-tour="lanes.manageDialog.archive"
+                      disabled={laneActionBusy || reclaimBusy}
+                      onClick={() => {
+                        void onArchive().then((archived) => (archived ? cancelLinkedIssueIfAsked() : undefined));
+                      }}
+                    >
                       {isBatch ? `Archive ${lanes.length} lanes` : "Archive and keep files"}
                     </Button>
                   </div>
                 </div>
                 {!isBatch && singleLane?.laneType === "worktree" ? (
-                  <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-3">
+                  <div className="rounded-xl border border-fg/[0.08] bg-fg/[0.025] p-3">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 text-sm font-semibold text-fg">
                         <FolderDashed size={16} className="text-accent" />
@@ -730,7 +784,7 @@ export function ManageLaneDialog({
                           || (reclaimRisk.dirty && !discardDirtyConfirmed)
                           || reclaimConfirm !== "RECLAIM"
                         }
-                        onClick={() => void archiveAndReclaim()}
+                        onClick={() => { void archiveAndReclaim(); }}
                       >
                         {reclaimBusy ? <CircleNotch size={13} className="animate-spin" /> : <FolderDashed size={13} />}
                         {reclaimBusy
@@ -801,7 +855,7 @@ export function ManageLaneDialog({
               {deleteProgress ? (
                 <DeleteProgressStrip progress={deleteProgress} />
               ) : showStaticBusy && (laneActionKind === "delete" || laneActionKind === "archive" || laneActionKind == null) ? (
-                <div className="mt-3 flex items-center gap-2 rounded-lg border border-white/[0.08] bg-black/25 px-3 py-2 text-xs text-muted-fg" role="status" aria-live="polite">
+                <div className="mt-3 flex items-center gap-2 rounded-lg border border-fg/[0.08] bg-black/25 px-3 py-2 text-xs text-muted-fg" role="status" aria-live="polite">
                   <CircleNotch
                     size={14}
                     className={`shrink-0 animate-spin ${laneActionKind === "delete" ? "text-red-300" : "text-amber-300"}`}
@@ -858,7 +912,7 @@ function DeleteCheckbox({ checked, indeterminate = false }: { checked: boolean; 
     <span
       aria-hidden
       className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[5px] border transition-colors ${
-        active ? "border-red-400/70 bg-red-500/80 text-white" : "border-white/25 bg-white/[0.04]"
+        active ? "border-red-400/70 bg-red-500/80 text-white" : "border-white/25 bg-fg/[0.04]"
       }`}
     >
       {checked ? <Check size={12} weight="bold" /> : indeterminate ? <Minus size={12} weight="bold" /> : null}
@@ -917,7 +971,7 @@ function DeleteTargetChecklist({
         disabled={disabled}
         onClick={onToggleAll}
         aria-pressed={allSelected}
-        className="flex h-8 w-full items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 text-left transition-colors hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-60"
+        className="flex h-8 w-full items-center gap-2 rounded-lg border border-fg/[0.08] bg-fg/[0.03] px-2.5 text-left transition-colors hover:bg-fg/[0.05] disabled:cursor-not-allowed disabled:opacity-60"
       >
         <DeleteCheckbox checked={allSelected} indeterminate={someSelected && !allSelected} />
         <div className="min-w-0 flex-1 text-[11px] font-medium text-fg">Select everything</div>
@@ -926,8 +980,8 @@ function DeleteTargetChecklist({
         ) : null}
       </button>
 
-      <div className="ml-3 overflow-hidden rounded-xl border border-white/[0.08] bg-black/25">
-        <div className="divide-y divide-white/[0.04]">
+      <div className="ml-3 overflow-hidden rounded-xl border border-fg/[0.08] bg-black/25">
+        <div className="divide-y divide-fg/[0.04]">
           {rows.map((row) => {
             const checked = selection[row.key];
             return (
@@ -939,7 +993,7 @@ function DeleteTargetChecklist({
                 disabled={disabled}
                 onClick={() => onToggle(row.key, !checked)}
                 className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-                  checked ? "bg-red-500/[0.08]" : "hover:bg-white/[0.03]"
+                  checked ? "bg-red-500/[0.08]" : "hover:bg-fg/[0.03]"
                 }`}
               >
                 <DeleteCheckbox checked={checked} />
@@ -947,7 +1001,7 @@ function DeleteTargetChecklist({
                   className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border ${
                     checked
                       ? "border-red-400/30 bg-red-500/15 text-red-200"
-                      : "border-white/[0.08] bg-white/[0.03] text-muted-fg/70"
+                      : "border-fg/[0.08] bg-fg/[0.03] text-muted-fg/70"
                   }`}
                 >
                   {row.icon}
@@ -976,7 +1030,7 @@ function buildDeleteRemovalPreview(
   const branchRef = risk?.branchRef ?? lane.branchRef ?? null;
   const branchLabel = branchRef ? formatBranchLabel(branchRef) : null;
   const laneColor = lane.color ?? null;
-  const laneColorStyle = laneColor ? { color: laneColor } : undefined;
+  const laneColorStyle = laneColor ? { color: toneText(laneColor) } : undefined;
 
   if (selection.worktree) {
     items.push({
@@ -1060,7 +1114,7 @@ function PreflightPanel({
   if (willStop.length === 0 && willRemove.length === 0) return null;
 
   return (
-    <div className="mt-3 rounded-lg border border-white/[0.08] bg-black/30 px-3 py-2.5">
+    <div className="mt-3 rounded-lg border border-fg/[0.08] bg-black/30 px-3 py-2.5">
       {willStop.length > 0 ? (
         <ul className="space-y-1.5">
           {willStop.map((item, i) => (
@@ -1109,7 +1163,7 @@ function DeleteProgressStrip({ progress }: { progress: LaneDeleteProgress }) {
       tone = "border-amber-500/15 bg-amber-500/[0.04]";
       break;
     default:
-      tone = "border-white/[0.08] bg-white/[0.04]";
+      tone = "border-fg/[0.08] bg-fg/[0.04]";
       break;
   }
   return (

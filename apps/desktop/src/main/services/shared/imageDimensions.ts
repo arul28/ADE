@@ -45,3 +45,20 @@ export function jpegDimensions(buffer: Buffer): ImageDimensions | null {
 export function imageDimensions(buffer: Buffer): ImageDimensions | null {
   return pngDimensions(buffer) ?? jpegDimensions(buffer);
 }
+
+/** Base64 characters decoded first: 3 KB of image, past a typical JPEG's frame header. */
+const BASE64_DIMENSIONS_PREFIX_CHARS = 4096;
+
+/**
+ * The dimensions of a base64-encoded image, read from its header. A screencast
+ * frame is ~300 KB of base64 arriving dozens of times a second; decoding all
+ * of it to read four bytes made a 200 KB buffer per frame. The whole image is
+ * decoded only when the header is not in the first few kilobytes.
+ */
+export function base64ImageDimensions(data: string): ImageDimensions | null {
+  if (data.length > BASE64_DIMENSIONS_PREFIX_CHARS) {
+    const head = imageDimensions(Buffer.from(data.slice(0, BASE64_DIMENSIONS_PREFIX_CHARS), "base64"));
+    if (head) return head;
+  }
+  return imageDimensions(Buffer.from(data, "base64"));
+}

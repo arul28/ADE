@@ -100,13 +100,16 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
             <span style={{ display: "inline-flex", flexShrink: 0, color: LINEAR_BRAND.primary }}>
               <LinearMark size={12} />
             </span>
-            <span>Linear</span>
+            <span style={{ flexShrink: 0, whiteSpace: "nowrap" }}>Linear</span>
             {linear?.state === "ready" ? (
               <>
                 <Dot tone="ok" />
-                <span style={{ color: "var(--color-fg)" }}>
-                  {linear.appManaged ? "Connected via ADE app" : "Connected"}
-                  {linear.lastEventAt ? ` · last ${formatDate(linear.lastEventAt, "—")}` : ""}
+                {/* One line: the narrow sidebar must not wrap "Linear" into letters. */}
+                <span
+                  style={{ color: "var(--color-fg)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  title={`${linear.appManaged ? "Connected via the ADE Linear app" : "Connected"}${linear.lastEventAt ? ` · last event ${formatDate(linear.lastEventAt, "—")}` : ""}`}
+                >
+                  Connected
                 </span>
               </>
             ) : linear?.state === "error" ? (

@@ -8,7 +8,6 @@ import {
 } from "motion/react";
 import { X } from "@phosphor-icons/react";
 import type {
-  AppControlEventPayload,
   BuiltInBrowserActionTraceEntry,
   BuiltInBrowserEventPayload,
   BuiltInBrowserStatus,
@@ -32,14 +31,13 @@ import {
 } from "../../state/workLiveCardState";
 import { EMPHASIZED_EASE, exitTransition } from "../../lib/motion";
 import { cn } from "../ui/cn";
-import { workToolDefinition } from "../terminals/workTools";
+import { hostDesktopTool, workToolDefinition } from "../terminals/workTools";
 import {
   closeWorkLiveCardForChat,
   markWorkLiveCardSeenForChat,
   unfloatWorkLiveCardForChat,
   useChatCompanionUiState,
 } from "../chat/chatCompanionUiState";
-import type { NativeToolFeedScope } from "../terminals/useNativeToolSessions";
 import {
   useNativeToolFeedHandlers,
   useNativeToolFeeds,
@@ -50,7 +48,6 @@ import {
   formatWorkLiveActionCaption,
   formatWorkLiveAge,
   selectWorkLiveCardTool,
-  updateWorkLiveScrubCaption,
   workLiveBottomReserve,
   workLiveCardDragConstraints,
   workLiveCardFits,
@@ -69,6 +66,11 @@ import {
   type WorkLiveScrubFrame,
 } from "./workLiveCard";
 import { MacDesktopMiniPlayer } from "./MacDesktopMiniPlayer";
+import { AppControlMiniPlayer } from "./AppControlMiniPlayer";
+import { FloatingPlayerCapturePill, useFloatingPlayerCapture } from "../shared/FloatingPlayer";
+import { useAnyFloatingPlayerShown } from "../shared/floatingPlayerSlots";
+import { showToast } from "../app/toast/toastStore";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 /**
  * The floating live-preview card.
@@ -96,10 +98,11 @@ import { MacDesktopMiniPlayer } from "./MacDesktopMiniPlayer";
  * floats because somebody asked it to — so there is nothing for this card to
  * surface on its own.
  *
- * Nor is the Mac Desktop. It floats in the same kind of player as the device
- * (`MacDesktopMiniPlayer`, on the shared `FloatingPlayerShell`), which this
- * component mounts beside the card because it is the one the Work page
- * already renders over the chat column with everything the player needs.
+ * Nor are the Mac Desktop and App Control. Each floats in the same kind of
+ * player as the device (`MacDesktopMiniPlayer`, `AppControlMiniPlayer`, on the
+ * shared `FloatingPlayerShell`), which this component mounts beside the card
+ * because it is the one the Work page already renders over the chat column
+ * with everything the players need.
  *
  * The chrome follows t3's mini-player: nothing but an 8px status dot at rest,
  * and a 32px blurred pill — icon, name, last action, ✕ — that takes its place
@@ -123,19 +126,65 @@ const PREVIEW_FPS = 12;
  */
 const BLANK_FRAME = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
+type BrowserTab = BuiltInBrowserStatus["tabs"][number];
+type BrowserTabPicker = (status: BuiltInBrowserStatus | null, chatSessionId: string | null) => BrowserTab | null;
+
 /**
- * What "the browser did something" means, as a string.
+ * The tab this chat owns: the active tab when the chat owns it, else the one
+ * it touched last (every claim renews `ownerClaimedAt`). Null when it owns none.
+ *
+ * Alone, this is the pick for a chat on another machine. The card shows what
+ * the chat's agent can use, and that agent reaches this browser only through
+ * the tabs it owns here.
+ */
+const ownedBrowserTabForChat: BrowserTabPicker = (status, chatSessionId) => {
+  if (!status || !Array.isArray(status.tabs) || !chatSessionId) return null;
+  const active = status.tabs.find((tab) => tab.id === status.activeTabId) ?? null;
+  if (active?.ownerChatSessionId === chatSessionId) return active;
+  let owned: BrowserTab | null = null;
+  let ownedAt = -1;
+  for (const tab of status.tabs) {
+    if (tab.ownerChatSessionId !== chatSessionId) continue;
+    const claimedAt = Date.parse(tab.ownerClaimedAt ?? "") || 0;
+    if (claimedAt > ownedAt) {
+      owned = tab;
+      ownedAt = claimedAt;
+    }
+  }
+  return owned;
+};
+
+/**
+ * The tab the card pictures for a chat on this machine: the chat's own tab
+ * when it has one, else the browser's active tab, so an agent working in a
+ * background tab (`--tab <id>`, or a tab it opened without activating) is
+ * pictured while a person's tab sits in front.
+ */
+const browserTabForChat: BrowserTabPicker = (status, chatSessionId) => {
+  if (!status || !Array.isArray(status.tabs)) return null;
+  const active = status.tabs.find((tab) => tab.id === status.activeTabId) ?? status.tabs[0] ?? null;
+  return ownedBrowserTabForChat(status, chatSessionId) ?? active;
+};
+
+/** A chat on another machine pictures only the tabs its agent owns here. */
+function browserTabPickerFor(runtimePin: OpenProjectBinding | null | undefined): BrowserTabPicker {
+  return runtimePin?.kind === "remote" ? ownedBrowserTabForChat : browserTabForChat;
+}
+
+/**
+ * What "the browser did something" means for this chat, as a string.
  *
  * Status events are bookkeeping as much as activity — closing the card stops
  * its preview stream, which itself emits one. Diffing the parts a human would
- * call activity is what keeps the most-recent-tool clock honest.
+ * call activity is what keeps the most-recent-tool clock honest. The parts come
+ * from the tab the card pictures, so an agent navigating its own background
+ * tab (agent opens never take focus) counts.
  */
-function browserActivitySignature(status: BuiltInBrowserStatus | null): string {
+function browserActivitySignature(status: BuiltInBrowserStatus | null, tab: BrowserTab | null): string {
   if (!status || !Array.isArray(status.tabs)) return "";
-  const tab = status.tabs.find((entry) => entry.id === status.activeTabId) ?? status.tabs[0] ?? null;
   if (!tab) return `${status.tabs.length}`;
   return [
-    status.activeTabId ?? "",
+    tab.id,
     status.tabs.length,
     tab.url ?? "",
     tab.title ?? "",
@@ -143,6 +192,15 @@ function browserActivitySignature(status: BuiltInBrowserStatus | null): string {
     tab.recording?.startedAt ?? "",
     tab.handoff?.startedAt ?? "",
   ].join("|");
+}
+
+/** The activity signature of the tab a chat's card pictures. */
+function chatBrowserActivitySignature(
+  status: BuiltInBrowserStatus | null,
+  runtimePin: OpenProjectBinding | null | undefined,
+  chatSessionId: string | null,
+): string {
+  return browserActivitySignature(status, browserTabPickerFor(runtimePin)(status, chatSessionId));
 }
 
 export function WorkLiveCornerCard({
@@ -192,9 +250,9 @@ export function WorkLiveCornerCard({
 
   const runtimePinRef = useRef(runtimePin);
   runtimePinRef.current = runtimePin;
+  const pickBrowserTab = browserTabPickerFor(runtimePin);
 
   const [lastTrace, setLastTrace] = useState<BuiltInBrowserActionTraceEntry | null>(null);
-  const [appControlAction, setAppControlAction] = useState<{ caption: string; at: number } | null>(null);
   const [activityAt, setActivityAt] = useState<Record<WorkLiveScreenTool, number>>({
     browser: 0,
     "app-control": 0,
@@ -274,7 +332,6 @@ export function WorkLiveCornerCard({
   /** A drag ends with a click event; that click must not also open the tool. */
   const suppressClickRef = useRef(false);
   const browserSignatureRef = useRef("");
-  const appControlTraceIdRef = useRef<string | null>(null);
   /**
    * Which tool the card is painting. Both the browser and App Control feeds are
    * subscribed at once (that is how "which tool is most recently active" is
@@ -291,6 +348,9 @@ export function WorkLiveCornerCard({
   const activityCommitRef = useRef<number | null>(null);
   /** Resize gesture state: where the pointer started and how wide the card was. */
   const resizeStartRef = useRef<{ x: number; width: number } | null>(null);
+  /** The chat on screen, for the feed handlers, which outlive a chat switch. */
+  const chatSessionIdRef = useRef(chatSessionId);
+  chatSessionIdRef.current = chatSessionId;
 
   /**
    * Records that a tool did something.
@@ -335,7 +395,7 @@ export function WorkLiveCornerCard({
 
   const onBrowserEvent = useCallback((event: BuiltInBrowserEventPayload) => {
     if (event.type === "status" || event.type === "open-request") {
-      const signature = browserActivitySignature(event.status);
+      const signature = chatBrowserActivitySignature(event.status, runtimePinRef.current, chatSessionIdRef.current);
       // An "open-request" is somebody asking for the browser, so it always
       // counts; a plain status only counts when something actually changed.
       if (event.type === "open-request" || signature !== browserSignatureRef.current) {
@@ -373,53 +433,11 @@ export function WorkLiveCornerCard({
    */
   const onBrowserStatusSettled = useCallback((status: BuiltInBrowserStatus | null) => {
     if (!status || !Array.isArray(status.tabs) || status.tabs.length === 0) return;
-    const signature = browserActivitySignature(status);
+    const signature = chatBrowserActivitySignature(status, runtimePinRef.current, chatSessionIdRef.current);
     if (signature === browserSignatureRef.current) return;
     browserSignatureRef.current = signature;
     bump("browser");
   }, [bump]);
-
-  const onAppControlEvent = useCallback((event: AppControlEventPayload, scope: NativeToolFeedScope) => {
-    if (event.type === "session-started" || event.type === "session-updated") {
-      const session = event.session ?? null;
-      bump("app-control");
-      // App Control has no `trace` event; it announces an action by moving
-      // `lastTraceEntryId`. Snapshot the frame at THAT instant and let the
-      // words catch up — the picture is the perishable half.
-      const traceId = session?.lastTraceEntryId ?? null;
-      if (traceId && traceId !== appControlTraceIdRef.current) {
-        appControlTraceIdRef.current = traceId;
-        const at = Date.now();
-        setScrubBuffer((current) => commitWorkLiveScrubFrame(current, {
-          id: traceId,
-          dataUrl: liveFrameRef.current,
-          caption: null,
-          at,
-        }));
-        void window.ade?.appControl?.getTrace?.({ limit: 1 }, runtimePinRef.current)
-          .then((result) => {
-            const entry = result?.entries?.[result.entries.length - 1] ?? null;
-            if (!scope.isActive() || !entry || entry.id !== traceId) return;
-            const caption = formatWorkLiveActionCaption(entry.action, entry.target);
-            setAppControlAction({ caption, at: Date.parse(entry.endedAt) || at });
-            setScrubBuffer((current) => updateWorkLiveScrubCaption(current, traceId, caption));
-          })
-          .catch(() => {});
-      }
-      return;
-    }
-    if (event.type === "frame") {
-      // Painted, but deliberately NOT counted as activity. The panel's
-      // screencast runs at 30fps for the life of the session, independent of
-      // this card: bumping on it made the × unusable and let App Control win
-      // the most-recent-activity tie-break forever. Real activity is a session
-      // event or a new trace id.
-      if (event.frame.width > 0 && event.frame.height > 0) {
-        setSourceAspect(event.frame.width / event.frame.height);
-      }
-      paintFrame("app-control", `data:${event.frame.mimeType};base64,${event.frame.data}`);
-    }
-  }, [bump, paintFrame]);
 
   // The page's one subscription set, shared with the Work tools pane: the
   // capability gate, the web-client boundary check, the offline guard and the
@@ -431,37 +449,34 @@ export function WorkLiveCornerCard({
     appControlSession,
     browserViewRoot,
     canBrowser,
-    canAppControl,
     context: toolContext,
   } = useNativeToolFeeds();
+  const desktopTool = hostDesktopTool(toolContext);
   useNativeToolFeedHandlers(useMemo(() => ({
     onBrowserStatusSettled,
     onBrowserEvent,
-    onAppControlEvent,
-  }), [onAppControlEvent, onBrowserEvent, onBrowserStatusSettled]));
-
-  /**
-   * A session that was already running when this card mounted counts too.
-   *
-   * The same gap the settled browser answer closes: App Control and the
-   * simulator only bump on events, so a card that mounted after the session
-   * started — a Work remount, a chat switch — saw a live session with no
-   * activity and could never picture it.
-   */
-  const seenAppControlSessionRef = useRef<string | null>(null);
-  useEffect(() => {
-    const key = appControlSession?.id ?? null;
-    if (!key || key === seenAppControlSessionRef.current) return;
-    seenAppControlSessionRef.current = key;
-    bump("app-control");
-  }, [appControlSession?.id, bump]);
+  }), [onBrowserEvent, onBrowserStatusSettled]));
 
   /* ── Which tool, and does it fit ───────────────────────────────────────── */
 
-  const activeBrowserTab = useMemo(() => {
-    if (!browserStatus) return null;
-    return browserStatus.tabs.find((tab) => tab.id === browserStatus.activeTabId) ?? browserStatus.tabs[0] ?? null;
-  }, [browserStatus]);
+  const activeBrowserTab = useMemo(
+    () => pickBrowserTab(browserStatus, chatSessionId),
+    [browserStatus, chatSessionId, pickBrowserTab],
+  );
+  // A failed page load (the agent's dev server stopped, a bad URL) is painted
+  // by Chromium as plain white, and that white is all the frames would carry.
+  // The card steps aside until the tab loads again rather than float a blank.
+  const browserLoadFailed = Boolean(activeBrowserTab?.loadError);
+  // The signature is per chat. Re-base it on a chat switch, or the next status
+  // event compares the new chat's tab with the old chat's and counts as activity.
+  const browserStatusRef = useRef(browserStatus);
+  browserStatusRef.current = browserStatus;
+  useEffect(() => {
+    browserSignatureRef.current = browserActivitySignature(
+      browserStatusRef.current,
+      pickBrowserTab(browserStatusRef.current, chatSessionId),
+    );
+  }, [chatSessionId, pickBrowserTab]);
 
   // Every per-tool question the card asks — live, owner, caption, handoff,
   // recording, session key — answered once, by the adapter map beside the tool
@@ -528,21 +543,16 @@ export function WorkLiveCornerCard({
     {
       tool: "browser",
       lastActivityAt: activityAt.browser,
-      available: canBrowser,
+      available: canBrowser && !browserLoadFailed,
       live: sources.browser.live,
       ownerChatSessionId: activeBrowserTab?.ownerChatSessionId ?? null,
       sessionKey: sources.browser.sessionKey,
       showWhenUnowned: isWorkLiveCardSeen(seen, "browser", sources.browser.sessionKey),
     },
-    {
-      tool: "app-control",
-      lastActivityAt: activityAt["app-control"],
-      available: canAppControl,
-      live: sources["app-control"].live,
-      ownerChatSessionId: appControlSession?.chatSessionId ?? null,
-      sessionKey: sources["app-control"].sessionKey,
-      showWhenUnowned: isWorkLiveCardSeen(seen, "app-control", sources["app-control"].sessionKey),
-    },
+    /*
+      Nor App Control: it floats in `AppControlMiniPlayer`, beside this card,
+      on the same shell as the Apple device and the Mac Desktop.
+    */
     /*
       The Apple device is deliberately absent: it floats in its own player,
       which the device rail opens (see the note on the component).
@@ -554,8 +564,7 @@ export function WorkLiveCornerCard({
   ], [
     activeBrowserTab?.ownerChatSessionId,
     activityAt,
-    appControlSession?.chatSessionId,
-    canAppControl,
+    browserLoadFailed,
     canBrowser,
     seen,
     sources,
@@ -587,7 +596,14 @@ export function WorkLiveCornerCard({
   const objectFit = WORK_LIVE_CARD_OBJECT_FIT;
 
   const fits = workLiveCardFits(hostSize, bottomReserve, baseCardSize);
-  const visible = active && tool != null && fits;
+  // One preview at a time: while a floating player (Mac Desktop, App Control,
+  // an Apple device) is on screen, the card steps aside rather than sit on top
+  // of it — the "second live preview over the floating player" the owner
+  // reported on 2026-10-07. A tool the user floated by hand is an explicit ask
+  // and still shows.
+  const floatingPlayerShown = useAnyFloatingPlayerShown();
+  const yieldsToPlayer = floatingPlayerShown && !(tool != null && floating.includes(tool));
+  const visible = active && tool != null && fits && !yieldsToPlayer;
 
   /* ── Host geometry ─────────────────────────────────────────────────────── */
 
@@ -836,18 +852,20 @@ export function WorkLiveCornerCard({
   }, [baseCardSize.width, browserViewRoot, previewTabId, visible]);
 
   // Switching source tools must not leave the previous tool's last frame or
-  // aspect on screen under the new tool's name.
+  // aspect on screen under the new tool's name. A new tab for the same tool
+  // (`previewTabId`) is the same problem: the caption and frames of the old tab
+  // would otherwise linger under the new one.
   useEffect(() => {
     paintToolRef.current = visible ? tool : null;
     liveFrameRef.current = null;
     pendingFrameRef.current = null;
-    appControlTraceIdRef.current = null;
     setSourceAspect(null);
     setScrubBuffer([]);
     setScrubFrameId(null);
+    setLastTrace(null);
     if (imageRef.current) imageRef.current.src = BLANK_FRAME;
     if (scrubImageRef.current) scrubImageRef.current.src = BLANK_FRAME;
-  }, [tool, visible]);
+  }, [previewTabId, tool, visible]);
 
   // One low-frequency tick so "· 2s" ages while you look at it. Only while the
   // card is actually on screen.
@@ -915,11 +933,8 @@ export function WorkLiveCornerCard({
       const label = formatWorkLiveActionCaption(lastTrace.action, lastTrace.target);
       return `${label} · ${formatWorkLiveAge(nowTick - (Date.parse(lastTrace.endedAt) || nowTick))}`;
     }
-    if (tool === "app-control" && appControlAction) {
-      return `${appControlAction.caption} · ${formatWorkLiveAge(nowTick - appControlAction.at)}`;
-    }
     return null;
-  }, [appControlAction, lastTrace, nowTick, scrubbedFrame, tool]);
+  }, [lastTrace, nowTick, scrubbedFrame, tool]);
 
   const handoff = source?.handoff ?? null;
   const recording = source?.recording ?? null;
@@ -940,6 +955,39 @@ export function WorkLiveCornerCard({
     setLocalClosed((current) => ({ ...current, [tool]: sessionKey }));
     setLocalFloating((current) => current.filter((entry) => entry !== tool));
   }, [chatSessionId, sources, tool]);
+
+  /*
+    Stop, from the card, through the browser's own stop. "Making demo…" holds
+    from the click until the answer: the tab's `recording` goes null early in
+    that stretch, so the stop in flight outranks it.
+  */
+  const recordingTab = tool === "browser" ? activeBrowserTab : null;
+  const recordingStartedAt = recordingTab?.recording?.startedAt ?? null;
+  const recordingTabId = recordingTab?.id ?? null;
+  // The chat's id only for its own tab: the service claims the tab for any
+  // chat that names itself, and a person stopping their own recording must
+  // not hand their tab to this chat's agent.
+  const recordingTabOwned = chatSessionId != null && recordingTab?.ownerChatSessionId === chatSessionId;
+  const stopBrowserRecording = useCallback(async () => {
+    const stop = window.ade?.builtInBrowser?.stopRecording;
+    if (!recordingTabId || !stop) return;
+    await stop({
+      ...(browserViewRoot ? { projectRoot: browserViewRoot } : {}),
+      tabId: recordingTabId,
+      ...(recordingTabOwned && chatSessionId ? { chatSessionId } : {}),
+    }, runtimePinRef.current).catch((error: unknown) => {
+      showToast({
+        tone: "error",
+        title: "Recording did not stop",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }, [browserViewRoot, chatSessionId, recordingTabId, recordingTabOwned]);
+  const recordingCapture = useFloatingPlayerCapture({
+    startedAt: recordingStartedAt,
+    makingDemo: false,
+    stop: recordingTabId ? stopBrowserRecording : null,
+  });
 
   const activate = useCallback(() => {
     if (suppressClickRef.current || draggingRef.current || resizeStartRef.current || !tool) return;
@@ -1106,11 +1154,24 @@ export function WorkLiveCornerCard({
                     style={{
                       background: index === timelineIndex
                         ? hue
-                        : "color-mix(in srgb, var(--color-fg) 24%, transparent)",
+                        : fgTint(24),
                     }}
                   />
                 ))}
               </div>
+            ) : null}
+
+            {/*
+              While the page records: the same live pill and Stop the tool's
+              pane draws, so a recording is never running behind a card that
+              only has a red dot to say so. Inert to the card's own click.
+            */}
+            {recordingCapture ? (
+              <FloatingPlayerCapturePill
+                capture={recordingCapture}
+                attrPrefix="live-card"
+                marker={{ "data-live-card-inert": "" }}
+              />
             ) : null}
 
             {/*
@@ -1132,6 +1193,22 @@ export function WorkLiveCornerCard({
               )}
               style={statusColor ? { background: statusColor } : undefined}
             />
+
+            {/* The tool's glyph at rest, the same one its Work tab shows; the pill replaces it on hover. */}
+            {Icon ? (
+              <span
+                aria-hidden="true"
+                data-live-card-icon=""
+                className={cn(
+                  "pointer-events-none absolute left-2 top-2 inline-flex h-5 w-5 items-center justify-center rounded-md",
+                  "bg-black/55 shadow-[0_0_0_1px_rgba(255,255,255,0.08)]",
+                  "transition-opacity duration-[120ms] ease-out motion-reduce:transition-none",
+                  "group-hover:opacity-0 group-focus-within:opacity-0",
+                )}
+              >
+                <Icon size={12} weight="duotone" style={{ color: hue }} />
+              </span>
+            ) : null}
 
             {/*
               …and on hover, in its place: the 32px pill. It is also the drag
@@ -1216,7 +1293,7 @@ export function WorkLiveCornerCard({
                 className={cn(
                   "-mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px]",
                   "text-muted-fg/80 transition-colors duration-[120ms] motion-reduce:transition-none",
-                  "hover:bg-white/[0.08] hover:text-fg",
+                  "hover:bg-fg/[0.08] hover:text-fg",
                   "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
                 )}
               >
@@ -1267,8 +1344,20 @@ export function WorkLiveCornerCard({
       chatSessionId={chatSessionId}
       sessionLaneId={sessionLaneId}
       runtimePin={runtimePin}
-      supported={toolContext.supportsMacDesktop !== false}
-      onOpenInPane={() => onPick("mac-desktop")}
+      desktopTool={desktopTool}
+      supported={desktopTool === "windows-desktop"
+        ? toolContext.supportsWindowsDesktop !== false
+        : toolContext.supportsMacDesktop !== false}
+      onOpenInPane={() => onPick(desktopTool)}
+    />
+    <AppControlMiniPlayer
+      active={active}
+      laneId={laneId}
+      paneTool={activeTool}
+      chatSessionId={chatSessionId}
+      sessionLaneId={sessionLaneId}
+      runtimePin={runtimePin}
+      onOpenInPane={() => onPick("app-control")}
     />
     </>
   );

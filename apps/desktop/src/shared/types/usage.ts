@@ -1,3 +1,5 @@
+import type { ProviderInstanceProvider } from "./providerInstances";
+
 // ---------------------------------------------------------------------------
 // Usage dashboard types
 // ---------------------------------------------------------------------------
@@ -124,6 +126,34 @@ export type GetAdeUsageStatsArgs = {
  */
 export type AdeUsagePricingSource = "list" | "fallback" | "mixed";
 
+/**
+ * The billing speed of one request. Codex writes it as `service_tier`
+ * (`priority` is Fast); Claude Code as `usage.speed`.
+ */
+export type UsageSpeed = "standard" | "fast" | "ultrafast";
+
+/**
+ * Where a cost figure's dollars went, computed on the host so every client
+ * shows the same split without carrying rate tables.
+ *
+ * The five type fields sum to the cost. `other` is a provider-reported cost
+ * that no list rate can split (a model with no public price). The two premium
+ * fields are the part of the cost a faster service tier added over the
+ * standard rate; they are inside the type fields, not on top of them.
+ *
+ * Optional everywhere it appears: a host that predates the split omits it and
+ * clients hide the split rather than show zeros.
+ */
+export type AdeUsageCostSplit = {
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+  output: number;
+  other: number;
+  fastPremium: number;
+  ultrafastPremium: number;
+};
+
 export type AdeUsageProviderSummary = {
   provider: string;
   inputTokens: number;
@@ -146,6 +176,8 @@ export type AdeUsageProviderSummary = {
   adeOriginatedTokens?: number;
   /** Tokens from sessions launched outside ADE (subset of totalTokens). */
   externalTokens?: number;
+  /** `rangeCostUsd` split by token type and speed premium. */
+  costSplit?: AdeUsageCostSplit;
 };
 
 export type AdeUsageModelSummary = {
@@ -157,6 +189,148 @@ export type AdeUsageModelSummary = {
   cachedTokens: number;
   totalTokens: number;
   costUsd: number;
+  /** `costUsd` split by token type and speed premium. */
+  costSplit?: AdeUsageCostSplit;
+  /** Cache-write tokens, so a client can show cache hit rate per model. Inside `cachedTokens`. */
+  cacheWriteTokens?: number;
+};
+
+export const ADE_USAGE_COST_BREAKDOWN_BY = ["chat", "lane", "account"] as const;
+export type AdeUsageCostBreakdownBy = (typeof ADE_USAGE_COST_BREAKDOWN_BY)[number];
+
+export function isAdeUsageCostBreakdownBy(value: unknown): value is AdeUsageCostBreakdownBy {
+  return typeof value === "string" && (ADE_USAGE_COST_BREAKDOWN_BY as readonly string[]).includes(value);
+}
+
+export type GetAdeUsageCostBreakdownArgs = {
+  by: AdeUsageCostBreakdownBy;
+  preset?: AdeUsageRangePreset;
+  since?: string | null;
+  until?: string | null;
+  /** With `by: "chat"`, only that lane's chats (the lane drill-down). */
+  laneId?: string | null;
+  /** Rows before the tail folds into `other`. Default 50, max 200. */
+  limit?: number;
+  /** What ranks the rows before that fold: cost (default) or tokens. An older host ranks by cost. */
+  rankBy?: "cost" | "tokens";
+};
+
+/**
+ * One chat, lane, or account in the cost breakdown. Every dollar figure is
+ * from ADE's per-turn ledger, so it covers chats ADE ran on this machine.
+ *
+ * `costUsd` is the API-equivalent value (the turns at public list prices,
+ * the one currency that compares plans with keys). `billedUsd` is what API
+ * keys and routed-away accounts were actually charged; `planValueUsd` is the
+ * list-price value of turns a subscription covered. A local model's turns are
+ * in neither.
+ */
+export type AdeUsageCostBreakdownRow = {
+  key: string;
+  label: string;
+  /** Secondary text: a chat's lane, an account's provider and plan. */
+  detail?: string | null;
+  laneId?: string | null;
+  sessionId?: string | null;
+  provider?: string | null;
+  accountKind?: "subscription" | "api_key" | "local" | "unknown" | null;
+  turns: number;
+  totalTokens: number;
+  costUsd: number;
+  billedUsd: number;
+  planValueUsd: number;
+};
+
+export type AdeUsageCostBreakdownTotals = Pick<AdeUsageCostBreakdownRow, "turns" | "totalTokens" | "costUsd" | "billedUsd" | "planValueUsd">;
+
+export type AdeUsageCostBreakdown = {
+  by: AdeUsageCostBreakdownBy;
+  range: { since: string | null; until: string };
+  /** False when this host keeps no turn ledger. */
+  available: boolean;
+  /** Ranked by `costUsd`, then tokens. */
+  rows: AdeUsageCostBreakdownRow[];
+  /** The tail past `limit`, folded into one figure. */
+  other: (AdeUsageCostBreakdownTotals & { count: number }) | null;
+  totals: AdeUsageCostBreakdownTotals;
+};
+
+export type GetAdeUsageModelDetailArgs = {
+  provider: string;
+  /** The model as `AdeUsageModelSummary.model` names it. */
+  model: string;
+  preset?: AdeUsageRangePreset;
+  since?: string | null;
+  until?: string | null;
+  scope?: AdeUsageScope;
+};
+
+/** One model's day, for the detail trend. */
+export type AdeUsageModelDetailDay = {
+  date: string;
+  costUsd: number;
+  totalTokens: number;
+};
+
+/** USD per million tokens. A missing cache rate bills at the input rate. */
+export type AdeUsageModelPrice = {
+  input: number;
+  output: number;
+  cacheRead?: number | null;
+  cacheWrite?: number | null;
+};
+
+export type AdeUsageModelDetail = {
+  provider: string;
+  model: string;
+  range: { since: string | null; until: string };
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** Cache reads plus cache writes. */
+  cachedTokens: number;
+  cacheReadTokens: number;
+  totalTokens: number;
+  /** `costUsd` per million total tokens; null with no tokens. */
+  costPerMillionUsd: number | null;
+  /** Cache reads over the whole input side (uncached + cache read + cache write); null with no input. */
+  cacheHitRate: number | null;
+  costSplit?: AdeUsageCostSplit;
+  daily: AdeUsageModelDetailDay[];
+  /**
+   * The rate ADE prices this model at now: `custom` is a price the user set,
+   * `list` models.dev, `fallback` the built-in registry or zero (`unpriced`).
+   */
+  price: AdeUsageModelPrice & { source: "custom" | "list" | "fallback"; unpriced: boolean };
+  /** The model ids this machine records the model under ("Map to" sources and the raw ids). */
+  modelIds: string[];
+  /** Where a "Map to" sends this model, when the user set one. */
+  mapTo: string | null;
+  /**
+   * Model ids the user mapped onto this one. Their usage is counted here and
+   * they no longer appear on their own, so this is where they are unmapped.
+   * An older host omits it.
+   */
+  mappedFrom?: string[];
+};
+
+/** The prices and "Map to" mappings the user set on this machine. */
+export type AdeUsagePriceOverrides = {
+  prices: Record<string, AdeUsageModelPrice>;
+  aliases: Record<string, string>;
+};
+
+export type SetAdeUsageModelPriceArgs = {
+  model: string;
+  /**
+   * Other raw ids the same change applies to: one display name can stand for
+   * several (a dated id, a `[1m]` variant). An older host ignores this.
+   */
+  models?: string[];
+  /** Null removes the user's price, back to automatic. */
+  price?: AdeUsageModelPrice | null;
+  /** Null or empty removes the mapping. Mapping a model drops its own price. */
+  mapTo?: string | null;
 };
 
 export type AdeUsageAgentProviderSummary = {
@@ -247,6 +421,19 @@ export type AdeUsageDailyPoint = {
   githubPrs?: number;
   githubAdditions?: number;
   githubDeletions?: number;
+};
+
+/**
+ * The signed-in GitHub user's contribution calendar (the green squares on
+ * their profile): every day of the last year, across every repository, as
+ * GitHub counts it. Machine-level: read with this machine's `gh` login.
+ */
+export type GithubContributionCalendar = {
+  /** GitHub's own total for the year. */
+  total: number;
+  /** One entry per day, oldest first; `date` is YYYY-MM-DD. */
+  days: Array<{ date: string; count: number }>;
+  fetchedAt: string;
 };
 
 /** GitHub-scoped activity, reported separately from local activity (never max-merged). */
@@ -372,6 +559,32 @@ export type AdeUsageStats = {
    * the UI then shows the single-machine numbers with no machine list.
    */
   machines?: AdeUsageMachineContribution[];
+  /**
+   * Per-machine live quota readings, for the pooled cross-environment limits.
+   *
+   * Optional and additive: a host that predates pooling omits it, and every
+   * client reads that as "no live limits to pool". These readings are the
+   * in-memory side channel from each machine's rollup; they never enter the
+   * CRR-replicated rollup store.
+   */
+  liveQuota?: { environments: AdeUsageLiveEnvironment[] };
+};
+
+/**
+ * One machine's live quota reading, for the pooled limits view.
+ *
+ * `windows` and `accounts` are exactly what that machine's `UsageSnapshot`
+ * carried — the accounts the windows are attributed to travel with them, so a
+ * reader can pool by account identity across machines.
+ */
+export type AdeUsageLiveEnvironment = {
+  machineKey: string;
+  label: string;
+  platform: string | null;
+  isLocal: boolean;
+  state: AdeUsageMachineState;
+  windows: UsageWindow[];
+  accounts: UsageAccount[];
 };
 
 // ---------------------------------------------------------------------------
@@ -425,6 +638,13 @@ export type AdeUsageRollupRow = {
   totalTokens: number;
   costUsd: number;
   calls: number;
+  /**
+   * `costUsd` split by token type and speed premium. Carried only on a live
+   * rollup response; the replicated rollup table does not store it, so a row
+   * read from it arrives without one and the merge drops the split for every
+   * summary that row feeds rather than show a partial one.
+   */
+  costSplit?: AdeUsageCostSplit;
 };
 
 /**
@@ -464,13 +684,25 @@ export type AdeUsageRollup = {
   capturedAt: string;
   source: AdeUsageTranscriptSource;
   rows: AdeUsageRollupRow[];
+  /**
+   * Live quota windows and their accounts, for a peer's pooled cross-machine
+   * limits view.
+   *
+   * An **in-memory side channel only**: unlike `rows`, this is never written to
+   * the CRR-replicated `usage_machine_rollups` — it changes every poll, and
+   * storing it would churn the CRR clock and reopen the self-feeding refresh
+   * loop the store's no-op detection exists to prevent. `applyAccountRollups`
+   * strips it before `publish`.
+   */
+  windows?: UsageWindow[];
+  accounts?: UsageAccount[];
 };
 
 // ---------------------------------------------------------------------------
 // Live quota tracking types (Claude/Codex API windows plus local runtime cost scans)
 // ---------------------------------------------------------------------------
 
-export type UsageProvider = "claude" | "codex" | "cursor" | "copilot" | "grok" | "opencode" | "kimi";
+export type UsageProvider = "claude" | "codex" | "cursor" | "copilot" | "grok" | "opencode" | "kimi" | "muse";
 
 /** Providers the live-quota poller can publish. History-only providers stay off this list. */
 export const LIVE_QUOTA_PROVIDERS = [
@@ -481,6 +713,7 @@ export const LIVE_QUOTA_PROVIDERS = [
   "grok",
   "opencode",
   "kimi",
+  "muse",
 ] as const satisfies readonly UsageProvider[];
 
 export type UsageWindowType = "five_hour" | "weekly" | "monthly" | "weekly_oauth_apps" | "weekly_cowork";
@@ -596,6 +829,7 @@ export type CostTokenBreakdown = {
   cached: number;
   cacheWrite?: number;
   costUsd?: number;
+  costSplit?: AdeUsageCostSplit;
 };
 
 export type CostSnapshot = {
@@ -704,6 +938,66 @@ export type UsageAccount = {
    * "Use reset" action on; `nextExpiresAt` is when the soonest credit lapses.
    */
   resetCredits?: { availableCount: number; nextExpiresAt?: string };
+  /**
+   * Why this account has no fresh numbers, when the polling host knows.
+   *
+   * Set only while the provider is throttling the usage check AND the account
+   * has no unexpired window to show: a carried reading still answers the
+   * question the row exists to answer, but "No usage yet" for an account the
+   * provider just 429'd reads as a broken account.
+   *
+   * `message` is the host's STATE ("Rate-limited"), not a finished sentence;
+   * the retry phrase and countdown belong to the client, which is the only side
+   * that knows "now". `nextRetryAt` is when the host will ask again. Local to
+   * the polling machine — a peer's notice describes the peer's attempt, so it
+   * never travels in a rollup.
+   */
+  notice?: { message: string; nextRetryAt?: string };
+  /**
+   * What this machine's stored login for the account can do, from its last poll.
+   *
+   * - `ok`: a live token.
+   * - `expired`: the token expired. The provider CLI refreshes it the next time
+   *   it runs on this account, so the account can still take a chat.
+   * - `signed_out`: no usable login. The account cannot take a chat until the
+   *   user signs in again, even when old windows still show room.
+   *
+   * Absent until a poll has read the account, and on providers with one login.
+   * Local to the polling machine, like `notice`.
+   */
+  login?: UsageAccountLogin;
+};
+
+export type UsageAccountLogin = "ok" | "expired" | "signed_out";
+
+/** Why smart balance kept a new chat on the default account. */
+export type AccountBalanceSkipReason =
+  | "one_account"
+  | "no_usage_data"
+  | "all_signed_out"
+  | "all_full";
+
+/**
+ * A reason smart balance cannot do its job, shown in the top bar.
+ *
+ * - `signed_out`: an account ADE lists as signed in has no usable login, so
+ *   balance skips it. The fix is to sign that account in again.
+ * - `no_usage_data`: the last new chat found no quota readings, so it stayed
+ *   on the default account.
+ * - `error`: the last balance decision threw.
+ *
+ * Present only while smart balance is on for the provider.
+ */
+export type AccountBalanceIssue = {
+  provider: ProviderInstanceProvider;
+  kind: "signed_out" | "no_usage_data" | "error";
+  /** Short text for the pill, e.g. "Claude account 90 signed out". */
+  title: string;
+  /** One or two sentences for the tooltip and the log. */
+  detail: string;
+  /** The provider accounts the issue is about. */
+  instanceIds?: string[];
+  at: string;
 };
 
 /**
@@ -738,6 +1032,13 @@ export type UsageSnapshot = {
   /** Per-provider freshness/health for the latest poll (drives quiet-retry UI). */
   providerStatus?: UsageProviderStatusMap;
   providerMessages?: UsageProviderMessage[];
+  /** Problems that stop smart balance from spreading chats. Omitted when there are none. */
+  balanceIssues?: AccountBalanceIssue[];
+  /**
+   * Where smart balance would send a new chat right now, per provider with it
+   * on and a real choice to make. Omitted when no provider has one.
+   */
+  balanceNext?: Array<{ provider: ProviderInstanceProvider; instanceId: string }>;
   costs: CostSnapshot[];
   /** Local runtime usage that can be attributed specifically to ADE-originated sessions. */
   adeCosts?: CostSnapshot[];

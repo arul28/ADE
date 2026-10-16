@@ -5,12 +5,21 @@ import type { AgentChatEventEnvelope } from "../../../shared/types";
 import { sceneRowIdentity, sceneScopeKeyFor } from "../../../shared/chatScene";
 import { prependOlderChatHistoryPage } from "./chatHistoryWindow";
 import {
+  applyWakeChains,
+  deriveWakeTurns,
+  foldScheduledWorkRows,
+  moveScheduledWorkToTurnEnds,
+} from "./chatScheduledWorkRows";
+import { arrangeComputerUseRuns, hasComputerUseEntries } from "./chatComputerUseRows";
+import { foldTurnFailureRows } from "./turnFailureRows";
+import {
   applyChatTranscriptTurnFolds,
   buildTranscriptEventRowKeys,
   collapseChatTranscriptEvents,
   collapseChatTranscriptEventsIncremental,
   collapseChatTranscriptEventsIncrementalWithContext,
   collapseChatTranscriptEventsWithContext,
+  filterVisibleTranscriptRows,
   collapseGroupedActivityPhaseRows,
   countRowsAppendedSince,
   countVisibleRowsAppendedSince,
@@ -27,6 +36,7 @@ import {
   readTurnEndSnapshots,
   sameTurnFolds,
   summarizeDiffStats,
+  stripInlineMarkdown,
   summarizeInlineText,
   summarizeTurnDetails,
   type ChatTranscriptGroupedEnvelope,
@@ -37,6 +47,77 @@ function groupEvents(events: AgentChatEventEnvelope[]) {
 }
 
 describe("chatTranscriptRows", () => {
+  const failureRows = (events: AgentChatEventEnvelope[]) => foldTurnFailureRows(groupEvents(events));
+
+  it("drops usage-limit error rows and marks their done row", () => {
+    const rows = failureRows([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-08T19:28:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "Continue after the limit clears.", turnId: "turn-limit" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-08T19:28:01.000Z",
+        sequence: 2,
+        event: { type: "error", message: "You have reached your usage limit.", turnId: "turn-limit", errorInfo: { category: "rate_limit" } },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-08T19:28:02.000Z",
+        sequence: 3,
+        event: { type: "done", status: "failed", turnId: "turn-limit" },
+      },
+    ]);
+
+    expect(rows.filter((row) => row.event.type === "error")).toHaveLength(0);
+    expect(rows.filter((row) => row.event.type === "user_message")).toHaveLength(1);
+    expect(rows.find((row) => row.event.type === "done")).toMatchObject({ endedAtUsageLimit: true });
+  });
+
+  it("folds an identical failed retry into the newest prompt and done row", () => {
+    const rows = failureRows([
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:00.000Z", sequence: 1, event: { type: "user_message", text: "Retry this prompt", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:01.000Z", sequence: 2, event: { type: "error", message: "Provider unavailable.", turnId: "turn-1", errorInfo: "responseStreamDisconnected" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:02.000Z", sequence: 3, event: { type: "done", status: "failed", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:00.000Z", sequence: 4, event: { type: "user_message", text: "Retry this prompt", turnId: "turn-2" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:01.000Z", sequence: 5, event: { type: "error", message: "Provider unavailable.", turnId: "turn-2", errorInfo: "responseStreamDisconnected" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:02.000Z", sequence: 6, event: { type: "done", status: "failed", turnId: "turn-2" } },
+    ]);
+    const prompts = rows.filter((row) => row.event.type === "user_message");
+    const errors = rows.filter((row) => row.event.type === "error");
+    const done = rows.filter((row) => row.event.type === "done");
+
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]?.event).toMatchObject({ text: "Retry this prompt", turnId: "turn-2" });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ repeatCount: 2, event: { turnId: "turn-2" } });
+    expect(done).toHaveLength(1);
+    expect(done[0]).toMatchObject({ repeatCount: 2, event: { turnId: "turn-2" } });
+  });
+
+  it.each([
+    ["a different failure", "Retry this prompt", "A different provider failure."],
+    ["a different prompt", "Try a new prompt", "Provider unavailable."],
+  ])("does not fold retries with %s", (_reason, retryText, retryFailure) => {
+    const rows = failureRows([
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:00.000Z", sequence: 1, event: { type: "user_message", text: "Retry this prompt", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:01.000Z", sequence: 2, event: { type: "error", message: "Provider unavailable.", turnId: "turn-1", errorInfo: "responseStreamDisconnected" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:02.000Z", sequence: 3, event: { type: "done", status: "failed", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:00.000Z", sequence: 4, event: { type: "user_message", text: retryText, turnId: "turn-2" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:01.000Z", sequence: 5, event: { type: "error", message: retryFailure, turnId: "turn-2", errorInfo: "responseStreamDisconnected" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:02.000Z", sequence: 6, event: { type: "done", status: "failed", turnId: "turn-2" } },
+    ]);
+    const errors = rows.filter((row) => row.event.type === "error");
+    const done = rows.filter((row) => row.event.type === "done");
+
+    expect(errors).toHaveLength(2);
+    expect(done).toHaveLength(2);
+    expect(errors.every((row) => row.repeatCount === undefined)).toBe(true);
+    expect(done.every((row) => row.repeatCount === undefined)).toBe(true);
+  });
+
   /**
    * A scene's still is a FILE, named by the key derived here, looked up again
    * on every reopen.
@@ -119,6 +200,27 @@ describe("chatTranscriptRows", () => {
       type: "error",
       errorInfo: "responseStreamDisconnected",
     }));
+  });
+
+  it("keeps the first started time when a repeated compaction start merges", () => {
+    const base = { sessionId: "session-1", timestamp: "2026-07-10T18:18:53.000Z" };
+    const start = (timestamp: string, sequence: number): AgentChatEventEnvelope => ({
+      ...base,
+      timestamp,
+      sequence,
+      event: { type: "context_compact", trigger: "manual", state: "started", turnId: "turn-compact" },
+    });
+    // Claude repeats its `compacting` status every ~30s while one compaction
+    // runs. The row counts its elapsed from this timestamp, so the repeat must
+    // merge into the first row rather than move it forward — that reset is the
+    // "Compacting 42s" clock restarting mid-run.
+    const [row] = collapseChatTranscriptEvents([
+      start("2026-07-10T18:18:53.000Z", 1),
+      start("2026-07-10T18:19:23.000Z", 2),
+    ]);
+
+    expect(row?.timestamp).toBe("2026-07-10T18:18:53.000Z");
+    expect(row?.event).toEqual(expect.objectContaining({ type: "context_compact", state: "started" }));
   });
 
   it("extracts and normalizes localhost URLs from tool output text", () => {
@@ -1209,6 +1311,39 @@ describe("summarizeInlineText", () => {
   it("does not truncate text shorter than maxChars", () => {
     expect(summarizeInlineText("short", 100)).toBe("short");
   });
+
+  it("strips inline Markdown from the collapsed preview", () => {
+    expect(summarizeInlineText("**bold** and `code` and [link](https://x)")).toBe(
+      "bold and code and link",
+    );
+  });
+});
+
+describe("stripInlineMarkdown", () => {
+  it.each([
+    ["**bold**", "bold"],
+    ["__bold__", "bold"],
+    ["*italic*", "italic"],
+    ["_italic_", "italic"],
+    ["`inline code`", "inline code"],
+    ["[label](https://example.com)", "label"],
+    ["![alt](https://example.com/a.png)", "alt"],
+    ["~~struck~~", "struck"],
+    ["- list item", "list item"],
+    ["* list item", "list item"],
+    ["+ list item", "list item"],
+    ["1. ordered item", "ordered item"],
+    ["# heading", "heading"],
+    ["## heading", "heading"],
+    ["> quoted", "quoted"],
+    ["plain text", "plain text"],
+    ["snake_case_name stays", "snake_case_name stays"],
+    ["rm **/*.log", "rm **/*.log"],
+    ["a * b * c", "a * b * c"],
+    ["2 * 3 = 6", "2 * 3 = 6"],
+  ])("strips %j to %j", (input, expected) => {
+    expect(stripInlineMarkdown(input)).toBe(expected);
+  });
 });
 
 describe("countVisibleRowsAppendedSince", () => {
@@ -1385,6 +1520,40 @@ describe("readRecord", () => {
 });
 
 describe("collapseChatTranscriptEventsIncremental", () => {
+  it("matches a full recompute when a long thread has an old tool call rewritten, then a newer one", () => {
+    const second = (index: number) => new Date(Date.UTC(2026, 5, 1, 10, 0, index)).toISOString();
+    const stream: AgentChatEventEnvelope[] = [];
+    for (let index = 0; index < 420; index += 1) {
+      stream.push(index % 7 === 3
+        ? env(second(index), { type: "tool_call", tool: "bash", args: {}, itemId: `call-${index}`, turnId: "turn-1" })
+        : env(second(index), { type: "text", text: `part ${index}`, messageId: `m-${Math.floor(index / 5)}`, turnId: "turn-1" }));
+    }
+    const rewrite = (events: AgentChatEventEnvelope[], index: number): AgentChatEventEnvelope[] => {
+      const call = events[index]!;
+      expect(call.event.type, "setup: a tool call sits at this index").toBe("tool_call");
+      const next = events.slice();
+      next[index] = { ...call, event: { ...call.event, args: { command: `echo ${index}` } } as AgentChatEventEnvelope["event"] };
+      next.push(env(second(events.length), { type: "text", text: "after", messageId: `tail-${events.length}`, turnId: "turn-1" }));
+      return next;
+    };
+
+    let prevEvents: AgentChatEventEnvelope[] = [];
+    let prev = collapseChatTranscriptEventsWithContext(prevEvents);
+    const advance = (nextEvents: AgentChatEventEnvelope[]) => {
+      prev = collapseChatTranscriptEventsIncrementalWithContext(nextEvents, prevEvents, prev.rows, prev.context);
+      prevEvents = nextEvents;
+      expect(prev.rows).toEqual(collapseChatTranscriptEvents(nextEvents));
+    };
+    for (let index = 1; index <= stream.length; index += 1) advance(stream.slice(0, index));
+
+    // Index 3 is older than every checkpoint; 388 is newer than most of them.
+    advance(rewrite(prevEvents, 3));
+    advance(rewrite(prevEvents, 388));
+    advance(rewrite(prevEvents, 199));
+    advance([...prevEvents, env(second(prevEvents.length), { type: "done", turnId: "turn-1", status: "completed" })]);
+    expect(prev.rows.length).toBeGreaterThan(1);
+  });
+
   it("reuses previous rows and only processes new events", () => {
     const events1: AgentChatEventEnvelope[] = [
       {
@@ -2870,6 +3039,45 @@ describe("spawn_completed notice folding", () => {
     expect(repeatCountOf(rows[0]!)).toBe(3);
   });
 
+  it("folds a turn's image views into one strip across hidden work, and breaks on a visible row", () => {
+    const view = (itemId: string, path: string, turnId = "turn-1") =>
+      ({ type: "codex_image_view", itemId, turnId, path, status: "completed" }) satisfies AgentChatEventEnvelope["event"];
+    const command = (itemId: string) =>
+      ({ type: "command", command: "ade app-control observe", cwd: "/repo", output: "", itemId, turnId: "turn-1", status: "completed", exitCode: 0 }) satisfies AgentChatEventEnvelope["event"];
+    const events = [
+      env("2026-06-01T10:00:00.000Z", view("v-1", "/shots/1.png")),
+      env("2026-06-01T10:00:01.000Z", command("c-1")),
+      env("2026-06-01T10:00:02.000Z", { type: "text", text: "Looking again.", itemId: "t-1", turnId: "turn-1" }),
+      env("2026-06-01T10:00:03.000Z", view("v-2", "/shots/2.png")),
+      // A later update to an image already in the strip changes it in place.
+      env("2026-06-01T10:00:04.000Z", view("v-2", "/shots/2b.png")),
+      // A row the reader keeps seeing ends the strip.
+      env("2026-06-01T10:00:05.000Z", { type: "ade_card", cardId: "ci-1", variant: "ci" } as unknown as AgentChatEventEnvelope["event"]),
+      env("2026-06-01T10:00:06.000Z", view("v-3", "/shots/3.png")),
+      // Another turn never joins this turn's strip.
+      env("2026-06-01T10:00:07.000Z", view("v-4", "/shots/4.png", "turn-2")),
+    ];
+    const rows = collapseChatTranscriptEvents(events);
+    const strips = rows
+      .filter((row) => row.event.type === "codex_image_view")
+      .map((row) => {
+        const head = row.event as Extract<AgentChatEventEnvelope["event"], { type: "codex_image_view" }>;
+        return [head.path, ...(row.imageViewSiblings ?? []).map((sibling) => sibling.path)];
+      });
+
+    expect(strips).toEqual([
+      ["/shots/1.png", "/shots/2b.png"],
+      ["/shots/3.png"],
+      ["/shots/4.png"],
+    ]);
+    // Appending one event at a time folds exactly as one full pass does.
+    let incremental = collapseChatTranscriptEvents(events.slice(0, 1));
+    for (let count = 2; count <= events.length; count += 1) {
+      incremental = collapseChatTranscriptEventsIncremental(events.slice(0, count), events.slice(0, count - 1), incremental);
+    }
+    expect(incremental).toEqual(rows);
+  });
+
   it("does not fold across an intervening row, and never folds a different child", () => {
     const rows = collapseChatTranscriptEvents([
       env("2026-06-01T10:00:00.000Z", completion("child-1", "Engine")),
@@ -2887,6 +3095,45 @@ describe("spawn_completed notice folding", () => {
       undefined,
       undefined,
     ]);
+  });
+
+  it("draws each child once, at its newest notice, and puts neighbouring children on one line", () => {
+    // What the reader sees: an older notice is out of date once a newer one
+    // for the same child lands, wherever it sits, and its turns still count.
+    const legacy = {
+      type: "system_notice",
+      noticeKind: "info",
+      status: "spawn_completed",
+      message: 'Peer "Old lane" turn finished',
+    } satisfies AgentChatEventEnvelope["event"];
+    const rows = filterVisibleTranscriptRows(collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:01.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:02.000Z", completion("child-2", "Docs")),
+      env("2026-06-01T10:00:03.000Z", { type: "text", text: "Thanks.", messageId: "m-1" }),
+      env("2026-06-01T10:00:04.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:05.000Z", completion("child-2", "Docs")),
+      env("2026-06-01T10:00:06.000Z", completion("child-2", "Docs")),
+      // A notice that lost its child id cannot be matched, so it keeps its row.
+      env("2026-06-01T10:00:07.000Z", legacy),
+    ]));
+
+    const childOf = (event: (typeof rows)[number]["event"]) =>
+      event.type === "system_notice" && event.detail && typeof event.detail === "object"
+        ? event.detail.spawnCompletion?.childSessionId ?? null
+        : null;
+    expect(rows.map((row) => ({
+      type: row.event.type,
+      child: childOf(row.event),
+      turns: row.repeatCount ?? 1,
+      sharedWith: (row.spawnCompletionSiblings ?? []).map((sibling) => [sibling.notice.childSessionId, sibling.repeatCount]),
+    }))).toEqual([
+      { type: "text", child: null, turns: 1, sharedWith: [] },
+      { type: "system_notice", child: "child-1", turns: 3, sharedWith: [["child-2", 3]] },
+      { type: "system_notice", child: null, turns: 1, sharedWith: [] },
+    ]);
+    // The line sorts with its newest notice, not the out-of-date ones.
+    expect(rows[1]!.timestamp).toBe("2026-06-01T10:00:04.000Z");
   });
 
   it("keeps the incremental collapse byte-identical to a full recompute", () => {
@@ -3422,14 +3669,14 @@ describe("subagent one-card rendering", () => {
         type: "subagent_started",
         taskId: "bg-1",
         taskType: "background",
-        description: "cd /repo && npm install",
+        description: "cd /repo && npm install --token=fake",
       }),
     ]);
 
     expect(rows).toHaveLength(1);
     if (rows[0]!.event.type !== "background_job_line") throw new Error("Expected background job line");
     expect(rows[0]!.event.status).toBe("running");
-    expect(rows[0]!.event.label).toBe("npm install");
+    expect(rows[0]!.event.label).toBe("npm install --token=<redacted>");
     expect(rows[0]!.event.taskId).toBe("bg-1");
     expect(rows[0]!.key).toBe("background-chip:bg-1");
   });
@@ -4441,6 +4688,27 @@ describe("text adjacency across an older-history prepend", () => {
       previous.context,
     );
     expect(after.rows).toEqual(collapseChatTranscriptEventsWithContext(merged).rows);
+
+    // An earlier event replaced in place, with the last one unchanged: Claude
+    // resends a tool call under the same item id once its args arrive, after
+    // other events already landed.
+    const toolCall = (args: Record<string, unknown>): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: "2026-03-17T10:00:01.000Z",
+      event: { type: "tool_call", tool: "Bash", args, itemId: "tool-1", turnId: "turn-1" },
+    } as never);
+    const live = [toolCall({}), textEvent("running it", 2)];
+    const liveRows = collapseChatTranscriptEventsWithContext(live);
+    const resent = [toolCall({ command: "ade screen status" }), live[1]!, textEvent(" now", 3)];
+    expect(resent[live.length - 1]).toBe(live[live.length - 1]);
+    const afterResend = collapseChatTranscriptEventsIncrementalWithContext(
+      resent,
+      live,
+      liveRows.rows,
+      liveRows.context,
+    );
+    expect(afterResend.rows).toEqual(collapseChatTranscriptEventsWithContext(resent).rows);
+    expect(JSON.stringify(afterResend.rows)).toContain("ade screen status");
   });
 
   it("keeps an intervening non-text event between the halves of a message", () => {
@@ -4462,188 +4730,6 @@ describe("text adjacency across an older-history prepend", () => {
   });
 });
 
-describe("voice call folding", () => {
-  function voiceEvent(
-    sequence: number,
-    event: AgentChatEventEnvelope["event"],
-    voiceCallId: string | null,
-  ): AgentChatEventEnvelope {
-    return {
-      sessionId: "session-voice",
-      timestamp: new Date(Date.UTC(2026, 8, 16, 12, 0, sequence)).toISOString(),
-      sequence,
-      event,
-      ...(voiceCallId ? { provenance: { voiceCallId } } : {}),
-    } as AgentChatEventEnvelope;
-  }
-
-  it("folds every row of one call into a single card", () => {
-    const grouped = groupEvents([
-      voiceEvent(1, { type: "user_message", text: "  what is failing on main?  " }, "call-1"),
-      voiceEvent(2, { type: "text", text: "Two checks are red.", itemId: "a-1" }, "call-1"),
-      voiceEvent(3, { type: "user_message", text: "fix the first one" }, "call-1"),
-      voiceEvent(4, { type: "text", text: "On it.", itemId: "a-2" }, "call-1"),
-    ]);
-
-    expect(grouped).toHaveLength(1);
-    const row = grouped[0]!;
-    expect(row.key).toBe("voice-call:call-1");
-    if (row.event.type !== "voice_call_group") throw new Error("expected a voice_call_group row");
-    expect(row.event.callId).toBe("call-1");
-    expect(row.event.exchanges).toBe(2);
-    expect(row.event.openingLine).toBe("what is failing on main?");
-    expect(row.event.hadApproval).toBe(false);
-    expect(row.event.durationMs).toBe(3000);
-    expect(row.event.rows).toHaveLength(4);
-    expect(row.timestamp).toBe(row.event.rows[3]!.timestamp);
-  });
-
-  it("marks a call that raised an approval", () => {
-    const grouped = groupEvents([
-      voiceEvent(1, { type: "user_message", text: "delete the branch" }, "call-2"),
-      voiceEvent(
-        2,
-        { type: "approval_request", itemId: "approval-1", kind: "command", description: "git branch -D x" },
-        "call-2",
-      ),
-    ]);
-
-    const card = grouped.find((row) => row.event.type === "voice_call_group");
-    expect(card).toBeTruthy();
-    if (card?.event.type !== "voice_call_group") throw new Error("expected a voice_call_group row");
-    expect(card.event.hadApproval).toBe(true);
-  });
-
-  it("keeps two calls apart and leaves the typed message between them ungrouped", () => {
-    const grouped = groupEvents([
-      voiceEvent(1, { type: "user_message", text: "first call" }, "call-a"),
-      voiceEvent(2, { type: "text", text: "sure", itemId: "a-1" }, "call-a"),
-      voiceEvent(3, { type: "user_message", text: "typed by hand" }, null),
-      voiceEvent(4, { type: "user_message", text: "second call" }, "call-b"),
-      voiceEvent(5, { type: "text", text: "ok", itemId: "a-2" }, "call-b"),
-    ]);
-
-    expect(grouped.map((row) => row.event.type)).toEqual([
-      "voice_call_group",
-      "user_message",
-      "voice_call_group",
-    ]);
-    expect(grouped.map((row) => row.key)).toEqual([
-      "voice-call:call-a",
-      grouped[1]!.key,
-      "voice-call:call-b",
-    ]);
-    const typed = grouped[1]!;
-    if (typed.event.type !== "user_message") throw new Error("expected the typed message to stay a user message");
-    expect(typed.event.text).toBe("typed by hand");
-  });
-
-  it("produces no card at all when nothing carries a voice call id", () => {
-    const events = [
-      voiceEvent(1, { type: "user_message", text: "typed" }, null),
-      voiceEvent(2, { type: "text", text: "answered", itemId: "a-1" }, null),
-    ];
-    const rows = collapseChatTranscriptEvents(events);
-    const grouped = groupChatTranscriptRows(rows);
-
-    expect(grouped.some((row) => row.event.type === "voice_call_group")).toBe(false);
-    // The wrapper must be a no-op on a voice-free transcript: identical rows in
-    // identical order, so today's transcript renders exactly as it did before.
-    expect(grouped.map((row) => ({ key: row.key, timestamp: row.timestamp, type: row.event.type }))).toEqual(
-      rows.map((row) => ({ key: row.key, timestamp: row.timestamp, type: row.event.type })),
-    );
-    expect(rows.every((row) => row.voiceCallId === undefined)).toBe(true);
-  });
-
-  it("stamps the call id onto every row a voice event produced", () => {
-    const rows = collapseChatTranscriptEvents([
-      voiceEvent(1, { type: "user_message", text: "hello" }, "call-3"),
-    ]);
-    expect(rows.length).toBeGreaterThan(0);
-    expect(rows.every((row) => row.voiceCallId === "call-3")).toBe(true);
-  });
-
-  // A subagent's card settles in place, so it keeps the voice call its spawn
-  // row was stamped with (or none): it never moves into, or out of, a call. A
-  // result whose spawn is not in the window is appended where it arrives and
-  // claims the call its terminal event was spoken under, so an untagged row
-  // never lands inside a tagged run (which would split one call into two cards
-  // sharing the key `voice-call:${callId}`).
-  it("keeps a settled subagent's card in the voice call its row belongs to, and untagged when there is none", () => {
-    // 1. Spawned and settled inside the call — the tag comes off the spawn row.
-    const spawnedInCall = collapseChatTranscriptEvents([
-      voiceEvent(1, { type: "user_message", text: "look into the flake" }, "call-sub"),
-      voiceEvent(
-        2,
-        { type: "subagent_started", taskId: "agent-voice", agentType: "Explore", description: "Find the flake" },
-        "call-sub",
-      ),
-      voiceEvent(
-        3,
-        { type: "subagent_result", taskId: "agent-voice", status: "completed", summary: "It is a timing assumption." },
-        "call-sub",
-      ),
-      voiceEvent(4, { type: "text", text: "Here is what it found.", itemId: "a-1" }, "call-sub"),
-    ]);
-    expect(spawnedInCall.some((row) => row.event.type === "subagent_spawn_anchor")).toBe(false);
-    expect(spawnedInCall.find((row) => row.event.type === "subagent_result_card")!.voiceCallId).toBe("call-sub");
-
-    // 2. Spawned BEFORE the call, settled inside it — the card stays in its
-    //    place before the call, untagged, and the call stays one card.
-    const settledInCall = collapseChatTranscriptEvents([
-      voiceEvent(
-        1,
-        { type: "subagent_started", taskId: "agent-early", agentType: "Explore", description: "Find the flake" },
-        null,
-      ),
-      voiceEvent(2, { type: "user_message", text: "anything from that agent?" }, "call-sub"),
-      voiceEvent(
-        3,
-        { type: "subagent_result", taskId: "agent-early", status: "completed", summary: "It is a timing assumption." },
-        "call-sub",
-      ),
-      voiceEvent(4, { type: "text", text: "Here is what it found.", itemId: "a-1" }, "call-sub"),
-    ]);
-    expect(settledInCall.find((row) => row.event.type === "subagent_result_card")!.voiceCallId).toBeUndefined();
-    const grouped = groupChatTranscriptRows(settledInCall);
-    expect(grouped.map((row) => row.event.type)).toEqual(["subagent_result_card", "voice_call_group"]);
-    expect(grouped[1]!.key).toBe("voice-call:call-sub");
-
-    // 2b. Settled inside the call with no spawn in the window — the appended
-    //     card claims the terminal event's call and joins its one card.
-    const orphanInCall = collapseChatTranscriptEvents([
-      voiceEvent(1, { type: "user_message", text: "anything from that agent?" }, "call-sub"),
-      voiceEvent(
-        2,
-        { type: "subagent_result", taskId: "agent-orphan", status: "completed", summary: "It is a timing assumption." },
-        "call-sub",
-      ),
-      voiceEvent(3, { type: "text", text: "Here is what it found.", itemId: "a-1" }, "call-sub"),
-    ]);
-    expect(orphanInCall.find((row) => row.event.type === "subagent_result_card")!.voiceCallId).toBe("call-sub");
-    const orphanGrouped = groupChatTranscriptRows(orphanInCall);
-    expect(orphanGrouped).toHaveLength(1);
-    expect(orphanGrouped[0]!.key).toBe("voice-call:call-sub");
-
-    // 3. No call anywhere — the result card comes back untagged and renders inline.
-    const plain = collapseChatTranscriptEvents([
-      voiceEvent(1, { type: "user_message", text: "look into the flake" }, null),
-      voiceEvent(
-        2,
-        { type: "subagent_started", taskId: "agent-plain", agentType: "Explore", description: "Find the flake" },
-        null,
-      ),
-      voiceEvent(
-        3,
-        { type: "subagent_result", taskId: "agent-plain", status: "completed", summary: "It is a timing assumption." },
-        null,
-      ),
-    ]);
-    expect(plain.find((row) => row.event.type === "subagent_result_card")!.voiceCallId).toBeUndefined();
-    expect(groupChatTranscriptRows(plain).some((row) => row.event.type === "voice_call_group")).toBe(false);
-  });
-});
-
 describe("turn fold (desktop adapter)", () => {
   let clock = 0;
   const at = () => new Date(Date.UTC(2026, 8, 23, 10, 0, clock++)).toISOString();
@@ -4656,7 +4742,8 @@ describe("turn fold (desktop adapter)", () => {
   /** The same presentation filter the message list applies before folding. */
   function present(rows: ReturnType<typeof collapseChatTranscriptEventsWithContext>["rows"]) {
     return mergeAdjacentActivityBundleRows(
-      groupChatTranscriptRows(rows).filter((row) => row.event.type !== "work_log_group"),
+      groupChatTranscriptRows(rows).filter((row) =>
+        row.event.type !== "work_log_group" || hasComputerUseEntries(row.event.entries)),
     );
   }
 
@@ -4739,9 +4826,11 @@ describe("turn fold (desktop adapter)", () => {
     }
   });
 
-  it("keeps subagent results and proof visible, and never folds rows after the answer", () => {
+  it("keeps subagent results, proof and computer-use actions visible, and never folds rows after the answer", () => {
     const { display } = fold([
       ev({ type: "user_message", text: "fan out", turnId: "t1" }),
+      ev({ type: "command", command: "ade screen click --label Save", cwd: "/r", output: 'hit: AXButton "Save" (e1)', itemId: "c1", turnId: "t1", status: "completed" }),
+      ev({ type: "reasoning", text: "Clicked.", turnId: "t1" }),
       ev({ type: "subagent_started", taskId: "chat:child-1", agentId: "child-1", agentType: "claude", description: "Scout", spawnKind: "peer", taskType: "subagent" }),
       ev({ type: "subagent_result", taskId: "chat:child-1", agentId: "child-1", status: "completed", summary: "Found it." }),
       ev({ type: "ade_card", cardId: "proof-1", variant: "proof_artifact", state: "terminal", title: "Screenshot", fallbackText: "Screenshot", turnId: "t1" }),
@@ -4753,6 +4842,7 @@ describe("turn fold (desktop adapter)", () => {
     expect(types(display)).toEqual([
       "user_message",
       "turn_fold",
+      "work_log_group",
       "subagent_result_card",
       "ade_card",
       "text",
@@ -5123,6 +5213,88 @@ describe("turn fold (desktop adapter)", () => {
       expect(rows.map((row) => [(row.event as { text: string }).text, (row.event as { phase?: string }).phase]))
         .toEqual([["Hello world.", undefined], ["Late label.", "final_answer"]]);
     });
+
+    it("keeps a partial answer apart from the narration it shares a message id with", () => {
+      // Codex reuses one message id across consecutive assistant text until a
+      // tool call flushes it, and 0.162 labels a finished-but-not-terminal
+      // answer `partial_answer`. Merging the two would leave the partial answer
+      // wearing the narration's label, which the turn fold then hides.
+      const { rows } = collapseChatTranscriptEventsWithContext([
+        ev({ type: "text", text: "The first result is ready. ", turnId: "t1", messageId: "msg-1", phase: "partial_answer" }),
+        ev({ type: "text", text: "Checking the rest. ", turnId: "t1", messageId: "msg-1", phase: "commentary" }),
+        ev({ type: "text", text: "Both results are in.", turnId: "t1", messageId: "msg-1", phase: "final_answer" }),
+      ]);
+      expect(rows.map((row) => [(row.event as { text: string }).text, (row.event as { phase?: string }).phase]))
+        .toEqual([
+          ["The first result is ready. ", "partial_answer"],
+          ["Checking the rest. ", "commentary"],
+          ["Both results are in.", "final_answer"],
+        ]);
+    });
+
+    it("keeps a partial answer out of the fold at turn end", () => {
+      // The sequence codex 0.162 actually emits (its own
+      // `scenarios_partial_answers` suite): a partial answer, then narration,
+      // then the terminal answer, which restates only its own part. The user
+      // asked for both results, so folding the first one away loses content.
+      const { display } = fold([
+        ev({ type: "user_message", text: "Give me both results.", turnId: "t1" }),
+        ev({ type: "reasoning", text: "Thinking.", turnId: "t1" }),
+        ev({ type: "text", text: "The first result is ready.", turnId: "t1", messageId: "m", phase: "partial_answer" }),
+        ev({ type: "text", text: "Checking the remaining result.", turnId: "t1", messageId: "m", phase: "commentary" }),
+        ev({ type: "text", text: "The second result is ready.", turnId: "t1", messageId: "m", phase: "final_answer" }),
+        ev({ type: "done", turnId: "t1", status: "completed" }),
+      ]);
+      const shown = display.flatMap((row) => row.event.type === "text" ? [(row.event as { text: string }).text] : []);
+      expect(shown).toEqual(["The first result is ready.", "The second result is ready."]);
+    });
+  });
+});
+
+describe("computer-use runs (desktop timeline)", () => {
+  let clock = 0;
+  const ev = (event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+    sessionId: "session-1",
+    timestamp: new Date(Date.UTC(2026, 8, 23, 11, 0, clock++)).toISOString(),
+    event,
+  });
+  const screenCommand = (itemId: string, command: string) =>
+    ev({ type: "command", command, cwd: "/r", output: "", itemId, turnId: "t1", status: "completed" });
+  const groups = (rows: ChatTranscriptGroupedEnvelope[]) =>
+    rows.flatMap((row) => row.event.type === "work_log_group"
+      ? [{ key: row.key, compact: Boolean(row.event.computerUseCompact), commands: row.event.entries.map((entry) => entry.command) }]
+      : []);
+
+  it("draws only a turn's last run in full, joins adjacent runs, and reuses unchanged envelopes", () => {
+    const events = [
+      ev({ type: "user_message", text: "go", turnId: "t1" }),
+      screenCommand("c1", "ade screen click --label Save"),
+      ev({ type: "text", text: "Saved.", turnId: "t1", itemId: "m1" }),
+      screenCommand("c2", "ade screen observe"),
+      ev({ type: "text", text: "Done.", turnId: "t1", itemId: "m2" }),
+    ];
+    const grouped = groupChatTranscriptRows(collapseChatTranscriptEventsWithContext(events).rows);
+
+    const first = arrangeComputerUseRuns(grouped, new Map());
+    const [earlierRun, lastRun] = groups(first.rows);
+    expect([earlierRun, lastRun]).toEqual([
+      { key: expect.stringContaining("c1"), compact: true, commands: ["ade screen click --label Save"] },
+      { key: expect.stringContaining("c2"), compact: false, commands: ["ade screen observe"] },
+    ]);
+
+    // Same rows again: every run keeps the envelope it had.
+    const again = arrangeComputerUseRuns(grouped, first.built);
+    expect(again.rows).toHaveLength(first.rows.length);
+    again.rows.forEach((row, index) => expect(row).toBe(first.rows[index]));
+
+    // The narration between them folded away: one run, keyed by the first, in full.
+    const withoutNarration = grouped.filter((row) => !(row.event.type === "text" && row.event.text === "Saved."));
+    const joined = arrangeComputerUseRuns(withoutNarration, first.built);
+    expect(groups(joined.rows)).toEqual([
+      { key: earlierRun!.key, compact: false, commands: ["ade screen click --label Save", "ade screen observe"] },
+    ]);
+    // Its fields changed, so its envelope is rebuilt rather than the stale one reused.
+    expect(joined.rows.find((row) => row.key === earlierRun!.key)).not.toBe(first.built.get(earlierRun!.key));
   });
 });
 
@@ -5266,5 +5438,210 @@ describe("row keys are position-independent", () => {
     const events = turn(10);
     const rowKeys = collapseChatTranscriptEvents(events).map((row) => row.key);
     expectContainsAll(buildTranscriptEventRowKeys(events), rowKeys);
+  });
+});
+
+describe("command row identity", () => {
+  it("keeps a refined command and its terminal update in one row", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-command-identity",
+        timestamp: "2026-09-25T10:00:00.000Z",
+        event: { type: "command", command: "npm", cwd: "/repo", output: "", itemId: "exec-1", turnId: "turn-1", status: "running" },
+      },
+      {
+        sessionId: "session-command-identity",
+        timestamp: "2026-09-25T10:00:01.000Z",
+        event: { type: "command", command: "npm test", cwd: "/repo", output: "passed", itemId: "exec-1", turnId: "turn-1", status: "completed" },
+      },
+    ];
+
+    const { rows } = collapseChatTranscriptEventsWithContext(events);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.event).toMatchObject({
+      type: "work_log_entry",
+      entry: {
+        command: "npm test",
+        output: "passed",
+        status: "completed",
+        itemId: "exec-1",
+      },
+    });
+  });
+});
+
+describe("scheduled work presentation (wake loops)", () => {
+  const SESSION = "session-wake-loop";
+  const at = (minute: number) => new Date(Date.UTC(2026, 9, 5, 1, minute, 0)).toISOString();
+  let sequence = 0;
+  const envelope = (minute: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+    sessionId: SESSION,
+    timestamp: at(minute),
+    sequence: ++sequence,
+    event,
+  });
+  const scheduled = (minute: number, turnId: string, id: string, reason: string, dueMinute: number) =>
+    envelope(minute, {
+      type: "scheduled_work_update",
+      id,
+      kind: "wakeup",
+      status: "scheduled",
+      origin: "schedule_wakeup",
+      reason,
+      prompt: "/ship 557",
+      nextRunAt: at(dueMinute),
+      turnId,
+    });
+  const settled = (minute: number, turnId: string, id: string, status: "cancelled" | "completed") =>
+    envelope(minute, {
+      type: "scheduled_work_update",
+      id,
+      kind: "wakeup",
+      status,
+      origin: "schedule_wakeup",
+      title: status === "cancelled" ? "Wakeup cancelled" : "Scheduled wakeup",
+      ...(status === "completed" ? { firedAt: at(minute - 1) } : {}),
+      turnId,
+    });
+  const text = (minute: number, turnId: string, body: string) =>
+    envelope(minute, { type: "text", text: body, turnId });
+  const done = (minute: number, turnId: string) =>
+    envelope(minute, { type: "done", turnId, status: "completed" });
+
+  /**
+   * A /ship deploy watch: the user starts it (turn A), then the agent wakes
+   * itself three times (B, C, D) and stops scheduling; the user replies (E).
+   * Turn A also schedules a wake-up and drops it before it is due.
+   */
+  function wakeLoopEvents(): AgentChatEventEnvelope[] {
+    sequence = 0;
+    return [
+      envelope(0, { type: "user_message", text: "/ship 557", turnId: "A" }),
+      text(1, "A", "Watching the deploy."),
+      scheduled(1, "A", "w-dropped", "superseded check", 30),
+      settled(2, "A", "w-dropped", "cancelled"),
+      // Overdue, then cancelled by the user: a real cancel, never a delivery.
+      scheduled(0, "A", "w-user", "user cancels this", 1),
+      envelope(2, {
+        type: "scheduled_work_update",
+        id: "w-user",
+        kind: "wakeup",
+        status: "cancelled",
+        stopSource: "user",
+        turnId: "A",
+      }),
+      // A subagent's turn ends inside turn A; it must not end A.
+      done(2, "subagent-turn"),
+      scheduled(2, "A", "w1", "deploy-watch 1: pending", 5),
+      // The provider's end-of-turn inventory repeats w1 with fewer fields.
+      envelope(2, {
+        type: "scheduled_work_update",
+        id: "w1",
+        kind: "wakeup",
+        status: "scheduled",
+        origin: "schedule_wakeup",
+        title: "/ship 557",
+        sourceTaskId: "provider-task-1",
+        turnId: "A",
+      }),
+      done(3, "A"),
+      text(6, "B", "Check 2: still queued."),
+      scheduled(6, "B", "w2", "deploy-watch 2: queued", 10),
+      // An older brain recorded a fired wake-up as cancelled, after its due time.
+      settled(6, "B", "w1", "cancelled"),
+      done(7, "B"),
+      text(11, "C", "Check 3: still queued."),
+      scheduled(11, "C", "w3", "deploy-watch 3: queued", 15),
+      settled(11, "C", "w2", "completed"),
+      done(12, "C"),
+      text(16, "D", "Check 4: deploy finished."),
+      settled(16, "D", "w3", "completed"),
+      done(17, "D"),
+      envelope(20, { type: "user_message", text: "thanks", turnId: "E" }),
+      text(21, "E", "You're welcome."),
+      done(22, "E"),
+    ];
+  }
+
+  function present(events: AgentChatEventEnvelope[]) {
+    const grouped = groupEvents(events).filter((row) => row.event.type !== "work_log_group");
+    const { rows, byTurnEndKey } = moveScheduledWorkToTurnEnds(foldScheduledWorkRows(grouped));
+    return { rows: mergeAdjacentActivityBundleRows(rows), byTurnEndKey };
+  }
+
+  const doneKey = (rows: ChatTranscriptGroupedEnvelope[], turnId: string) =>
+    rows.find((row) => row.event.type === "done" && row.event.turnId === turnId)?.key ?? null;
+  const textsIn = (rows: ChatTranscriptGroupedEnvelope[]) =>
+    rows.flatMap((row) => (row.event.type === "text" ? [row.event.text] : []));
+
+  it("keeps one wake-up per schedule on the turn-end line of the turn that created it", () => {
+    const { rows, byTurnEndKey } = present(wakeLoopEvents());
+
+    expect(rows.some((row) => row.event.type === "activity_bundle")).toBe(false);
+    const onTurnEnd = (turnId: string) =>
+      (byTurnEndKey.get(doneKey(rows, turnId) ?? "") ?? []).map((item) => item.event);
+
+    // One entry per schedule, however many updates it got and in which turns.
+    expect(onTurnEnd("A").map((event) => event.id)).toEqual(["w-dropped", "w-user", "w1"]);
+    expect(onTurnEnd("A")).toEqual([
+      expect.objectContaining({ id: "w-dropped", status: "cancelled" }),
+      expect.objectContaining({ id: "w-user", status: "cancelled" }),
+      // The inventory repeat kept the reason; the late "cancel" reads as fired.
+      expect.objectContaining({ id: "w1", status: "completed", reason: "deploy-watch 1: pending", firedAt: at(5) }),
+    ]);
+    expect(onTurnEnd("B")).toEqual([expect.objectContaining({ id: "w2", status: "completed" })]);
+    expect(onTurnEnd("C")).toEqual([expect.objectContaining({ id: "w3", status: "completed" })]);
+    expect(onTurnEnd("D")).toEqual([]);
+  });
+
+  it("folds every self-paced check but the latest under the line that scheduled the first", () => {
+    const { rows, byTurnEndKey } = present(wakeLoopEvents());
+
+    const { chains, turnIds } = deriveWakeTurns(rows, byTurnEndKey);
+    expect(chains).toHaveLength(1);
+    expect(chains[0]).toMatchObject({ checkCount: 2, anchorTurnEndKey: doneKey(rows, "A") });
+    expect([...chains[0]!.hiddenTurnIds]).toEqual(["B", "C"]);
+    // Wake turns lose their own fold row; the user's turns keep theirs.
+    expect([...turnIds]).toEqual(["B", "C", "D"]);
+
+    const closed = applyWakeChains(rows, chains, new Set());
+    expect(textsIn(closed)).toEqual([
+      "Watching the deploy.",
+      "Check 4: deploy finished.",
+      "You're welcome.",
+    ]);
+    // Anchored on turn A's line, so no row of its own.
+    expect(closed.some((row) => row.event.type === "wake_chain")).toBe(false);
+
+    const open = applyWakeChains(rows, chains, new Set([chains[0]!.chainId]));
+    expect(textsIn(open)).toContain("Check 2: still queued.");
+    expect(textsIn(open)).toContain("Check 3: still queued.");
+  });
+
+  it("does not chain a turn the user started, even right after a wake-up or from a queued message", () => {
+    sequence = 0;
+    const events = [
+      envelope(0, { type: "user_message", text: "watch it", turnId: "A" }),
+      scheduled(1, "A", "w1", "check", 5),
+      // Sent while A ran: it keeps its place among A's rows, delivered as turn B.
+      envelope(1, { type: "user_message", text: "check sooner", turnId: "B", steerId: "steer-1", deliveryState: "delivered" }),
+      done(1, "A"),
+      text(4, "B", "Checking sooner."),
+      scheduled(4, "B", "w2", "check", 6),
+      done(4, "B"),
+      text(7, "C", "Still queued."),
+      done(7, "C"),
+    ];
+    const { rows, byTurnEndKey } = present(events);
+
+    // B is the user's turn: it breaks the run, so C is a run of one and nothing folds.
+    const { chains, turnIds } = deriveWakeTurns(rows, byTurnEndKey);
+    expect(chains).toEqual([]);
+    expect([...turnIds]).toEqual(["C"]);
+    expect(textsIn(applyWakeChains(rows, chains, new Set()))).toEqual([
+      "Checking sooner.",
+      "Still queued.",
+    ]);
   });
 });

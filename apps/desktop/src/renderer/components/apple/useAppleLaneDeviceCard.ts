@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
+import type { AppleLaneDeviceOrigin } from "../../../shared/types/iosSimulator";
 import { applePowerFromPhase, laneDeviceBooted } from "./appleDeviceState";
 
 /**
@@ -35,8 +36,8 @@ export type AppleLaneDeviceCard = {
   laneId: string;
   /** The lane's device udid. The menu boots it by name. */
   udid: string;
-  /** `clone` is ADE's to delete; `attached` is the user's and only ever released. */
-  origin: "clone" | "attached";
+  /** `created` (and the older `clone`) is ADE's to delete; `attached` is the user's and only ever released. */
+  origin: AppleLaneDeviceOrigin;
 };
 
 export function useAppleLaneDeviceCard(args: {

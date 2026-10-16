@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PERSONAL_CHAT_CATALOG_SCOPE,
   descriptorsFromAgentChatModelCatalog,
-  filterAcpFallbackModelsToRuntimeCatalog,
+  ensureRuntimeCatalogDescriptors,
+  filterFallbackModelsToRuntimeCatalog,
   getRuntimeCatalogModelDescriptor,
   mergeSelectorModels,
   requestModelCatalog,
@@ -24,7 +25,9 @@ import {
 import type { AgentChatModelCatalog } from "../../../../shared/types";
 import {
   createDynamicAcpModelDescriptor,
+  createDynamicOpenCodeModelDescriptor,
   createDynamicPiModelDescriptor,
+  replaceDynamicOpenCodeModelDescriptors,
 } from "../../../../shared/modelRegistry";
 
 describe("mergeSelectorModels", () => {
@@ -143,7 +146,7 @@ describe("mergeSelectorModels", () => {
       catalogAvailable: true,
     };
 
-    const filtered = filterAcpFallbackModelsToRuntimeCatalog(
+    const filtered = filterFallbackModelsToRuntimeCatalog(
       [...qwenFallbacks, liveQwen],
       [liveQwen],
     );
@@ -837,5 +840,95 @@ describe("requestModelCatalog", () => {
       .resolves.toEqual(catalog);
     expect(projectCatalog).toHaveBeenCalledWith({ mode: "force" });
     expect(personalCall).not.toHaveBeenCalled();
+  });
+});
+
+describe("ensureRuntimeCatalogDescriptors", () => {
+  beforeEach(() => {
+    resetRuntimeCatalogDescriptorCacheForTests();
+  });
+
+  function openCodeCatalog(modelId: string, reasoningEfforts: string[]): AgentChatModelCatalog {
+    return {
+      groups: [{
+        key: "opencode",
+        label: "OpenCode",
+        providers: [{
+          key: "deepseek",
+          displayName: "DeepSeek",
+          modelCount: 1,
+          subsections: [{
+            key: "deepseek",
+            label: "DeepSeek",
+            models: [{
+              id: modelId,
+              displayName: "DeepSeek V4.1 Flash",
+              family: "opencode",
+              groupKey: "opencode",
+              isAvailable: true,
+              supportsReasoning: true,
+              reasoningEfforts: reasoningEfforts.map((effort) => ({ effort })),
+            }],
+          }],
+        }],
+      }],
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      stale: false,
+    } as unknown as AgentChatModelCatalog;
+  }
+
+  // The composer's @ model menu and chip READ the runtime descriptor map, but
+  // only the picker ever built it. So an OpenCode model resolved to the static
+  // descriptor (no reasoning tiers) until a picker had been opened — the chip
+  // showed no thinking level. Warming the scope fixes that.
+  it("warms a scope's descriptors so an OpenCode model keeps its runtime tiers", () => {
+    const id = "opencode/deepseek/deepseek-flash";
+    rememberRuntimeCatalog(openCodeCatalog(id, ["none", "low", "high", "max"]), {
+      mode: "cached",
+      scopeKey: "machine-a",
+    });
+
+    ensureRuntimeCatalogDescriptors("machine-a");
+
+    expect(resolveModelDescriptorWithRuntimeCatalog(id, "machine-a")?.reasoningTiers)
+      .toEqual(["none", "low", "high", "max"]);
+  });
+
+  it("is a no-op for a scope whose catalog has not loaded", () => {
+    ensureRuntimeCatalogDescriptors("machine-empty");
+    expect(getRuntimeCatalogModelDescriptor("opencode/opencode-go/deepseek-v4.1-flash", "machine-empty"))
+      .toBeUndefined();
+  });
+
+  // An unfiltered parse is memoized per scope on the catalog object's identity,
+  // so the pane's read-only callers stop rebuilding a descriptor per row on every
+  // mount. The registry is the other half of each row: a parse reads
+  // `resolveModelDescriptor(id)` for everything the catalog does not state, so a
+  // memo that outlived a registry change would keep serving the old answer — a
+  // picker still showing a replaced OpenCode inventory. The generation key is
+  // what prevents that, and this is the test that goes red without it.
+  it("re-parses a catalog it has already parsed once the registry changes under it", () => {
+    const id = "opencode/deepseek/deepseek-reparse";
+    const catalog = openCodeCatalog(id, ["low", "high"]);
+    rememberRuntimeCatalog(catalog, { mode: "cached", scopeKey: "machine-a" });
+
+    const first = descriptorsFromAgentChatModelCatalog(catalog, undefined, "machine-a");
+    const firstRow = first.models.find((model) => model.id === id);
+    expect(firstRow).toBeDefined();
+    expect(firstRow?.contextWindow).not.toBe(424242);
+
+    // The catalog row says nothing about the context window, so it comes from the
+    // registry. Replace the registry's answer for this id.
+    replaceDynamicOpenCodeModelDescriptors([
+      createDynamicOpenCodeModelDescriptor("", {
+        openCodeProviderId: "deepseek",
+        openCodeModelId: "deepseek-reparse",
+        contextWindow: 424242,
+      }),
+    ]);
+
+    // Same catalog OBJECT, so only the generation key can force the re-parse.
+    const second = descriptorsFromAgentChatModelCatalog(catalog, undefined, "machine-a");
+    expect(second.models.find((model) => model.id === id)?.contextWindow).toBe(424242);
   });
 });

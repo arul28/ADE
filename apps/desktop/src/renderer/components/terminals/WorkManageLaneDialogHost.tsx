@@ -5,6 +5,7 @@ import type {
   LaneSummary,
   OpenProjectBinding,
 } from "../../../shared/types";
+import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { createPendingLaneDeleteProgress } from "../../lib/laneDeleteProgress";
 import { useAppStore } from "../../state/appStore";
 import { showToast } from "../app/toast/toastStore";
@@ -91,7 +92,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
   const runLaneAction = useCallback(async (
     fn: () => Promise<void>,
     status: string,
-  ) => {
+  ): Promise<boolean> => {
     setLaneActionBusy(true);
     setLaneActionKind("archive");
     setLaneActionStatus(status);
@@ -100,8 +101,10 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
       await fn();
       await refreshManagedLanes({ includeStatus: false });
       onClose();
+      return true;
     } catch (error) {
       setLaneActionError(error instanceof Error ? error.message : String(error));
+      return false;
     } finally {
       setLaneActionBusy(false);
       setLaneActionStatus(null);
@@ -109,9 +112,9 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
     }
   }, [onClose, refreshManagedLanes]);
 
-  const handleArchive = useCallback(() => {
-    if (!lane || lane.laneType === "primary") return;
-    void runLaneAction(async () => {
+  const handleArchive = useCallback(async (): Promise<boolean> => {
+    if (!lane || lane.laneType === "primary") return false;
+    return await runLaneAction(async () => {
       if (runtimePin) {
         await window.ade.lanes.archive({ laneId: lane.id }, runtimePin);
       } else {
@@ -146,7 +149,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
       if (runtimePin) {
         showToast({
           title: `Could not delete ${lane.name}`,
-          message: error instanceof Error ? error.message : String(error),
+          message: stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)),
           tone: "error",
           durationMs: 0,
         });
@@ -160,7 +163,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
       });
       showToast({
         title: `Could not delete ${lane.name}`,
-        message: error instanceof Error ? error.message : String(error),
+        message: stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)),
         tone: "error",
         durationMs: 0,
       });

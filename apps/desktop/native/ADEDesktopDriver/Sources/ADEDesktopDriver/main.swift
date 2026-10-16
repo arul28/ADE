@@ -1,9 +1,7 @@
 /// `ade-desktop-driver`: one NDJSON request per line in, one reply per line out.
 ///
-/// Transport note: the attention notch helper this package's layout mirrors uses
-/// a unix socket, because it is a long-lived UI process the app may reconnect
-/// to. This helper is the opposite — the runtime owns it, starts it, and dies
-/// with it — so stdin/stdout is the right pipe: no socket path to leak, no
+/// Transport note: the runtime owns this helper, starts it, and dies with it,
+/// so stdin/stdout is the right pipe: no socket path to leak, no
 /// stale file after a crash, and the process group cleans itself up.
 ///
 /// Three invariants hold for every line:
@@ -36,7 +34,7 @@ final class DriverRuntime: NSObject {
     private let output = OutputWriter()
     private let ownership = OwnershipRegistry()
     private let handles = HandleRegistry()
-    private let leases = InputLeaseStore()
+    let leases = InputLeaseStore()
 
     lazy var displays: VirtualDisplayHost = {
         let host = VirtualDisplayHost(log: log)
@@ -51,9 +49,13 @@ final class DriverRuntime: NSObject {
     lazy var accessibility = AccessibilityDriver(handles: handles, log: log)
     private lazy var capture = CaptureEngine(log: log, emit: emit)
     lazy var realInput = RealInput(leases: leases, log: log)
+    lazy var backgroundInput = BackgroundInput(log: log)
+    lazy var displayReconfiguration = DisplayReconfigurationWatcher { [weak self] in
+        self?.relocateMovedDisplays()
+    }
 
-    /// "A real gesture is holding the mouse button right now." Consulted by the
-    /// dispatcher below, set by the `drag` path in `InputCommands`, and read by
+    /// "A drag — real, or background — is in flight right now." Consulted by
+    /// the dispatcher below, set by the `drag` paths in `InputCommands`, and read by
     /// the window watcher so its 1-second sweep does not repark a window out
     /// from under the pointer.
     let gestures = GestureGate()
@@ -134,6 +136,7 @@ final class DriverRuntime: NSObject {
         startReading()
         installSignalHandlers()
         startWatchdog()
+        displayReconfiguration.start()
         log("ade-desktop-driver \(driverVersion) ready (pid \(getpid()))")
         application.run()
     }
@@ -423,6 +426,7 @@ final class DriverRuntime: NSObject {
         case .parkWindow: return try parkWindow(request)
         case .unparkWindow: return try unparkWindow(request)
         case .launch: return try launch(request)
+        case .quitApp: return try quitApp(request)
         case .present: return try present(request)
         case .observe: return try observe(request)
         case .input: return try input(request)
@@ -549,9 +553,16 @@ final class DriverRuntime: NSObject {
         let width = request.int("width") ?? 2560
         let height = request.int("height") ?? 1440
         let scale = request.int("scale") ?? 2
-        let handle = displays.create(laneId: laneId, name: name, width: width, height: height, scale: scale)
-        windows.setPlacement(laneId: laneId, placement: handle.placement, displayId: handle.displayId)
+        let created = displays.create(laneId: laneId, name: name, width: width, height: height, scale: scale)
+        windows.setPlacement(laneId: laneId, placement: created.placement, displayId: created.displayId)
         touch(laneId)
+        // Adding this display may have pushed another lane's aside, or settled
+        // this one somewhere else than it first reported. Followed before the
+        // reply is built, so the reply carries the origin the display has now
+        // — unless a drag defers the move, in which case `display-moved`
+        // follows the reply.
+        relocateMovedDisplays()
+        let handle = displays.handle(forLane: laneId) ?? created
         let json = handle.asJSON(
             windowCount: ownership.windows(forLane: laneId).count,
             lastActivityAt: lastActivity[laneId] ?? Date()
@@ -695,6 +706,21 @@ final class DriverRuntime: NSObject {
             "bundleId": result.bundleId.map(JSONValue.string) ?? .null,
             "windows": .array(result.windows.map { .object($0.asJSON()) }),
             "watching": .bool(result.watching),
+        ]
+    }
+
+    private func quitApp(_ request: DriverRequest) throws -> [String: JSONValue] {
+        let laneId = try request.requireString("laneId")
+        let quit = try windows.quitApps(laneId: laneId, match: request.string("app"))
+        return [
+            "quit": .array(quit.map { entry in
+                .object([
+                    "pid": .int(Int(entry.app.pid)),
+                    "appName": .string(entry.app.appName),
+                    "bundleId": entry.app.bundleId.map(JSONValue.string) ?? .null,
+                    "released": .bool(entry.released),
+                ])
+            }),
         ]
     }
 
@@ -931,8 +957,17 @@ final class DriverRuntime: NSObject {
     private func startRecording(_ request: DriverRequest) throws -> [String: JSONValue] {
         let laneId = try request.requireString("laneId")
         if let refusal = windows.stopGate.refusal(laneId: laneId, action: "start a recording") { throw refusal }
-        guard let handle = displays.handle(forLane: laneId) else {
-            throw DriverError(code: DriverErrorCode.noDisplay, message: "Lane \(laneId) has no display.")
+        // `windowId` records one window and needs no lane display: App Control
+        // records the app it drives. `laneId` is then only the recording's key.
+        let windowId = request.int("windowId").flatMap { $0 > 0 ? CGWindowID($0) : nil }
+        let displayId: CGDirectDisplayID
+        if windowId != nil {
+            displayId = 0
+        } else {
+            guard let handle = displays.handle(forLane: laneId) else {
+                throw DriverError(code: DriverErrorCode.noDisplay, message: "Lane \(laneId) has no display.")
+            }
+            displayId = handle.displayId
         }
         let fps = max(1, min(60, request.int("fps") ?? 30))
         let filePath = request.string("filePath")
@@ -941,7 +976,8 @@ final class DriverRuntime: NSObject {
         // mostly a still display. `keepIdle: true` keeps wall-clock time.
         let startedAt = try capture.startRecording(
             laneId: laneId,
-            displayId: handle.displayId,
+            displayId: displayId,
+            windowId: windowId,
             fps: fps,
             filePath: filePath,
             keepIdle: request.bool("keepIdle") ?? false

@@ -1,6 +1,7 @@
 import type { AgentChatSessionSummary } from "./chat";
 import type { LaneEnvInitProgress } from "./config";
 import type { ConflictOverlap, ConflictStatus } from "./conflicts";
+import type { LaneJiraIssue } from "./jira";
 import type { LinearPriorityLabel } from "./linearSync";
 import type {
   DiffChanges,
@@ -71,13 +72,27 @@ export type ResolveLaneBranchDriftArgs = {
   acknowledgeActiveWork?: boolean;
 };
 
+/** Why ADE did or did not adopt the branch an agent switched its lane to. */
+export type AdoptAgentBranchSwitchResult =
+  | { adopted: true; previousBranchRef: string; branchRef: string }
+  | {
+      adopted: false;
+      reason:
+        | "no_drift"
+        | "primary_lane"
+        | "branch_moved_before_turn"
+        | "old_branch_has_unpushed_commits"
+        | "branch_owned_by_other_lane"
+        | "unavailable";
+    };
+
 export type ResolveLaneBranchDriftResult = {
   lane: LaneSummary;
   resolution: LaneBranchDriftResolution;
   previousBranchRef: string;
   branchRef: string;
-  /** Set by `keep-head` when the lane display name was re-pointed too. */
-  previousLaneName: string | null;
+  /** Always null: adopting a branch never renames the lane. Still sent for older readers. */
+  previousLaneName: null;
   laneName: string;
 };
 
@@ -120,6 +135,7 @@ export type LaneSummary = {
   linearIssue?: LaneLinearIssue | null;
   linearIssueLinks?: LaneLinearIssueLink[];
   githubIssueLinks?: LaneGitHubIssueLink[];
+  jiraIssueLinks?: LaneJiraIssueLink[];
 };
 
 export type LaneLinearIssue = {
@@ -149,6 +165,33 @@ export type LaneLinearIssue = {
   branchName?: string | null;
   createdAt: string;
   updatedAt: string;
+  /**
+   * The last change someone made to the issue in Linear after the lane linked
+   * it (kept live from Linear's webhooks). `moved_back` = the issue left a
+   * finished or started state for an earlier one.
+   */
+  remoteChange?: {
+    kind: "moved_back" | "completed" | "canceled" | "state" | "assigned";
+    at: string;
+    from: string | null;
+    to: string;
+    by: string | null;
+  } | null;
+};
+
+/** A change made in Linear, applied to every lane copy of the issue. */
+export type LinearIssueSnapshotPatch = {
+  id: string;
+  title?: string | null;
+  stateId?: string | null;
+  stateName?: string | null;
+  stateType?: string | null;
+  assigneeId?: string | null;
+  assigneeName?: string | null;
+  priority?: number | null;
+  priorityLabel?: LaneLinearIssue["priorityLabel"] | null;
+  updatedAt?: string | null;
+  actorName?: string | null;
 };
 
 export type LaneLinearIssueLinkRole = "primary" | "worked" | "referenced" | "inferred";
@@ -236,11 +279,38 @@ export type LaneGitHubIssueLink = {
   updatedAt: string;
 };
 
+export type LaneJiraIssueLink = {
+  id: string;
+  laneId: string;
+  issue: LaneJiraIssue;
+  role: LaneLinearIssueLinkRole;
+  source: LaneLinearIssueLinkSource;
+  includeInPr: boolean;
+  closeOnMerge: boolean;
+  evidence?: SessionLinearIssueLink["evidence"] | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type SessionGitHubIssueLink = {
   id: string;
   sessionId: string;
   laneId: string | null;
   issue: LaneGitHubIssue;
+  role: LaneLinearIssueLinkRole;
+  source: LaneLinearIssueLinkSource;
+  includeInPr: boolean;
+  closeOnMerge: boolean;
+  evidence?: SessionLinearIssueLink["evidence"] | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SessionJiraIssueLink = {
+  id: string;
+  sessionId: string;
+  laneId: string | null;
+  issue: LaneJiraIssue;
   role: LaneLinearIssueLinkRole;
   source: LaneLinearIssueLinkSource;
   includeInPr: boolean;
@@ -344,6 +414,10 @@ export type CreateLaneArgs = {
   branchName?: string;
   startPoint?: string;
   linearIssue?: LaneLinearIssue | null;
+  /** A GitHub issue the lane is for: linked to the lane itself, so its PR says "Closes #N". */
+  githubIssue?: LaneGitHubIssue | null;
+  /** A Jira issue the lane is for; linked to the lane itself for PR references. */
+  jiraIssue?: LaneJiraIssue | null;
 };
 
 export type CreateChildLaneArgs = {
@@ -489,6 +563,14 @@ export type RestoreLaneResult = {
   setupWarning?: string | null;
 };
 
+/**
+ * Outcome of `laneService.recreateMissingWorktree`. `recreated: false` with no
+ * `reason` means the folder was already there and nothing was touched.
+ */
+export type RecreateMissingWorktreeResult =
+  | { recreated: true; worktreePath: string; branch: string }
+  | { recreated: false; reason?: string };
+
 export type DeleteLaneArgs = {
   laneId: string;
   deleteBranch?: boolean;
@@ -606,6 +688,12 @@ export type LaneLifecycleEvent = {
   previousLaneName?: string | null;
   color?: string | null;
   lane?: LaneSummary;
+  /** `lane-branch-updated` from a drift resolution: the branch the lane left. */
+  previousBranchRef?: string;
+  /** `lane-branch-updated` from a drift resolution: the branch the lane follows now. */
+  branchRef?: string;
+  /** True when ADE adopted the branch on its own because an agent in the lane switched to it. */
+  adoptedByAgent?: boolean;
 };
 
 export type LaneDeleteRisk = {

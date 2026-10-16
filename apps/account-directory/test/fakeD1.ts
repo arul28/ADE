@@ -112,14 +112,29 @@ export type StoredUsageResearchRow = {
   updated_at: number;
 };
 
+/** One `model_registry_snapshots` row. */
+export type StoredModelRegistrySnapshot = {
+  id: number;
+  generated_at: number;
+  body: string;
+  bytes: number;
+  etag: string;
+};
+
 export class FakeD1Database {
   rows: StoredMachine[] = [];
+  /** `model_registry_snapshots`, in insert order; `id` is the rowid SQLite would assign. */
+  modelRegistrySnapshots: StoredModelRegistrySnapshot[] = [];
+  /** The single `model_registry_refresh_claim` row, or null before the first claim. */
+  modelRegistryClaim: { claimed_at: number; expires_at: number; failures: number } | null = null;
   /** `usage_research_daily`, keyed `${install_id}|${day}` — the table's primary key. */
   usageResearchRows = new Map<string, StoredUsageResearchRow>();
   /** `usage_research_days`: the fleet write budget, one row per UTC day of receipt. */
   usageResearchDays = new Map<string, number>();
   /** `usage_research_identity_days`, keyed `${day}|${identity}`. */
   usageResearchIdentityDays = new Map<string, number>();
+  /** Sweep rewrites of the totals row, so a test can see an idle sweep write nothing. */
+  usageResearchTotalsWrites = 0;
   /** `usage_research_totals.bytes`. The migration seeds it at 0; `null` is the row missing. */
   usageResearchTotalBytes: number | null = 0;
   /**
@@ -254,9 +269,18 @@ export class FakeD1Database {
       if (normalized.includes("sum(bytes)")) {
         // Sweep, half one: subtract exactly the rows half two deletes.
         const [cutoff, limit] = values;
+        // The statement's own `exists` guard: with nothing expired the row is
+        // not rewritten at all (a billed write every minute otherwise).
+        if (
+          normalized.includes("exists (select 1 from usage_research_daily where day < ?)")
+          && this.expiredUsageResearchRows(String(values[2]), 1).length === 0
+        ) {
+          return 0;
+        }
         const freed = this.expiredUsageResearchRows(String(cutoff), Number(limit))
           .reduce((sum, row) => sum + row.bytes, 0);
         this.usageResearchTotalBytes = Math.max(0, this.usageResearchTotalBytes - freed);
+        this.usageResearchTotalsWrites += 1;
         return 1;
       }
       // Refund of a storage claim whose write did not happen.
@@ -385,6 +409,58 @@ export class FakeD1Database {
     return null;
   }
 
+  /**
+   * The model registry tables, or null when the statement is not theirs. The
+   * claim's `expires_at <= ?` guard and the release's `claimed_at = ?` guard are
+   * read off the statement: without them two ticks refresh at once, or a late
+   * tick frees a claim it does not hold.
+   */
+  private runModelRegistry(normalized: string, values: unknown[]): number | null {
+    if (normalized.includes("insert into model_registry_snapshots")) {
+      const [generatedAt, body, bytes, etag] = values;
+      const id = (this.modelRegistrySnapshots.at(-1)?.id ?? 0) + 1;
+      this.modelRegistrySnapshots.push({
+        id,
+        generated_at: Number(generatedAt),
+        body: String(body),
+        bytes: Number(bytes),
+        etag: String(etag),
+      });
+      return 1;
+    }
+    if (normalized.includes("delete from model_registry_snapshots")) {
+      if (!/order\s+by\s+id\s+desc\s+limit\s+\?/.test(normalized)) return 0;
+      const keep = Number(values[0]);
+      const before = this.modelRegistrySnapshots.length;
+      this.modelRegistrySnapshots = this.modelRegistrySnapshots.slice(Math.max(0, before - keep));
+      return before - this.modelRegistrySnapshots.length;
+    }
+    if (normalized.includes("insert into model_registry_refresh_claim")) {
+      const [claimedAt, expiresAt, nowMs] = values;
+      const guarded = /where\s+model_registry_refresh_claim\.expires_at\s*<=\s*\?/.test(normalized);
+      if (this.modelRegistryClaim && guarded && this.modelRegistryClaim.expires_at > Number(nowMs)) return 0;
+      this.modelRegistryClaim = {
+        claimed_at: Number(claimedAt),
+        expires_at: Number(expiresAt),
+        failures: this.modelRegistryClaim?.failures ?? 0,
+      };
+      return 1;
+    }
+    if (normalized.includes("update model_registry_refresh_claim")) {
+      const [expiresAt, failures, claimedAt] = values;
+      if (!this.modelRegistryClaim) return 0;
+      const guarded = /claimed_at\s*=\s*\?/.test(normalized);
+      if (guarded && this.modelRegistryClaim.claimed_at !== Number(claimedAt)) return 0;
+      this.modelRegistryClaim = {
+        ...this.modelRegistryClaim,
+        expires_at: Number(expiresAt),
+        failures: Number(failures),
+      };
+      return 1;
+    }
+    return null;
+  }
+
   /** Lexicographic on a fixed-width ISO date, same as SQLite. */
   private deleteDaysBefore(
     table: Map<string, number>,
@@ -403,6 +479,15 @@ export class FakeD1Database {
   first<T>(sql: string, values: unknown[]): T | null {
     this.throwIfFailing(sql);
     const normalized = sql.toLowerCase();
+    if (normalized.includes("from model_registry_snapshots")) {
+      const row = normalized.includes("where id = ?")
+        ? this.modelRegistrySnapshots.find((snapshot) => snapshot.id === Number(values[0]))
+        : this.modelRegistrySnapshots.at(-1);
+      return (row ? { ...row } : null) as T | null;
+    }
+    if (normalized.includes("from model_registry_refresh_claim")) {
+      return (this.modelRegistryClaim ? { failures: this.modelRegistryClaim.failures } : null) as T | null;
+    }
     if (normalized.includes("from usage_research_daily")) {
       const [installId, day] = values;
       const row = this.usageResearchRows.get(`${installId}|${day}`);
@@ -476,6 +561,8 @@ export class FakeD1Database {
     const normalized = sql.toLowerCase();
     const usageResearch = this.runUsageResearch(normalized, values);
     if (usageResearch !== null) return usageResearch;
+    const modelRegistry = this.runModelRegistry(normalized, values);
+    if (modelRegistry !== null) return modelRegistry;
     if (normalized.includes("insert into diagnostics_upload_days")) {
       // The fleet budget claim. Mirrors the upsert's `where count < ?` exactly,
       // because that predicate IS the cap: a worker that drops it (or checks the

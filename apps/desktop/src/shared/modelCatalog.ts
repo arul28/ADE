@@ -1,3 +1,5 @@
+import { compareTextInsensitive } from "./formatting";
+import { PROVIDER_DISPLAY_NAME } from "./providers";
 import {
   CURSOR_CLI_LINE_ORDER,
   DROID_CLI_LINE_ORDER,
@@ -40,6 +42,7 @@ export const PROVIDER_CATEGORY_MAP: Record<string, ProviderCategory> = {
   qwen: "cloud-api",
   moonshot: "cloud-api",
   "github-copilot": "cloud-api",
+  muse: "cloud-api",
 };
 
 export const PROVIDER_CATEGORY_LABELS: Record<ProviderCategory, string> = {
@@ -80,7 +83,9 @@ export type ModelProviderGroupBlock = {
 export const MODEL_PICKER_PROVIDER_ORDER = [
   "claude",
   "codex",
+  "muse",
   "cursor",
+  "devin",
   "opencode",
   "pi",
   "copilot",
@@ -100,6 +105,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   cursor: "Cursor",
   factory: "Factory Droid",
   pi: "Pi",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   google: "Google",
   "github-copilot": "GitHub Copilot",
   deepseek: "DeepSeek",
@@ -113,9 +119,14 @@ const PROVIDER_LABELS: Record<string, string> = {
   meta: "Meta",
   qwen: "Qwen",
   moonshot: "Moonshot",
+  moonshotai: "Moonshot",
+  zhipuai: "Zhipu",
+  togetherai: "Together",
+  devin: "Devin",
 };
 
 export const PROVIDER_BADGE_COLORS: Record<string, string> = { ...SHARED_PROVIDER_BADGE_COLORS };
+
 
 export const PROVIDER_ORDER: string[] = [
   "opencode",
@@ -137,6 +148,7 @@ export const PROVIDER_ORDER: string[] = [
   "cursor",
   "factory",
   "pi",
+  "muse",
 ];
 
 const PROVIDER_GROUP_ORDER = Object.fromEntries(
@@ -145,6 +157,7 @@ const PROVIDER_GROUP_ORDER = Object.fromEntries(
 
 /** Provider-group colors are shared with usage, chat, model, and iOS surfaces. */
 export const PROVIDER_GROUP_COLORS = SHARED_PROVIDER_GROUP_COLORS as Record<ProviderGroupKey, string>;
+
 
 const CURSOR_SECTION_PREFIX = "__cursor_line__:";
 const DROID_SECTION_PREFIX = "__droid_line__:";
@@ -215,10 +228,12 @@ const PROVIDER_GROUP_LABELS: Record<ProviderGroupKey, string> = {
   cursor: "Cursor",
   droid: "Droid",
   pi: "Pi",
+  muse: "Muse",
   qwen: "Qwen",
   kimi: "Kimi",
   grok: "Grok",
   copilot: "GitHub Copilot",
+  devin: "Devin",
   opencode: "OpenCode",
   ollama: "Ollama",
   lmstudio: "LM Studio",
@@ -318,7 +333,7 @@ function sortModels(models: ModelDescriptor[], modelOrder: Map<string, number>):
     const oa = modelOrder.get(a.id);
     const ob = modelOrder.get(b.id);
     if (oa != null && ob != null && oa !== ob) return oa - ob;
-    return a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base" });
+    return compareTextInsensitive(a.displayName, b.displayName);
   });
 }
 

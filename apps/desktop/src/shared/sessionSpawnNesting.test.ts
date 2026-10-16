@@ -6,8 +6,9 @@ import {
   groupAttachedShellsByParentId,
   indexNestedSubagents,
   isTopLevelWorkSession,
-  nestedSubagentDrawerAttention,
+  nestedDrawerStatus,
   nestedSubagentSectionId,
+  parentsWithBusySubagents,
   workNestingDrawers,
 } from "./sessionSpawnNesting";
 
@@ -266,19 +267,19 @@ describe("isTopLevelWorkSession", () => {
   });
 });
 
-describe("nestedSubagentDrawerAttention", () => {
-  it("prefers Failed over Needs you", () => {
-    const needsYou = sess({
-      id: "ask",
-      attentionRequestedAt: NOW_ISO,
-    });
-    const failed = sess({
-      id: "fail",
-      lastTurnFailedAt: NOW_ISO,
-    });
-    expect(nestedSubagentDrawerAttention([needsYou, failed], NOW)).toBe("failed");
-    expect(nestedSubagentDrawerAttention([needsYou], NOW)).toBe("needs_you");
-    expect(nestedSubagentDrawerAttention([sess({ id: "ok" })], NOW)).toBe(null);
+describe("nestedDrawerStatus", () => {
+  const needsYou = sess({ id: "ask", attentionRequestedAt: NOW_ISO });
+  const failed = sess({ id: "fail", lastTurnFailedAt: NOW_ISO });
+  const running = sess({ id: "busy" });
+  const ended = sess({ id: "done", status: "completed", runtimeState: "exited", exitCode: 0, toolType: "shell" });
+
+  it.each([
+    ["Failed over Needs you", [needsYou, failed], "failed"],
+    ["Needs you over running", [running, needsYou], "needs_you"],
+    ["running when nothing asks", [ended, running], "running"],
+    ["nothing for finished work", [ended], null],
+  ] as const)("shows %s", (_label, children, expected) => {
+    expect(nestedDrawerStatus([...children], NOW)).toBe(expected);
   });
 
   it("does not shout Failed for a usage-limit resume", () => {
@@ -297,8 +298,37 @@ describe("nestedSubagentDrawerAttention", () => {
         updatedAt: NOW_ISO,
       },
     });
-    expect(nestedSubagentDrawerAttention([parked], NOW)).toBe(null);
-    expect(nestedSubagentDrawerAttention([{ ...parked, usageLimitResume: null }], NOW)).toBe("failed");
+    expect(nestedDrawerStatus([parked], NOW)).toBe(null);
+    expect(nestedDrawerStatus([{ ...parked, usageLimitResume: null }], NOW)).toBe("failed");
+  });
+});
+
+describe("parentsWithBusySubagents", () => {
+  const MINUTE = 60_000;
+  const idleParent = sess({ id: "parent", runtimeState: "idle" });
+  const subagent = (overrides: Partial<SpawnNestingSession> = {}) =>
+    sess({ id: "child", spawnKind: "subagent", orchestrationParentSessionId: "parent", ...overrides });
+  const wakeIn = (minutes: number) => new Date(NOW + minutes * MINUTE).toISOString();
+
+  // A subagent keeps its parent's work open while it is mid-turn or parked on
+  // a wake that will start it again; it reports back and wakes the parent.
+  it.each<[string, SpawnNestingSession[], string[]]>([
+    ["a subagent mid-turn", [idleParent, subagent()], ["parent"]],
+    ["a subagent parked on a wake still to come", [idleParent, subagent({ runtimeState: "idle", nextWakeAt: wakeIn(12) })], ["parent"]],
+    ["a subagent whose wake is due but inside the grace", [idleParent, subagent({ runtimeState: "idle", nextWakeAt: wakeIn(-1) })], ["parent"]],
+    ["a busy grandchild, filed under the root", [
+      idleParent,
+      subagent({ runtimeState: "idle" }),
+      sess({ id: "grandchild", spawnKind: "subagent", orchestrationParentSessionId: "child" }),
+    ], ["parent"]],
+    ["a finished subagent with no wake", [idleParent, subagent({ runtimeState: "idle" })], []],
+    ["a subagent whose wake is overdue and never ran", [idleParent, subagent({ runtimeState: "idle", nextWakeAt: wakeIn(-5) })], []],
+    ["an archived subagent still holding a wake", [idleParent, subagent({ runtimeState: "idle", nextWakeAt: wakeIn(12), archivedAt: NOW_ISO })], []],
+    ["a snoozed subagent mid-turn", [idleParent, subagent({ snoozedUntil: wakeIn(60), snoozedAt: NOW_ISO })], []],
+    ["a running attached shell, which is never a subagent", [idleParent, sess({ id: "shell", toolType: "shell", chatSessionId: "parent" })], []],
+    ["a running peer", [idleParent, sess({ id: "peer", spawnKind: "peer", orchestrationParentSessionId: "parent" })], []],
+  ])("%s", (_label, sessions, expected) => {
+    expect([...parentsWithBusySubagents(sessions, NOW)]).toEqual(expected);
   });
 });
 

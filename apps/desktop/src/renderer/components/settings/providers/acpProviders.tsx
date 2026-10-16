@@ -8,10 +8,11 @@
  * four near-identical descriptors.
  */
 import React from "react";
+import { FolderSimple, Key, Terminal, Warning, Wrench } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../lanes/laneDesignTokens";
 import { ProviderLogo } from "../../shared/ProviderLogos";
 import { listModelDescriptorsForProvider, providerTierIsPreview } from "../../../../shared/modelRegistry";
-import { ACP_PROVIDER_METADATA, COPILOT_NPM_PACKAGE_SPEC } from "../../../../shared/acpProviderMetadata";
+import { ACP_PROVIDER_METADATA, acpInstallDisplayCommand } from "../../../../shared/acpProviderMetadata";
 import { CopyableCommand, SubsectionTitle } from "./providerUi";
 import type {
   AcpSettingsProviderId,
@@ -59,16 +60,16 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     id: "qwen",
     tagline: "Uses the Qwen Code CLI you already set up.",
     logoFamily: "qwen",
-    installCommand: "npm install -g @qwen-code/qwen-code",
-    credentialSource: "OPENAI_API_KEY (and optional OPENAI_BASE_URL), a custom provider in ~/.qwen/settings.json, or `qwen --auth-type=openai` / `qwen --auth-type=openai-responses`. The `qwen auth` subcommand is removed in 0.24.0.",
-    setup: "Install Qwen Code 0.24.0 and configure it in that CLI. ADE does not write ~/.qwen. Point Qwen at DashScope, OpenRouter, or any OpenAI-compatible server (OPENAI_BASE_URL plus a dummy or real key). Models you add with /model show up here after a refresh.",
+    installCommand: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.qwen.install),
+    credentialSource: "OPENAI_API_KEY (and optional OPENAI_BASE_URL), a custom provider in ~/.qwen/settings.json, or `qwen --auth-type=openai` / `qwen --auth-type=openai-responses`. Recent releases no longer ship the `qwen auth` subcommand.",
+    setup: "Install Qwen Code and configure it in that CLI. ADE does not write ~/.qwen. Point Qwen at DashScope, OpenRouter, or any OpenAI-compatible server (OPENAI_BASE_URL plus a dummy or real key). Models you add with /model show up here after a refresh.",
   },
   {
     ...ACP_PROVIDER_METADATA.kimi,
     id: "kimi",
     tagline: "Uses your Moonshot account through the kimi CLI.",
     logoFamily: "kimi",
-    installCommand: "curl -LsSf https://code.kimi.com/kimi-code/install.sh | bash",
+    installCommand: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.kimi.install),
     credentialSource: "Signed in through `kimi login`; stored in its config.toml. ADE does not write that file.",
     setup: "Install Kimi Code and run `kimi login` in a terminal. Use `--region global` for kimi.ai or `--region mainland-cn` for kimi.com. ADE reuses ~/.kimi-code and does not configure Kimi for you. On Windows the binary needs Git for Windows, because Git Bash is its shell.",
     // Stated plainly rather than hidden behind a tooltip: Kimi's usage signals
@@ -81,7 +82,7 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     id: "grok",
     tagline: "Uses your grok login, or XAI_API_KEY.",
     logoFamily: "xai",
-    installCommand: "npm install -g @xai-official/grok@1.0.34",
+    installCommand: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.grok.install),
     credentialSource: "Signed in through `grok login` (GROK_HOME/auth.json, default ~/.grok/auth.json), or XAI_API_KEY. ADE does not write Grok's config.",
     setup: "Install the Grok CLI and run `grok login`, or set XAI_API_KEY. ADE passes GROK_HOME through to the ACP process and defaults to ~/.grok. Permission cards in ADE chats are the ones ADE can honour; Grok's own defaultMode is not the source of truth.",
   },
@@ -90,9 +91,19 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     id: "copilot",
     tagline: "Uses your GitHub account through the copilot CLI.",
     logoFamily: "github-copilot",
-    installCommand: `npm install -g ${COPILOT_NPM_PACKAGE_SPEC}`,
+    installCommand: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.copilot.install),
     credentialSource: "Signed in through `copilot login`; the free plan includes the CLI. ADE does not write ~/.copilot.",
     setup: "Install the Copilot CLI and run `copilot login`. ADE reuses that GitHub login and never writes Copilot's config.json. Cancelled turns can still look finished on Copilot's side; ADE marks them stopped.",
+  },
+  {
+    ...ACP_PROVIDER_METADATA.devin,
+    id: "devin",
+    tagline: "Your local Devin CLI.",
+    logoFamily: "devin",
+    installCommand: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.devin.install),
+    credentialSource: "`devin auth login`, or WINDSURF_API_KEY.",
+    setup: "Install the devin CLI, then run `devin auth login`.",
+    degradation: "No org Knowledge, Playbooks, or Secrets in local sessions.",
   },
 ];
 
@@ -190,17 +201,18 @@ function acpFacts(ctx: ProvidersViewContext, id: AcpSettingsProviderId): Provide
   const binary = diagnostics?.binaryPath ?? connectionPath;
   const configHome = diagnostics?.configHome ?? null;
   return [
-    ...(binary ? [{ label: "Binary", value: binary, mono: true }] : []),
+    ...(binary ? [{ label: "Binary", value: binary, mono: true, icon: <Terminal size={12} weight="bold" /> }] : []),
     ...(configHome
       ? [{
           label: spec.configHomeEnv ? `Config home (${spec.configHomeEnv})` : "Config home",
           value: configHome,
           mono: true,
+          icon: <FolderSimple size={12} weight="bold" />,
         }]
       : []),
-    { label: "Credentials", value: spec.credentialSource },
-    { label: "Setup", value: spec.setup },
-    ...(spec.degradation ? [{ label: "Known limitation", value: spec.degradation }] : []),
+    { label: "Credentials", value: spec.credentialSource, icon: <Key size={12} weight="bold" /> },
+    { label: "Setup", value: spec.setup, icon: <Wrench size={12} weight="bold" /> },
+    ...(spec.degradation ? [{ label: "Known limitation", value: spec.degradation, icon: <Warning size={12} weight="bold" /> }] : []),
   ];
 }
 
@@ -324,6 +336,93 @@ function KimiBody() {
   );
 }
 
+/**
+ * Devin Cloud rides the same CLI login as local Devin (`devin acp --cloud`),
+ * so there is nothing extra to configure here — the page only says so and
+ * points at where cloud sessions live.
+ */
+function DevinBody() {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <SubsectionTitle>Devin Cloud</SubsectionTitle>
+      <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+        Devin Cloud uses your Devin CLI login
+        (<span style={{ fontFamily: MONO_FONT }}>devin auth login</span>) — no
+        API token needed. Cloud sessions appear in the Devin Cloud panel in the
+        top bar.
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Where the installed CLI sits against the versions ADE has tested.
+ *
+ * An update installs the newest tested version, never npm `latest`. The button
+ * exists only when the host resolved the binary to a known installer
+ * (`update.canUpdate`); otherwise the note says how to update by hand, and
+ * there is no button to run the wrong command.
+ */
+function AcpVersionBody({ ctx, id, label }: { ctx: ProvidersViewContext; id: AcpSettingsProviderId; label: string }) {
+  const diagnostics = ctx.acpDiagnostics[id] ?? null;
+  const update = diagnostics?.update ?? null;
+  if (!diagnostics || !update) return null;
+  const busy = ctx.acpUpdateBusy === id;
+  const error = ctx.acpDiagnosticsError[id] ?? null;
+  const installed = update.installedVersion ?? diagnostics.version ?? "unknown";
+  const { min, max } = update.testedRange;
+  const statusLine = update.standing === "below"
+    ? `${label} ${installed} is older than ADE supports. Update to ${update.targetVersion}.`
+    : update.standing === "above"
+      ? `${label} ${installed} is newer than ADE has tested. Some features may not work.`
+      : update.updateAvailable
+        ? `Update available: ${installed} → ${update.targetVersion}.`
+        : update.standing === "unknown"
+          ? `ADE could not read the ${label} version.`
+          : `Up to date (${installed}).`;
+  const tone = update.standing === "below"
+    ? COLORS.warning
+    : update.updateAvailable
+      ? COLORS.textPrimary
+      : COLORS.textMuted;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <SubsectionTitle>Version</SubsectionTitle>
+      <div style={{ fontSize: 11, fontFamily: SANS_FONT, lineHeight: 1.5, color: tone }}>
+        {statusLine}
+      </div>
+      <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+        ADE is tested with {min === max ? min : `${min} to ${max}`}.
+      </div>
+      {update.note ? (
+        <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+          {update.note}
+        </div>
+      ) : null}
+      {update.canUpdate ? (
+        <button
+          type="button"
+          style={outlineButton({ height: 28 })}
+          disabled={busy}
+          onClick={() => void ctx.actions.updateAcpProvider(id)}
+        >
+          {busy ? "Updating…" : `Update to ${update.targetVersion}`}
+        </button>
+      ) : null}
+      {error ? (
+        <div style={{ fontSize: 11, fontFamily: SANS_FONT, lineHeight: 1.5, color: COLORS.danger, overflowWrap: "anywhere" }}>
+          {error}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+const ACP_EXTRA_BODIES: Partial<Record<AcpSettingsProviderId, () => React.JSX.Element>> = {
+  kimi: KimiBody,
+  devin: DevinBody,
+};
+
 function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
   return {
     id: spec.id,
@@ -335,7 +434,7 @@ function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
     // chip on its own.
     preview: providerTierIsPreview(spec.id),
     // All four share one permission vocabulary because they share one host.
-    permissions: { family: spec.id === "kimi" ? "moonshot" : spec.id === "grok" ? "xai" : spec.id === "copilot" ? "github-copilot" : "qwen", isCliWrapped: true, key: spec.id },
+    permissions: { family: spec.id === "kimi" ? "moonshot" : spec.id === "grok" ? "xai" : spec.id === "copilot" ? "github-copilot" : spec.id === "devin" ? "devin" : "qwen", isCliWrapped: true, key: spec.id },
     status: (ctx) => acpStatus(ctx, spec.id),
     models: (ctx) => acpModels(ctx, spec.id),
     version: (ctx) => acpVersion(ctx, spec.id),
@@ -345,7 +444,15 @@ function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
     ...(spec.id === "grok" || spec.id === "kimi"
       ? { Diagnostics: ({ ctx }: { ctx: ProvidersViewContext }) => <AcpDiagnostics ctx={ctx} id={spec.id} /> }
       : {}),
-    ...(spec.id === "kimi" ? { Body: KimiBody } : {}),
+    Body: ({ ctx }: { ctx: ProvidersViewContext }) => {
+      const Extra = ACP_EXTRA_BODIES[spec.id];
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <AcpVersionBody ctx={ctx} id={spec.id} label={spec.label} />
+          {Extra ? <Extra /> : null}
+        </div>
+      );
+    },
   };
 }
 

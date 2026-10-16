@@ -1,9 +1,14 @@
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { CancellationToken } from "builder-util-runtime";
+import { ElectronHttpExecutor } from "electron-updater/out/electronHttpExecutor";
 import { createAutoUpdateService } from "./autoUpdateService";
+import { deferToRunningWindowsInstall, takeWindowsInstallProgressReport } from "./windowsInstallProgress";
+import { switchUpdaterToNodeTransport } from "./updaterNetRecovery";
 import {
   buildGithubReleaseUrl,
   buildReleaseNotesUrl,
@@ -16,7 +21,7 @@ import {
   estimateUpdateRequiredBytes,
   isStaleHandoffError,
 } from "./autoUpdateErrors";
-import { runUpdateTransaction } from "./updateTransaction";
+import { runUpdateTransaction, UPDATE_TRANSACTION_FAILURE_COPY } from "./updateTransaction";
 import { DEFAULT_AUTO_UPDATE_PREFERENCES, type AutoUpdateSnapshot } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 
@@ -30,6 +35,18 @@ class FakeAutoUpdater extends EventEmitter {
   quitAndInstallCalled = false;
   setFeedURL = vi.fn();
   checkForUpdates = vi.fn<[], Promise<unknown>>(async () => null);
+  /**
+   * The assertions on this spy pin `(isSilent, isForceRunAfter) = (true, true)`,
+   * and both halves are load-bearing on Windows — do not relax them to
+   * `expect.anything()`.
+   *
+   * ADE's NSIS target is `oneClick: false`, so app-builder-lib's
+   * `installSection.nsh` starts the app from exactly one place:
+   * `${if} ${isForceRun} ${andIf} ${Silent}`. With `isSilent: false` there is no
+   * `/S`, `${Silent}` is false, and nothing relaunches ADE after the install —
+   * which is the bug these flags fixed. `runAfterFinish: false` also compiles
+   * out the finish page's run checkbox, so there is no second route.
+   */
   quitAndInstall = vi.fn(() => {
     if (this.quitAndInstallCalled) {
       throw new Error("install call ignored");
@@ -500,6 +517,39 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
+  // A retry that landed while an earlier launch had already consumed the
+  // pending marker used to keep reporting the failure on the version it named.
+  it.each([
+    ["the failed version", "1.2.3"],
+    ["a newer version", "1.2.4"],
+  ])("clears a recorded failure when this launch already runs %s", (_label, currentVersion) => {
+    const globalStatePath = makeStatePath();
+    const logger = makeLogger();
+    fs.writeFileSync(globalStatePath, JSON.stringify({
+      failedInstallAttempts: {
+        targetVersion: "1.2.3",
+        count: 2,
+        lastFailedAt: "2026-04-06T15:10:00.000Z",
+      },
+    }), "utf8");
+
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion,
+      globalStatePath,
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      now: () => "2026-04-06T15:21:00.000Z",
+      updater: new FakeAutoUpdater(),
+    });
+
+    expect(readState(globalStatePath)).not.toHaveProperty("failedInstallAttempts");
+    expect(service.getSnapshot().lastInstallFailed).toBeNull();
+    expect(logger.error).not.toHaveBeenCalledWith("autoUpdate.install_did_not_land", expect.anything());
+
+    service.dispose();
+  });
+
   it("clears the cached download after a second failed install of the same version", () => {
     const globalStatePath = makeStatePath();
     const updaterCacheDir = makeUpdaterCacheDir();
@@ -649,7 +699,10 @@ describe("createAutoUpdateService", () => {
   });
 
   it("leaves a staged update untouched when the check itself fails", async () => {
-    const { service, updater, logger, updaterCacheDir } = stageReadyUpdate();
+    let nowMs = 1_791_397_260_000;
+    const { service, updater, logger, updaterCacheDir } = stageReadyUpdate({
+      nowMs: () => nowMs,
+    });
 
     // A feed error means "nothing new to report", not "discard the finished
     // download". electron-updater emits `error` and rejects, so cover both.
@@ -659,15 +712,22 @@ describe("createAutoUpdateService", () => {
       throw new Error("net::ERR_INTERNET_DISCONNECTED");
     });
 
-    service.checkForUpdates();
+    // The check's own catch owns a Chromium net failure, so await the check
+    // rather than the updater call before reading what it logged.
+    await service.checkForUpdates();
 
-    await vi.waitFor(() => expect(updater.checkForUpdates).toHaveBeenCalledTimes(1));
+    expect(updater.checkForUpdates).toHaveBeenCalledTimes(1);
     expect(service.getSnapshot()).toMatchObject({
       status: "ready",
       version: "1.2.61",
       latestKnownVersion: "1.2.61",
       error: null,
       errorDetails: null,
+      checkFailure: {
+        kind: "network",
+        message: "net::ERR_INTERNET_DISCONNECTED",
+        at: nowMs,
+      },
     });
     expect(updater.downloadUpdate).not.toHaveBeenCalled();
     expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
@@ -679,6 +739,24 @@ describe("createAutoUpdateService", () => {
       "autoUpdate.ready_check_failed",
       expect.objectContaining({ readyVersion: "1.2.61" }),
     );
+
+    nowMs += 1_000;
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", { version: "1.2.61" });
+      return { updateInfo: { version: "1.2.61" } };
+    });
+
+    await service.checkForUpdates();
+
+    expect(service.getSnapshot()).toMatchObject({
+      status: "ready",
+      version: "1.2.61",
+      lastCheckedAt: nowMs,
+      checkFailure: null,
+    });
+    expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
 
     service.dispose();
   });
@@ -735,7 +813,7 @@ describe("createAutoUpdateService", () => {
     releasePrepare();
     await expect(installPromise).resolves.toBe(true);
     expect(service.getSnapshot()).toMatchObject({ status: "installing", version: "1.2.61" });
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
 
     service.dispose();
   });
@@ -828,7 +906,7 @@ describe("createAutoUpdateService", () => {
     });
 
     await expect(service.quitAndInstall()).resolves.toBe(true);
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
 
     expect(readState(globalStatePath)).toEqual({
       pendingInstallUpdate: {
@@ -837,6 +915,7 @@ describe("createAutoUpdateService", () => {
         releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
         requestedAt: "2026-04-06T15:21:00.000Z",
       },
+      restoreUpdateWorkspaceOnLaunch: true,
     });
 
     service.dispose();
@@ -1341,7 +1420,7 @@ describe("createAutoUpdateService", () => {
     await expect(service.quitAndInstall()).resolves.toBe(true);
 
     expect(updater.checkForUpdates).toHaveBeenCalledTimes(1);
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
     expect(readState(globalStatePath)).toEqual({
       pendingInstallUpdate: {
         fromVersion: "1.2.2",
@@ -1349,6 +1428,7 @@ describe("createAutoUpdateService", () => {
         releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.4",
         requestedAt: "2026-04-06T15:21:00.000Z",
       },
+      restoreUpdateWorkspaceOnLaunch: true,
     });
     expect(service.getSnapshot()).toMatchObject({
       status: "installing",
@@ -1412,13 +1492,174 @@ describe("createAutoUpdateService", () => {
 
     finishDownload();
     await expect(installPromise).resolves.toBe(true);
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
     expect(service.getSnapshot()).toMatchObject({
       status: "installing",
       version: "1.2.4",
     });
 
     service.dispose();
+  });
+
+  // A check that fails inside Chromium's net stack is told apart from a real
+  // outage by asking Node for the channel file. Only a real channel file means
+  // the updater's own session is the broken part.
+  it.each([
+    { name: "a real channel file", respond: () => new Response("version: 1.2.93\nfiles: []\n", { status: 200 }), kind: "network_stuck" },
+    { name: "a captive portal page", respond: () => new Response("<html>Sign in to Wi-Fi</html>", { status: 200 }), kind: "network" },
+    { name: "a missing feed", respond: () => new Response("Not Found", { status: 404 }), kind: "network" },
+    { name: "no answer at all", respond: () => { throw new TypeError("fetch failed"); }, kind: "network" },
+  ])("classifies a net::ERR_FAILED check when Node's probe gets $name", async ({ respond, kind }) => {
+    const fetchMock = vi.fn(async () => respond());
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const updater = Object.assign(new FakeAutoUpdater(), { httpExecutor: { cachedSession: null } });
+      // electron-updater announces the check, then Chromium fails it at once.
+      updater.checkForUpdates.mockImplementation(async () => {
+        updater.emit("checking-for-update");
+        throw new Error("net::ERR_FAILED");
+      });
+      const service = createAutoUpdateService({
+        logger: makeLogger(),
+        currentVersion: "1.2.92",
+        globalStatePath: makeStatePath(),
+        updaterCacheDir: makeEmptyUpdaterCacheDir(),
+        autoCheckEnabled: false,
+        platform: "darwin",
+        updater,
+      });
+
+      await service.checkForUpdates({ userInitiated: true });
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/latest-mac\.yml$/),
+        expect.anything(),
+      );
+      expect(service.getSnapshot()).toMatchObject({
+        status: "error",
+        errorDetails: { kind, phase: "check" },
+      });
+      service.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("falls back to Node when Chromium recovery is unavailable, then keeps later checks on Node", async () => {
+    const requests: string[] = [];
+    const server = http.createServer((request, response) => {
+      requests.push(request.url ?? "");
+      response.end("version: 1.2.93\nfiles: []\n");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    expect(address && typeof address === "object").toBe(true);
+    if (!address || typeof address === "string") throw new Error("update test server did not bind");
+
+    const fetchMock = vi.fn(async () => new Response("version: 1.2.93\nfiles: []\n", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const httpExecutor = {
+      cachedSession: null as unknown,
+      createRequest: vi.fn((
+        _options: http.RequestOptions,
+        _callback: (response: http.IncomingMessage) => void,
+      ): http.ClientRequest => { throw new Error("Chromium transport was used"); }),
+      addRedirectHandlers: vi.fn(),
+    };
+    const updater = Object.assign(new FakeAutoUpdater(), { httpExecutor });
+    const logger = makeLogger();
+    let checkAttempt = 0;
+    updater.checkForUpdates.mockImplementation(async () => {
+      checkAttempt += 1;
+      updater.emit("checking-for-update");
+      if (checkAttempt === 1) throw new Error("net::ERR_FAILED");
+      await new Promise<void>((resolve, reject) => {
+        const request = httpExecutor.createRequest({
+          protocol: "http:",
+          hostname: "127.0.0.1",
+          port: address.port,
+          path: checkAttempt === 2 ? "/recovered-check" : "/later-check",
+          method: "GET",
+        }, (response: http.IncomingMessage) => {
+          response.resume();
+          response.on("end", resolve);
+          response.on("error", reject);
+        });
+        request.on("error", reject);
+        request.end();
+      });
+      updater.emit("update-not-available", { version: "1.2.93" });
+      return { updateInfo: { version: "1.2.93" } };
+    });
+
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.92",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir: makeEmptyUpdaterCacheDir(),
+      autoCheckEnabled: false,
+      platform: "darwin",
+      updater,
+    });
+
+    try {
+      await service.checkForUpdates({ userInitiated: true });
+
+      expect(service.getSnapshot()).toMatchObject({ status: "idle", latestKnownVersion: "1.2.93" });
+      expect(updater.checkForUpdates).toHaveBeenCalledTimes(2);
+      expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/\/latest-mac\.yml$/), expect.anything());
+      expect(logger.info).toHaveBeenCalledWith(
+        "autoUpdate.net_wedge_recovered",
+        expect.objectContaining({ transport: "node" }),
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        "autoUpdate.net_fresh_session_failed",
+        expect.objectContaining({ reason: "session_unavailable" }),
+      );
+
+      await service.checkForUpdates();
+
+      expect(service.getSnapshot()).toMatchObject({ status: "idle", latestKnownVersion: "1.2.93" });
+      expect(updater.checkForUpdates).toHaveBeenCalledTimes(3);
+      expect(requests).toEqual(["/recovered-check", "/later-check"]);
+    } finally {
+      service.dispose();
+      vi.unstubAllGlobals();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("downloads a redirected artifact through Node after switching the updater transport", async () => {
+    const requests: string[] = [];
+    const server = http.createServer((request, response) => {
+      requests.push(request.url ?? "");
+      if (request.url === "/redirect") {
+        response.writeHead(302, { location: "/artifact" });
+        response.end();
+        return;
+      }
+      response.end("verified update bytes");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    expect(address && typeof address === "object").toBe(true);
+    if (!address || typeof address === "string") throw new Error("update test server did not bind");
+    const destination = path.join(os.tmpdir(), `ade-node-update-${process.pid}-${Date.now()}.zip`);
+    const executor = new ElectronHttpExecutor();
+
+    try {
+      expect(switchUpdaterToNodeTransport({ httpExecutor: executor })).toBe(true);
+
+      await executor.download(new URL(`http://127.0.0.1:${address.port}/redirect`), destination, {
+        cancellationToken: new CancellationToken(),
+      });
+
+      expect(fs.readFileSync(destination, "utf8")).toBe("verified update bytes");
+      expect(requests).toEqual(["/redirect", "/artifact"]);
+    } finally {
+      fs.rmSync(destination, { force: true });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("does not install a ready update when latest-version verification fails", async () => {
@@ -1639,6 +1880,7 @@ describe("createAutoUpdateService", () => {
     updater.quitAndInstall = vi.fn(() => {
       throw new Error("The command is disabled and cannot be executed");
     });
+    const cancelHandoff = vi.fn();
     const service = createAutoUpdateService({
       logger,
       currentVersion: "1.2.2",
@@ -1648,6 +1890,7 @@ describe("createAutoUpdateService", () => {
       periodicCheckMs: 60_000,
       now: () => "2026-04-06T15:21:00.000Z",
       updater,
+      onInstallHandoff: () => cancelHandoff,
     });
 
     updater.emit("update-downloaded", {
@@ -1659,6 +1902,8 @@ describe("createAutoUpdateService", () => {
       status: "ready",
       parked: { reason: "handoff_failed" },
     });
+    // ADE stays open, so the update window it started must go away.
+    expect(cancelHandoff).toHaveBeenCalledTimes(1);
     expect(readState(globalStatePath)).toEqual({});
     expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
     expect(logger.warn).toHaveBeenCalledWith(
@@ -1678,6 +1923,8 @@ describe("createAutoUpdateService", () => {
     const logger = makeLogger();
     const updater = new FakeAutoUpdater();
     const beforeQuitAndInstall = vi.fn(async () => {});
+    const cancelHandoff = vi.fn();
+    const onInstallHandoff = vi.fn(() => cancelHandoff);
     const service = createAutoUpdateService({
       logger,
       currentVersion: "1.2.2",
@@ -1688,6 +1935,7 @@ describe("createAutoUpdateService", () => {
       now: () => "2026-04-06T15:21:00.000Z",
       updater,
       beforeQuitAndInstall,
+      onInstallHandoff,
     });
 
     updater.emit("update-downloaded", {
@@ -1696,10 +1944,18 @@ describe("createAutoUpdateService", () => {
 
     await expect(service.quitAndInstall()).resolves.toBe(true);
     expect(beforeQuitAndInstall).toHaveBeenCalledTimes(1);
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
     expect(beforeQuitAndInstall.mock.invocationCallOrder[0]).toBeLessThan(
       updater.quitAndInstall.mock.invocationCallOrder[0],
     );
+    // The update window has to be up before ADE quits into the installer, and
+    // a handoff that went through leaves it running.
+    expect(onInstallHandoff).toHaveBeenCalledTimes(1);
+    expect(onInstallHandoff).toHaveBeenCalledWith(expect.objectContaining({ version: "1.2.3" }));
+    expect(onInstallHandoff.mock.invocationCallOrder[0]).toBeLessThan(
+      updater.quitAndInstall.mock.invocationCallOrder[0],
+    );
+    expect(cancelHandoff).not.toHaveBeenCalled();
     expect(readState(globalStatePath)).toMatchObject({
       pendingInstallUpdate: {
         targetVersion: "1.2.3",
@@ -1834,7 +2090,7 @@ describe("createAutoUpdateService", () => {
     expect(updater.downloadUpdate.mock.invocationCallOrder[0]).toBeLessThan(
       beforeQuitAndInstall.mock.invocationCallOrder[0],
     );
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
     expect(fs.readFileSync(downloadedFile, "utf8")).toBe("restored zip");
 
     service.dispose();
@@ -1897,7 +2153,7 @@ describe("createAutoUpdateService", () => {
 
     await expect(service.quitAndInstall()).resolves.toBe(true);
 
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
     expect(beforeQuitAndInstall).toHaveBeenCalledTimes(1);
     fs.unlinkSync(stagedFile);
 
@@ -2390,7 +2646,7 @@ describe("createAutoUpdateService", () => {
 
     await vi.advanceTimersByTimeAsync(10_000);
 
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
     expect(productAnalyticsService.captureInternal).toHaveBeenCalledWith({
       event: "ade_update_auto_applied",
       surface: "desktop",
@@ -2458,7 +2714,7 @@ describe("createAutoUpdateService", () => {
     });
 
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
     service.dispose();
   });
 
@@ -2526,7 +2782,7 @@ describe("createAutoUpdateService", () => {
 
     idle = true;
     await vi.advanceTimersByTimeAsync(13_000);
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
 
     service.dispose();
   });
@@ -2858,6 +3114,92 @@ describe("createAutoUpdateService", () => {
   });
 });
 
+describe("the installed notice and the resume it still owes", () => {
+  // A chat the user asked to resume in the install confirmation: the launch
+  // that lands the install may not have managed to arm it yet, and the record
+  // is the only place that knows.
+  const RESUMED_CHAT = {
+    sessionId: "8f1c2d3e-0000-4000-8000-000000000001",
+    title: "AudioShake pipeline",
+    projectName: "Versic",
+    projectRoot: "/Users/someone/Versic",
+  };
+  const installedAt = {
+    version: "1.2.3",
+    installedAt: "2026-04-06T15:20:00.000Z",
+    releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+    githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.3",
+  };
+
+  // No update checks: this block sits outside `createAutoUpdateService`'s
+  // `afterEach`, so it must not lean on that teardown to clean up a scheduler.
+  const startServiceOn = (globalStatePath: string) => createAutoUpdateService({
+    logger: makeLogger(),
+    currentVersion: "1.2.3",
+    globalStatePath,
+    startupDelayMs: 60_000,
+    periodicCheckMs: 60_000,
+    autoCheckEnabled: false,
+    now: () => "2026-04-06T15:21:00.000Z",
+    updater: new FakeAutoUpdater(),
+  });
+
+  const seed = (state: Record<string, unknown>): string => {
+    const globalStatePath = makeStatePath();
+    fs.writeFileSync(globalStatePath, JSON.stringify(state), "utf8");
+    return globalStatePath;
+  };
+
+  it("keeps a resume it has not armed yet when the installed notice is dismissed", () => {
+    const globalStatePath = seed({
+      recentlyInstalledUpdate: { ...installedAt, resumedChats: [RESUMED_CHAT] },
+    });
+    const service = startServiceOn(globalStatePath);
+    expect(service.getSnapshot().recentlyInstalled).not.toBeNull();
+
+    service.dismissInstalledNotice();
+
+    expect(service.getSnapshot().recentlyInstalled).toBeNull();
+    expect(readState(globalStatePath).recentlyInstalledUpdate).toMatchObject({
+      noticeDismissedAt: "2026-04-06T15:21:00.000Z",
+      resumedChats: [RESUMED_CHAT],
+    });
+
+    service.dispose();
+  });
+
+  it("drops the record once the notice is dismissed with nothing left to arm", () => {
+    const globalStatePath = seed({ recentlyInstalledUpdate: installedAt });
+    const service = startServiceOn(globalStatePath);
+
+    service.dismissInstalledNotice();
+
+    expect(service.getSnapshot().recentlyInstalled).toBeNull();
+    expect(readState(globalStatePath).recentlyInstalledUpdate).toBeUndefined();
+
+    service.dispose();
+  });
+
+  it("does not bring a dismissed notice back, and still owes its resume, on the next launch", () => {
+    const globalStatePath = seed({
+      recentlyInstalledUpdate: {
+        ...installedAt,
+        resumedChats: [RESUMED_CHAT],
+        noticeDismissedAt: "2026-04-06T15:22:00.000Z",
+      },
+    });
+
+    const nextLaunch = startServiceOn(globalStatePath);
+
+    expect(nextLaunch.getSnapshot().recentlyInstalled).toBeNull();
+    expect(readState(globalStatePath).recentlyInstalledUpdate).toMatchObject({
+      resumedChats: [RESUMED_CHAT],
+    });
+
+    nextLaunch.dispose();
+  });
+});
+
 describe("compareUpdateVersions", () => {
   it("orders semver versions including prereleases", () => {
     expect(compareUpdateVersions("1.2.4", "1.2.3")).toBeGreaterThan(0);
@@ -2898,10 +3240,10 @@ describe("update transaction on the snapshot", () => {
 
     expect(service.getSnapshot().updateTransaction?.ok).toBe(false);
     expect(service.getSnapshot().updateTransaction?.failureMessage).toBe(
-      "Updated the app, but the background service didn't restart — click Repair.",
+      UPDATE_TRANSACTION_FAILURE_COPY.restart,
     );
     expect(seen.at(-1)?.failureMessage).toBe(
-      "Updated the app, but the background service didn't restart — click Repair.",
+      UPDATE_TRANSACTION_FAILURE_COPY.restart,
     );
 
     unsubscribe();
@@ -3012,5 +3354,74 @@ describe("update transaction on the snapshot", () => {
     expect(service.getPreferences()).toEqual({ automaticInstall: false, onlyWhenIdle: true });
 
     service.dispose();
+  });
+});
+
+// The hand-launch guard and the update window meet only through files in
+// %LOCALAPPDATA%\ADE\update-progress-<channel>, so these drive it through a real
+// folder and a real live / dead pid.
+describe("Windows update window files", () => {
+  let localAppData: string;
+  let previousLocalAppData: string | undefined;
+
+  beforeEach(() => {
+    previousLocalAppData = process.env.LOCALAPPDATA;
+    localAppData = fs.mkdtempSync(path.join(os.tmpdir(), "ade-update-progress-test-"));
+    process.env.LOCALAPPDATA = localAppData;
+  });
+
+  afterEach(() => {
+    if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previousLocalAppData;
+    fs.rmSync(localAppData, { recursive: true, force: true });
+  });
+
+  const progressDir = (channel: string | null) =>
+    path.join(localAppData, "ADE", `update-progress-${channel ?? "stable"}`);
+  const writeHeartbeat = (channel: string | null, beat: Record<string, unknown>): string => {
+    const dir = progressDir(channel);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "progress.json");
+    fs.writeFileSync(file, JSON.stringify(beat));
+    return file;
+  };
+  const now = () => new Date().toISOString();
+  const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+  // A pid no process holds: far above any real pid on the test hosts.
+  const DEAD_PID = 2 ** 30;
+
+  it.each([
+    { label: "the old copy, opened mid-install", defers: true, beat: { pid: process.pid, targetVersion: "1.2.95", phase: "installing" }, ageMs: 0 },
+    { label: "the new version the installer opened", defers: false, beat: { pid: process.pid, targetVersion: "1.2.94", phase: "opening" }, ageMs: 0 },
+    { label: "after the window reported a failure", defers: false, beat: { pid: process.pid, targetVersion: "1.2.95", phase: "failed" }, ageMs: 0 },
+    { label: "a heartbeat that stopped beating", defers: false, beat: { pid: process.pid, targetVersion: "1.2.95", phase: "installing" }, ageMs: 9_000 },
+    { label: "a heartbeat dated in the future", defers: false, beat: { pid: process.pid, targetVersion: "1.2.95", phase: "installing" }, ageMs: -60_000 },
+    { label: "a window process that is gone", defers: false, beat: { pid: DEAD_PID, targetVersion: "1.2.95", phase: "installing" }, ageMs: 0 },
+  ])("hand-launch guard, $label: defers $defers", ({ beat, ageMs, defers }) => {
+    // Dated here, not in the table: the table is built at collection, and on a
+    // loaded runner a beat dated then is already stale when its row runs.
+    const heartbeat = writeHeartbeat(null, { ...beat, updatedAt: ago(ageMs) });
+
+    expect(deferToRunningWindowsInstall({ channel: null, appVersion: "1.2.94" })).toBe(defers);
+    // Deferring is only half of it: the window has to be asked to come forward.
+    expect(fs.existsSync(`${heartbeat}.focus`)).toBe(defers);
+  });
+
+  it("hand-launch guard starts normally with no update window, or another channel's", () => {
+    expect(deferToRunningWindowsInstall({ channel: null, appVersion: "1.2.94" })).toBe(false);
+
+    writeHeartbeat("beta", { pid: process.pid, targetVersion: "1.2.95", phase: "installing", updatedAt: now() });
+    expect(deferToRunningWindowsInstall({ channel: null, appVersion: "1.2.94" })).toBe(false);
+    expect(deferToRunningWindowsInstall({ channel: "beta", appVersion: "1.2.94" })).toBe(true);
+  });
+
+  it("hands the window's log to the next launch once, without its BOM or blank lines", () => {
+    const dir = progressDir(null);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "progress.log"), "\uFEFF+0.2s started\r\n\r\n+3.4s parent_exited\r\n");
+
+    expect(takeWindowsInstallProgressReport(null)).toEqual(["+0.2s started", "+3.4s parent_exited"]);
+    expect(takeWindowsInstallProgressReport(null)).toBeNull();
+    expect(fs.existsSync(path.join(dir, "progress.log"))).toBe(false);
   });
 });

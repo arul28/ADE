@@ -1,9 +1,9 @@
 import { useRef, useState, type RefObject } from "react";
 import { Broom, CaretDown, Plus } from "@phosphor-icons/react";
-import type { TestSuiteDefinition } from "../../../../shared/types";
+import type { OpenProjectBinding, TestSuiteDefinition } from "../../../../shared/types";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { cn } from "../../ui/cn";
-import { ADD_STEP_ORDER, stepDef, type StepKind } from "../actionCatalog";
+import { ADD_STEP_ORDER, NOTIFY_STEP, stepDef, type StepKind } from "../actionCatalog";
 import { blankStep, type WorkflowStep } from "./draftBridge";
 import { StepCard } from "./StepCard";
 
@@ -12,8 +12,29 @@ function newKey(): string {
   return c?.randomUUID?.() ?? `step-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-// Steps offered in the add menu — cleanup (delete-lane) has its own zone.
-const ADDABLE_KINDS = ADD_STEP_ORDER.filter((kind) => kind !== "delete-lane");
+/**
+ * What the add menu offers: every step kind except cleanup (delete-lane has its
+ * own zone), plus "Send notification to mobile app", which is an ADE-action
+ * step that starts out set to `attention.sendNotification`.
+ */
+type StepChoice = StepKind | typeof NOTIFY_STEP.id;
+
+const ADDABLE_CHOICES: readonly StepChoice[] = [
+  ...ADD_STEP_ORDER.filter((kind) => kind !== "delete-lane").slice(0, 1),
+  NOTIFY_STEP.id,
+  ...ADD_STEP_ORDER.filter((kind) => kind !== "delete-lane").slice(1),
+];
+
+function choiceDef(choice: StepChoice) {
+  return choice === NOTIFY_STEP.id ? NOTIFY_STEP : stepDef(choice);
+}
+
+function newStepFor(choice: StepChoice, defaultSuiteId?: string): WorkflowStep {
+  if (choice === NOTIFY_STEP.id) {
+    return { kind: "ade-action", adeAction: { domain: "attention", action: "sendNotification", args: { title: "" } } };
+  }
+  return blankStep(choice, defaultSuiteId);
+}
 
 function isCleanupStep(step: WorkflowStep): boolean {
   return step.kind === "delete-lane";
@@ -23,11 +44,14 @@ export function StepStack({
   steps,
   triggerType,
   suites,
+  runtimePin = null,
   onChange,
 }: {
   steps: WorkflowStep[];
   triggerType: string;
   suites: TestSuiteDefinition[];
+  /** The machine the rule runs on; null is this window's. */
+  runtimePin?: OpenProjectBinding | null;
   onChange: (next: WorkflowStep[]) => void;
 }) {
   const keysRef = useRef<string[]>(steps.map(() => newKey()));
@@ -43,12 +67,12 @@ export function StepStack({
   const cleanupIndex = hasTrailingCleanup ? steps.length - 1 : -1;
   const normalCount = hasTrailingCleanup ? steps.length - 1 : steps.length;
 
-  const insertStep = (at: number, kind: StepKind) => {
+  const insertStep = (at: number, kind: StepChoice) => {
     const keys = [...keysRef.current];
     keys.splice(at, 0, newKey());
     keysRef.current = keys;
     const next = [...steps];
-    next.splice(at, 0, blankStep(kind, suites[0]?.id));
+    next.splice(at, 0, newStepFor(kind, suites[0]?.id));
     onChange(next);
   };
 
@@ -91,6 +115,7 @@ export function StepStack({
               total={normalCount}
               triggerType={triggerType}
               suites={suites}
+              runtimePin={runtimePin}
               isCleanup={false}
               onChange={(next) => updateStep(index, next)}
               onRemove={() => removeStep(index)}
@@ -126,7 +151,7 @@ export function StepStack({
         <button
           type="button"
           onClick={addCleanup}
-          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-white/[0.1] px-3 py-2 text-[11px] font-medium text-muted-fg/70 transition-colors hover:border-amber-500/30 hover:text-amber-200"
+          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-fg/[0.1] px-3 py-2 text-[11px] font-medium text-muted-fg/70 transition-colors hover:border-amber-500/30 hover:text-amber-200"
         >
           <Broom size={13} weight="regular" />
           Add a cleanup step (delete the lane when done)
@@ -136,7 +161,7 @@ export function StepStack({
   );
 }
 
-function StepInserter({ onAdd }: { onAdd: (kind: StepKind) => void }) {
+function StepInserter({ onAdd }: { onAdd: (kind: StepChoice) => void }) {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   return (
@@ -149,7 +174,7 @@ function StepInserter({ onAdd }: { onAdd: (kind: StepKind) => void }) {
           "flex h-5 w-5 items-center justify-center rounded-full border transition-colors",
           open
             ? "border-accent/50 bg-accent/15 text-accent"
-            : "border-white/[0.1] bg-white/[0.03] text-muted-fg/50 hover:border-accent/40 hover:text-accent",
+            : "border-fg/[0.1] bg-fg/[0.03] text-muted-fg/50 hover:border-accent/40 hover:text-accent",
         )}
         title="Insert step here"
       >
@@ -168,7 +193,7 @@ function StepInserter({ onAdd }: { onAdd: (kind: StepKind) => void }) {
   );
 }
 
-function AddStepButton({ onAdd }: { onAdd: (kind: StepKind) => void }) {
+function AddStepButton({ onAdd }: { onAdd: (kind: StepChoice) => void }) {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   return (
@@ -181,7 +206,7 @@ function AddStepButton({ onAdd }: { onAdd: (kind: StepKind) => void }) {
           "flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-[12px] font-medium transition-colors",
           open
             ? "border-accent/40 bg-accent/[0.06] text-fg"
-            : "border-white/[0.08] bg-white/[0.03] text-fg/85 hover:border-accent/30 hover:bg-white/[0.05]",
+            : "border-fg/[0.08] bg-fg/[0.03] text-fg/85 hover:border-accent/30 hover:bg-fg/[0.05]",
         )}
       >
         <span className="flex items-center gap-2">
@@ -213,18 +238,18 @@ function StepMenu({
   open: boolean;
   anchorRef: RefObject<HTMLElement | null>;
   onClose: () => void;
-  onPick: (kind: StepKind) => void;
+  onPick: (kind: StepChoice) => void;
 }) {
   return (
     <AnchoredMenu
       open={open}
       anchorRef={anchorRef}
       onClose={onClose}
-      className="max-h-[70vh] w-[280px] overflow-y-auto rounded-xl border border-white/[0.08] bg-surface-overlay p-1 shadow-float"
+      className="max-h-[70vh] w-[280px] overflow-y-auto rounded-xl border border-fg/[0.08] bg-surface-overlay p-1 shadow-float"
       role="menu"
     >
-      {ADDABLE_KINDS.map((kind) => {
-        const def = stepDef(kind);
+      {ADDABLE_CHOICES.map((kind) => {
+        const def = choiceDef(kind);
         const Icon = def.icon;
         return (
           <button
@@ -232,9 +257,9 @@ function StepMenu({
             type="button"
             role="menuitem"
             onClick={() => onPick(kind)}
-            className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-white/[0.05]"
+            className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-fg/[0.05]"
           >
-            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.04]">
+            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-fg/[0.04]">
               <Icon size={12} weight="fill" style={{ color: def.accent }} />
             </span>
             <span className="min-w-0 flex-1">
@@ -248,22 +273,22 @@ function StepMenu({
   );
 }
 
-function EmptyStepPicker({ onAdd }: { onAdd: (kind: StepKind) => void }) {
+function EmptyStepPicker({ onAdd }: { onAdd: (kind: StepChoice) => void }) {
   return (
-    <div className="rounded-xl border border-dashed border-white/[0.1] bg-white/[0.02] p-3">
+    <div className="rounded-xl border border-dashed border-fg/[0.1] bg-fg/[0.02] p-3">
       <div className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-muted-fg/60">Pick a first step</div>
       <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
-        {ADDABLE_KINDS.map((kind) => {
-          const def = stepDef(kind);
+        {ADDABLE_CHOICES.map((kind) => {
+          const def = choiceDef(kind);
           const Icon = def.icon;
           return (
             <button
               key={kind}
               type="button"
               onClick={() => onAdd(kind)}
-              className="flex items-start gap-2.5 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-left transition-colors hover:border-accent/30 hover:bg-white/[0.05]"
+              className="flex items-start gap-2.5 rounded-lg border border-fg/[0.06] bg-fg/[0.02] px-3 py-2.5 text-left transition-colors hover:border-accent/30 hover:bg-fg/[0.05]"
             >
-              <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.04]">
+              <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-fg/[0.04]">
                 <Icon size={12} weight="fill" style={{ color: def.accent }} />
               </span>
               <span className="min-w-0 flex-1">

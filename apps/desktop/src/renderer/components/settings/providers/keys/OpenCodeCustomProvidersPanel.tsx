@@ -16,7 +16,11 @@ import { COLORS, MONO_FONT, SANS_FONT, SECTION_LABEL_STYLE, outlineButton } from
 import { confirmDialog } from "../../../ui/dialog";
 import { invalidateAiDiscoveryCache } from "../../../../lib/aiDiscoveryCache";
 import { ProviderErrorRow, prettifyProviderId } from "../providerUi";
-import type { AiCustomProviderConfig } from "../../../../../shared/types/config";
+import type {
+  AiCustomProviderCacheFormat,
+  AiCustomProviderConfig,
+  AiCustomProviderEncoding,
+} from "../../../../../shared/types/config";
 import type { ApiCredentialSummary } from "../../../../../shared/types/apiCredentials";
 import type { ProvidersViewContext } from "../types";
 import { AddApiKeySheet, type ApiKeyDraft } from "./AddApiKeySheet";
@@ -25,9 +29,89 @@ import {
   persistOpenCodeProviderBlock,
   protocolForNpm,
   saveCustomProviders,
+  withCustomProvider,
   withoutCustomProvider,
 } from "./openCodeCustomProviders";
 import { providerActionMessage } from "../providerErrorMessage";
+import { useSettingsMachineScope } from "../../SettingsMachineScope";
+import { useApiCredentialsPin } from "./useApiCredentials";
+import "./customProviderOptions.css";
+
+const ENCODING_CHOICES: Array<{ value: AiCustomProviderEncoding | ""; label: string }> = [
+  { value: "", label: "Off" },
+  { value: "gzip", label: "gzip" },
+  { value: "zstd", label: "zstd" },
+];
+
+const CACHE_FORMAT_CHOICES: Array<{ value: AiCustomProviderCacheFormat | ""; label: string }> = [
+  { value: "", label: "Default" },
+  { value: "anthropic", label: "Anthropic style" },
+  { value: "alibaba", label: "Alibaba style" },
+];
+
+/**
+ * Two request options OpenCode 2.0.28 added for an endpoint it does not know:
+ * compressing request bodies, and which prompt-cache markers to send. Both
+ * stay off by default: an endpoint that cannot read a compressed body or a
+ * cache marker rejects every request.
+ */
+function CustomProviderRequestOptions({
+  entry,
+  disabled,
+  onChange,
+}: {
+  entry: AiCustomProviderConfig;
+  disabled: boolean;
+  onChange: (next: AiCustomProviderConfig) => void;
+}) {
+  const name = entry.name || entry.id;
+  return (
+    <div className="ade-custom-provider-options">
+      <label
+        className="ade-custom-provider-option"
+        title="Compress each request. Only for endpoints that accept compressed bodies; the request fails otherwise."
+      >
+        Compression
+        <select
+          className="kit-input"
+          aria-label={`Compression for ${name}`}
+          disabled={disabled}
+          value={entry.encoding ?? ""}
+          onChange={(event) => {
+            const value = event.target.value as AiCustomProviderEncoding | "";
+            const { encoding: _drop, ...rest } = entry;
+            onChange(value ? { ...rest, encoding: value } : rest);
+          }}
+        >
+          {ENCODING_CHOICES.map((choice) => (
+            <option key={choice.value} value={choice.value}>{choice.label}</option>
+          ))}
+        </select>
+      </label>
+      <label
+        className="ade-custom-provider-option"
+        title="Mark the start of each prompt so the endpoint can cache it: later requests are cheaper and faster. Pick the style the endpoint documents."
+      >
+        Prompt caching
+        <select
+          className="kit-input"
+          aria-label={`Prompt caching for ${name}`}
+          disabled={disabled}
+          value={entry.cacheFormat ?? ""}
+          onChange={(event) => {
+            const value = event.target.value as AiCustomProviderCacheFormat | "";
+            const { cacheFormat: _drop, ...rest } = entry;
+            onChange(value ? { ...rest, cacheFormat: value } : rest);
+          }}
+        >
+          {CACHE_FORMAT_CHOICES.map((choice) => (
+            <option key={choice.value} value={choice.value}>{choice.label}</option>
+          ))}
+        </select>
+      </label>
+    </div>
+  );
+}
 
 /** A config entry, shaped as the key sheet's "already saved" prefill. */
 function asCredential(entry: AiCustomProviderConfig): ApiCredentialSummary {
@@ -50,6 +134,10 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
   const entries = useMemo(() => ctx.status?.customProviders ?? [], [ctx.status?.customProviders]);
   const [sheet, setSheet] = useState<{ existing: ApiCredentialSummary | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Config goes to the page's machine; the key store follows the same rule as
+  // every other key read on this page (This computer stays on desktop IPC).
+  const { pin } = useSettingsMachineScope();
+  const credentialPin = useApiCredentialsPin();
 
   const save = useCallback(async (draft: ApiKeyDraft) => {
     const id = draft.providerId.trim();
@@ -68,14 +156,28 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
         baseUrl: draft.baseUrl,
         ...(draft.protocol ? { protocol: draft.protocol } : {}),
         models: draft.models,
-      });
+      }, credentialPin);
     }
-    await persistOpenCodeProviderBlock(entries, draft);
+    await persistOpenCodeProviderBlock(entries, draft, pin);
     invalidateAiDiscoveryCache();
     setSheet(null);
     setError(null);
     await ctx.actions.refreshStatus({ force: true, refreshOpenCodeInventory: true });
-  }, [ctx.actions, entries]);
+  }, [credentialPin, ctx.actions, entries, pin]);
+
+  const [savingOptionsFor, setSavingOptionsFor] = useState<string | null>(null);
+  const saveOptions = useCallback(async (next: AiCustomProviderConfig) => {
+    setSavingOptionsFor(next.id);
+    try {
+      await saveCustomProviders(withCustomProvider(entries, next), pin);
+      setError(null);
+      await ctx.actions.refreshStatus({ force: true });
+    } catch (err) {
+      setError(providerActionMessage(err, "That custom provider change did not go through."));
+    } finally {
+      setSavingOptionsFor(null);
+    }
+  }, [ctx.actions, entries, pin]);
 
   const remove = useCallback(async (entry: AiCustomProviderConfig) => {
     const ok = await confirmDialog({
@@ -86,15 +188,15 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
     });
     if (!ok) return;
     try {
-      await saveCustomProviders(withoutCustomProvider(entries, entry.id));
-      await window.ade.apiCredentials.remove({ provider: entry.id, credentialId: "default" });
+      await saveCustomProviders(withoutCustomProvider(entries, entry.id), pin);
+      await window.ade.apiCredentials.remove({ provider: entry.id, credentialId: "default" }, credentialPin);
       invalidateAiDiscoveryCache();
       setError(null);
       await ctx.actions.refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
       setError(providerActionMessage(err, "That custom provider change did not go through."));
     }
-  }, [ctx.actions, entries]);
+  }, [credentialPin, ctx.actions, entries, pin]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -103,7 +205,7 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
         <button
           type="button"
           aria-label="Add a custom provider"
-          style={outlineButton({ height: 24, padding: "0 8px", fontSize: 11 })}
+          style={outlineButton({ height: 24, padding: "0 8px", fontSize: 12 })}
           onClick={() => {
             setError(null);
             setSheet({ existing: null });
@@ -147,7 +249,7 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
               <button
                 type="button"
                 aria-label={`Edit ${entry.id}`}
-                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 11 })}
+                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 12 })}
                 onClick={() => {
                   setError(null);
                   setSheet({ existing: asCredential(entry) });
@@ -158,12 +260,17 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
               <button
                 type="button"
                 aria-label={`Delete ${entry.id}`}
-                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 11, color: COLORS.danger })}
+                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 12, color: COLORS.danger })}
                 onClick={() => void remove(entry)}
               >
                 Delete
               </button>
             </div>
+            <CustomProviderRequestOptions
+              entry={entry}
+              disabled={savingOptionsFor !== null}
+              onChange={(next) => void saveOptions(next)}
+            />
           </div>
         ))
       )}

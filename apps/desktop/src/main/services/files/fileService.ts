@@ -1,6 +1,5 @@
 import fs, { promises as fsp } from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import type {
   FileChangeEvent,
   FileContent,
@@ -35,7 +34,7 @@ import type {
 } from "../../../shared/types";
 import type { createLaneService } from "../lanes/laneService";
 import type { ExternalFilesWorkspaceRegistry } from "./externalFilesWorkspaceRegistry";
-import { runGit } from "../git/git";
+import { parseGitOwnershipError, runGit } from "../git/git";
 import {
   hasNullByte,
   isPathEscapeError,
@@ -366,65 +365,30 @@ function omittedFileContent(args: {
   };
 }
 
-async function runGitCheckIgnoreBatch(args: { cwd: string; paths: string[]; timeoutMs?: number }): Promise<Set<string>> {
+/**
+ * The paths git ignores, or null when git could not answer for a reason that
+ * may clear up — the folder is one git refuses to use until the user trusts it
+ * (safe.directory). Null is not cached, so the tree is right once they do.
+ * Other failures (timeout, not a repository) keep the old answer: nothing is
+ * ignored.
+ */
+async function runGitCheckIgnoreBatch(args: { cwd: string; paths: string[]; timeoutMs?: number }): Promise<Set<string> | null> {
   if (args.paths.length === 0) return new Set<string>();
-  const timeoutMs = args.timeoutMs ?? 7_000;
-
-  return await new Promise<Set<string>>((resolve) => {
-    const child = spawn("git", ["check-ignore", "--stdin"], {
-      cwd: args.cwd,
-      stdio: ["pipe", "pipe", "ignore"],
-      windowsHide: true,
-    });
-
-    let settled = false;
-    let stdout = "";
-
-    const finish = (result: Set<string>) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(result);
-    };
-
-    const timer = setTimeout(() => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // ignore
-      }
-      finish(new Set<string>());
-    }, timeoutMs);
-
-    child.stdout.on("data", (chunk: Buffer | string) => {
-      stdout += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
-    });
-
-    child.on("error", () => finish(new Set<string>()));
-
-    child.on("close", (code) => {
-      if (code !== 0 && code !== 1) {
-        finish(new Set<string>());
-        return;
-      }
-      const ignored = new Set(
-        stdout
-          .split(/\r?\n/)
-          .map((line) => normalizeRelative(line.trim()))
-          .filter(Boolean)
-      );
-      finish(ignored);
-    });
-
-    child.stdin.on("error", () => finish(new Set<string>()));
-
-    try {
-      child.stdin.write(`${args.paths.join("\n")}\n`);
-      child.stdin.end();
-    } catch {
-      finish(new Set<string>());
-    }
+  const result = await runGit(["check-ignore", "--stdin"], {
+    cwd: args.cwd,
+    timeoutMs: args.timeoutMs ?? 7_000,
+    stdin: `${args.paths.join("\n")}\n`,
   });
+  // check-ignore exits 1 when nothing matched.
+  if (result.exitCode !== 0 && result.exitCode !== 1) {
+    return parseGitOwnershipError(result.stderr) ? null : new Set<string>();
+  }
+  return new Set(
+    result.stdout
+      .split(/\r?\n/)
+      .map((line) => normalizeRelative(line.trim()))
+      .filter(Boolean)
+  );
 }
 
 function ensureSafePath(
@@ -663,6 +627,7 @@ export function createFileService({
 
     if (unresolved.length === 0) return;
     const ignoredSet = await runGitCheckIgnoreBatch({ cwd: rootPath, paths: unresolved });
+    if (!ignoredSet) return;
     for (const normalized of unresolved) {
       const cacheKey = `${rootPath}::${normalized}`;
       const ignored = ignoredSet.has(normalized);
@@ -677,6 +642,29 @@ export function createFileService({
     (relPath: string, includeIgnored: boolean) => isIgnoredPath(rootPath, relPath, includeIgnored);
   const primeIgnoreCacheForRoot = (rootPath: string) =>
     (relPaths: string[], includeIgnored: boolean) => primeIgnoreCache(rootPath, relPaths, includeIgnored);
+  /**
+   * Git's list of every file that is not ignored, for the search index. Null
+   * (walk the tree instead) outside a git repo, when git refuses, and when the
+   * repo has submodules: ls-files names a submodule but not the files in it.
+   */
+  const listVisibleFilesForRoot = (rootPath: string) => async (): Promise<string[] | null> => {
+    if (fs.existsSync(path.join(rootPath, ".gitmodules"))) return null;
+    const result = await runGit(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
+      cwd: rootPath,
+      timeoutMs: 15_000,
+      maxOutputBytes: 64 * 1024 * 1024,
+    });
+    // A cut-off list would silently drop files; walk instead. The index applies
+    // its own visibility rule to every entry, and skips paths git still tracks
+    // that are gone from disk.
+    return result.exitCode === 0 && !result.stdoutTruncated ? result.stdout.split("\0") : null;
+  };
+  /** The ignore inputs every search-index call takes for one workspace root. */
+  const indexIgnoreOptions = (rootPath: string) => ({
+    shouldIgnore: shouldIgnoreForRoot(rootPath),
+    primeIgnoreCache: primeIgnoreCacheForRoot(rootPath),
+    listVisibleFiles: listVisibleFilesForRoot(rootPath),
+  });
   const workspaceRootExists = (rootPath: string): boolean => {
     try {
       return fs.existsSync(rootPath) && fs.statSync(rootPath).isDirectory();
@@ -1464,8 +1452,7 @@ export function createFileService({
         includeIgnored: Boolean(args.includeIgnored),
         allowComposerPrefixFallback: Boolean(args.allowComposerPrefixFallback),
         includeDirectories: Boolean(args.includeDirectories),
-        shouldIgnore: shouldIgnoreForRoot(workspace.rootPath),
-        primeIgnoreCache: primeIgnoreCacheForRoot(workspace.rootPath)
+        ...indexIgnoreOptions(workspace.rootPath),
       });
     },
 
@@ -1476,8 +1463,7 @@ export function createFileService({
           workspaceId: args.workspaceId,
           rootPath: workspace.rootPath,
           includeIgnored: Boolean(args.includeIgnored),
-          shouldIgnore: shouldIgnoreForRoot(workspace.rootPath),
-          primeIgnoreCache: primeIgnoreCacheForRoot(workspace.rootPath)
+          ...indexIgnoreOptions(workspace.rootPath),
         });
       } catch {
         // Warming is best-effort; the interactive query path reports real errors.
@@ -1495,8 +1481,7 @@ export function createFileService({
         query,
         limit,
         includeIgnored: Boolean(args.includeIgnored),
-        shouldIgnore: shouldIgnoreForRoot(workspace.rootPath),
-        primeIgnoreCache: primeIgnoreCacheForRoot(workspace.rootPath)
+        ...indexIgnoreOptions(workspace.rootPath),
       });
     },
 

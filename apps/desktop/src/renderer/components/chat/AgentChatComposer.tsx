@@ -1,6 +1,14 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
+import { useAgentChatApi, useChatPaneScope } from "./agentChatApi";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { ISSUE_CONTEXT_DND_MIME, readIssueContextDrag } from "../../lib/issueDrag";
+import { openIssueRef } from "../../lib/issueNavigation";
+import { jiraIssueRef, linearIssueRef } from "../../../shared/issueRefs";
+import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
+import { stripElectronErrorWrapper } from "../../../shared/codedError";
+import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
+import { toneText } from "../lanes/laneDesignTokens";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, CircleNotch, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, LockKey, MagnifyingGlass, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -11,6 +19,7 @@ import {
   type AgentChatCursorConfigOption,
   type AgentChatCursorModeSnapshot,
   type AgentChatDroidPermissionMode,
+  type AgentChatMusePermissionMode,
   type AgentChatCodexApprovalPolicy,
   type AgentChatCodexConfigSource,
   type AgentChatCodexSandbox,
@@ -30,25 +39,36 @@ import {
   type OpenProjectBinding,
   type PendingInputRequest,
   type AgentChatModelCatalogRefreshProvider,
-  type PromptStashEntry,
+  type DraftEntry,
+  type DraftScheduleInput,
 } from "../../../shared/types";
 import {
   AGENT_CHAT_STOP_MODES,
   chatStopModeCopy,
+  DEFAULT_AGENT_CHAT_STOP_MODE,
   parseAgentChatStopMode,
+  providerStopModeSupport,
+  providerSupportsStopModeChoice,
+  stopModeAvailable,
   stopModeClearsQueue,
+  stopModeStopsChildren,
 } from "../../../shared/chatStopModes";
+import { CLOUD_LANE_LABELS, type CloudLaneProvider } from "../../../shared/cloudLanes";
 import {
   buildChatContextAttachmentPrompt,
   chatContextAttachmentKey,
   makeGitHubIssueContextAttachment,
+  makeJiraIssueContextAttachment,
   makeLinearIssueContextAttachment,
 } from "../../../shared/chatContextAttachments";
+import { jiraIssueToLaneIssue } from "../../../shared/laneJiraIssue";
+import type { LaneJiraIssue } from "../../../shared/types/jira";
 import {
   getModelById,
   modelSupportsFastMode,
   resolveOpenCodeFastEffortSelection,
   type ProviderFamily,
+  type FastTier,
 } from "../../../shared/modelRegistry";
 import { claudeApprovalOptionsOfferSession } from "../../../shared/claudePermissionDialog";
 import {
@@ -65,6 +85,8 @@ import {
 import { codexUserShellChipRange } from "../../../shared/codexComposerCommands";
 import {
   formatChatMentionToken,
+  CHAT_MENTION_DND_MIME,
+  parseChatMentionDragPayload,
   isChatMentionTokenBody,
   parseChatMentions,
   chatMentionKindFromToken,
@@ -76,12 +98,32 @@ import {
   parseComposerClipboard,
   serializeComposerClipboard,
 } from "../../../shared/composerClipboard";
+import {
+  isPastedTextAttachmentFile,
+  pastedTextAttachmentFile,
+  shouldFoldPastedText,
+} from "../../../shared/composerPasteFolding";
 import { chipDisplayLabel, chipFromPath, chipFromSmartLink, chipGlyph } from "../../../shared/chips";
-import { serializeComposerDom, serializedComposerOffsetAt } from "./composerChipDom";
+import { composerDomPointAtSerializedOffset, serializeComposerDom, serializedComposerOffsetAt } from "./composerChipDom";
+import {
+  composerModelInfo,
+  composerModelSuggestion,
+  createModelChipNode,
+  initialModelMention,
+  modelChipOptions,
+  modelChipSegments,
+  renderModelChip,
+  type ComposerModelInfo,
+  type ModelChipSegment,
+} from "./composerModelChip";
+import { ModelChipSegmentMenu } from "./ModelChipSegmentMenu";
+import { formatModelMentionToken, parseModelMentionToken, parseModelMentions } from "../../../shared/modelMentions";
 import {
   activeTurnDispatchModes,
+  activeTurnInlineAttachmentBlock,
   activeTurnInterruptContinues,
   defaultActiveTurnDispatchMode,
+  hasPastedTextPromptAttachment,
   type HeicConversionErrorCode,
   isImageAttachmentPath,
   isHeicAttachment,
@@ -95,9 +137,12 @@ import {
 } from "../shared/PermissionModePicker";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import type { AuthStatus } from "../shared/ModelPicker/ModelPickerRail";
-import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
+import { ensureRuntimeCatalogDescriptors, resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
+import { fetchSharedRuntimeCatalog } from "../shared/ModelPicker/sharedCatalogFetch";
+import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../shared/ModelPicker/runtimeCatalogCache";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
+import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
 import { getPermissionOptions, type PermissionOption } from "../shared/permissionOptions";
 import { ContextUsageDial } from "./usage/ContextUsageDial";
@@ -120,19 +165,33 @@ import {
 import { basenameCrossPlatform } from "../../../shared/pathDisplay";
 import {
   pastedTextChipLabel,
-  pastedTextFilename,
   pastedTextLineCount,
-  shouldPasteTextAsFile,
 } from "../../../shared/pastedTextAttachment";
 import { ChatComposerShell } from "./ChatComposerShell";
 import { ComposerSmartLinkMenu } from "./ComposerSmartLinkMenu";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
-import { mentionChipMarkSvg, type ComposerAtChipKind } from "./mentionChipMark";
+import {
+  COMPOSER_MENTION_CHIP_CLASS,
+  COMPOSER_TOKEN_CHIP_ICON_CLASS,
+  mentionChipMarkSvg,
+  type ComposerAtChipKind,
+} from "./mentionChipMark";
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
+import { JiraMark, JiraStatusIcon, JIRA_BRAND } from "../lanes/jiraBrand";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
+import { LinearPaneModal } from "../app/LinearPaneModal";
+import { Banner } from "../ui/notice";
 import { AskQuestionComposer } from "./AskQuestionComposer";
+import { showToast } from "../app/toast/toastStore";
+import {
+  AddProjectSecretDialog,
+  ProjectSecretRequestComposer,
+  projectSecretKeepAnswers,
+  projectSecretSaveAnswers,
+} from "./ProjectSecretCard";
+import { projectSecretComposerNote, readProjectSecretRequestCard } from "../../../shared/projectSecretRequest";
 import { isAskQuestionRequest } from "../../../shared/pendingInputAnswers";
 import { approvalDetailIsRedundant, approvalRequestDetail } from "./approvalRequestDetail";
 import { formatCursorModeLabel } from "../../../shared/cursorModes";
@@ -150,20 +209,41 @@ import {
 } from "../../../shared/smartLinks";
 import { hasChatOutputContext } from "../../../shared/chatOutputContext";
 import { hydrateChatOutputContextChipsInEditor } from "./composerChatOutputContext";
+import { hasBrowserTabMention, parseBrowserTabMentions } from "../../../shared/browserTabMention";
+import { hydrateBrowserTabChipsInEditor, insertBrowserTabChip } from "./composerBrowserTabChip";
+import type { ChatThreadComment } from "../../../shared/threadComments";
+import { ComposerThreadCommentsButton } from "./ThreadCommentControls";
+import { countCommentsForNextSend } from "./threadCommentsStore";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { VoiceDictationButton } from "./VoiceDictationButton";
-import { ProviderLogo } from "../shared/ProviderLogos";
+import { CodexVoiceBar, CodexVoiceButton, useCodexVoice } from "./CodexVoice";
+import { useProviderAuthStatus } from "../shared/ModelPicker/useProviderAuthStatus";
+import { ProviderLogo, DevinLogo } from "../shared/ProviderLogos";
+import { bodyLogoFamily } from "../settings/harnesses/presetFacts";
+import {
+  colorToRgba,
+  NEUTRAL_CHAT_ACCENT,
+  providerChatAccent,
+} from "./chatSurfaceTheme";
 import { pendingInputHeaderLabel, providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { useAppStore, useRootAppStore, rootAppStoreApi } from "../../state/appStore";
-import { presetLabel } from "../../../shared/harnessPresets";
+import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import { harnessBodyLabel, type HarnessPresetBody } from "../../../shared/harnessPresets";
 import type { ModelPickerSelection } from "../shared/ModelPicker/ModelPickerContent";
 import { useVoiceModelInstalled } from "../../hooks/useVoiceModelInstalled";
 import {
-  ComposerPromptStash,
-  type ComposerPromptStashHandle,
-} from "./ComposerPromptStash";
+  ComposerDrafts,
+  type ComposerDraftsHandle,
+} from "./ComposerDrafts";
+import {
+  DraftSchedulePopover,
+  type DraftScheduleConfig,
+  type DraftScheduleTargets,
+} from "./DraftSchedulePopover";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import type { AgentChatPromptHistoryEntry } from "./chatPromptHistory";
+import { PENDING_STEER_DND_MIME, usePendingSteerReorder, type PendingSteerReorder } from "./usePendingSteerReorder";
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import {
@@ -176,6 +256,7 @@ import {
 } from "./chatAttachmentStaging";
 import {
   DROID_PERMISSION_OPTIONS as BASE_DROID_PERMISSION_OPTIONS,
+  MUSE_PERMISSION_OPTIONS as BASE_MUSE_PERMISSION_OPTIONS,
 } from "../../lib/nativeLaunchControls";
 
 export type ComposerDraftEditIntent = {
@@ -188,8 +269,13 @@ export type ComposerDraftEditIntent = {
 // leg the bytes take, which depends on the machine that owns the chat. See
 // `chatAttachmentStaging.ts` and `shared/chatAttachmentLimits.ts`.
 const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
+/** The plain composer sizes itself with CSS; older web-client browsers measure instead. */
+const TEXTAREA_FIELD_SIZING_SUPPORTED =
+  typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports("field-sizing", "content");
 const PROMPT_HISTORY_SEQUENCE_TIMEOUT_MS = 3_000;
 type PromptHistoryArrowKey = "ArrowUp" | "ArrowDown";
+
+const EMPTY_THREAD_COMMENTS: readonly ChatThreadComment[] = [];
 const ISSUE_CONTEXT_MENU_WIDTH = 180;
 const ISSUE_CONTEXT_MENU_GAP = 8;
 const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
@@ -207,9 +293,39 @@ export const CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE =
   "Cursor's model list has not loaded yet. Open the model picker to load it, then try again.";
 export const CURSOR_CLOUD_SEND_EMPTY_CONTENT_MESSAGE = "Add a message or issue context";
 
-export type CursorCloudSendBlock = {
+export type CloudSendBlock = {
   reason: string;
   notify: boolean;
+};
+
+/**
+ * The cloud run the composer's next send can target (Cursor Cloud or Devin
+ * Cloud). Null when no cloud target applies.
+ * - `canLaunch`: this chat can still start a cloud run. Only true for fresh
+ *   chats with no events and no existing cloud agent — once a chat has turns,
+ *   the cloud toggle goes disabled rather than disappearing, so the affordance
+ *   does not move around under the cursor.
+ * - `modelReady`: the draft's model is one the cloud can run. Read only while
+ *   cloud mode is active. It is separate from `canLaunch` on purpose: cloud
+ *   mode must stay on with an ineligible model so the send is BLOCKED with a
+ *   reason, never silently rerouted to the local runtime. Folding it into
+ *   `canLaunch` would also drop cloud mode before the pane's auto-switch could
+ *   move the draft onto an eligible model.
+ * - `hasEligibleModels`: this machine reports at least one model the cloud can
+ *   run. It only chooses which blocked message the user reads — the send is
+ *   refused either way.
+ * - `active`: cloud mode — the next send goes to the hosted cloud runtime
+ *   instead of the local runtime. Set by picking a cloud row in the launch
+ *   shelf's machine picker.
+ * The provider names the send button ("Send to Devin Cloud") and decides
+ * whether file attachments ride a launch (Devin uploads them; Cursor does not).
+ */
+export type ComposerCloudLaunch = {
+  provider: CloudLaneProvider;
+  canLaunch: boolean;
+  modelReady: boolean;
+  hasEligibleModels: boolean;
+  active: boolean;
 };
 
 /**
@@ -217,11 +333,11 @@ export type CursorCloudSendBlock = {
  * three cannot drift. `notify` is true when Enter should surface the reason;
  * empty content only disables the button.
  */
-export function cursorCloudSendBlock(input: {
+export function resolveCloudSendBlock(input: {
   hasEligibleModels: boolean;
   modelReady: boolean;
   hasContent: boolean;
-}): CursorCloudSendBlock | null {
+}): CloudSendBlock | null {
   if (!input.hasEligibleModels) {
     return { reason: CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE, notify: true };
   }
@@ -264,10 +380,6 @@ const SMART_LINK_ICON_MARK_CLASS =
   "inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-violet-100/85";
 const SMART_LINK_ICON_GLYPH_CLASS =
   "inline-flex h-3.5 min-w-3.5 shrink-0 items-center justify-center rounded-[3px] bg-violet-200/10 px-0.5 font-mono text-[7px] font-bold text-violet-100/80";
-const COMPOSER_TOKEN_CHIP_ICON_CLASS =
-  "inline-flex h-3 w-3 shrink-0 items-center justify-center text-violet-100/75";
-const COMPOSER_MENTION_CHIP_CLASS =
-  "mx-0.5 inline-flex max-w-[10.5rem] translate-y-px items-center gap-1 rounded border border-violet-300/22 bg-violet-500/12 px-1 py-px font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-4 text-violet-100/88 align-baseline";
 const COMPOSER_TOKEN_CHIP_CLASS =
   "mx-0.5 inline-flex max-w-[280px] translate-y-[1px] items-center rounded-md border border-violet-300/22 bg-violet-500/12 px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] leading-5 text-violet-100/88 align-baseline";
 
@@ -484,6 +596,9 @@ type SlashCommandEntry = {
   description: string;
   argumentHint?: string;
   source: "sdk" | "local";
+  kind?: "command" | "skill" | "mcp";
+  origin?: "project" | "user" | "plugin" | "provider";
+  server?: string;
 };
 
 type CommandMenuAnchor = { top: number; left: number; bottom: number };
@@ -607,6 +722,7 @@ export type ParallelComposerControlSlot = {
   codexConfigSource: AgentChatCodexConfigSource;
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
   droidPermissionMode: AgentChatDroidPermissionMode;
+  musePermissionMode: AgentChatMusePermissionMode;
   cursorModeSnapshot: AgentChatCursorModeSnapshot | null;
   onInteractionModeChange: (mode: AgentChatInteractionMode) => void;
   onClaudeModeChange: (mode: AgentChatClaudePermissionMode) => void;
@@ -621,9 +737,9 @@ export type ParallelComposerControlSlot = {
   onCodexConfigSourceChange: (source: AgentChatCodexConfigSource) => void;
   onOpenCodePermissionModeChange: (mode: AgentChatOpenCodePermissionMode) => void;
   onDroidPermissionModeChange: (mode: AgentChatDroidPermissionMode) => void;
+  onMusePermissionModeChange: (mode: AgentChatMusePermissionMode) => void;
   onCursorModeChange: (modeId: string) => void;
   /** `null` hands the option back to Cursor's default. */
-  onCursorConfigChange: (configId: string, value: string | boolean | null) => void;
 };
 
 /**
@@ -642,8 +758,8 @@ function PendingApprovalDetail({
   const detail = approvalRequestDetail(request);
   if (approvalDetailIsRedundant(detail, description) || !detail) return null;
   return (
-    <div className="mb-2 overflow-hidden rounded-[var(--chat-radius-md,8px)] border border-white/[0.07] bg-black/25">
-      <div className="border-b border-white/[0.05] px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase tracking-widest text-fg/35">
+    <div className="mb-2 overflow-hidden rounded-[var(--chat-radius-md,8px)] border border-fg/[0.07] bg-black/25">
+      <div className="border-b border-fg/[0.05] px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase tracking-widest text-fg/35">
         {detail.kind === "command" ? "Command" : "Path"}
       </div>
       <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/80">
@@ -651,6 +767,21 @@ function PendingApprovalDetail({
       </pre>
     </div>
   );
+}
+
+/**
+ * Drafts set aside while a question card holds the editor, by chat. Module
+ * state on purpose: it has to outlive a switch to another chat, and it is only
+ * ever a handful of short strings.
+ */
+const draftsSetAsideForQuestion = new Map<string, string>();
+function rememberDraftSetAside(sessionId: string, text: string): void {
+  // Bounded: a chat deleted with a card still open would otherwise stay here.
+  if (draftsSetAsideForQuestion.size >= 32) {
+    const oldest = draftsSetAsideForQuestion.keys().next().value;
+    if (oldest !== undefined) draftsSetAsideForQuestion.delete(oldest);
+  }
+  draftsSetAsideForQuestion.set(sessionId, text);
 }
 
 function getComposerInputLockMessage(pendingInput: PendingInputRequest | null | undefined): string | null {
@@ -716,6 +847,9 @@ function buildSlashCommands(
       description: cmd.description || `Run ${name}`,
       argumentHint: cmd.argumentHint,
       source: cmd.source,
+      kind: cmd.kind,
+      origin: cmd.origin,
+      server: cmd.server,
     });
   }
 
@@ -732,7 +866,8 @@ function buildSlashCommands(
   return result;
 }
 
-const COMPOSER_TOOLBAR_PICKER_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-0";
+// Clipped when it gives up width, so its label never runs over the next chip.
+const COMPOSER_TOOLBAR_PICKER_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-0 overflow-hidden";
 // The model name is the priority control: it keeps a readable floor and only
 // shrinks after the permission/fast labels collapse and the reasoning picker
 // has given up its width.
@@ -755,10 +890,79 @@ const COMPOSER_MODEL_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-[4.5rem]";
  * rather than as an answer — and "where is this actually running" is a question
  * worth answering while you are typing into it.
  */
-function ComposerMachineChip({ machineName, cloud = false }: { machineName: string; cloud?: boolean }) {
+/**
+ * Lets a host surface turn the read-only machine chip into its own control.
+ *
+ * The CTO page uses it: the CTO lives on one home machine, and the chip that
+ * already says where this chat runs is the natural place to change that.
+ */
+export type ComposerMachineChipAction = {
+  onClick: () => void;
+  /** Full tooltip text, e.g. "Runs on Mac Studio. Click to change." */
+  tooltip: string;
+  /** The machine is unreachable; the chip reads dimmed with an offline dot. */
+  offline?: boolean;
+  /** One quiet line beside the chip (an update hint, for one). */
+  note?: string | null;
+};
+
+/**
+ * The machine chip gives up width first in a narrow composer (a dock): its
+ * name truncates down to the icon instead of crowding the pickers beside it.
+ */
+// Clips the label as the chip shrinks; the button draws an inset focus ring
+// so the clip cannot cut it off.
+const MACHINE_CHIP_WRAPPER = "min-w-[1.5rem] shrink-[8] overflow-hidden";
+
+function ComposerMachineChip({
+  machineName,
+  cloud = false,
+  action = null,
+}: {
+  machineName: string;
+  cloud?: boolean;
+  action?: ComposerMachineChipAction | null;
+}) {
+  if (action) {
+    return (
+      <>
+        <SmartTooltip forceEnabled wrapperClassName={MACHINE_CHIP_WRAPPER} content={{ label: machineName, description: action.tooltip }}>
+          <button
+            type="button"
+            data-chat-composer-machine-chip="action"
+            aria-label={action.tooltip}
+            onClick={action.onClick}
+            className={cn(
+              "inline-flex h-6 min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-md px-1 transition-colors",
+              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/60",
+              "font-sans text-[9px] font-medium text-muted-fg/60 hover:bg-fg/[0.05] hover:text-fg/85",
+              action.offline && "opacity-60",
+            )}
+            style={{ whiteSpace: "nowrap" }}
+          >
+            <DesktopTower size={11} weight="duotone" className="shrink-0 text-amber-400/85" aria-hidden />
+            <span className="min-w-0 max-w-24 truncate">{machineName}</span>
+            {action.offline ? (
+              <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-muted-fg/40" />
+            ) : null}
+          </button>
+        </SmartTooltip>
+        {action.note ? (
+          <span
+            data-chat-composer-machine-note
+            title={action.note}
+            className="min-w-0 max-w-[260px] truncate font-sans text-[9px] text-muted-fg/50"
+          >
+            {action.note}
+          </span>
+        ) : null}
+      </>
+    );
+  }
   return (
     <SmartTooltip
       forceEnabled
+      wrapperClassName={MACHINE_CHIP_WRAPPER}
       content={{
         label: machineName,
         description: cloud
@@ -770,19 +974,47 @@ function ComposerMachineChip({ machineName, cloud = false }: { machineName: stri
         data-chat-composer-machine-chip="readonly"
         aria-label={`Running on ${machineName}`}
         className={cn(
-          "inline-flex h-6 shrink-0 items-center gap-1 px-1",
+          "inline-flex h-6 min-w-0 max-w-full items-center gap-1 overflow-hidden px-1",
           "font-sans text-[9px] font-medium text-muted-fg/60",
         )}
         style={{ whiteSpace: "nowrap" }}
       >
         {cloud ? (
-          <CloudArrowUp size={11} weight="fill" className="text-violet-300/85" aria-hidden />
+          <CloudArrowUp size={11} weight="fill" className="shrink-0 text-violet-300/85" aria-hidden />
         ) : (
-          <DesktopTower size={11} weight="duotone" className="text-amber-400/85" aria-hidden />
+          <DesktopTower size={11} weight="duotone" className="shrink-0 text-amber-400/85" aria-hidden />
         )}
-        <span className="max-w-24 truncate">{machineName}</span>
+        <span className="min-w-0 max-w-24 truncate">{machineName}</span>
       </span>
     </SmartTooltip>
+  );
+}
+
+/**
+ * Which harness the prompt is about to run in, when a Custom provider or an
+ * ad-hoc route is the choice.
+ *
+ * The model trigger already names the Custom provider ("Cheap DeepSeek"), but a
+ * preset's name is the user's own words — it does not have to say which program
+ * runs it, and the same preset can be duplicated across two harnesses. The
+ * transcript already paints each harness in its own colour; this puts the same
+ * mark and the same colour in the box the prompt is typed into, so "which
+ * harness am I about to talk to" is answerable without opening the picker.
+ */
+function ComposerHarnessChip({ harness }: { harness: HarnessPresetBody }) {
+  const label = harnessBodyLabel(harness);
+  const accent = providerChatAccent(harness) ?? NEUTRAL_CHAT_ACCENT;
+  return (
+    <span
+      data-chat-composer-harness-chip={harness}
+      aria-label={`Runs in ${label}`}
+      title={`Runs in ${label}`}
+      className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-1 font-sans text-[9px] font-medium"
+      style={{ borderColor: colorToRgba(accent, 0.3), color: toneText(accent), whiteSpace: "nowrap" }}
+    >
+      <ProviderLogo family={bodyLogoFamily(harness)} size={11} />
+      <span className="max-w-24 truncate">{label}</span>
+    </span>
   );
 }
 
@@ -790,7 +1022,7 @@ const COMPOSER_PERMISSION_TRIGGER_CLASS = cn(
   "ade-chat-composer-permission-trigger",
   "inline-flex h-6 min-w-0 shrink-0 items-center justify-start gap-1 rounded-md border px-1.5",
   "font-sans text-[length:calc(var(--chat-font-size)*9/14)] leading-none transition-colors duration-150",
-  "border-white/[0.06] bg-white/[0.03] text-fg/80",
+  "border-fg/[0.06] bg-fg/[0.03] text-fg/80",
   "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
 );
 
@@ -856,6 +1088,7 @@ function ComposerIdleSendButton({
   backgroundBusy,
   onSend,
   onSendInBackground,
+  onSchedule,
 }: {
   label: string;
   description: string;
@@ -867,6 +1100,8 @@ function ComposerIdleSendButton({
   backgroundBusy: boolean;
   onSend: () => void;
   onSendInBackground: () => void;
+  /** Absent hides the Scheduled send row entirely. */
+  onSchedule?: (() => void) | undefined;
 }) {
   const { caretRef, menuOpen, setMenuOpen } = useComposerSplitMenu("[data-idle-send-menu]");
   useEffect(() => {
@@ -894,13 +1129,24 @@ function ComposerIdleSendButton({
       enabled: backgroundEnabled,
       onSelect: onSendInBackground,
     },
+    ...(onSchedule
+      ? [{
+        id: "schedule",
+        label: "Scheduled send…",
+        detail: "Send this prompt later, with the settings it has now.",
+        icon: <Clock size={13} weight="bold" />,
+        enabled: sendEnabled,
+        onSelect: onSchedule,
+      }]
+      : []),
   ];
 
   return (
     <div className="relative inline-flex items-center">
-      <div data-composer-idle-send-control className="inline-flex shrink-0 items-center overflow-hidden rounded-full">
+      <div data-composer-idle-send-control data-send-control="" className="inline-flex shrink-0 items-center overflow-hidden rounded-full">
         <SmartTooltip forceEnabled content={{ label, description, ...(effect ? { effect } : {}) }}>
           <button
+            data-send-part=""
             type="button"
             disabled={!sendEnabled}
             onClick={onSend}
@@ -909,7 +1155,7 @@ function ComposerIdleSendButton({
               "inline-flex h-7 items-center justify-center rounded-l-full pl-2.5 pr-2 transition-all",
               sendEnabled
                 ? "bg-white/90 text-zinc-900 hover:bg-white"
-                : "cursor-not-allowed bg-white/[0.06] text-muted-fg/20",
+                : "cursor-not-allowed bg-fg/[0.06] text-muted-fg/20",
             )}
           >
             {icon}
@@ -923,6 +1169,7 @@ function ComposerIdleSendButton({
           }}
         >
           <button
+            data-send-part=""
             ref={caretRef}
             type="button"
             data-testid="composer-send-mode-button"
@@ -934,7 +1181,7 @@ function ComposerIdleSendButton({
               "inline-flex h-7 items-center justify-center border-l pl-1 pr-1.5 transition-all",
               sendEnabled || backgroundEnabled
                 ? "border-zinc-900/15 bg-white/90 text-zinc-900 hover:bg-white"
-                : "border-white/[0.06] bg-white/[0.06] text-muted-fg/20",
+                : "border-fg/[0.06] bg-fg/[0.06] text-muted-fg/20",
             )}
           >
             <CaretDown
@@ -946,7 +1193,8 @@ function ComposerIdleSendButton({
         </SmartTooltip>
       </div>
       {menuOpen && caretRef.current
-        ? createPortal(
+        ? (
+          <ViewportOverlayPortal layer="popover">
             <div
               data-idle-send-menu
               role="menu"
@@ -955,7 +1203,7 @@ function ComposerIdleSendButton({
                 setMenuOpen(false);
                 requestAnimationFrame(() => caretRef.current?.focus());
               })}
-              className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className={cn("pointer-events-auto absolute overflow-hidden", POPOVER_SURFACE_CLASS)}
               style={composerSplitMenuPosition(caretRef.current)}
             >
               {rows.map((row, index) => (
@@ -971,8 +1219,8 @@ function ComposerIdleSendButton({
                   }}
                   className={cn(
                     "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors",
-                    index > 0 && "border-t border-white/[0.05]",
-                    row.enabled ? "hover:bg-white/[0.05]" : "cursor-not-allowed opacity-40",
+                    index > 0 && "border-t border-fg/[0.05]",
+                    row.enabled ? "hover:bg-fg/[0.05]" : "cursor-not-allowed opacity-40",
                   )}
                 >
                   <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-fg/45">
@@ -988,8 +1236,8 @@ function ComposerIdleSendButton({
                   </span>
                 </button>
               ))}
-            </div>,
-            document.body,
+            </div>
+          </ViewportOverlayPortal>
           )
         : null}
     </div>
@@ -1067,7 +1315,7 @@ function ComposerOverflowMenu({
           onClick={only.onSelect}
           className={cn(
             "relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors",
-            only.active ? "bg-white/[0.06] text-fg/70" : "text-muted-fg/35 hover:bg-white/[0.05] hover:text-fg/60",
+            only.active ? "bg-fg/[0.06] text-fg/70" : "text-muted-fg/35 hover:bg-fg/[0.05] hover:text-fg/60",
             only.disabled && "cursor-not-allowed opacity-40",
           )}
         >
@@ -1106,7 +1354,7 @@ function ComposerOverflowMenu({
           onClick={() => setOpen((current) => !current)}
           className={cn(
             "relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors",
-            open ? "bg-white/[0.06] text-fg/70" : "text-muted-fg/35 hover:bg-white/[0.05] hover:text-fg/60",
+            open ? "bg-fg/[0.06] text-fg/70" : "text-muted-fg/35 hover:bg-fg/[0.05] hover:text-fg/60",
           )}
         >
           <DotsThree size={16} weight="bold" />
@@ -1118,7 +1366,8 @@ function ComposerOverflowMenu({
         </button>
       </SmartTooltip>
       {open && caretRef.current
-        ? createPortal(
+        ? (
+          <ViewportOverlayPortal layer="popover">
             <div
               data-composer-overflow-menu
               role="menu"
@@ -1127,7 +1376,7 @@ function ComposerOverflowMenu({
                 setOpen(false);
                 requestAnimationFrame(() => caretRef.current?.focus());
               })}
-              className="fixed z-[100] flex flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className={cn("pointer-events-auto absolute flex flex-col overflow-hidden", POPOVER_SURFACE_CLASS, "p-1")}
               style={composerSplitMenuPosition(caretRef.current)}
             >
                 {items.map((item) => (
@@ -1145,7 +1394,7 @@ function ComposerOverflowMenu({
                     className={cn(
                       "flex items-center gap-2 rounded-md px-2 py-1.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
                       item.active ? "text-fg/90" : "text-fg/65",
-                      item.disabled ? "cursor-not-allowed opacity-40" : "hover:bg-white/[0.06] hover:text-fg/90",
+                      item.disabled ? "cursor-not-allowed opacity-40" : "hover:bg-fg/[0.06] hover:text-fg/90",
                     )}
                   >
                     <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center" aria-hidden>
@@ -1161,8 +1410,8 @@ function ComposerOverflowMenu({
                     ) : null}
                   </button>
                 ))}
-            </div>,
-            document.body,
+            </div>
+          </ViewportOverlayPortal>
           )
         : null}
     </div>
@@ -1244,15 +1493,18 @@ const DROID_PERMISSION_OPTION_PRESENTATION: Record<AgentChatDroidPermissionMode,
 const DROID_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatDroidPermissionMode>> =
   BASE_DROID_PERMISSION_OPTIONS.map((option) => ({ ...option, ...DROID_PERMISSION_OPTION_PRESENTATION[option.value] }));
 
-/** A Cursor boolean option's label: unset is Cursor's default, not Off. */
-export function cursorBooleanConfigLabel(value: unknown): "On" | "Off" | "Default" {
-  return value === true ? "On" : value === false ? "Off" : "Default";
-}
-
-/** The next value of a Cursor boolean option: Default, then On, then Off, then Default again. */
-export function nextCursorBooleanConfigValue(value: unknown): boolean | null {
-  return value === true ? false : value === false ? null : true;
-}
+/** Muse's approval modes plus ADE's plan mode, which runs on `denyUnmatched`. */
+type MusePermissionPickerValue = AgentChatMusePermissionMode | "plan";
+const MUSE_PERMISSION_OPTION_PRESENTATION: Record<AgentChatMusePermissionMode, Pick<PermissionModePickerOption<MusePermissionPickerValue>, "triggerLabel" | "tone" | "icon">> = {
+  denyUnmatched: { triggerLabel: "Read-only", tone: "green", icon: "manual" },
+  promptUnmatched: { tone: "green", icon: "edit" },
+  onRequest: { tone: "amber", icon: "auto" },
+  allowAll: { triggerLabel: "Full", tone: "red", icon: "full" },
+};
+const MUSE_PERMISSION_OPTIONS: Array<PermissionModePickerOption<MusePermissionPickerValue>> = [
+  { value: "plan", label: "Plan", detail: "Read-only Muse turns for planning, with ADE's plan guidance.", tone: "purple", icon: "plan" },
+  ...BASE_MUSE_PERMISSION_OPTIONS.map((option) => ({ ...option, ...MUSE_PERMISSION_OPTION_PRESENTATION[option.value] })),
+];
 
 function resolveCursorModeOption(snapshot: AgentChatCursorModeSnapshot | null | undefined): AgentChatCursorConfigOption | null {
   if (!snapshot?.configOptions?.length) return null;
@@ -1267,6 +1519,10 @@ function PendingSteerItem({
   onEdit,
   onSendNow,
   onInterrupt,
+  reorder,
+  attachmentTray,
+  statusLabel,
+  statusHint,
 }: {
   steer: {
     steerId: string;
@@ -1279,27 +1535,103 @@ function PendingSteerItem({
   onEdit: () => void;
   onSendNow?: () => void;
   onInterrupt?: () => void;
+  /** Present only when the queue can be reordered and holds more than one row. */
+  reorder?: PendingSteerReorder;
+  /** The message's files and context, as the composer's own tray draws them. */
+  attachmentTray?: React.ReactNode;
+  /** Where the message stands in the queue ("Sends next", "Queued"). */
+  statusLabel: string;
+  /** What the user can do with it, and why it waits; shown on the status tag. */
+  statusHint: string;
 }) {
   const interruptCopy = activeTurnSendCopy("interrupt", capability);
+  const rowRef = useRef<HTMLDivElement | null>(null);
   return (
-    <div className="group flex items-start gap-2 rounded-lg border border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_4%,transparent)] px-2.5 py-1.5">
-      <div className="mt-px h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--chat-accent)] opacity-60" />
+    <div
+      ref={rowRef}
+      role="listitem"
+      // The hint tooltip opens on pointer hover only; assistive tech reads it here.
+      aria-description={statusHint}
+      data-testid="pending-steer-item"
+      className={cn(
+        "group relative flex items-center gap-2 rounded-[10px] bg-fg/[0.035] px-2.5 py-1.5 transition-[background-color,opacity] hover:bg-fg/[0.055] focus-within:bg-fg/[0.055]",
+        reorder?.dragging && "opacity-40",
+        reorder?.dropEdge === "before" && "shadow-[inset_0_2px_0_var(--chat-accent)]",
+        reorder?.dropEdge === "after" && "shadow-[inset_0_-2px_0_var(--chat-accent)]",
+      )}
+      onDragOver={reorder ? (event) => {
+        if (!event.dataTransfer.types.includes(PENDING_STEER_DND_MIME)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        const rect = event.currentTarget.getBoundingClientRect();
+        reorder.onDragOverRow(event.clientY < rect.top + rect.height / 2 ? "before" : "after");
+      } : undefined}
+      onDrop={reorder ? (event) => {
+        if (!event.dataTransfer.types.includes(PENDING_STEER_DND_MIME)) return;
+        event.preventDefault();
+        reorder.onDrop();
+      } : undefined}
+    >
+      {reorder ? (
+        <SmartTooltip forceEnabled side="left" content={{ label: "Reorder", description: "Drag to change when this message is sent, or focus and use the arrow keys." }}>
+          <button
+            type="button"
+            ref={reorder.handleRef}
+            draggable
+            data-testid="pending-steer-reorder-handle"
+            aria-label={`Reorder queued message, position ${reorder.index + 1} of ${reorder.count}`}
+            aria-keyshortcuts="ArrowUp ArrowDown Home End"
+            className="-ml-1 inline-flex h-4 w-3.5 shrink-0 cursor-grab items-center justify-center rounded text-fg/30 hover:text-fg/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40 active:cursor-grabbing"
+            onDragStart={(event) => {
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData(PENDING_STEER_DND_MIME, steer.steerId);
+              if (rowRef.current) event.dataTransfer.setDragImage(rowRef.current, 12, 12);
+              reorder.onDragStart();
+            }}
+            onDragEnd={reorder.onDragEnd}
+            onKeyDown={(event) => {
+              const target = event.key === "ArrowUp" ? reorder.index - 1
+                : event.key === "ArrowDown" ? reorder.index + 1
+                  : event.key === "Home" ? 0
+                    : event.key === "End" ? reorder.count - 1
+                      : null;
+              if (target == null) return;
+              event.preventDefault();
+              if (target < 0 || target >= reorder.count || target === reorder.index) return;
+              reorder.onMove(target);
+            }}
+          >
+            <DotsSixVertical size={11} weight="bold" />
+          </button>
+        </SmartTooltip>
+      ) : (
+        <Clock size={12} weight="bold" className="shrink-0 text-fg/30" aria-hidden />
+      )}
       <div className="flex-1 min-w-0">
-        <div className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.14em] text-[var(--chat-accent)]/60">
-          Sends after turn
-        </div>
-        <div className="truncate text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.5] text-fg/62">
-          {steer.text}
-        </div>
+        {/* The hint sits on the text: the status tag hides under the actions on hover. */}
+        <SmartTooltip forceEnabled content={{ label: statusLabel, description: statusHint }} wrapperStyle={{ display: "flex", minWidth: 0 }}>
+          <div className="min-w-0 flex-1 truncate text-[length:calc(var(--chat-font-size)*12.5/14)] leading-[1.5] text-fg/80">
+            {steer.text}
+          </div>
+        </SmartTooltip>
+        {attachmentTray}
       </div>
+      <span
+        data-testid="pending-steer-status"
+        className="shrink-0 rounded-full bg-fg/[0.05] px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/45 [@media(hover:hover)]:group-hover:hidden [@media(hover:hover)]:group-focus-within:hidden"
+      >
+        {statusLabel}
+      </span>
       {/* Hidden until hover ONLY where hovering exists. A touch pointer never
           hovers, so gating on `opacity-0` alone left every queued-message
           control invisible on mobile and ADE Web. Both rules sit inside the
           same media query and `group-hover` outranks the base class on
-          specificity, so the reveal never depends on stylesheet order. */}
+          specificity, so the reveal never depends on stylesheet order. With a
+          pointer the actions sit over the status tag, which hides on hover, so
+          every tag lines up at the row's right edge. */}
       <div
         data-testid="pending-steer-actions"
-        className="flex shrink-0 items-center gap-0.5 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-focus-within:opacity-100"
+        className="flex shrink-0 items-center gap-0.5 transition-opacity [@media(hover:hover)]:absolute [@media(hover:hover)]:right-2 [@media(hover:hover)]:top-1/2 [@media(hover:hover)]:-translate-y-1/2 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-focus-within:opacity-100"
       >
           {onSendNow ? (
             <SmartTooltip forceEnabled content={{ label: "Send during turn", description: `${capability.agentLabel} picks this up after the current tool step, before continuing.` }}>
@@ -1337,7 +1669,7 @@ function PendingSteerItem({
             <button
               type="button"
               onClick={onEdit}
-              className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-white/[0.06] hover:text-fg/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40"
+              className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-fg/[0.06] hover:text-fg/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40"
               aria-label="Edit queued message"
             >
               <PencilSimple size={11} />
@@ -1425,15 +1757,20 @@ function stagedSteerHint(args: {
   capability: ActiveTurnSendCapability;
   canSendNow: boolean;
   canInterrupt: boolean;
+  canReorder?: boolean;
+  /** Why some staged messages cannot be sent during the turn, when any cannot. */
+  inlineBlockedReason?: string | null;
 }): string {
   const actions = [
     ...(args.canSendNow ? ["send during the turn"] : []),
     ...(args.canInterrupt ? ["interrupt with this message"] : []),
+    ...(args.canReorder ? ["drag to reorder"] : []),
     "edit",
     "remove",
   ];
   const list = `${actions.slice(0, -1).join(", ")} or ${actions[actions.length - 1]}`;
   const sentence = `${list.charAt(0).toUpperCase()}${list.slice(1)}.`;
+  if (args.inlineBlockedReason) return `${sentence} ${args.inlineBlockedReason}`;
   if (args.capability.modes.some((mode) => mode !== "queue")) return sentence;
   return `${sentence} ${args.capability.agentLabel} cannot take a message mid-turn, so this one waits for the turn to end.`;
 }
@@ -1448,10 +1785,10 @@ function activeTurnSendCopy(
   if (mode === "queue") {
     return { label: "Send after turn", description: "When this turn finishes." };
   }
-  return {
-    label: capability.interruptContinues ? "Interrupt & continue" : "Interrupt & send",
-    description: `Stop and redirect ${capability.agentLabel} now.`,
-  };
+  // Cursor's interrupt cancels the run; Claude's keeps slow tools running.
+  return capability.interruptContinues
+    ? { label: "Interrupt & continue", description: `Stop and redirect ${capability.agentLabel} now.` }
+    : { label: "Interrupt & send", description: `Redirect ${capability.agentLabel} now.` };
 }
 
 function ActiveTurnSendIcon({ mode, size = 14 }: { mode: ActiveTurnSendMode; size?: number }) {
@@ -1484,12 +1821,13 @@ function useComposerSplitMenu(menuSelector: string) {
   return { caretRef, menuOpen, setMenuOpen };
 }
 
-function composerSplitMenuPosition(anchor: HTMLButtonElement): React.CSSProperties {
+function composerSplitMenuPosition(anchor: HTMLElement): React.CSSProperties {
   return fixedMenuAboveAnchorStyle(anchor.getBoundingClientRect(), {
     width: COMPOSER_COMPACT_MENU_WIDTH,
     align: "end",
   });
 }
+
 
 function ActiveTurnSendButton({
   enabled,
@@ -1497,6 +1835,7 @@ function ActiveTurnSendButton({
   capability,
   allowInline,
   allowInterrupt,
+  inlineBlockedReason,
   onModeChange,
   onSend,
 }: {
@@ -1505,6 +1844,8 @@ function ActiveTurnSendButton({
   capability: ActiveTurnSendCapability;
   allowInline: boolean;
   allowInterrupt: boolean;
+  /** Why "Send during turn" is withheld for this draft, shown in the menu. */
+  inlineBlockedReason?: string | null;
   onModeChange: (mode: ActiveTurnSendMode) => void;
   onSend: () => void;
 }) {
@@ -1521,15 +1862,17 @@ function ActiveTurnSendButton({
 
   return (
     <div className="relative inline-flex items-center">
-      <div className="inline-flex items-center overflow-hidden rounded-full">
+      <div data-send-control="" className="inline-flex items-center overflow-hidden rounded-full">
         <SmartTooltip
           forceEnabled
           content={{
             label: selectedCopy.label,
             description: selectedCopy.description,
+            ...(inlineBlockedReason ? { effect: inlineBlockedReason } : {}),
           }}
         >
           <button
+            data-send-part=""
             type="button"
             disabled={!enabled}
             onClick={onSend}
@@ -1538,7 +1881,7 @@ function ActiveTurnSendButton({
               "inline-flex h-7 items-center justify-center gap-1 rounded-l-full pl-2.5 pr-2 transition-all",
               enabled
                 ? "bg-white/90 text-zinc-900 hover:bg-white"
-                : "cursor-not-allowed bg-white/[0.06] text-muted-fg/20",
+                : "cursor-not-allowed bg-fg/[0.06] text-muted-fg/20",
             )}
           >
             <ActiveTurnSendIcon mode={mode} />
@@ -1552,6 +1895,7 @@ function ActiveTurnSendButton({
           }}
         >
           <button
+            data-send-part=""
             ref={caretRef}
             type="button"
             aria-haspopup="menu"
@@ -1572,59 +1916,61 @@ function ActiveTurnSendButton({
         </SmartTooltip>
       </div>
       {menuOpen && caretRef.current
-        ? createPortal(
-            (() => {
-              return (
-                <div
-                  data-active-send-menu
-                  role="menu"
-                  aria-label="Send options"
-                  className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
-                  style={composerSplitMenuPosition(caretRef.current)}
-                >
-                  {offeredModes.map((option, index) => {
-                    const copy = activeTurnSendCopy(option, capability);
-                    const selected = option === mode;
-                    return (
-                      <button
-                        key={option}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={selected}
-                        onClick={() => {
-                          onModeChange(option);
-                          setMenuOpen(false);
-                        }}
-                        className={cn(
-                          "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-white/[0.05]",
-                          index > 0 && "border-t border-white/[0.05]",
-                          option === "interrupt" && "hover:bg-amber-500/[0.08]",
-                        )}
-                      >
-                        <span className={cn(
-                          "mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-fg/45",
-                          option === "interrupt" && "text-amber-400/80",
-                        )}>
-                          <ActiveTurnSendIcon mode={option} size={13} />
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">
-                            {copy.label}
-                          </span>
-                          <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
-                            {copy.description}
-                          </span>
-                        </span>
-                        <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-[var(--chat-accent)]">
-                          {selected ? <Check size={11} weight="bold" /> : null}
-                        </span>
-                      </button>
-                    );
-                  })}
+        ? (
+          <ViewportOverlayPortal layer="popover">
+            <div
+              data-active-send-menu
+              role="menu"
+              aria-label="Send options"
+              className={cn("pointer-events-auto absolute overflow-hidden", POPOVER_SURFACE_CLASS)}
+              style={composerSplitMenuPosition(caretRef.current)}
+            >
+              {offeredModes.map((option, index) => {
+                const copy = activeTurnSendCopy(option, capability);
+                const selected = option === mode;
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={selected}
+                    onClick={() => {
+                      onModeChange(option);
+                      setMenuOpen(false);
+                    }}
+                    className={cn(
+                      "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-fg/[0.05]",
+                      index > 0 && "border-t border-fg/[0.05]",
+                      option === "interrupt" && "hover:bg-amber-500/[0.08]",
+                    )}
+                  >
+                    <span className={cn(
+                      "mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-fg/45",
+                      option === "interrupt" && "text-amber-400/80",
+                    )}>
+                      <ActiveTurnSendIcon mode={option} size={13} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">
+                        {copy.label}
+                      </span>
+                      <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
+                        {copy.description}
+                      </span>
+                    </span>
+                    <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-[var(--chat-accent)]">
+                      {selected ? <Check size={11} weight="bold" /> : null}
+                    </span>
+                  </button>
+                );
+              })}
+              {inlineBlockedReason ? (
+                <div className="border-t border-fg/[0.05] px-2.5 py-2 text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
+                  {inlineBlockedReason}
                 </div>
-              );
-            })(),
-            document.body,
+              ) : null}
+            </div>
+          </ViewportOverlayPortal>
           )
         : null}
     </div>
@@ -1637,17 +1983,24 @@ function ActiveTurnStopButton({
   mode,
   allowQueueChoice,
   backgroundJobCount,
+  childChatCount = 0,
+  provider = null,
   onModeChange,
   onStop,
 }: {
   mode: AgentChatStopMode;
   allowQueueChoice: boolean;
   backgroundJobCount: number;
+  /** Spawned chats of this chat that are working right now. */
+  childChatCount?: number;
+  provider?: string | null;
   onModeChange: (mode: AgentChatStopMode) => void;
   onStop: () => void;
 }) {
   const { caretRef, menuOpen, setMenuOpen } = useComposerSplitMenu("[data-active-stop-menu]");
-  const selectedCopy = chatStopModeCopy(mode, backgroundJobCount);
+  const selectedCopy = chatStopModeCopy(mode, backgroundJobCount, childChatCount);
+  // The child-chat choices only appear while there is a child chat to stop.
+  const visibleModes = ACTIVE_TURN_STOP_MODES.filter((option) => childChatCount > 0 || !stopModeStopsChildren(option));
 
   if (!allowQueueChoice) {
     return (
@@ -1671,13 +2024,15 @@ function ActiveTurnStopButton({
           <button
             type="button"
             className="inline-flex h-7 items-center justify-center px-2 text-red-400/80 transition-all hover:bg-red-500/[0.12] hover:text-red-400"
-            aria-label={selectedCopy.label}
+            aria-label="Stop active turn"
+            aria-description={selectedCopy.label}
             onClick={onStop}
           >
             {stopModeClearsQueue(mode) ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
           </button>
         </SmartTooltip>
-        <SmartTooltip forceEnabled content={{ label: "More stop options", description: "Choose whether queued messages and background jobs should be kept." }}>
+        {/* Off while the menu is open: it would sit on top of the menu's last rows. */}
+        <SmartTooltip forceEnabled={!menuOpen} content={{ label: "More stop options", description: "Choose what else stops with the turn: queued messages, background jobs, child chats." }}>
           <button
             ref={caretRef}
             type="button"
@@ -1692,54 +2047,220 @@ function ActiveTurnStopButton({
         </SmartTooltip>
       </div>
       {menuOpen && caretRef.current
-        ? createPortal(
-            (() => {
-              return (
-                <div
-                  data-active-stop-menu
-                  role="menu"
-                  aria-label="Stop options"
-                  className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
-                  style={composerSplitMenuPosition(caretRef.current)}
-                >
-                  {ACTIVE_TURN_STOP_MODES.map((option, index) => {
-                    const copy = chatStopModeCopy(option, backgroundJobCount);
-                    const selected = option === mode;
-                    return (
-                      <button
-                        key={option}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={selected}
-                        onClick={() => {
-                          onModeChange(option);
-                          setMenuOpen(false);
-                        }}
-                        className={cn(
-                          "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-red-500/[0.08]",
-                          index > 0 && "border-t border-white/[0.05]",
-                        )}
-                      >
-                        <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400/75">
-                          {stopModeClearsQueue(option) ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">{copy.label}</span>
-                          <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">{copy.description}</span>
-                        </span>
-                        <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400">
-                          {selected ? <Check size={11} weight="bold" /> : null}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              );
-            })(),
-            document.body,
+        ? (
+          <ViewportOverlayPortal layer="popover">
+            <div
+              data-active-stop-menu
+              role="menu"
+              aria-label="Stop options"
+              className={cn("pointer-events-auto absolute overflow-hidden", POPOVER_SURFACE_CLASS)}
+              style={composerSplitMenuPosition(caretRef.current)}
+            >
+              {visibleModes.map((option, index) => {
+                const copy = chatStopModeCopy(option, backgroundJobCount, childChatCount);
+                const selected = option === mode;
+                const support = providerStopModeSupport(provider, option);
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={selected}
+                    aria-disabled={!support.supported}
+                    disabled={!support.supported}
+                    title={support.supported ? undefined : support.reason}
+                    onClick={() => {
+                      if (!support.supported) return;
+                      onModeChange(option);
+                      setMenuOpen(false);
+                    }}
+                    className={cn(
+                      "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors",
+                      support.supported ? "hover:bg-red-500/[0.08]" : "cursor-not-allowed opacity-45",
+                      index > 0 && "border-t border-fg/[0.05]",
+                    )}
+                  >
+                    <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400/75">
+                      {stopModeClearsQueue(option) ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">{copy.label}</span>
+                      <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
+                        {support.supported ? copy.description : support.reason}
+                      </span>
+                    </span>
+                    <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400">
+                      {selected ? <Check size={11} weight="bold" /> : null}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </ViewportOverlayPortal>
           )
         : null}
     </div>
+  );
+}
+
+function JiraIssueSelectModal({
+  open,
+  pin,
+  selectedIssue,
+  onOpenChange,
+  onSelectIssue,
+  onRemoveIssue,
+}: {
+  open: boolean;
+  pin: OpenProjectBinding | null;
+  selectedIssue: LaneJiraIssue | null;
+  onOpenChange: (open: boolean) => void;
+  onSelectIssue: (issue: LaneJiraIssue) => void;
+  onRemoveIssue: (issue: LaneJiraIssue) => void;
+}) {
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
+  const [issues, setIssues] = useState<LaneJiraIssue[]>([]);
+  const [siteLabel, setSiteLabel] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setQuery(search.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const jira = window.ade?.jira;
+          if (!jira?.getConnectionStatus || !jira.listIssues) {
+            throw new Error("Jira is not available in this ADE window.");
+          }
+          const status = await jira.getConnectionStatus(pinRef.current);
+          if (!status.connected || !status.siteUrl) {
+            throw new Error(status.error?.message ?? "Connect Jira in Settings to attach an issue.");
+          }
+          const page = await jira.listIssues({
+            state: "all",
+            query: query || undefined,
+            limit: 50,
+          }, pinRef.current);
+          if (cancelled) return;
+          setSiteLabel(new URL(status.siteUrl).host);
+          setIssues(page.issues
+            .map((issue) => jiraIssueToLaneIssue(issue, status.siteUrl!))
+            .filter((issue): issue is LaneJiraIssue => issue != null));
+        } catch (cause) {
+          if (cancelled) return;
+          setError(cause instanceof Error ? cause.message : "Jira request failed.");
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+      })();
+    }, query ? 250 : 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [open, pinKey, query, refreshKey]);
+
+  return (
+    <LinearPaneModal
+      open={open}
+      ariaLabel="Attach Jira issue"
+      loading={loading}
+      brand={{
+        surface: JIRA_BRAND.surface,
+        surfaceHover: JIRA_BRAND.surfaceHover,
+        accent: JIRA_BRAND.primaryBright,
+        border: JIRA_BRAND.border,
+      }}
+      mark={<JiraMark size={14} />}
+      headerTitle="Jira"
+      headerSubtitle={siteLabel ?? "Select an issue"}
+      refreshTitle="Refresh Jira issues"
+      closeTitle="Close Jira issues"
+      onRefresh={() => setRefreshKey((value) => value + 1)}
+      onClose={() => onOpenChange(false)}
+    >
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="shrink-0 border-b border-[color:var(--kit-rule)] p-3">
+          <label className="kit-input flex items-center gap-2 px-2">
+            <MagnifyingGlass size={13} className="shrink-0 text-[color:var(--kit-text-3)]" />
+            <input
+              aria-label="Search Jira issues"
+              className="min-w-0 flex-1 bg-transparent text-[12px] text-fg outline-none placeholder:text-[color:var(--kit-text-3)]"
+              placeholder="Search Jira issues…"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+          </label>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          {error ? (
+            <Banner layout="inline" model={{
+              id: "chat-jira-issue-picker-error",
+              tone: "error",
+              title: "Couldn't load Jira issues",
+              detail: error,
+              actions: [{ label: "Retry", onClick: () => setRefreshKey((value) => value + 1) }],
+            }} />
+          ) : loading && issues.length === 0 ? (
+            <div className="flex items-center gap-2 p-3 text-[12px] text-[color:var(--kit-text-3)]">
+              <CircleNotch size={13} className="animate-spin" /> Loading Jira issues…
+            </div>
+          ) : issues.length === 0 ? (
+            <p className="p-3 text-[12px] text-[color:var(--kit-text-3)]">No Jira issues match.</p>
+          ) : (
+            issues.map((issue) => {
+              const attached = selectedIssue?.id === issue.id;
+              return (
+                <div key={issue.id} className="kit-row flex items-center gap-2 !items-start !py-2">
+                  <span className="mt-[2px]"><JiraStatusIcon category={issue.statusCategory} /></span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block line-clamp-2 text-[12.5px] leading-snug text-fg/90">{issue.title}</span>
+                    <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[color:var(--kit-text-3)]">
+                      <span className="kit-num">{issue.key}</span>
+                      <span>·</span>
+                      <span>{issue.statusName}</span>
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    className="kit-btn kit-btn-ghost shrink-0"
+                    aria-label={`${attached ? "Detach" : "Attach"} ${issue.key}`}
+                    onClick={() => {
+                      if (attached) onRemoveIssue(issue);
+                      else {
+                        onSelectIssue(issue);
+                        onOpenChange(false);
+                      }
+                    }}
+                  >
+                    {attached ? "Detach" : "Attach"}
+                  </button>
+                </div>
+              );
+            })
+          )}
+        </div>
+        {loading && issues.length > 0 ? (
+          <div className="flex shrink-0 items-center gap-2 border-t border-[color:var(--kit-rule)] px-3 py-1.5 text-[11px] text-[color:var(--kit-text-3)]">
+            <CircleNotch size={12} className="animate-spin" /> Updating Jira issues…
+          </div>
+        ) : null}
+      </div>
+    </LinearPaneModal>
   );
 }
 
@@ -1750,10 +2271,17 @@ export function AgentChatComposer({
   composerMaxHeightPx = null,
   isActive = false,
   shouldAutofocus = isActive,
+  caretToEndRequest = 0,
+  browserTabInsertRequest = null,
+  threadComments = EMPTY_THREAD_COMMENTS,
+  threadCommentsSessionId = null,
+  threadCommentsPin = null,
+  onJumpToThreadComment,
   sdkSlashCommands = [],
   modelId,
   activeHarnessPresetId = null,
   availableModelIds,
+  mentionModelIds,
   constrainModelSelection = false,
   modelUnavailableMessage,
   providerAuthStatus,
@@ -1764,6 +2292,8 @@ export function AgentChatComposer({
   reasoningEffort,
   effectiveReasoningEffort,
   fastMode = false,
+  fastTier = null,
+  effectiveFastTier = null,
   cursorCloudServiceTier = null,
   usageViewModel = null,
   compactionPulse = false,
@@ -1774,8 +2304,11 @@ export function AgentChatComposer({
   onPromptHistoryNavigate,
   attachments,
   composerMachineBinding = null,
+  scheduledSendContext = null,
+  machineChipAction = null,
   cursorRuntime = null,
   modelRuntimePin = null,
+  catalogScopeKey,
   attachmentPersistenceUnavailableReason = null,
   onUseThisComputer,
   contextAttachments = [],
@@ -1794,6 +2327,7 @@ export function AgentChatComposer({
   codexConfigSource,
   opencodePermissionMode,
   droidPermissionMode,
+  musePermissionMode,
   cursorModeSnapshot,
   iosElementContextItems = [],
   appControlContextItems = [],
@@ -1821,6 +2355,7 @@ export function AgentChatComposer({
   backgroundLaunchLabel = "Background",
   onInterrupt,
   backgroundJobCount = 0,
+  childChatCount = 0,
   onApproval,
   onAddAttachment,
   onRegisterDropTarget,
@@ -1839,8 +2374,8 @@ export function AgentChatComposer({
   onCodexConfigSourceChange,
   onOpenCodePermissionModeChange,
   onDroidPermissionModeChange,
+  onMusePermissionModeChange,
   onCursorModeChange,
-  onCursorConfigChange,
   onRemoveIosElementContext,
   onRemoveAppControlContext,
   onRemoveBuiltInBrowserContext,
@@ -1851,6 +2386,7 @@ export function AgentChatComposer({
   onEditSteer,
   onDispatchSteerInline,
   onDispatchSteerInterrupt,
+  onMoveSteer,
   onSendSteerNow,
   onSendSteerInterrupt,
   onOpenAiSettings,
@@ -1879,14 +2415,16 @@ export function AgentChatComposer({
   showIosSimulatorToggle = false,
   iosSimulatorOpen = false,
   onToggleIosSimulator,
-  cursorCloudCanLaunch = false,
-  cursorCloudModelReady = false,
-  cursorCloudHasEligibleModels = true,
-  cursorCloudModeActive = false,
+  cloudLaunch = null,
+  cloudSessionLinked = false,
   onSubmitToCloud,
   cursorCloudPanelAvailable = false,
-  cursorCloudPaneOpen = false,
   onToggleCursorCloudPanel,
+  devinCloudPanelAvailable = false,
+  onToggleDevinCloudPanel,
+  devinCloudHandoffAvailable = false,
+  onHandoffToDevinCloud,
+  fixedModelLabel = null,
   showAppControlToggle = false,
   appControlOpen = false,
   onToggleAppControl,
@@ -1902,6 +2440,23 @@ export function AgentChatComposer({
   composerMaxHeightPx?: number | null;
   isActive?: boolean;
   shouldAutofocus?: boolean;
+  /**
+   * Bumped when something outside the composer adds to the draft for the user
+   * to keep typing after (an "Add to chat" quote). Each new value focuses the
+   * editor with the caret at the very end, after the added chip.
+   */
+  caretToEndRequest?: number;
+  /**
+   * A browser tab attached from the Browser panel ("Attach to chat"). Each new
+   * `id` inserts the tab's `<ade-browser-tab>` token as a chip at the caret the
+   * user last left in the composer, then focuses it after the chip.
+   */
+  browserTabInsertRequest?: { id: number; token: string } | null;
+  /** The chat's pending thread comments; the ones marked for send go with the next message. */
+  threadComments?: readonly ChatThreadComment[];
+  threadCommentsSessionId?: string | null;
+  threadCommentsPin?: OpenProjectBinding | null;
+  onJumpToThreadComment?: (comment: ChatThreadComment) => void;
   sdkSlashCommands?: AgentChatSlashCommand[];
   modelId: string;
   /**
@@ -1912,6 +2467,11 @@ export function AgentChatComposer({
    */
   activeHarnessPresetId?: string | null;
   availableModelIds?: string[];
+  /**
+   * Every model a new chat could start on, for `@` model chips. Wider than
+   * `availableModelIds`, which a running chat narrows to what it can switch to.
+   */
+  mentionModelIds?: string[];
   constrainModelSelection?: boolean;
   modelUnavailableMessage?: string;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
@@ -1930,6 +2490,14 @@ export function AgentChatComposer({
    */
   effectiveReasoningEffort?: string | null;
   fastMode?: boolean;
+  /** Fast's tier for the selected model ("ultrafast" on Codex models that offer it). */
+  fastTier?: FastTier | null;
+  /**
+   * The tier the server last reported for this chat's Fast, when it has
+   * reported one. Reaches the picker's selected row so a declined request is
+   * visible; see `ModelListRow`.
+   */
+  effectiveFastTier?: string | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   usageViewModel?: ContextUsageViewModel | null;
   compactionPulse?: boolean;
@@ -1949,6 +2517,8 @@ export function AgentChatComposer({
   attachments: AgentChatFileRef[];
   /** Effective runtime owning this composer and its prompt stashes. */
   composerMachineBinding?: OpenProjectBinding | null;
+  /** Makes the machine chip a host-owned control (the CTO's home machine). */
+  machineChipAction?: ComposerMachineChipAction | null;
   /** Cloud chats run on Cursor Cloud, not on this computer or a paired machine. */
   cursorRuntime?: "local" | "cloud" | null;
   /**
@@ -1957,6 +2527,12 @@ export function AgentChatComposer({
    * tab. `null` is only for surfaces with no composer machine.
    */
   modelRuntimePin?: OpenProjectBinding | null;
+  /**
+   * The machine bucket the model LIST was built from. Resolution must use the
+   * same bucket: a draft whose runtime pin differs from the list's scope looked
+   * up the static descriptor and lost the model's runtime reasoning tiers.
+   */
+  catalogScopeKey?: string;
   /** Fail-closed reason shown when the selected runtime cannot own new attachments. */
   attachmentPersistenceUnavailableReason?: string | null;
   /** Clears an unavailable draft machine without changing the project tab. */
@@ -1977,6 +2553,7 @@ export function AgentChatComposer({
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot | null;
   executionMode?: AgentChatExecutionMode | null;
   computerUseSnapshot?: ComputerUseOwnerSnapshot | null;
@@ -2000,7 +2577,7 @@ export function AgentChatComposer({
    */
   onModelChange: (modelId: string, options?: ModelPickerSelection) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
-  onFastModeChange?: (enabled: boolean) => void;
+  onFastModeChange?: (enabled: boolean, tier?: FastTier) => void;
   onCursorCloudServiceTierChange?: (tier: CursorCloudServiceTier | null) => void;
   onDraftChange: (value: string, editIntent?: ComposerDraftEditIntent) => void;
   /** Persisted display labels keyed by their canonical mention token. */
@@ -2015,6 +2592,8 @@ export function AgentChatComposer({
   onInterrupt: (mode?: AgentChatStopMode) => void;
   /** Live background job count for stop-menu labels. */
   backgroundJobCount?: number;
+  /** This chat's spawned chats that are working now, for the Stop menu's child-chat choices. */
+  childChatCount?: number;
   /**
    * Resolves `false` when the response could not be delivered. The answer card
    * stays open in that case, so a caller that cleared a draft to send it has to
@@ -2052,9 +2631,10 @@ export function AgentChatComposer({
   onCodexConfigSourceChange?: (source: AgentChatCodexConfigSource) => void;
   onOpenCodePermissionModeChange?: (mode: AgentChatOpenCodePermissionMode) => void;
   onDroidPermissionModeChange?: (mode: AgentChatDroidPermissionMode) => void;
+  /** Muse's plan rung is an interaction mode plus `denyUnmatched`, so both travel in one change. */
+  onMusePermissionModeChange?: (mode: AgentChatMusePermissionMode, interactionMode: AgentChatInteractionMode) => void;
   onCursorModeChange?: (modeId: string) => void;
   /** `null` hands the option back to Cursor's default. */
-  onCursorConfigChange?: (configId: string, value: string | boolean | null) => void;
   onComputerUsePolicyChange?: (policy: unknown) => void;
   onRemoveIosElementContext?: (id: string) => void;
   onRemoveAppControlContext?: (id: string) => void;
@@ -2078,6 +2658,12 @@ export function AgentChatComposer({
   onDispatchSteerInline?: (steerId: string) => void;
   onDispatchSteerInterrupt?: (steerId: string) => void;
   /**
+   * Moves a staged message to `toIndex`. Absent when the provider keeps its own
+   * queue (see `queuedSteersCanReorder`). Rejects when the host refused, which
+   * drops the optimistic order.
+   */
+  onMoveSteer?: (steerId: string, toIndex: number) => Promise<void>;
+  /**
    * Active-turn split-button primary: submit the current draft and immediately
    * fold it into the running turn (Claude Code parity). Only supplied for
    * providers whose runtime can dispatch a queued steer into a live turn.
@@ -2096,9 +2682,21 @@ export function AgentChatComposer({
   launchPromptClipboardNoticeEnabled?: boolean;
   onOpenLaunchPromptClipboardSettings?: () => void;
   sessionId?: string | null;
+  /**
+   * Enables the "Scheduled send" row in the send menu. Carries the lane this
+   * composer belongs to plus the lanes a new-chat schedule may start in;
+   * absent (personal chats, embedders, a pane with no lane context) leaves the
+   * row out entirely rather than offering a send that cannot be aimed.
+   */
+  scheduledSendContext?: {
+    laneId: string | null;
+    laneName: string | null;
+    lanes: Array<{ id: string; name: string }>;
+    machineName: string | null;
+  } | null;
   parallelChatMode?: boolean;
   onParallelChatModeChange?: (enabled: boolean) => void;
-  parallelModelSlots?: Array<{ modelId: string; reasoningEffort: string | null; fastMode?: boolean }>;
+  parallelModelSlots?: Array<{ modelId: string; reasoningEffort: string | null; fastMode?: boolean; fastTier?: FastTier | null }>;
   parallelConfiguringIndex?: number | null;
   onParallelConfiguringIndexChange?: (index: number | null) => void;
   onParallelAddModel?: () => void;
@@ -2109,7 +2707,7 @@ export function AgentChatComposer({
     options?: { fastMode: boolean },
   ) => void;
   onParallelSlotReasoningChange?: (index: number, effort: string | null) => void;
-  onParallelSlotFastModeChange?: (index: number, enabled: boolean) => void;
+  onParallelSlotFastModeChange?: (index: number, enabled: boolean, tier?: FastTier) => void;
   parallelLaunchBusy?: boolean;
   parallelLaunchStatus?: string | null;
   parallelControlSlot?: ParallelComposerControlSlot | null;
@@ -2120,45 +2718,64 @@ export function AgentChatComposer({
   showIosSimulatorToggle?: boolean;
   iosSimulatorOpen?: boolean;
   onToggleIosSimulator?: () => void;
+  /** The cloud run the next send can target; see `ComposerCloudLaunch`. */
+  cloudLaunch?: ComposerCloudLaunch | null;
   /**
-   * Whether this chat can still start a cloud run. Only true for fresh chats with no events and
-   * no existing cloud agent — once a chat has turns, the cloud toggle goes disabled rather than
-   * disappearing, so the affordance does not move around under the cursor.
+   * Whether this chat is already bound to a cloud session (its agent is a
+   * cloud session id, not the launchable-draft state). Linked replies ride
+   * the ordinary submit path — they are not launches — so `cloudLaunch.canLaunch`
+   * stays false; this prop exists only so send gating does not fall back to
+   * the local-model readiness check, which a cloud-bound chat never needs.
    */
-  cursorCloudCanLaunch?: boolean;
-  /**
-   * Whether the draft's model is one Cursor Cloud can run. Read only while cloud mode is active.
-   * It is a separate prop from `cursorCloudCanLaunch` on purpose: cloud mode must stay on with an
-   * ineligible model so the send is BLOCKED with a reason, never silently rerouted to the local
-   * runtime. Folding it into `cursorCloudCanLaunch` would also drop cloud mode before the pane's
-   * auto-switch could move the draft onto an eligible model.
-   */
-  cursorCloudModelReady?: boolean;
-  /**
-   * Whether this machine reports at least one model Cursor Cloud can run. It only
-   * chooses which blocked message the user reads — the send is refused either way.
-   * Defaults to true so a caller that never learned the count keeps the
-   * "choose a model" wording instead of claiming the catalog is missing.
-   */
-  cursorCloudHasEligibleModels?: boolean;
-  /**
-   * Cloud mode: the next send goes to Cursor Cloud instead of the local runtime. The composer
-   * sets it by picking "Cursor Cloud" in the launch shelf's machine picker. The same overflow
-   * menu exposes the all-agents Cursor Cloud panel.
-   */
-  cursorCloudModeActive?: boolean;
+  cloudSessionLinked?: boolean;
   onSubmitToCloud?: (promptText: string) => Promise<boolean> | boolean;
   /** Whether the Cursor Cloud all-agents panel can be opened for this lane. */
   cursorCloudPanelAvailable?: boolean;
-  cursorCloudPaneOpen?: boolean;
   onToggleCursorCloudPanel?: () => void;
+  /** Whether the Devin Cloud sessions panel can be opened for this lane. */
+  devinCloudPanelAvailable?: boolean;
+  onToggleDevinCloudPanel?: () => void;
+  devinCloudHandoffAvailable?: boolean;
+  onHandoffToDevinCloud?: () => void;
+  /**
+   * The chat's model is fixed by where it runs (a Devin Cloud session keeps the
+   * version it started with), so show it as a label instead of the picker.
+   */
+  fixedModelLabel?: string | null;
   showAppControlToggle?: boolean;
   appControlOpen?: boolean;
   onToggleAppControl?: () => void;
 }) {
-  const cursorCloudSessionActive = cursorCloudModeActive || cursorRuntime === "cloud";
-  const promptStashRef = useRef<ComposerPromptStashHandle>(null);
-  const promptStashButtonEnabled = useRootAppStore((state) => state.promptStashButtonEnabled);
+  // The pane's chat API: the project chat domain, or the personal-chat adapter.
+  const agentChatApi = useAgentChatApi();
+  const agentChatApiRef = useRef(agentChatApi);
+  agentChatApiRef.current = agentChatApi;
+  // A chat with no project runs in ask mode or with full permission; planning
+  // modes are a project-work affordance and are not offered there.
+  const projectChatPane = useChatPaneScope() == null;
+  const planningAllowed = projectChatPane;
+  // Prompt stashes and Codex voice live in the project runtime; a scoped
+  // (personal) pane has neither, so their controls and shortcuts are hidden.
+  const draftsAvailable = projectChatPane;
+  const withoutPlanning = <T extends { icon?: string }>(options: T[]): T[] => (
+    planningAllowed ? options : options.filter((option) => option.icon !== "plan")
+  );
+  const cloudCanLaunch = cloudLaunch?.canLaunch ?? false;
+  const cloudModelReady = cloudLaunch?.modelReady ?? false;
+  const cloudHasEligibleModels = cloudLaunch?.hasEligibleModels ?? true;
+  const cloudModeActive = cloudLaunch?.active ?? false;
+  const cloudTargetLabel = cloudLaunch ? CLOUD_LANE_LABELS[cloudLaunch.provider] : "the cloud";
+  const cloudFileAttachmentsDelivered = cloudLaunch?.provider === "devin";
+  // Cursor-only controls (the service-tier picker) key off this, so a Devin
+  // cloud chat must not turn it on.
+  const cursorCloudSessionActive = (cloudModeActive || cursorRuntime === "cloud") && cloudLaunch?.provider !== "devin";
+  const draftsRef = useRef<ComposerDraftsHandle>(null);
+  const draftsButtonEnabled = useRootAppStore((state) => state.draftsButtonEnabled);
+  const [scheduleRequest, setScheduleRequest] = useState<
+    { mode: "composer" } | { mode: "draft"; entry: DraftEntry } | null
+  >(null);
+  const [scheduleBusy, setScheduleBusy] = useState(false);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState("");
   const [attachmentBusy, setAttachmentBusy] = useState(false);
@@ -2214,12 +2831,10 @@ export function AgentChatComposer({
     return () => window.clearTimeout(timer);
   }, [attachNotice]);
   const [issueContextMenuOpen, setIssueContextMenuOpen] = useState(false);
+  const [addSecretOpen, setAddSecretOpen] = useState(false);
   const [linearIssuePickerOpen, setLinearIssuePickerOpen] = useState(false);
-  const [linearIssuePickerMode, setLinearIssuePickerMode] = useState<"attach" | "details">("attach");
   const [githubIssuePickerOpen, setGitHubIssuePickerOpen] = useState(false);
-  const [githubIssuePickerMode, setGitHubIssuePickerMode] = useState<"attach" | "details">("attach");
-  const [linearDetailsIssueId, setLinearDetailsIssueId] = useState<string | null>(null);
-  const [githubDetailsIssueId, setGitHubDetailsIssueId] = useState<string | null>(null);
+  const [jiraIssuePickerOpen, setJiraIssuePickerOpen] = useState(false);
   const [githubRepo, setGitHubRepo] = useState<{ owner: string; name: string } | null>(null);
 
   useEffect(() => {
@@ -2239,7 +2854,11 @@ export function AgentChatComposer({
   const [selectedAppControlContextId, setSelectedAppControlContextId] = useState<string | null>(null);
   const [selectedBuiltInBrowserContextId, setSelectedBuiltInBrowserContextId] = useState<string | null>(null);
   const [smartLinkEditorEnabled, setSmartLinkEditorEnabled] = useState(
-    () => findSmartLinks(draft).length > 0 || hasChatOutputContext(draft) || parseChatMentions(draft).length > 0,
+    () => findSmartLinks(draft).length > 0
+      || hasChatOutputContext(draft)
+      || hasBrowserTabMention(draft)
+      || parseChatMentions(draft).length > 0
+      || parseModelMentions(draft).length > 0,
   );
   const [selectedSmartLinkNode, setSelectedSmartLinkNode] = useState<HTMLElement | null>(null);
   /**
@@ -2282,9 +2901,33 @@ export function AgentChatComposer({
   // live session's provider (which drives the handlers). On the CTO, where
   // queue is not offered, that keeps the primary button inside the same menu
   // the caret shows instead of silently labelling itself "send after turn".
+  const draftInlineBlockedReason = activeTurnInlineAttachmentBlock(sessionProvider, {
+    attachments,
+    contextAttachmentCount: contextAttachments.length
+      + iosElementContextItems.length
+      + appControlContextItems.length
+      + builtInBrowserContextItems.length,
+  });
+  const {
+    orderedSteers: orderedPendingSteers,
+    canReorder: canReorderSteers,
+    reorderPropsFor: steerReorderPropsFor,
+  } = usePendingSteerReorder(pendingSteers, onMoveSteer);
+
+  const stagedSteerInlineBlock = (steer: {
+    attachments: AgentChatFileRef[];
+    contextAttachments: AgentChatContextAttachment[];
+  }): string | null => activeTurnInlineAttachmentBlock(sessionProvider, {
+    attachments: steer.attachments,
+    contextAttachmentCount: steer.contextAttachments.length,
+  });
+  // A draft the live turn cannot take is not offered "Send during turn"; the
+  // fallback below then lands on "Send after turn", with interrupt still in
+  // the menu.
+  const draftInlineSteerHandler = draftInlineBlockedReason ? undefined : onSendSteerNow;
   const activeTurnSendModeDispatchable = (mode: ActiveTurnSendMode): boolean => (
     mode === "inline"
-      ? Boolean(onSendSteerNow)
+      ? Boolean(draftInlineSteerHandler)
       : mode === "interrupt"
         ? Boolean(onSendSteerInterrupt)
         : activeTurnSendCapability.modes.includes("queue")
@@ -2308,18 +2951,6 @@ export function AgentChatComposer({
   const activeTurnSendMenuEnabled = Boolean(onSendSteerNow || onSendSteerInterrupt);
 
   useEffect(() => {
-    if (
-      hasChatOutputContext(draft)
-      || parseChatMentions(draft).length > 0
-      // A restored `[Image #k]` whose attachment exists is a chip, and chips
-      // live in the rich editor.
-      || parseAttachmentTokens(draft).some((token) => resolveAttachmentToken(attachments, token) != null)
-    ) {
-      setSmartLinkEditorEnabled(true);
-    }
-  }, [attachments, draft]);
-
-  useEffect(() => {
     if (!sessionId) {
       setActiveTurnStopMode("stop_and_clear");
       return;
@@ -2327,6 +2958,11 @@ export function AgentChatComposer({
     const stored = window.localStorage.getItem(`ade.chat.stopMode.${sessionId}`);
     setActiveTurnStopMode(parseAgentChatStopMode(stored));
   }, [sessionId]);
+  // A remembered choice this chat cannot honour right now (a provider without
+  // background stop, a child-chat stop with no child chats) stops the default way.
+  const effectiveStopMode: AgentChatStopMode = stopModeAvailable(sessionProvider, activeTurnStopMode, childChatCount)
+    ? activeTurnStopMode
+    : DEFAULT_AGENT_CHAT_STOP_MODE;
 
   const updateActiveTurnStopMode = useCallback((mode: AgentChatStopMode) => {
     setActiveTurnStopMode(mode);
@@ -2336,7 +2972,7 @@ export function AgentChatComposer({
   }, [sessionId]);
 
   const issueContextButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [dragActive, setDragActive] = useState(false);
+  const [dragActive, setDragActive] = useState<false | "files" | "reference">(false);
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<ComposerTrigger | null>(null);
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<CommandMenuAnchor | null>(null);
   const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
@@ -2401,6 +3037,31 @@ export function AgentChatComposer({
   }, [mentionLabels]);
   const lastSerializedDraftRef = useRef<string>("");
   const lastPlainSelectionRef = useRef<number | null>(null);
+  // Switching from the textarea to the rich editor unmounts the node that holds
+  // the caret. When the user was typing, keep the caret's draft offset here so
+  // the rich editor can take focus and put the caret back at the same place.
+  const richPromotionCaretRef = useRef<number | null>(null);
+  const promoteToRichEditor = () => {
+    const textarea = textareaRef.current;
+    if (!smartLinkEditorEnabled && textarea && document.activeElement === textarea) {
+      richPromotionCaretRef.current = lastPlainSelectionRef.current ?? textarea.selectionStart ?? textarea.value.length;
+    }
+    setSmartLinkEditorEnabled(true);
+  };
+  useEffect(() => {
+    if (
+      hasChatOutputContext(draft)
+      || hasBrowserTabMention(draft)
+      || parseChatMentions(draft).length > 0
+      || parseModelMentions(draft).length > 0
+      // A restored `[Image #k]` / `[File #k: name]` whose attachment exists is
+      // a chip, and chips live in the rich editor.
+      || parseAttachmentTokens(draft).some((token) => resolveAttachmentToken(attachments, token) != null)
+    ) {
+      promoteToRichEditor();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- promotion follows the draft and its attachments
+  }, [draft, attachments]);
   const pendingDraftEditIntentRef = useRef<ComposerDraftEditIntent | null>(null);
   const fileAddInProgressRef = useRef(false);
   const addFileAttachmentsRef = useRef<(files: FileList | File[] | null | undefined) => void>(() => {});
@@ -2408,7 +3069,83 @@ export function AgentChatComposer({
   latestComposerMachineBindingRef.current = composerMachineBinding;
   // Catalog bucket for every model-derived control in this composer (picker
   // rows, availability, thinking levels). Empty only when no machine is known.
-  const modelCatalogScopeKey = modelRuntimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
+  const modelCatalogScopeKey = catalogScopeKey ?? modelRuntimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
+  const describeChipModel = useCallback((modelId: string): ComposerModelInfo | null => {
+    // Warm the scope's runtime descriptors first: without this the chip fell
+    // back to the static descriptor and lost an OpenCode model's reasoning tiers.
+    ensureRuntimeCatalogDescriptors(modelCatalogScopeKey);
+    return composerModelInfo(resolveModelDescriptorWithRuntimeCatalog(modelId, modelCatalogScopeKey) ?? getModelById(modelId));
+  }, [modelCatalogScopeKey]);
+  // The runtime catalog (OpenCode/DeepSeek reasoning tiers, aliases) is loaded by
+  // the model picker on open. The `@model` menu and chip read it without the
+  // picker ever opening, so fetch it here once per scope; the tick below
+  // re-renders the menu and any existing chips when it lands.
+  const [runtimeCatalogTick, setRuntimeCatalogTick] = useState(0);
+  const modelRuntimePinRef = useRef(modelRuntimePin);
+  modelRuntimePinRef.current = modelRuntimePin;
+  useEffect(() => {
+    let cancelled = false;
+    const pin = modelRuntimePinRef.current;
+    const load = async () => {
+      if (!getSharedRuntimeCatalog(modelCatalogScopeKey)) {
+        const result = await fetchSharedRuntimeCatalog({
+          scopeKey: modelCatalogScopeKey,
+          mode: "cached",
+          ...(pin ? { pin } : {}),
+        });
+        if (cancelled || result.status !== "ok") return;
+      }
+      ensureRuntimeCatalogDescriptors(modelCatalogScopeKey, true);
+      if (!cancelled) setRuntimeCatalogTick((tick) => tick + 1);
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [modelCatalogScopeKey]);
+  // DOM callbacks (chip hydration) read the latest lookup without re-binding.
+  const describeChipModelRef = useRef(describeChipModel);
+  describeChipModelRef.current = describeChipModel;
+  // The model picker's synced recents (desktop, TUI, iOS); the `@` menu leads with them.
+  const { recents: modelRecents, recordUsage: recordModelRecent } = useModelRecents();
+  const modelMentionOptions = useMemo(() => {
+    ensureRuntimeCatalogDescriptors(modelCatalogScopeKey, true);
+    const ids = mentionModelIds ?? availableModelIds ?? [];
+    const out = [];
+    const seen = new Set<string>();
+    for (const id of ids) {
+      const descriptor = resolveModelDescriptorWithRuntimeCatalog(id, modelCatalogScopeKey) ?? getModelById(id);
+      if (!descriptor || descriptor.deprecated || seen.has(descriptor.id)) continue;
+      seen.add(descriptor.id);
+      out.push(composerModelSuggestion(descriptor));
+    }
+    return out;
+  }, [availableModelIds, mentionModelIds, modelCatalogScopeKey, runtimeCatalogTick]);
+  // A model chip being edited: which chip, which part, which option is lit.
+  const [modelChipEdit, setModelChipEdit] = useState<{
+    chip: HTMLElement;
+    segment: ModelChipSegment;
+    index: number;
+  } | null>(null);
+  // Mirror of `modelChipEdit` for the catalog-refresh effect, so re-rendering a
+  // chip the user is actively editing does not clobber its active segment.
+  const modelChipEditRef = useRef<HTMLElement | null>(null);
+  modelChipEditRef.current = modelChipEdit?.chip ?? null;
+  // A model chip is built once with whatever the catalog knew at that moment.
+  // The runtime catalog (which carries reasoning tiers) usually arrives after
+  // the chip, so without this the chip showed no thinking level while the
+  // footer — which reads the catalog live — did. Re-render existing chips when
+  // the catalog scope or its model list changes.
+  useEffect(() => {
+    const editor = richEditorRef.current;
+    if (!editor) return;
+    editor.querySelectorAll<HTMLElement>("[data-composer-chip='model']").forEach((chip) => {
+      if (modelChipEditRef.current === chip) return;
+      const mention = parseModelMentionToken(chip.dataset.composerChipText ?? "");
+      if (mention) renderModelChip(chip, mention, describeChipModelRef.current(mention.modelId), null);
+    });
+  }, [modelMentionOptions, modelCatalogScopeKey]);
+  // Set when a model is picked in the plain textarea: the chip only exists
+  // after the switch to the rich editor, which then opens its first part.
+  const pendingModelChipTokenRef = useRef<string | null>(null);
   const objectPreviewUrlsRef = useRef<Set<string>>(new Set());
   const cancelledPendingImageAttachmentsRef = useRef<Set<string>>(new Set());
   const pendingImageAttachmentSequenceRef = useRef(0);
@@ -2429,8 +3166,8 @@ export function AgentChatComposer({
   const promptHistoryIndexRef = useRef<number | null>(null);
   const promptHistorySelectedKeyRef = useRef<string | null>(null);
   const promptHistoryStashRef = useRef<{
-    promise: Promise<PromptStashEntry | null>;
-    consume: ComposerPromptStashHandle["consume"];
+    promise: Promise<DraftEntry | null>;
+    consume: ComposerDraftsHandle["consume"];
   } | null>(null);
   const promptHistoryDraftBeforeRef = useRef<string | null>(null);
   const promptHistoryAppliedDraftRef = useRef<string | null>(null);
@@ -2598,18 +3335,50 @@ export function AgentChatComposer({
   const voiceInputEnabled = useAppStore((s) => s.voiceInputEnabled);
   const voiceModelInstalled = useVoiceModelInstalled(voiceInputEnabled);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  // Codex voice: a voice layer on any chat, carried by the user's Codex
+  // (ChatGPT) sign-in. Shown when enabled in Settings and Codex is signed in;
+  // the full composer only, not grid tiles or parallel launches. Desktop only
+  // for now: the web client has no path to the brain's voice host.
+  const codexVoicePreferences = useAppStore((s) => s.codexVoice);
+  // Voice runs on the chat machine's brain and Codex sign-in, not this window's.
+  // The chat-scope pin is null when the chat is on the tab's machine, which
+  // keeps the unpinned route (transition guard + local fallback) there.
+  const chatRuntimePin = useChatRuntimeScope().pin;
+  const chatRuntimePinRef = useRef(chatRuntimePin);
+  chatRuntimePinRef.current = chatRuntimePin;
+  const chatRuntimePinKey = chatRuntimePin?.key ?? null;
+  const codexAuth = useProviderAuthStatus({ runtimePin: chatRuntimePin }).status.openai;
+  const codexVoiceOffered = Boolean(
+    sessionId
+    && projectChatPane
+    && !isWebClientMode()
+    && codexVoicePreferences.enabled
+    && codexAuth === "ok"
+    && !parallelChatMode
+    && layoutVariant !== "grid-tile",
+  );
+  const codexVoice = useCodexVoice({
+    sessionId: codexVoiceOffered ? sessionId ?? null : null,
+    runtimePin: chatRuntimePin,
+    preferences: codexVoicePreferences,
+    onError: setVoiceError,
+  });
   const [voiceShimmer, setVoiceShimmer] = useState(false);
 
+  const textareaMaxHeightPx = layoutVariant === "grid-tile" ? (composerMaxHeightPx ?? 200) : 200;
   const resizeTextarea = useCallback(() => {
-    if (useRichComposer) return;
+    // Where `field-sizing: content` works (Electron's Chromium) the textarea
+    // grows in the browser's own layout pass. Measuring it here set the height
+    // to 0 and read scrollHeight on every keystroke, twice: two forced layouts
+    // of the whole window per key.
+    if (useRichComposer || TEXTAREA_FIELD_SIZING_SUPPORTED) return;
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "0px";
-    const maxH = layoutVariant === "grid-tile" ? (composerMaxHeightPx ?? 200) : 200;
-    const next = Math.min(Math.max(el.scrollHeight, 28), maxH);
+    const next = Math.min(Math.max(el.scrollHeight, 28), textareaMaxHeightPx);
     el.style.height = `${next}px`;
-    el.style.overflowY = el.scrollHeight > maxH ? "auto" : "hidden";
-  }, [layoutVariant, composerMaxHeightPx, useRichComposer]);
+    el.style.overflowY = el.scrollHeight > textareaMaxHeightPx ? "auto" : "hidden";
+  }, [textareaMaxHeightPx, useRichComposer]);
   useEffect(() => {
     resizeTextarea();
     if (!shouldAutofocus) return;
@@ -2678,7 +3447,7 @@ export function AgentChatComposer({
     });
   }, [attachedPaths, draft, knownSlashCommandNames, useRichComposer]);
   const [plainOverlayScrollTop, setPlainOverlayScrollTop] = useState(0);
-  const userShellChipRange = sessionProvider === "codex"
+  const userShellChipRange = sessionProvider === "codex" || sessionProvider === "muse"
     ? codexUserShellChipRange(draft)
     : null;
   const plainUserShellChipRange = useRichComposer ? null : userShellChipRange;
@@ -2770,11 +3539,11 @@ export function AgentChatComposer({
   useEffect(() => {
     if (!sessionId) return;
     try {
-      void window.ade?.agentChat?.fileSearch?.({ sessionId, query: "" })?.catch?.(() => {});
+      void agentChatApiRef.current?.fileSearch?.({ sessionId, query: "" }, chatRuntimePinRef.current)?.catch?.(() => {});
     } catch {
       // warming is best-effort
     }
-  }, [sessionId]);
+  }, [chatRuntimePinKey, sessionId]);
 
   const revokePreviewUrl = useCallback((url: string | null | undefined) => {
     if (!url || !objectPreviewUrlsRef.current.has(url)) return;
@@ -3013,7 +3782,7 @@ export function AgentChatComposer({
       // One probe per batch, not per file: the answer is a property of the
       // machine, and asking again mid-batch would only widen the window in
       // which half the files were staged under a different contract.
-      const stagingMode = await readAttachmentStagingMode(composerMachineBinding);
+      const stagingMode = await readAttachmentStagingMode(composerMachineBinding, agentChatApiRef.current);
       for (const file of Array.from(files)) {
         if (parallelChatMode && initialSlotCount + addedInBatch >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
           setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
@@ -3050,13 +3819,14 @@ export function AgentChatComposer({
           // is written once below. Duplicating it is how the two branches drift.
           let staged: StagedAttachment;
           if (plan.transport === "path") {
-            const { path: stagedPath } = await window.ade.agentChat.stageFileAttachment(
+            const { path: stagedPath } = await agentChatApiRef.current.stageFileAttachment(
               { sourcePath: plan.sourcePath, filename: sourceAttachmentName },
               attachmentOwnerBinding,
             );
             staged = { path: stagedPath, mimeType: file.type || null, previewDataUrl: null };
           } else {
             staged = await stageAttachmentBytesFromFile({
+              api: agentChatApiRef.current,
               file,
               filename: sourceAttachmentName,
               requiresHeicConversion: isHeicUpload,
@@ -3082,7 +3852,11 @@ export function AgentChatComposer({
           rememberAttachmentSize(staged.path, file.size);
           const pastedLineCount = pastedTextFilesRef.current.get(file);
           if (pastedLineCount != null) pastedTextLineCountsRef.current.set(staged.path, pastedLineCount);
-          onAddAttachment({ path: staged.path, type: attachmentType });
+          onAddAttachment({
+            path: staged.path,
+            type: attachmentType,
+            ...(isPastedTextAttachmentFile(file) ? { intent: "user_prompt" as const } : {}),
+          });
           queueAttachmentChip(staged.path, chipPlacement);
           chipPlacement = { kind: "afterChip", path: staged.path, fallback: chipPlacement };
           if (pendingImage) dropPendingImageAttachment(pendingImage.id);
@@ -3103,25 +3877,40 @@ export function AgentChatComposer({
   };
   addFileAttachmentsRef.current = addFileAttachments;
 
-  const addNativeClipboardImageAttachment = async (chipPlacement: AttachmentChipPlacement = { kind: "end" }) => {
+  /**
+   * Attach the clipboard's image through the host, which fits an oversized one
+   * under the ceiling. `fallbackFiles` are what the paste event carried: when
+   * the clipboard holds no bitmap after all (a file copied in Finder, say),
+   * they go through the normal path, which says why it refuses one.
+   */
+  const addNativeClipboardImageAttachment = async (
+    chipPlacement: AttachmentChipPlacement = { kind: "end" },
+    fallbackFiles?: File[],
+  ) => {
     if (attachmentPersistenceUnavailableReason) {
       setAttachError(attachmentPersistenceUnavailableReason);
       return;
     }
-    if (!canAttach) return;
+    if (!canAttach) {
+      // The normal path is the one that says why attaching is blocked.
+      if (fallbackFiles?.length) void addFileAttachments(fallbackFiles);
+      return;
+    }
     if (parallelChatMode && attachmentSlotsUsed >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
     setAttachError(null);
     const pendingImage = addPendingImageAttachment("clipboard.png", null);
     const attachmentOwnerBinding = composerMachineBinding;
+    let clipboardWasEmpty = false;
     try {
       const image = await window.ade.app.readClipboardImage();
       if (!image) {
         dropPendingImageAttachment(pendingImage.id);
+        clipboardWasEmpty = true;
         return;
       }
-      const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
+      const { path: tempPath } = await agentChatApiRef.current.saveTempAttachment({
         data: image.data,
         filename: image.filename || "clipboard.png",
       }, attachmentOwnerBinding);
@@ -3138,11 +3927,15 @@ export function AgentChatComposer({
       onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, image.mimeType) });
       queueAttachmentChip(tempPath, chipPlacement);
       dropPendingImageAttachment(pendingImage.id);
-    } catch {
+    } catch (error) {
       dropPendingImageAttachment(pendingImage.id);
-      setAttachError("Unable to attach clipboard image.");
+      // The host's reason (a clipboard image it could not fit under the
+      // ceiling, say) is the useful part; a bare "Unable to attach" hid it.
+      const reason = error instanceof Error ? stripElectronErrorWrapper(error.message) : "";
+      setAttachError(reason || "Unable to attach clipboard image.");
     } finally {
       fileAddInProgressRef.current = false;
+      if (clipboardWasEmpty && fallbackFiles?.length) void addFileAttachments(fallbackFiles);
     }
   };
 
@@ -3271,6 +4064,41 @@ export function AgentChatComposer({
     captureRichSelection();
   }, [captureRichSelection, onDraftChange, serializeRichEditor, useRichComposer]);
 
+  // Applied on the first commit where the editor that will hold the text
+  // exists: a quote promotes the plain textarea to the rich editor one render
+  // later, and focusing the textarea in between would put the caret in an
+  // element that is about to unmount.
+  const appliedCaretToEndRequestRef = useRef(caretToEndRequest);
+  useEffect(() => {
+    if (caretToEndRequest === appliedCaretToEndRequestRef.current) return;
+    if (hasChatOutputContext(draft) && !useRichComposer) return;
+    appliedCaretToEndRequestRef.current = caretToEndRequest;
+    if (useRichComposer) {
+      const editor = richEditorRef.current;
+      if (!editor) return;
+      let tail = editor.lastChild;
+      if (!(tail instanceof Text) || !/[ \u00a0]$/.test(tail.textContent ?? "")) {
+        tail = document.createTextNode(" ");
+        editor.appendChild(tail);
+        // Keep the draft equal to the editor, or the next render would
+        // treat the space as an outside edit and reset the editor.
+        syncRichDraft();
+      }
+      const range = document.createRange();
+      range.setStart(tail, (tail.textContent ?? "").length);
+      range.collapse(true);
+      editor.focus({ preventScroll: true });
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      richSelectionRef.current = range.cloneRange();
+      return;
+    }
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus({ preventScroll: true });
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  });
   const getRichCursorTextOffset = useCallback((): number => {
     const editor = richEditorRef.current;
     const selection = window.getSelection();
@@ -3969,13 +4797,29 @@ export function AgentChatComposer({
     }
     for (const node of nodes) {
       const text = node.textContent ?? "";
-      const mentions = parseChatMentions(text).filter((mention) => labels.has(mention.token));
+      const mentions: Array<{ start: number; end: number; build: () => HTMLElement }> = [
+        ...parseChatMentions(text)
+          .filter((mention) => labels.has(mention.token))
+          .map((mention) => ({
+            start: mention.start,
+            end: mention.end,
+            build: () => createComposerTokenChipNode("mention", mention.token, labels.get(mention.token)),
+          })),
+        // A model token needs no label table: the catalog names it. An unknown
+        // model still becomes a chip, drawn as unavailable.
+        ...parseModelMentions(text).map((mention) => ({
+          start: mention.start,
+          end: mention.end,
+          build: () => createModelChipNode(mention, describeChipModelRef.current(mention.modelId)),
+        })),
+      ].sort((a, b) => a.start - b.start);
       if (!mentions.length) continue;
       const fragment = document.createDocumentFragment();
       let offset = 0;
       for (const mention of mentions) {
+        if (mention.start < offset) continue;
         if (mention.start > offset) fragment.append(document.createTextNode(text.slice(offset, mention.start)));
-        fragment.append(createComposerTokenChipNode("mention", mention.token, labels.get(mention.token)));
+        fragment.append(mention.build());
         offset = mention.end;
       }
       if (offset < text.length) fragment.append(document.createTextNode(text.slice(offset)));
@@ -4063,6 +4907,7 @@ export function AgentChatComposer({
   const replaceRichTriggerWith = useCallback((insertion:
     | { text: string }
     | { chipKind: "file" | "command" | "mention"; chipText: string; chipLabel?: string; triggerLabel?: string }
+    | { node: HTMLElement; triggerLabel: string }
   ): boolean => {
     const editor = richEditorRef.current;
     if (!editor) return false;
@@ -4079,7 +4924,7 @@ export function AgentChatComposer({
       ? composerTriggerForSelection(
         detectedContext.trigger,
         insertion.triggerLabel ?? "",
-        insertion.chipKind === "file" ? "file" : "mention",
+        "chipKind" in insertion && insertion.chipKind === "file" ? "file" : "mention",
       )
       : detectedContext.trigger;
     const context = trigger.query === detectedContext.trigger.query
@@ -4095,7 +4940,9 @@ export function AgentChatComposer({
       return true;
     }
     context.range.deleteContents();
-    const chip = createComposerTokenChipNode(insertion.chipKind, insertion.chipText, insertion.chipLabel);
+    const chip = "node" in insertion
+      ? insertion.node
+      : createComposerTokenChipNode(insertion.chipKind, insertion.chipText, insertion.chipLabel);
     context.range.insertNode(chip);
     const space = document.createTextNode(" ");
     chip.after(space);
@@ -4108,6 +4955,162 @@ export function AgentChatComposer({
     syncRichDraft();
     return true;
   }, [captureRichSelection, createComposerTokenChipNode, getRichTriggerContext, syncRichDraft]);
+
+  /** Put the caret in the text just after `chip`, adding a space when none follows. */
+  const placeCaretAfterChip = useCallback((chip: HTMLElement) => {
+    const editor = richEditorRef.current;
+    if (!editor || !editor.contains(chip)) return;
+    let next = chip.nextSibling;
+    if (!(next instanceof Text) || !/^[ \u00a0]/.test(next.textContent ?? "")) {
+      next = document.createTextNode(" ");
+      chip.after(next);
+    }
+    const range = document.createRange();
+    range.setStart(next, 1);
+    range.collapse(true);
+    editor.focus({ preventScroll: true });
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    richSelectionRef.current = range.cloneRange();
+  }, []);
+
+  // Insert an attached browser tab at the caret the user last left here. The
+  // rich editor takes the chip directly, so the context chips around it keep
+  // their places; the plain textarea splices the token into the draft and lets
+  // promotion draw the chip, with the caret restored just after it.
+  const appliedBrowserTabInsertIdRef = useRef(browserTabInsertRequest?.id ?? 0);
+  useEffect(() => {
+    const request = browserTabInsertRequest;
+    if (!request || request.id === appliedBrowserTabInsertIdRef.current) return;
+    const match = parseBrowserTabMentions(request.token)[0];
+    if (!match) {
+      appliedBrowserTabInsertIdRef.current = request.id;
+      return;
+    }
+    if (useRichComposer) {
+      const editor = richEditorRef.current;
+      if (!editor) return;
+      appliedBrowserTabInsertIdRef.current = request.id;
+      placeCaretAfterChip(insertBrowserTabChip(editor, richSelectionRef.current, match));
+      syncRichDraft();
+      return;
+    }
+    appliedBrowserTabInsertIdRef.current = request.id;
+    const caret = Math.min(Math.max(0, lastPlainSelectionRef.current ?? draft.length), draft.length);
+    const head = draft.slice(0, caret);
+    const tail = draft.slice(caret);
+    const inserted = `${head && !/\s$/.test(head) ? " " : ""}${request.token}${/^\s/.test(tail) ? "" : " "}`;
+    richPromotionCaretRef.current = head.length + inserted.length;
+    onDraftChange(`${head}${inserted}${tail}`);
+  }, [browserTabInsertRequest, draft, onDraftChange, placeCaretAfterChip, syncRichDraft, useRichComposer]);
+
+  /** Light up one part of a model chip and open its list. */
+  const openModelChipSegment = useCallback((chip: HTMLElement, segment: ModelChipSegment) => {
+    const mention = parseModelMentionToken(chip.dataset.composerChipText ?? "");
+    if (!mention) return;
+    const info = describeChipModelRef.current(mention.modelId);
+    const options = modelChipOptions(segment, info);
+    const current = segment === "effort" ? mention.effort : mention.permission;
+    const index = Math.max(0, options.findIndex((option) => option.value === current));
+    renderModelChip(chip, mention, info, segment);
+    placeCaretAfterChip(chip);
+    setModelChipEdit({ chip, segment, index });
+  }, [placeCaretAfterChip]);
+
+  /** Write one option into the chip's token and redraw it. */
+  const applyModelChipOption = useCallback((
+    chip: HTMLElement,
+    segment: ModelChipSegment,
+    index: number,
+    active: ModelChipSegment | null,
+  ) => {
+    const mention = parseModelMentionToken(chip.dataset.composerChipText ?? "");
+    if (!mention) return;
+    const info = describeChipModelRef.current(mention.modelId);
+    const option = modelChipOptions(segment, info)[index];
+    const next = option
+      ? { ...mention, ...(segment === "effort" ? { effort: option.value } : { permission: option.value }) }
+      : mention;
+    renderModelChip(chip, next, info, active);
+    syncRichDraft();
+  }, [syncRichDraft]);
+
+  const closeModelChipEdit = useCallback(() => {
+    setModelChipEdit((current) => {
+      if (current) {
+        const mention = parseModelMentionToken(current.chip.dataset.composerChipText ?? "");
+        if (mention) renderModelChip(current.chip, mention, describeChipModelRef.current(mention.modelId), null);
+      }
+      return null;
+    });
+  }, []);
+
+  /**
+   * Step to the next (or previous) part of the chip, or out of it. Leaving the
+   * last part puts the caret after the chip so typing just continues.
+   */
+  const stepModelChipEdit = useCallback((direction: 1 | -1) => {
+    if (!modelChipEdit) return;
+    const { chip, segment } = modelChipEdit;
+    const mention = parseModelMentionToken(chip.dataset.composerChipText ?? "");
+    const segments = modelChipSegments(mention ? describeChipModelRef.current(mention.modelId) : null);
+    const next = segments[segments.indexOf(segment) + direction];
+    if (next) {
+      openModelChipSegment(chip, next);
+      return;
+    }
+    closeModelChipEdit();
+    placeCaretAfterChip(chip);
+  }, [closeModelChipEdit, modelChipEdit, openModelChipSegment, placeCaretAfterChip]);
+
+  /** Keys while a chip part is open. Returns true when the key was used. */
+  const handleModelChipEditKey = (event: React.KeyboardEvent<HTMLElement>): boolean => {
+    if (!modelChipEdit) return false;
+    const { chip, segment, index } = modelChipEdit;
+    if (!richEditorRef.current?.contains(chip)) {
+      setModelChipEdit(null);
+      return false;
+    }
+    const mention = parseModelMentionToken(chip.dataset.composerChipText ?? "");
+    const options = modelChipOptions(segment, mention ? describeChipModelRef.current(mention.modelId) : null);
+    const move = (nextIndex: number) => {
+      const wrapped = (nextIndex + options.length) % options.length;
+      applyModelChipOption(chip, segment, wrapped, segment);
+      setModelChipEdit({ chip, segment, index: wrapped });
+    };
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (options.length) move(index + (event.key === "ArrowDown" ? 1 : -1));
+      return true;
+    }
+    if (event.key === "Tab") {
+      event.preventDefault();
+      stepModelChipEdit(event.shiftKey ? -1 : 1);
+      return true;
+    }
+    if (event.key === "Enter" || event.key === "Escape") {
+      event.preventDefault();
+      closeModelChipEdit();
+      placeCaretAfterChip(chip);
+      return true;
+    }
+    // A letter jumps to the next option that starts with it ("f" → Full access).
+    if (event.key.length === 1 && /[a-z]/i.test(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      const letter = event.key.toLowerCase();
+      for (let step = 1; step <= options.length; step += 1) {
+        const candidate = (index + step) % options.length;
+        if (options[candidate]!.label.toLowerCase().startsWith(letter)) {
+          event.preventDefault();
+          move(candidate);
+          return true;
+        }
+      }
+    }
+    // Anything else ends the edit and is typed as usual after the chip.
+    closeModelChipEdit();
+    return false;
+  };
 
   // Brief shimmer over the composer (CSS honors prefers-reduced-motion). Fired
   // both on the optimistic mic-down (recording start) and on transcript insert.
@@ -4321,6 +5324,8 @@ export function AgentChatComposer({
       }
     }
 
+    // First, so a title inside an attached tab's block never chips on its own.
+    hydrateBrowserTabChipsInEditor(editor);
     hydrateMentionChipsInEditor();
     hydrateChatOutputContextChipsInEditor(editor);
     reconcileAttachmentChipsInEditor(editor);
@@ -4398,11 +5403,35 @@ export function AgentChatComposer({
 
     tokenizeSmartLinksInEditor();
 
+    const promotionCaret = richPromotionCaretRef.current;
+    if (promotionCaret !== null) {
+      richPromotionCaretRef.current = null;
+      const point = composerDomPointAtSerializedOffset(editor, promotionCaret);
+      const range = document.createRange();
+      range.setStart(point.node, point.offset);
+      range.collapse(true);
+      editor.focus({ preventScroll: true });
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      richSelectionRef.current = range.cloneRange();
+    }
+
+    const pendingModelToken = pendingModelChipTokenRef.current;
+    if (pendingModelToken) {
+      pendingModelChipTokenRef.current = null;
+      const chips = Array.from(editor.querySelectorAll<HTMLElement>("[data-composer-chip='model']"))
+        .filter((chip) => chip.dataset.composerChipText === pendingModelToken);
+      const chip = chips[chips.length - 1];
+      const first = chip ? modelChipSegments(describeChipModelRef.current(chip.dataset.modelId ?? ""))[0] : null;
+      if (chip && first) openModelChipSegment(chip, first);
+    }
+
     const next = serializeRichEditor();
     if (next === lastSerializedDraftRef.current) return;
     lastSerializedDraftRef.current = next;
     onDraftChange(next);
-  }, [appControlContextItems, askQuestionActive, attachments, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, hydrateMentionChipsInEditor, imagePreviewUrls, insertNodeAtTextOffset, iosElementContextItems, mentionLabels, onDraftChange, reconcileAttachmentChipsInEditor, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
+  }, [appControlContextItems, askQuestionActive, attachments, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, hydrateMentionChipsInEditor, imagePreviewUrls, insertNodeAtTextOffset, iosElementContextItems, mentionLabels, onDraftChange, openModelChipSegment, reconcileAttachmentChipsInEditor, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
 
   // Linked hover glow, composer side: the chip(s) of the hovered tray item
   // light up. An armed chip (first Backspace of a safe delete) keeps its ring.
@@ -4545,6 +5574,7 @@ export function AgentChatComposer({
       provider: compactSessionProvider === undefined ? sessionProvider : compactSessionProvider,
       state: usageViewModel?.state ?? "unknown",
       enabled: Boolean(onCompactContext && usageViewModel),
+      openCodeCompactAvailable: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
       turnActive,
       busy,
       pendingInput: hasPendingInput,
@@ -4553,6 +5583,7 @@ export function AgentChatComposer({
     [
       busy,
       compactSessionProvider,
+      sdkSlashCommands,
       externalInputLockMessage,
       hasPendingInput,
       onCompactContext,
@@ -4572,6 +5603,7 @@ export function AgentChatComposer({
   const ccsUse = slot?.codexConfigSource ?? codexConfigSource;
   const opmUse = slot?.opencodePermissionMode ?? opencodePermissionMode;
   const dpmUse = slot?.droidPermissionMode ?? droidPermissionMode ?? "auto-low";
+  const mpmUse = slot?.musePermissionMode ?? musePermissionMode ?? "onRequest";
   const cmsUse = slot?.cursorModeSnapshot ?? cursorModeSnapshot;
   const fastModeModelId =
     parallelChatMode && parallelConfiguringIndex != null
@@ -4604,12 +5636,14 @@ export function AgentChatComposer({
   // Root store: the preset list is an account-scoped preference the project
   // store only ever holds a stale seed copy of (see `useHarnessPresets`).
   const harnessPresets = useRootAppStore((state) => state.harnessPresets);
+  // An ad-hoc route id (a Run-in pick) is not in the saved list; it decodes to
+  // "DeepSeek V4.1 Flash · Claude Code" with the harness's mark.
   const activeHarnessPreset = useMemo(() => {
-    const id = activeHarnessPresetId?.trim();
-    if (!id) return null;
-    const preset = harnessPresets.find((entry) => entry.id === id);
-    return preset ? { name: presetLabel(preset), logo: preset.logo } : null;
-  }, [activeHarnessPresetId, harnessPresets]);
+    const target = resolveHarnessLaunchTarget(activeHarnessPresetId, harnessPresets, modelCatalogScopeKey);
+    return target
+      ? { name: target.name, logo: target.logo, accentColor: target.accentColor, harness: target.harness }
+      : null;
+  }, [activeHarnessPresetId, harnessPresets, modelCatalogScopeKey]);
 
   /* Where this chat executes.
 
@@ -4623,7 +5657,7 @@ export function AgentChatComposer({
      with no remote binding is running on this Mac. */
   const composerMachineName = sessionId
     ? cursorRuntime === "cloud"
-      ? "Cursor Cloud"
+      ? cloudTargetLabel
       : composerMachineBinding?.kind === "remote"
         ? composerMachineBinding.runtimeName
         : THIS_MACHINE_NAME
@@ -4789,7 +5823,7 @@ export function AgentChatComposer({
           <PermissionModePicker
             ariaLabel="Claude permission mode"
             selectedValue={selectedOption.value}
-            options={CLAUDE_MODE_OPTIONS}
+            options={withoutPlanning(CLAUDE_MODE_OPTIONS)}
             disabled={nativeControlsDisabled}
             onSelect={applyClaudeMode}
           />
@@ -4813,7 +5847,7 @@ export function AgentChatComposer({
         <PermissionModePicker
           ariaLabel="Codex permission mode"
           selectedValue={codexPreset}
-          options={pickerOptions}
+          options={withoutPlanning(pickerOptions)}
           disabled={nativeControlsDisabled}
           onSelect={(preset) => {
             if (preset === "custom") return;
@@ -4829,7 +5863,7 @@ export function AgentChatComposer({
         <PermissionModePicker
           ariaLabel="Droid autonomy mode"
           selectedValue={dpmUse}
-          options={DROID_PERMISSION_OPTIONS}
+          options={withoutPlanning(DROID_PERMISSION_OPTIONS)}
           disabled={nativeControlsDisabled || (!onDroidPermissionModeChange && !parallelControlSlot)}
           onSelect={(value) => {
             if (parallelControlSlot) parallelControlSlot.onDroidPermissionModeChange(value);
@@ -4839,13 +5873,29 @@ export function AgentChatComposer({
       );
     }
 
-    const cursorModeOption = resolveCursorModeOption(cmsUse);
-    const cursorExtraOptions = (cmsUse?.configOptions ?? []).filter((option) => {
-      if (option.id === cmsUse?.modelConfigId) return false;
-      if (option.id === cursorModeOption?.id) return false;
-      return true;
-    });
+    if (sp === "muse") {
+      const applyMuseMode = (value: MusePermissionPickerValue) => {
+        const interaction: AgentChatInteractionMode = value === "plan" ? "plan" : "default";
+        const mode: AgentChatMusePermissionMode = value === "plan" ? "denyUnmatched" : value;
+        if (parallelControlSlot) {
+          parallelControlSlot.onInteractionModeChange(interaction);
+          parallelControlSlot.onMusePermissionModeChange(mode);
+          return;
+        }
+        onMusePermissionModeChange?.(mode, interaction);
+      };
+      return (
+        <PermissionModePicker
+          ariaLabel="Muse approval mode"
+          selectedValue={im === "plan" ? "plan" : mpmUse}
+          options={withoutPlanning(MUSE_PERMISSION_OPTIONS)}
+          disabled={nativeControlsDisabled || (!onMusePermissionModeChange && !parallelControlSlot)}
+          onSelect={applyMuseMode}
+        />
+      );
+    }
 
+    const cursorModeOption = resolveCursorModeOption(cmsUse);
     if (sp === "cursor" && (cmsUse?.availableModeIds?.length || cursorModeOption)) {
       const modeValue = typeof cursorModeOption?.currentValue === "string"
         ? cursorModeOption.currentValue
@@ -4857,97 +5907,20 @@ export function AgentChatComposer({
             label: formatCursorModeLabel(modeId),
           }));
       const cursorModeOptions = modeChoices.map((option) => cursorPermissionPickerOption(option.value, option.label));
+      // Only the mode lives in the prompt box. Cursor's Fast is the model
+      // picker's Fast chip, and its other model options keep Cursor's default.
+      if (!modeChoices.length) return null;
       return (
-        <div className="flex flex-wrap items-center gap-2">
-          {modeChoices.length ? (
-            <PermissionModePicker
-              ariaLabel="Cursor mode"
-              selectedValue={modeValue || cursorModeOptions[0]?.value || ""}
-              options={cursorModeOptions}
-              disabled={nativeControlsDisabled || (!onCursorModeChange && !parallelControlSlot)}
-              onSelect={(value) => {
-                if (parallelControlSlot) parallelControlSlot.onCursorModeChange(value);
-                else onCursorModeChange?.(value);
-              }}
-            />
-          ) : null}
-          {cursorExtraOptions.map((option) => {
-            if (option.type === "boolean") {
-              const active = option.currentValue === true;
-              // Three states: Default (unset, Cursor decides), On, Off. The
-              // cycle ends back at Default, so an option can be un-set again.
-              const next = nextCursorBooleanConfigValue(option.currentValue);
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  disabled={nativeControlsDisabled || (!onCursorConfigChange && !parallelControlSlot)}
-                  onClick={() => {
-                    if (parallelControlSlot) parallelControlSlot.onCursorConfigChange(option.id, next);
-                    else onCursorConfigChange?.(option.id, next);
-                  }}
-                  className={cn(
-                    "inline-flex h-8 min-h-8 items-center gap-2 rounded-md px-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
-                    plainComposerToolbarChrome
-                      ? cn(
-                          "border border-transparent bg-transparent",
-                          active ? "text-emerald-200/90" : "text-fg/72",
-                          nativeControlsDisabled ? "cursor-not-allowed opacity-50" : "hover:bg-white/[0.05] hover:text-fg/86",
-                        )
-                      : cn(
-                          "border px-2.5 py-1.5",
-                          active
-                            ? "border-emerald-500/24 bg-emerald-500/[0.10] text-emerald-100/88"
-                            : "border-white/[0.06] bg-[#1a1a22] text-fg/72",
-                          nativeControlsDisabled ? "cursor-not-allowed opacity-50" : "hover:border-white/[0.1] hover:text-fg/86",
-                        ),
-                  )}
-                  title={option.description ?? option.name}
-                  aria-pressed={active}
-                >
-                  <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.12em] text-muted-fg/45">
-                    {cursorBooleanConfigLabel(option.currentValue)}
-                  </span>
-                  <span>{option.name}</span>
-                </button>
-              );
-            }
-
-            const choices = option.options ?? [];
-            if (!choices.length) return null;
-            return (
-              <label
-                key={option.id}
-                className={cn(
-                  "flex h-8 min-h-8 items-center gap-2 rounded-md px-2",
-                  plainComposerToolbarChrome
-                    ? "border border-transparent bg-transparent"
-                    : "border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5",
-                )}
-                title={option.description ?? option.name}
-              >
-                <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.16em] text-muted-fg/45">
-                  {option.name}
-                </span>
-                <select
-                  value={typeof option.currentValue === "string" ? option.currentValue : ""}
-                  disabled={nativeControlsDisabled || (!onCursorConfigChange && !parallelControlSlot)}
-                  onChange={(event) => {
-                    if (parallelControlSlot) parallelControlSlot.onCursorConfigChange(option.id, event.target.value);
-                    else onCursorConfigChange?.(option.id, event.target.value);
-                  }}
-                  className="min-w-0 bg-transparent font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
-                >
-                  {choices.map((choice) => (
-                    <option key={`${option.id}:${choice.value}`} value={choice.value}>
-                      {choice.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            );
-          })}
-        </div>
+        <PermissionModePicker
+          ariaLabel="Cursor mode"
+          selectedValue={modeValue || cursorModeOptions[0]?.value || ""}
+          options={withoutPlanning(cursorModeOptions)}
+          disabled={nativeControlsDisabled || (!onCursorModeChange && !parallelControlSlot)}
+          onSelect={(value) => {
+            if (parallelControlSlot) parallelControlSlot.onCursorModeChange(value);
+            else onCursorModeChange?.(value);
+          }}
+        />
       );
     }
 
@@ -4955,7 +5928,7 @@ export function AgentChatComposer({
       <PermissionModePicker
         ariaLabel="OpenCode permission mode"
         selectedValue={opmUse ?? "edit"}
-        options={OPENCODE_PERMISSION_OPTIONS}
+        options={withoutPlanning(OPENCODE_PERMISSION_OPTIONS)}
         disabled={nativeControlsDisabled || (!onOpenCodePermissionModeChange && !parallelControlSlot)}
         onSelect={(value) => {
           if (parallelControlSlot) parallelControlSlot.onOpenCodePermissionModeChange(value);
@@ -4974,12 +5947,14 @@ export function AgentChatComposer({
     onClaudeModeChange,
     onClaudePermissionModeChange,
     onInteractionModeChange,
-    onCursorConfigChange,
     onCursorModeChange,
     onDroidPermissionModeChange,
+    onMusePermissionModeChange,
     onOpenCodePermissionModeChange,
     cmsUse,
     dpmUse,
+    mpmUse,
+    im,
     sp,
     opmUse,
     parallelControlSlot,
@@ -5020,8 +5995,8 @@ export function AgentChatComposer({
   const stashDraftBeforeHistory = useCallback((currentText: string) => {
     if (!currentText.trim() && attachments.length === 0) return;
     promptHistoryDraftBeforeRef.current = currentText;
-    if (typeof window.ade?.agentChat?.promptStashes?.create === "function") {
-      const stashHandle = promptStashRef.current;
+    if (typeof agentChatApiRef.current?.drafts?.create === "function") {
+      const stashHandle = draftsRef.current;
       if (stashHandle) {
         promptHistoryStashRef.current = {
           promise: stashHandle.activatePreservingDraft(),
@@ -5125,6 +6100,7 @@ export function AgentChatComposer({
 
   /* ── Keyboard handler for composer input ── */
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (handleModelChipEditKey(event)) return;
     const commandModified = event.metaKey || event.ctrlKey;
     const isPlainHistoryArrow =
       (event.key === "ArrowUp" || event.key === "ArrowDown")
@@ -5137,12 +6113,13 @@ export function AgentChatComposer({
       && commandModified
       && !event.altKey
       && !event.shiftKey
+      && draftsAvailable
     ) {
       event.preventDefault();
-      promptStashRef.current?.activate();
+      draftsRef.current?.activate();
       return;
     }
-    if (promptStashRef.current?.handleMenuKeyDown(event)) {
+    if (draftsRef.current?.handleMenuKeyDown(event)) {
       cancelPromptHistorySequence();
       event.preventDefault();
       return;
@@ -5278,7 +6255,7 @@ export function AgentChatComposer({
       return;
     }
 
-    if (event.key === "." && commandModified && turnActive) { event.preventDefault(); onInterrupt(activeTurnStopMode); return; }
+    if (event.key === "." && commandModified && turnActive) { event.preventDefault(); onInterrupt(effectiveStopMode); return; }
 
     /* Tab to accept prompt suggestion */
     if (event.key === "Tab" && !event.shiftKey && !commandModified && promptSuggestion && !draft.length && !turnActive) {
@@ -5319,6 +6296,49 @@ export function AgentChatComposer({
   const clearAnswerDraft = useCallback(() => {
     writeAnswerDraft("");
   }, [writeAnswerDraft]);
+
+  /**
+   * What the user had typed before a question card took the editor over.
+   *
+   * The card re-homes this composer's editor as its answer field, and the
+   * answer is cleared once it is sent or declined. A message the user was in
+   * the middle of writing would become the "answer" and then be thrown away,
+   * so it is set aside when the card opens and put back when it closes.
+   *
+   * Kept per chat and outside the component (`draftsSetAsideForQuestion`): one
+   * composer serves every chat in the pane, so a switch away while the card is
+   * up must leave the text waiting for that chat, not drop it.
+   */
+  const latestDraftRef = useRef(draft);
+  latestDraftRef.current = draft;
+  const questionOwnerId = sessionId ?? null;
+  const questionOwnerSeenRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!questionOwnerId) return;
+    // The first pass for a chat that just came into this composer: the pane
+    // may still be showing the previous chat's draft, so nothing is captured
+    // from it. A card that was already up when the chat was opened keeps the
+    // old behaviour for that one visit.
+    const cameIntoView = questionOwnerSeenRef.current !== questionOwnerId;
+    questionOwnerSeenRef.current = questionOwnerId;
+    if (askQuestionActive) {
+      // Several questions in a row keep the first set-aside text.
+      if (draftsSetAsideForQuestion.has(questionOwnerId)) return;
+      if (cameIntoView) {
+        draftsSetAsideForQuestion.set(questionOwnerId, "");
+        return;
+      }
+      rememberDraftSetAside(questionOwnerId, latestDraftRef.current);
+      if (latestDraftRef.current.length) writeAnswerDraft("");
+      return;
+    }
+    const saved = draftsSetAsideForQuestion.get(questionOwnerId);
+    if (saved === undefined) return;
+    draftsSetAsideForQuestion.delete(questionOwnerId);
+    // Never over text that is there now (an answer whose delivery failed, or
+    // something new).
+    if (saved.length && !latestDraftRef.current.length) writeAnswerDraft(saved);
+  }, [askQuestionActive, questionOwnerId, writeAnswerDraft]);
 
   /**
    * Keyboard for the editor in its question-card home.
@@ -5458,7 +6478,7 @@ export function AgentChatComposer({
     const next = `${draft.slice(0, start)}${payload.text}${draft.slice(end)}`;
     onDraftChange(next);
     restoreTextareaCaret(start + payload.text.length);
-    setSmartLinkEditorEnabled(true);
+    promoteToRichEditor();
     return true;
   };
 
@@ -5501,17 +6521,18 @@ export function AgentChatComposer({
       const pastedText = event.clipboardData.getData("text/plain");
       // A big paste becomes a file attachment with a "Pasted · N lines" chip,
       // instead of burying the prompt. Only when it can actually be staged;
-      // otherwise the text pastes as it always did.
+      // otherwise the text pastes as it always did. A small paste keeps the
+      // native selection-replace and undo path.
       if (
         pastedText
-        && shouldPasteTextAsFile(pastedText)
+        && shouldFoldPastedText(pastedText)
         && !composerInputLocked
         && !attachmentPersistenceUnavailableReason
         && !fileAddInProgressRef.current
         && !(parallelChatMode && attachmentSlotsUsed >= PARALLEL_CHAT_MAX_ATTACHMENTS)
       ) {
         event.preventDefault();
-        const file = new File([pastedText], pastedTextFilename(pastedText), { type: "text/plain" });
+        const file = pastedTextAttachmentFile(pastedText);
         pastedTextFilesRef.current.set(file, pastedTextLineCount(pastedText));
         void addFileAttachments([file], { chipPlacement });
         return;
@@ -5525,7 +6546,8 @@ export function AgentChatComposer({
           // composer to the rich editor and tokenize the pasted URL.
           window.requestAnimationFrame(() => {
             onDraftChange(node.value);
-            setSmartLinkEditorEnabled(true);
+            lastPlainSelectionRef.current = node.selectionStart ?? node.value.length;
+            promoteToRichEditor();
           });
         } else {
           window.requestAnimationFrame(() => tokenizeSmartLinksInEditor());
@@ -5536,16 +6558,49 @@ export function AgentChatComposer({
     event.preventDefault();
     if (fallbackAlreadyAttached) return;
     clipboardImagePasteHandledRef.current += 1;
+    // A photo copied out of Messages or Photos arrives as a PNG the browser
+    // re-encoded from the bitmap, often 3–10x the file that was sent, and over
+    // the pasted-bytes ceiling. The desktop clipboard reader fits it under the
+    // ceiling instead of refusing it, so an oversized pasted image goes there.
+    // The web adapter's reader does no fitting, so the web keeps the old path.
+    const [onlyFile] = collected;
+    // A file copied in Finder has a path on disk, which the normal path
+    // streams at the full ceiling; only an in-memory bitmap needs fitting.
+    const oversizedClipboardImage = collected.length === 1
+      && onlyFile != null
+      && onlyFile.type.startsWith("image/")
+      && onlyFile.size > LEGACY_MAX_CHAT_ATTACHMENT_BYTES
+      && !window.ade?.project?.getDroppedPath?.(onlyFile)
+      && !isWebClientMode()
+      && typeof window.ade?.app?.readClipboardImage === "function";
+    if (oversizedClipboardImage) {
+      void addNativeClipboardImageAttachment(chipPlacement, collected);
+      return;
+    }
     void addFileAttachments(collected, { chipPlacement });
   };
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
     event.stopPropagation();
+    if (event.dataTransfer.types.includes(ISSUE_CONTEXT_DND_MIME)) {
+      if (!canAttachIssueContext) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setDragActive("reference");
+      return;
+    }
+    if (event.dataTransfer.types.includes(CHAT_MENTION_DND_MIME)) {
+      if (composerInputLocked) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setDragActive("reference");
+      return;
+    }
     const hasImageUrl = event.dataTransfer.types.includes("text/uri-list");
     const hasFiles = event.dataTransfer.files.length > 0 || event.dataTransfer.types.includes("Files");
     if (!canAttach || (!hasFiles && !hasImageUrl)) return;
     event.preventDefault();
-    setDragActive(true);
+    setDragActive("files");
   };
 
   const handleDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
@@ -5557,6 +6612,29 @@ export function AgentChatComposer({
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.stopPropagation();
     setDragActive(false);
+    if (event.dataTransfer.types.includes(ISSUE_CONTEXT_DND_MIME)) {
+      event.preventDefault();
+      const issueContext = readIssueContextDrag(event.dataTransfer);
+      if (issueContext && canAttachIssueContext) onAddContextAttachment?.(issueContext);
+      return;
+    }
+    const mention = event.dataTransfer.types.includes(CHAT_MENTION_DND_MIME)
+      ? parseChatMentionDragPayload(event.dataTransfer.getData(CHAT_MENTION_DND_MIME))
+      : null;
+    if (mention) {
+      event.preventDefault();
+      if (composerInputLocked || mention.id === sessionId) return;
+      const token = formatChatMentionToken(mention.kind, mention.id);
+      mentionLabelsRef.current.set(token, mention.title);
+      onMentionLabelChange?.(token, mention.title);
+      if (useRichComposer) {
+        insertTextIntoRichEditor(`${token} `);
+      } else {
+        const separator = draft.length && !/\s$/.test(draft) ? " " : "";
+        onDraftChange(`${draft}${separator}${token} `);
+      }
+      return;
+    }
     const hasFiles = event.dataTransfer.files.length > 0;
     const hasUriList = event.dataTransfer.types.includes("text/uri-list");
     if (!canAttach || (!hasFiles && !hasUriList)) return;
@@ -5626,6 +6704,28 @@ export function AgentChatComposer({
         onDraftChange(next.text);
         restoreTextareaCaret(next.caret);
       }
+    } else if (item.type === "model" && commandMenuTrigger) {
+      // Shared with the model picker's Recents, so the next `@` leads with it.
+      recordModelRecent(item.model.modelId);
+      const mention = initialModelMention(item.model);
+      const token = formatModelMentionToken(mention);
+      if (useRichComposer) {
+        const chip = createModelChipNode(mention, describeChipModelRef.current(mention.modelId));
+        if (replaceRichTriggerWith({ node: chip, triggerLabel: item.model.title })) {
+          const first = modelChipSegments(describeChipModelRef.current(mention.modelId))[0];
+          if (first) openModelChipSegment(chip, first);
+        } else {
+          insertTextIntoRichEditor(`${token} `);
+        }
+      } else {
+        // The rich editor takes over once the draft holds the token; it then
+        // opens the chip's first part (see `pendingModelChipTokenRef`).
+        pendingModelChipTokenRef.current = token;
+        const trigger = composerTriggerForSelection(commandMenuTrigger, item.model.title, "mention");
+        const next = replaceComposerTriggerSpan(draft, trigger, `${token} `);
+        onDraftChange(next.text);
+        restoreTextareaCaret(next.caret);
+      }
     } else if (item.type === "mention" && commandMenuTrigger) {
       // A mention is a pointer, not an attachment: nothing is resolved or read
       // now. The token is expanded into an <ade-mention> block at send time.
@@ -5672,7 +6772,7 @@ export function AgentChatComposer({
       }
     }
     closeCommandMenu();
-  }, [attachBlockedReason, canAttach, closeCommandMenu, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, replaceRichTriggerWith, restoreTextareaCaret, useRichComposer]);
+  }, [attachBlockedReason, canAttach, closeCommandMenu, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, openModelChipSegment, recordModelRecent, replaceRichTriggerWith, restoreTextareaCaret, useRichComposer]);
 
   const handleRichEditorInput = useCallback((event?: React.FormEvent<HTMLDivElement>) => {
     const editor = richEditorRef.current;
@@ -5711,7 +6811,9 @@ export function AgentChatComposer({
   }, [allowCommandMenuTrigger, captureRichSelection, clearPromptHistory, closeCommandMenu, closeCommandMenuKeepingDismissal, disarmAttachmentChip, getRichTriggerContext, onDraftChange, removeAttachmentsForDeletedChips, serializeRichEditor, tokenizeSmartLinksInEditor]);
 
   const singleModelBlockedMessage = modelUnavailableMessage?.trim() ? modelUnavailableMessage : null;
-  const singleModelReady = Boolean(modelId) && !singleModelBlockedMessage;
+  // A running turn already has its model, and the picker is locked mid-turn:
+  // steering it must not wait on a model the composer has not loaded yet.
+  const singleModelReady = (Boolean(modelId) || turnActive) && !singleModelBlockedMessage;
 
   const hasIosElementContext = iosElementContextItems.length > 0;
   const hasAppControlContext = appControlContextItems.length > 0;
@@ -5719,21 +6821,126 @@ export function AgentChatComposer({
   /**
    * Draft text, or any selected visual/issue context. This is the composer's one
    * content test, so the enable predicates and the submit guards cannot disagree.
-   * File attachments are deliberately not part of it: only some surfaces allow an
-   * attachment-only submit, and Cursor Cloud receives no file attachments at all.
+   * File attachments stay separate because local file-only sends are opt-in and
+   * Cursor Cloud validates its own file-delivery path.
    */
+  const threadCommentSendCount = threadCommentsSessionId ? countCommentsForNextSend(threadComments) : 0;
+  /** Send, merged with the pending-comments pill when the chat has comments. */
+  const withThreadComments = (sendControl: React.ReactNode) => (
+    parallelChatMode ? sendControl : (
+      <ComposerThreadCommentsButton
+        sessionId={threadCommentsSessionId}
+        pin={threadCommentsPin}
+        comments={threadComments}
+        onJumpToComment={onJumpToThreadComment}
+      >
+        {sendControl}
+      </ComposerThreadCommentsButton>
+    )
+  );
   const hasComposerContextContent =
     draft.trim().length > 0
+    || threadCommentSendCount > 0
     || hasIosElementContext
     || hasAppControlContext
     || hasBuiltInBrowserContext
     || contextAttachmentCount > 0;
   /**
-   * What a local send or an active-turn steer has to deliver. An empty or
-   * whitespace-only draft disables the send actions instead of silently no-oping.
+   * Content that a local send or active-turn steer can deliver. Empty drafts
+   * with no supported attachment or context keep the send actions disabled.
    */
   const activeTurnHasContent =
     hasComposerContextContent || (allowAttachmentOnlySubmit && attachments.length > 0);
+
+  /**
+   * The permission mode this composer would actually apply. It is per-provider
+   * — a Claude chat's "plan" and an OpenCode chat's mode are different
+   * vocabularies — so the schedule captures the one that belongs to the
+   * provider it captured, and nothing when this provider has no such control.
+   */
+  const schedulePermissionMode = useMemo((): string | null => {
+    switch (sp) {
+      // The derived selection, not the raw mode: when the interaction mode is
+      // plan the picker shows Plan, and capturing `default` would let the send
+      // run without the restriction the user is looking at.
+      case "claude": return claudeSelectionMode;
+      case "opencode": return opmUse ?? null;
+      case "droid": return dpmUse ?? null;
+      case "muse": return im === "plan" ? "plan" : mpmUse ?? null;
+      // Cursor's control is a whole config snapshot rather than one mode name,
+      // so there is no single value to freeze here; the chat keeps its own.
+      default: return null;
+    }
+  }, [claudeSelectionMode, dpmUse, im, mpmUse, opmUse, sp]);
+
+  const scheduleTargets = useMemo((): DraftScheduleTargets => ({
+    sessionId: sessionId ?? null,
+    laneId: scheduledSendContext?.laneId ?? null,
+    laneName: scheduledSendContext?.laneName ?? null,
+    // Deliberately no machine key. A project binding's key is
+    // `local:<rootPath>` (or a remote target id), which is a different
+    // namespace from the account machine key the host matches against — so
+    // sending one here would name a machine that never matches and strand the
+    // send forever. Untargeted means "whichever runtime is up delivers it",
+    // which is right for the machine the composer is already bound to. Only a
+    // surface that knows a real account machine key (the phone) targets one.
+    machineKey: null,
+    machineName: scheduledSendContext?.machineName ?? composerMachineBinding?.displayName ?? null,
+    runsHere: composerMachineBinding?.kind !== "remote",
+  }), [composerMachineBinding?.displayName, composerMachineBinding?.kind, scheduledSendContext, sessionId]);
+
+  const scheduleConfig = useMemo((): DraftScheduleConfig => ({
+    // Not `sp`: that carries the composer's display default ("opencode") when
+    // no provider is known, and freezing it would name a provider the user
+    // never chose. Null lets the host use its own default.
+    provider: slot?.sessionProvider ?? sessionProvider ?? null,
+    modelId: modelId ?? null,
+    // The runtime-facing model string lives with the launch builder, not here;
+    // the popover falls back to the model id, which the host accepts.
+    model: null,
+    permissionMode: schedulePermissionMode,
+    thinking: reasoningEffort ?? null,
+  }), [modelId, reasoningEffort, schedulePermissionMode, sessionProvider, slot?.sessionProvider]);
+
+  const openComposerSchedule = useCallback(() => {
+    setScheduleError(null);
+    setScheduleRequest({ mode: "composer" });
+  }, []);
+
+  const openDraftSchedule = useCallback((entry: DraftEntry) => {
+    setScheduleError(null);
+    setScheduleRequest({ mode: "draft", entry });
+  }, []);
+
+  const submitSchedule = useCallback(async (input: DraftScheduleInput) => {
+    const request = scheduleRequest;
+    if (!request) return;
+    setScheduleBusy(true);
+    setScheduleError(null);
+    try {
+      if (request.mode === "draft") {
+        const draftsApi = agentChatApiRef.current?.drafts;
+        const updated = draftsApi && typeof draftsApi.update === "function"
+          ? await draftsApi.update({ id: request.entry.id, schedule: input }, composerMachineBinding)
+          : await window.ade.agentChat.drafts.update(
+            { id: request.entry.id, schedule: input },
+            composerMachineBinding,
+          );
+        if (!updated) throw new Error("That draft was taken on another machine.");
+      } else {
+        const created = await draftsRef.current?.activateScheduled(input);
+        if (!created) throw new Error("There was nothing to schedule.");
+      }
+      draftsRef.current?.reload();
+      setScheduleRequest(null);
+    } catch (scheduleFailure) {
+      setScheduleError(scheduleFailure instanceof Error
+        ? scheduleFailure.message
+        : "Could not schedule this send.");
+    } finally {
+      setScheduleBusy(false);
+    }
+  }, [composerMachineBinding, scheduleRequest]);
 
   const submitComposerDraft = useCallback(() => {
     if (pendingInput?.blocking) {
@@ -5753,18 +6960,22 @@ export function AgentChatComposer({
     }
     // Cloud submit only fires when the chat is fresh enough to launch a new cloud run. Once any
     // turns have been exchanged the cloud target is unavailable, so this branch is gated on
-    // `cursorCloudCanLaunch` to defend against a stale `cursorCloudModeActive=true`.
+    // `cloudCanLaunch` to defend against a stale `cloudModeActive=true`.
     if (
-      cursorCloudCanLaunch
-      && cursorCloudModeActive
+      cloudCanLaunch
+      && cloudModeActive
       && onSubmitToCloud
     ) {
       if (busy || backgroundLaunchBusy || parallelLaunchBusy || composerInputLocked) return;
       const trimmed = draft.trim();
-      const block = cursorCloudSendBlock({
-        hasEligibleModels: cursorCloudHasEligibleModels,
-        modelReady: cursorCloudModelReady,
-        hasContent: trimmed.length > 0 || contextAttachmentCount > 0,
+      const block = resolveCloudSendBlock({
+        hasEligibleModels: cloudHasEligibleModels,
+        modelReady: cloudModelReady,
+        // The launch prompt carries typed text, issue context, and delivered
+        // file attachments — visual-context items are not part of it, so a
+        // visual-only draft must stay blocked rather than launch with "".
+        hasContent: trimmed.length > 0 || contextAttachmentCount > 0
+          || (cloudFileAttachmentsDelivered && attachments.length > 0),
       });
       if (block) {
         if (block.notify) onSubmitBlocked?.(block.reason);
@@ -5780,12 +6991,15 @@ export function AgentChatComposer({
       });
       return;
     }
-    if (busy || !singleModelReady || !activeTurnHasContent) {
-      if (!busy && !singleModelReady) onSubmitBlocked?.(singleModelBlockedMessage ?? "Select a model first");
+    // A linked cloud reply rides this same submit path but never touches the
+    // local model — don't let local-model readiness veto it.
+    const linkedCloudReply = cloudSessionLinked && cloudModeActive;
+    if (busy || (!singleModelReady && !linkedCloudReply) || !activeTurnHasContent) {
+      if (!busy && !singleModelReady && !linkedCloudReply) onSubmitBlocked?.(singleModelBlockedMessage ?? "Select a model first");
       return;
     }
     onSubmit();
-  }, [activeTurnHasContent, attachments.length, backgroundLaunchBusy, busy, composerInputLocked, contextAttachmentCount, contextAttachments, cursorCloudCanLaunch, cursorCloudHasEligibleModels, cursorCloudModeActive, cursorCloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
+  }, [activeTurnHasContent, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
   const submitActiveTurnDraft = useCallback(() => {
     if (effectiveActiveTurnSendMode === "queue") {
@@ -5797,9 +7011,9 @@ export function AgentChatComposer({
       else submitComposerDraft();
       return;
     }
-    if (onSendSteerNow) onSendSteerNow();
+    if (draftInlineSteerHandler) draftInlineSteerHandler();
     else submitComposerDraft();
-  }, [effectiveActiveTurnSendMode, onSendSteerInterrupt, onSendSteerNow, submitComposerDraft]);
+  }, [draftInlineSteerHandler, effectiveActiveTurnSendMode, onSendSteerInterrupt, submitComposerDraft]);
 
   /**
    * The request behind `askQuestionActive`, narrowed for the card. There is
@@ -5860,12 +7074,19 @@ export function AgentChatComposer({
     && parallelModelSlots.length >= 2
     && (draft.trim().length > 0 || attachments.length > 0 || contextAttachmentCount > 0);
   const singleReady = !parallelChatMode && singleModelReady && activeTurnHasContent;
-  const cloudModeActiveForSend = cursorCloudCanLaunch && cursorCloudModeActive && !parallelChatMode;
+  const cloudModeActiveForSend = (cloudCanLaunch || cloudSessionLinked) && cloudModeActive && !parallelChatMode;
   const cloudSendBlock = cloudModeActiveForSend
-    ? cursorCloudSendBlock({
-      hasEligibleModels: cursorCloudHasEligibleModels,
-      modelReady: cursorCloudModelReady,
-      hasContent: draft.trim().length > 0 || contextAttachmentCount > 0,
+    ? resolveCloudSendBlock({
+      hasEligibleModels: cloudHasEligibleModels,
+      modelReady: cloudModelReady,
+      // Match the predicate of the path the send will actually take: a fresh
+      // launch delivers text + issue context + file attachments, while a
+      // linked reply rides submit, which accepts composer context and folded
+      // pasted prompts, but not ordinary file-only payloads.
+      hasContent: cloudCanLaunch
+        ? draft.trim().length > 0 || contextAttachmentCount > 0
+          || (cloudFileAttachmentsDelivered && attachments.length > 0)
+        : hasComposerContextContent || hasPastedTextPromptAttachment(attachments),
     })
     : null;
   const hasPendingImageAttachments = pendingImageAttachments.length > 0;
@@ -5877,7 +7098,9 @@ export function AgentChatComposer({
     && (parallelReady || (cloudModeActiveForSend
       ? cloudSendBlock === null
       : singleReady));
-  const activeSteerEnabled = !composerInputLocked && !hasPendingImageAttachments && activeTurnHasContent;
+  const activeSteerEnabled = !composerInputLocked
+    && !hasPendingImageAttachments
+    && (cloudModeActiveForSend ? cloudSendBlock === null : activeTurnHasContent);
   const backgroundSendEnabled = Boolean(onSubmitInBackground)
     && !busy
     && !backgroundLaunchBusy
@@ -5900,9 +7123,9 @@ export function AgentChatComposer({
     }
     if (cloudModeActiveForSend) {
       if (cloudSendBlock) return cloudSendBlock.reason;
-      return "Send to Cursor Cloud";
+      return `Send to ${cloudTargetLabel}`;
     }
-    if (!modelId) return singleModelBlockedMessage ?? "Select a model first";
+    if (!modelId && !turnActive) return singleModelBlockedMessage ?? "Select a model first";
     if (singleModelBlockedMessage) return singleModelBlockedMessage;
     if (!draft.trim().length && allowAttachmentOnlySubmit && attachments.length > 0) return "Send attached files";
     if (!draft.trim().length && contextAttachmentCount > 0) return "Send attached issue context";
@@ -5916,45 +7139,24 @@ export function AgentChatComposer({
     "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
     layoutVariant === "grid-tile" ? "m-0" : "",
   );
-  const issueContextMenu = issueContextMenuOpen && issueContextButtonRef.current ? createPortal(
-    <div
-      className="fixed z-[1000] overflow-hidden rounded-xl border border-white/10 bg-[#16121c] shadow-xl"
-      data-issue-context-menu="true"
-      role="menu"
-      aria-label="Attach issue context"
-      style={fixedMenuAboveAnchorStyle(issueContextButtonRef.current.getBoundingClientRect(), {
-        width: ISSUE_CONTEXT_MENU_WIDTH,
-        gap: ISSUE_CONTEXT_MENU_GAP,
-        gutter: ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER,
-        align: "end",
-      })}
-    >
-      <div className="border-b border-white/[0.04] px-3 py-2">
-        <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold text-fg/80">Attach issue context</div>
-      </div>
-      <div className="p-1">
-        <button
-          type="button"
-          className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
-          disabled={!canAttachIssueContext}
-          onClick={() => {
-            if (!canAttachIssueContext) return;
-            setIssueContextMenuOpen(false);
-            setLinearIssuePickerMode("attach");
-            setLinearIssuePickerOpen(true);
-          }}
-        >
-          <span
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
-            style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
-          >
-            <LinearMark size={11} />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block font-medium">Linear issue</span>
-          </span>
-        </button>
-        {githubRepo ? (
+  const issueContextMenu = issueContextMenuOpen && issueContextButtonRef.current ? (
+    <ViewportOverlayPortal layer="contextMenu">
+      <div
+        className="pointer-events-auto absolute overflow-hidden rounded-xl border border-fg/10 bg-(color:--work-popover-bg) shadow-xl"
+        data-issue-context-menu="true"
+        role="menu"
+        aria-label="Attach issue context"
+        style={fixedMenuAboveAnchorStyle(issueContextButtonRef.current.getBoundingClientRect(), {
+          width: ISSUE_CONTEXT_MENU_WIDTH,
+          gap: ISSUE_CONTEXT_MENU_GAP,
+          gutter: ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER,
+          align: "end",
+        })}
+      >
+        <div className="border-b border-fg/[0.04] px-3 py-2">
+          <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold text-fg/80">Attach issue context</div>
+        </div>
+        <div className="p-1">
           <button
             type="button"
             className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
@@ -5962,51 +7164,80 @@ export function AgentChatComposer({
             onClick={() => {
               if (!canAttachIssueContext) return;
               setIssueContextMenuOpen(false);
-              setGitHubIssuePickerMode("attach");
-              setGitHubIssuePickerOpen(true);
+              setLinearIssuePickerOpen(true);
             }}
           >
             <span
               className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
-              style={{ background: GITHUB_BRAND.surfaceHover, color: GITHUB_BRAND.primaryBright }}
+              style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
             >
-              <GithubLogo size={13} weight="fill" />
+              <LinearMark size={11} />
             </span>
             <span className="min-w-0 flex-1">
-              <span className="block font-medium">GitHub issue</span>
+              <span className="block font-medium">Linear issue</span>
             </span>
           </button>
-        ) : null}
+          {githubRepo ? (
+            <button
+              type="button"
+              className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
+              disabled={!canAttachIssueContext}
+              onClick={() => {
+                if (!canAttachIssueContext) return;
+                setIssueContextMenuOpen(false);
+                setGitHubIssuePickerOpen(true);
+              }}
+            >
+              <span
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
+                style={{ background: GITHUB_BRAND.surfaceHover, color: GITHUB_BRAND.primaryBright }}
+              >
+                <GithubLogo size={13} weight="fill" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block font-medium">GitHub issue</span>
+              </span>
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
+            disabled={!canAttachIssueContext}
+            onClick={() => {
+              if (!canAttachIssueContext) return;
+              setIssueContextMenuOpen(false);
+              setJiraIssuePickerOpen(true);
+            }}
+          >
+            <span
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
+              style={{ background: JIRA_BRAND.surfaceHover, color: JIRA_BRAND.primaryBright }}
+            >
+              <JiraMark size={11} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block font-medium">Jira issue</span>
+            </span>
+          </button>
+        </div>
       </div>
-    </div>,
-    document.body,
+    </ViewportOverlayPortal>
   ) : null;
 
-  const selectedLinearContextIssue = (
-    linearIssuePickerMode === "details" && linearDetailsIssueId
-      ? contextAttachments.find(
-        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
-          attachment.type === "linear_issue" && attachment.issue.id === linearDetailsIssueId
-        ),
-      )
-      : contextAttachments.find(
-        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
-          attachment.type === "linear_issue"
-        ),
-      )
+  const selectedLinearContextIssue = contextAttachments.find(
+    (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
+      attachment.type === "linear_issue"
+    ),
   )?.issue ?? null;
-  const selectedGitHubContextIssue = (
-    githubIssuePickerMode === "details" && githubDetailsIssueId
-      ? contextAttachments.find(
-        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> => (
-          attachment.type === "github_issue" && attachment.issue.id === githubDetailsIssueId
-        ),
-      )
-      : contextAttachments.find(
-        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> => (
-          attachment.type === "github_issue"
-        ),
-      )
+  const selectedGitHubContextIssue = contextAttachments.find(
+    (attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> => (
+      attachment.type === "github_issue"
+    ),
+  )?.issue ?? null;
+  const selectedJiraContextIssue = contextAttachments.find(
+    (attachment): attachment is Extract<AgentChatContextAttachment, { type: "jira_issue" }> => (
+      attachment.type === "jira_issue"
+    ),
   )?.issue ?? null;
   const isMcpElicitation = pendingInput?.providerMetadata?.mcpElicitation === true;
   const mcpElicitationSupportsPersistence = pendingInput?.providerMetadata?.persistenceSupported === true;
@@ -6030,7 +7261,7 @@ export function AgentChatComposer({
       {issueContextMenu}
       <LinearIssueSelectModal
         open={linearIssuePickerOpen}
-        ariaLabel={linearIssuePickerMode === "details" ? "Linear issue" : "Attach Linear issue"}
+        ariaLabel="Attach Linear issue"
         selectedIssue={selectedLinearContextIssue}
         pinnedIssue={pinnedLinearIssue}
         pinnedIssueLabel={pinnedLinearIssue ? "Linked to this lane" : "Attached to chat"}
@@ -6038,7 +7269,7 @@ export function AgentChatComposer({
         actionBusyLabel="Attaching issue"
         actionDisabled={busy || parallelLaunchBusy}
         showBranchPreview={false}
-        mode={linearIssuePickerMode}
+        mode="attach"
         onOpenChange={setLinearIssuePickerOpen}
         onSelectIssue={(laneIssue) => {
           onAddContextAttachment?.(makeLinearIssueContextAttachment(
@@ -6056,9 +7287,9 @@ export function AgentChatComposer({
       />
       <GitHubIssueSelectModal
         open={githubIssuePickerOpen}
-        ariaLabel={githubIssuePickerMode === "details" ? "GitHub issue" : "Attach GitHub issue"}
+        ariaLabel="Attach GitHub issue"
         selectedIssue={selectedGitHubContextIssue}
-        mode={githubIssuePickerMode}
+        mode="attach"
         actionLabel="Attach issue"
         actionBusyLabel="Attaching issue"
         actionDisabled={busy || parallelLaunchBusy}
@@ -6073,12 +7304,29 @@ export function AgentChatComposer({
           if (attachment) onRemoveContextAttachment?.(chatContextAttachmentKey(attachment));
         }}
       />
+      {jiraIssuePickerOpen ? (
+        <JiraIssueSelectModal
+          open
+          pin={chatRuntimePin}
+          selectedIssue={selectedJiraContextIssue}
+          onOpenChange={setJiraIssuePickerOpen}
+          onSelectIssue={(issue) => {
+            onAddContextAttachment?.(makeJiraIssueContextAttachment(issue));
+          }}
+          onRemoveIssue={(issue) => {
+            const attachment = contextAttachments.find(
+              (entry) => entry.type === "jira_issue" && entry.issue.id === issue.id,
+            );
+            if (attachment) onRemoveContextAttachment?.(chatContextAttachmentKey(attachment));
+          }}
+        />
+      ) : null}
       {showLaunchClipboardNotice && layoutVariant !== "grid-tile" ? (
         <div className="mx-auto mb-1.5 w-full max-w-[var(--chat-column,52rem)] px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45">
           Prompt copies to clipboard on send.{" "}
           <button
             type="button"
-            className="text-fg/70 underline decoration-white/20 underline-offset-2 transition-colors hover:text-fg"
+            className="text-fg/70 underline decoration-fg/20 underline-offset-2 transition-colors hover:text-fg"
             onClick={onOpenLaunchPromptClipboardSettings}
           >
             Setting
@@ -6113,6 +7361,7 @@ export function AgentChatComposer({
       <ChatComposerShell
       mode={surfaceMode}
       glowColor={composerGlowColor}
+      voiceBar={<CodexVoiceBar voice={codexVoice} />}
       className={cn(
         layoutVariant === "grid-tile"
           ? "border-0 bg-transparent shadow-none"
@@ -6208,10 +7457,10 @@ export function AgentChatComposer({
                   <img
                     src={selectedBuiltInBrowserContext.screenshotDataUrl}
                     alt=""
-                    className="h-16 w-16 rounded border border-white/[0.06] object-cover"
+                    className="h-16 w-16 rounded border border-fg/[0.06] object-cover"
                   />
                 ) : (
-                  <div className="flex h-16 w-16 items-center justify-center rounded border border-white/[0.06] bg-white/[0.03] text-teal-100/35">
+                  <div className="flex h-16 w-16 items-center justify-center rounded border border-fg/[0.06] bg-fg/[0.03] text-teal-100/35">
                     <Globe size={20} weight="regular" />
                   </div>
                 )}
@@ -6222,7 +7471,7 @@ export function AgentChatComposer({
                     </span>
                     <span className="truncate text-teal-50/85">{builtInBrowserContextDisplayLabel(selectedBuiltInBrowserContext)}</span>
                     {builtInBrowserContextRoleHint(selectedBuiltInBrowserContext) ? (
-                      <span className="shrink-0 rounded bg-white/[0.04] px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase text-muted-fg/55">
+                      <span className="shrink-0 rounded bg-fg/[0.04] px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase text-muted-fg/55">
                         {builtInBrowserContextRoleHint(selectedBuiltInBrowserContext)}
                       </span>
                     ) : null}
@@ -6256,10 +7505,10 @@ export function AgentChatComposer({
                   <img
                     src={selectedAppControlContext.screenshotDataUrl}
                     alt=""
-                    className="h-16 w-16 rounded border border-white/[0.06] object-cover"
+                    className="h-16 w-16 rounded border border-fg/[0.06] object-cover"
                   />
                 ) : (
-                  <div className="flex h-16 w-16 items-center justify-center rounded border border-white/[0.06] bg-white/[0.03] text-sky-100/35">
+                  <div className="flex h-16 w-16 items-center justify-center rounded border border-fg/[0.06] bg-fg/[0.03] text-sky-100/35">
                     <Desktop size={20} weight="regular" />
                   </div>
                 )}
@@ -6270,7 +7519,7 @@ export function AgentChatComposer({
                     </span>
                     <span className="truncate text-sky-50/85">{appControlContextDisplayLabel(selectedAppControlContext)}</span>
                     {appControlContextRoleHint(selectedAppControlContext) ? (
-                      <span className="shrink-0 rounded bg-white/[0.04] px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase tracking-wide text-muted-fg/55">
+                      <span className="shrink-0 rounded bg-fg/[0.04] px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase tracking-wide text-muted-fg/55">
                         {appControlContextRoleHint(selectedAppControlContext)}
                       </span>
                     ) : null}
@@ -6290,14 +7539,14 @@ export function AgentChatComposer({
                     <div className="text-muted-fg/45">{appControlContextFrameHint(selectedAppControlContext)}</div>
                   ) : null}
                   {selectedAppControlSnippet && selectedAppControlSnippet.trim().length ? (
-                    <pre className="mt-1 max-h-24 overflow-auto rounded border border-white/[0.05] bg-black/20 p-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] leading-4 text-sky-50/70">
+                    <pre className="mt-1 max-h-24 overflow-auto rounded border border-fg/[0.05] bg-black/20 p-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] leading-4 text-sky-50/70">
                       {selectedAppControlSnippet}
                     </pre>
                   ) : selectedAppControlCandidates.length ? (
                     <div className="space-y-1">
                       <div className="text-sky-100/45">Best source candidates</div>
                       {selectedAppControlCandidates.map((candidate, index) => (
-                        <div key={`${candidate.sourceFile}:${candidate.sourceLine}:${index}`} className="rounded border border-white/[0.05] bg-white/[0.025] px-1.5 py-1">
+                        <div key={`${candidate.sourceFile}:${candidate.sourceLine}:${index}`} className="rounded border border-fg/[0.05] bg-fg/[0.025] px-1.5 py-1">
                           <div className="truncate text-sky-50/70">
                             {String(candidate.sourceFile ?? "unknown")}{candidate.sourceLine ? `:${String(candidate.sourceLine)}` : ""}
                           </div>
@@ -6313,7 +7562,7 @@ export function AgentChatComposer({
                       <div className="text-sky-100/45">Nearby screen context</div>
                       <div className="flex flex-wrap gap-1">
                         {selectedAppControlNearby.map((element, index) => (
-                          <span key={`${String(element.id ?? index)}:${index}`} className="max-w-[160px] truncate rounded border border-white/[0.05] bg-white/[0.025] px-1.5 py-0.5 text-muted-fg/55">
+                          <span key={`${String(element.id ?? index)}:${index}`} className="max-w-[160px] truncate rounded border border-fg/[0.05] bg-fg/[0.025] px-1.5 py-0.5 text-muted-fg/55">
                             {String(element.label ?? element.role ?? element.tagName ?? "element")}
                           </span>
                         ))}
@@ -6337,10 +7586,10 @@ export function AgentChatComposer({
                   <img
                     src={selectedIosContext.screenshotDataUrl}
                     alt=""
-                    className="h-16 w-16 rounded border border-white/[0.06] object-cover"
+                    className="h-16 w-16 rounded border border-fg/[0.06] object-cover"
                   />
                 ) : (
-                  <div className="h-16 w-16 rounded border border-white/[0.06] bg-white/[0.03]" />
+                  <div className="h-16 w-16 rounded border border-fg/[0.06] bg-fg/[0.03]" />
                 )}
                 <div className="min-w-0 space-y-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/70">
                   <div className="truncate text-cyan-50/85">{iosContextDisplayLabel(selectedIosContext)}</div>
@@ -6356,14 +7605,14 @@ export function AgentChatComposer({
                   ) : null}
                   {iosFrameLabel(selectedIosContext) ? <div>{iosFrameLabel(selectedIosContext)}</div> : null}
                   {typeof selectedIosContext.metadata.sourceSnippet === "string" && selectedIosContext.metadata.sourceSnippet.trim().length ? (
-                    <pre className="mt-1 max-h-24 overflow-auto rounded border border-white/[0.05] bg-black/20 p-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] leading-4 text-cyan-50/70">
+                    <pre className="mt-1 max-h-24 overflow-auto rounded border border-fg/[0.05] bg-black/20 p-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] leading-4 text-cyan-50/70">
                       {selectedIosContext.metadata.sourceSnippet}
                     </pre>
                   ) : selectedIosCandidates.length ? (
                     <div className="space-y-1">
                       <div className="text-cyan-100/45">Best source candidates</div>
                       {selectedIosCandidates.map((candidate, index) => (
-                        <div key={`${candidate.sourceFile}:${candidate.sourceLine}:${index}`} className="rounded border border-white/[0.05] bg-white/[0.025] px-1.5 py-1">
+                        <div key={`${candidate.sourceFile}:${candidate.sourceLine}:${index}`} className="rounded border border-fg/[0.05] bg-fg/[0.025] px-1.5 py-1">
                           <div className="truncate text-cyan-50/70">
                             {String(candidate.sourceFile ?? "unknown")}{candidate.sourceLine ? `:${String(candidate.sourceLine)}` : ""}
                           </div>
@@ -6379,7 +7628,7 @@ export function AgentChatComposer({
                       <div className="text-cyan-100/45">Nearby screen context</div>
                       <div className="flex flex-wrap gap-1">
                         {selectedNearbyIosElements.map((element, index) => (
-                          <span key={`${String(element.id ?? index)}:${index}`} className="max-w-[160px] truncate rounded border border-white/[0.05] bg-white/[0.025] px-1.5 py-0.5 text-muted-fg/55">
+                          <span key={`${String(element.id ?? index)}:${index}`} className="max-w-[160px] truncate rounded border border-fg/[0.05] bg-fg/[0.025] px-1.5 py-0.5 text-muted-fg/55">
                             {String(element.label ?? element.componentId ?? element.role ?? element.elementType ?? "element")}
                           </span>
                         ))}
@@ -6469,15 +7718,23 @@ export function AgentChatComposer({
               onRemoveContext={onRemoveContextAttachment}
               onOpenContext={(attachment) => {
                 if (attachment.type === "linear_issue") {
-                  setLinearDetailsIssueId(attachment.issue.id);
-                  setLinearIssuePickerMode("details");
-                  setLinearIssuePickerOpen(true);
+                  // Peek at the issue before sending: the native viewer, where you are.
+                  const ref = linearIssueRef(attachment.issue.identifier, attachment.issue.url ?? null);
+                  if (ref) openIssueRef({ ref, source: "chip" });
                   return;
                 }
                 if (attachment.type === "github_issue") {
-                  setGitHubDetailsIssueId(attachment.issue.id);
-                  setGitHubIssuePickerMode("details");
-                  setGitHubIssuePickerOpen(true);
+                  const issue = attachment.issue;
+                  openIssueRef({
+                    ref: { provider: "github", owner: issue.owner, repo: issue.repo, number: issue.number, url: issue.url },
+                    source: "chip",
+                  });
+                  return;
+                }
+                if (attachment.type === "jira_issue") {
+                  const issue = attachment.issue;
+                  const ref = jiraIssueRef(issue.siteUrl, issue.key, issue.url);
+                  if (ref) openIssueRef({ ref, source: "chip", pin: composerMachineBinding });
                 }
               }}
               onRemovePendingImageAttachment={removePendingImageAttachment}
@@ -6503,7 +7760,7 @@ export function AgentChatComposer({
           />
           {attachmentPickerOpen ? (
             <div className="ade-chat-drawer-glass absolute bottom-full left-3 z-10 mb-3 w-80 overflow-hidden">
-              <div className="flex items-center gap-2 border-b border-white/[0.04] px-3 py-2.5">
+              <div className="flex items-center gap-2 border-b border-fg/[0.04] px-3 py-2.5">
                 <At size={11} weight="bold" className="text-muted-fg/30" />
                 <input
                   ref={attachmentInputRef}
@@ -6565,11 +7822,13 @@ export function AgentChatComposer({
         turnActive ? (
           <div className="ade-chat-composer-footer flex items-center justify-end px-2 py-1 sm:px-2.5">
             <ActiveTurnStopButton
-              mode={activeTurnStopMode}
-              allowQueueChoice={sessionProvider === "claude"}
+              mode={effectiveStopMode}
+              allowQueueChoice={providerSupportsStopModeChoice(sessionProvider)}
               backgroundJobCount={backgroundJobCount}
+              childChatCount={childChatCount}
+              provider={sessionProvider}
               onModeChange={updateActiveTurnStopMode}
-              onStop={() => onInterrupt(activeTurnStopMode)}
+              onStop={() => onInterrupt(effectiveStopMode)}
             />
           </div>
         ) : undefined
@@ -6588,7 +7847,7 @@ export function AgentChatComposer({
                   <button
                     type="button"
                     disabled={parallelLaunchBusy}
-                    className="shrink-0 rounded-lg border border-white/[0.1] px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/80 disabled:opacity-40"
+                    className="shrink-0 rounded-lg border border-fg/[0.1] px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg/80 disabled:opacity-40"
                     onClick={() => {
                       onParallelChatModeChange?.(false);
                       onParallelConfiguringIndexChange?.(null);
@@ -6609,10 +7868,10 @@ export function AgentChatComposer({
                         "flex flex-wrap items-center gap-2 rounded-lg border px-2.5 py-2 transition-colors",
                         configuring
                           ? "border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--chat-accent)_12%,transparent)]"
-                          : "border-white/[0.07] bg-white/[0.02]",
+                          : "border-fg/[0.07] bg-fg/[0.02]",
                       )}
                     >
-                      <span className="flex h-6 min-w-[1.5rem] items-center justify-center rounded-md bg-white/[0.06] font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold text-muted-fg/50">
+                      <span className="flex h-6 min-w-[1.5rem] items-center justify-center rounded-md bg-fg/[0.06] font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold text-muted-fg/50">
                         {idx + 1}
                       </span>
                       <span className="min-w-0 max-w-[min(200px,46%)] truncate font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-medium text-fg/82">
@@ -6625,7 +7884,7 @@ export function AgentChatComposer({
                             "rounded-md px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
                             configuring
                               ? "bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] text-fg/90"
-                              : "text-muted-fg/55 hover:bg-white/[0.06] hover:text-fg/75",
+                              : "text-muted-fg/55 hover:bg-fg/[0.06] hover:text-fg/75",
                           )}
                           disabled={parallelLaunchBusy}
                           onClick={() => onParallelConfiguringIndexChange?.(configuring ? null : idx)}
@@ -6655,7 +7914,7 @@ export function AgentChatComposer({
               <SmartTooltip content={{ label: "Add model", description: "Add another model and child lane to this parallel launch." }}>
                 <button
                   type="button"
-                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-white/[0.12] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-muted-fg/65 transition-colors hover:border-white/[0.2] hover:bg-white/[0.04] hover:text-fg/75 disabled:opacity-40"
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-fg/[0.12] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-muted-fg/65 transition-colors hover:border-fg/[0.2] hover:bg-fg/[0.04] hover:text-fg/75 disabled:opacity-40"
                   disabled={parallelLaunchBusy}
                   onClick={() => onParallelAddModel?.()}
                 >
@@ -6664,7 +7923,7 @@ export function AgentChatComposer({
                 </button>
               </SmartTooltip>
               {parallelLaunchBusy && parallelLaunchStatus ? (
-                <div className="mt-3 flex items-center gap-2 rounded-lg border border-white/[0.06] bg-black/20 px-2.5 py-2">
+                <div className="mt-3 flex items-center gap-2 rounded-lg border border-fg/[0.06] bg-black/20 px-2.5 py-2">
                   <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--chat-accent)]" />
                   <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/70">{parallelLaunchStatus}</span>
                 </div>
@@ -6695,7 +7954,7 @@ export function AgentChatComposer({
               );
             })()}
             {parallelChatMode && parallelConfiguringIndex != null && parallelSlotExecutionModeOptions.length > 0 ? (
-              <div className="flex flex-wrap items-center gap-px rounded-md border border-white/[0.06] bg-[#1a1a22] p-0.5">
+              <div className="flex flex-wrap items-center gap-px rounded-md border border-fg/[0.06] bg-surface-recessed p-0.5">
                 {parallelSlotExecutionModeOptions.map((option) => {
                   const active = parallelSlotExecutionMode === option.value;
                   return (
@@ -6711,7 +7970,7 @@ export function AgentChatComposer({
                         type="button"
                         className={cn(
                           "rounded-[8px] px-2.5 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider transition-colors",
-                          active ? "bg-white/[0.08] text-fg/80" : "text-muted-fg/35 hover:text-muted-fg/60",
+                          active ? "bg-fg/[0.08] text-fg/80" : "text-muted-fg/35 hover:text-muted-fg/60",
                           parallelLaunchBusy ? "cursor-not-allowed opacity-50" : "",
                         )}
                         disabled={parallelLaunchBusy}
@@ -6738,8 +7997,9 @@ export function AgentChatComposer({
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
                   runtimePin={modelRuntimePin}
                   allowCliOnlyModels={allowCliOnlyModels}
-                  listsHarnessPresets={listsHarnessPresets}
-                  {...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {})}
+                  // A parallel slot carries a model, not a preset, so a Custom
+                  // pick here would be silently dropped at launch.
+                  listsHarnessPresets={false}
                   disabled={parallelLaunchBusy}
                   compact
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
@@ -6748,8 +8008,9 @@ export function AgentChatComposer({
                   fastModeUnavailableReason={fastModeUnavailableReason}
                   {...(onParallelSlotFastModeChange
                     ? {
-                        onFastModeChange: (next: boolean) =>
-                          onParallelSlotFastModeChange(parallelConfiguringIndex, next),
+                        fastTier: parallelModelSlots[parallelConfiguringIndex]?.fastTier ?? null,
+                        onFastModeChange: (next: boolean, tier?: FastTier) =>
+                          onParallelSlotFastModeChange(parallelConfiguringIndex, next, tier),
                       }
                     : {})}
                 />
@@ -6764,12 +8025,20 @@ export function AgentChatComposer({
                 />
               </>
             ) : null}
-            {!hideModelControls && !parallelChatMode ? (
+            {!hideModelControls && !parallelChatMode && fixedModelLabel ? (
+              <SmartTooltip content={{ label: "Model", description: "A cloud session keeps the model it started with. Start a new session to use another." }}>
+                <span className={cn("inline-flex h-6 items-center truncate rounded-md px-2 text-[11px] font-medium text-fg/75", COMPOSER_MODEL_TRIGGER)}>
+                  {fixedModelLabel}
+                </span>
+              </SmartTooltip>
+            ) : null}
+            {!hideModelControls && !parallelChatMode && !fixedModelLabel ? (
               <>
                 <ModelPicker
                   value={modelId}
                   onChange={onModelChange}
                   {...(activeHarnessPreset ? { activePreset: activeHarnessPreset } : {})}
+                  activePresetId={activeHarnessPresetId}
                   openRequestKey={modelPickerOpenRequestKey}
                   onOpenRequestHandled={onModelPickerOpenRequestHandled}
                   {...(availableModelIds ? { availableModelIds } : {})}
@@ -6785,6 +8054,8 @@ export function AgentChatComposer({
                   compact
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
                   fastMode={fastModeActive}
+                  fastTier={fastTier}
+                  effectiveFastTier={effectiveFastTier}
                   fastModeSupported={fastModeSupported}
                   fastModeUnavailableReason={fastModeUnavailableReason}
                   {...(cursorCloudSessionActive ? {
@@ -6804,6 +8075,10 @@ export function AgentChatComposer({
                 />
               </>
             ) : null}
+            {/* The harness a Custom pick runs in, next to the model it applies
+                to. Only a Custom pick gets one: every other model names its own
+                provider already, in the trigger beside this. */}
+            {activeHarnessPreset ? <ComposerHarnessChip harness={activeHarnessPreset.harness} /> : null}
             {/* Right of the thinking-level selector when controls are present:
                 model, then how hard it thinks, then where it runs. It stays
                 outside that conditional because host surfaces hide model
@@ -6812,25 +8087,56 @@ export function AgentChatComposer({
               <ComposerMachineChip
                 machineName={composerMachineName}
                 cloud={cursorRuntime === "cloud"}
+                action={cursorRuntime === "cloud" ? null : machineChipAction}
               />
             ) : null}
           </div>
 
-          <ComposerPromptStash
-            ref={promptStashRef}
+          {draftsAvailable ? <ComposerDrafts
+            ref={draftsRef}
             draft={draft}
             attachments={attachments}
             composerMachineBinding={composerMachineBinding}
             provider={sessionProvider}
             modelId={modelId}
             active={isActive}
-            buttonVisible={promptStashButtonEnabled && !parallelChatMode}
+            buttonVisible={draftsButtonEnabled && !parallelChatMode}
             shortcutLabel={`${modifierKeyLabel}+S`}
             disabled={pendingImageAttachments.length > 0}
             onDraftChange={onDraftChange}
             onAddAttachment={onAddAttachment}
             onRemoveAttachment={handleRemoveAttachment}
-          />
+            onRequestSchedule={scheduledSendContext ? openDraftSchedule : undefined}
+          /> : null}
+
+          {scheduleRequest && scheduledSendContext ? (() => {
+            // Anchored to the send caret, so scheduling reads as a send mode
+            // rather than a separate panel appearing from nowhere.
+            const anchor = document.querySelector<HTMLButtonElement>(
+              '[data-testid="composer-send-mode-button"]',
+            )
+              // The idle send caret does not exist during a running turn, and
+              // the wrapper only exists in the empty-state hero. The dock is
+              // present in the active-chat surface the drafts list is used from.
+              ?? document.querySelector<HTMLElement>('[data-chat-composer-dock]')
+              ?? document.querySelector<HTMLElement>('[data-chat-composer-wrapper]');
+            if (!anchor) return null;
+            return (
+              <ViewportOverlayPortal layer="popover">
+                <div className="pointer-events-auto absolute" style={composerSplitMenuPosition(anchor)}>
+                  <DraftSchedulePopover
+                    targets={scheduleTargets}
+                    config={scheduleConfig}
+                    lanes={scheduledSendContext.lanes}
+                    busy={scheduleBusy}
+                    error={scheduleError}
+                    onSubmit={(input) => { void submitSchedule(input); }}
+                    onClose={() => setScheduleRequest(null)}
+                  />
+                </div>
+              </ViewportOverlayPortal>
+            );
+          })() : null}
 
           {!parallelChatMode && usageViewModel ? (
             <ContextUsageDial
@@ -6885,13 +8191,38 @@ export function AgentChatComposer({
                     setIssueContextMenuOpen((open) => !open);
                   },
                 },
+                {
+                  // The person adds a project secret themselves. The value goes
+                  // to the project's encrypted secrets; only the name lands in
+                  // the draft, so the agent learns it exists and nothing more.
+                  id: "add-secret",
+                  label: "Add secret…",
+                  icon: <LockKey size={14} weight="regular" />,
+                  disabled: composerInputLocked,
+                  onSelect: () => setAddSecretOpen(true),
+                },
                 ...(cursorCloudPanelAvailable && onToggleCursorCloudPanel
                   ? [{
                       id: "cursor-cloud-panel",
-                      label: cursorCloudPaneOpen ? "Close Cursor Cloud agents" : "Open Cursor Cloud agents",
-                      icon: <CloudArrowUp size={14} weight={cursorCloudPaneOpen ? "fill" : "regular"} />,
-                      active: cursorCloudPaneOpen,
+                      label: "Cursor Cloud agents…",
+                      icon: <CloudArrowUp size={14} weight="regular" />,
                       onSelect: onToggleCursorCloudPanel,
+                    }]
+                  : []),
+                ...(devinCloudPanelAvailable && onToggleDevinCloudPanel
+                  ? [{
+                      id: "devin-cloud-panel",
+                      label: "Devin Cloud sessions…",
+                      icon: <DevinLogo size={14} />,
+                      onSelect: onToggleDevinCloudPanel,
+                    }]
+                  : []),
+                ...(devinCloudHandoffAvailable && onHandoffToDevinCloud
+                  ? [{
+                      id: "devin-cloud-handoff",
+                      label: "Hand off to Devin Cloud",
+                      icon: <CloudArrowUp size={14} weight="regular" />,
+                      onSelect: onHandoffToDevinCloud,
                     }]
                   : []),
                 ...(showParallelChatToggle && !parallelChatMode
@@ -6923,6 +8254,23 @@ export function AgentChatComposer({
                   : []),
               ]}
             />
+
+            <AddProjectSecretDialog
+              open={addSecretOpen}
+              onOpenChange={setAddSecretOpen}
+              onSaved={(name) => {
+                const note = projectSecretComposerNote(name);
+                onDraftChange(draft.trim().length ? `${draft.replace(/\s+$/, "")}\n\n${note}` : note);
+                showToast({
+                  tone: "success",
+                  title: `${name} saved to this project`,
+                  message: "The value stays hidden. A note naming it is in your draft.",
+                });
+              }}
+            />
+
+            {/* Codex voice: talk with this chat. */}
+            {codexVoiceOffered ? <CodexVoiceButton voice={codexVoice} /> : null}
 
             {/* Voice dictation — paired just left of the send control. */}
             {voiceInputEnabled && !composerInputLocked && !parallelChatMode ? (
@@ -6965,14 +8313,14 @@ export function AgentChatComposer({
                   <SmartTooltip forceEnabled content={{ label: "Clear draft", description: "Clear the unsent text without interrupting the active turn." }}>
                     <button
                       type="button"
-                      className="inline-flex h-6 items-center justify-center rounded-md border border-white/[0.06] px-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45 transition-all hover:bg-white/[0.04] hover:text-fg/72"
+                      className="inline-flex h-6 items-center justify-center rounded-md border border-fg/[0.06] px-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45 transition-all hover:bg-fg/[0.04] hover:text-fg/72"
                       onClick={onClearDraft}
                     >
                       Clear
                     </button>
                   </SmartTooltip>
                 ) : null}
-                {!composerInputLocked ? (
+                {!composerInputLocked ? withThreadComments(
                   activeTurnSendMenuEnabled ? (
                     // Claude Code parity: the caret selects delivery behavior;
                     // the primary button and Enter execute that selection.
@@ -6980,8 +8328,9 @@ export function AgentChatComposer({
                       enabled={activeSteerEnabled}
                       mode={effectiveActiveTurnSendMode}
                       capability={activeTurnSendCapability}
-                      allowInline={Boolean(onSendSteerNow)}
+                      allowInline={Boolean(draftInlineSteerHandler)}
                       allowInterrupt={Boolean(onSendSteerInterrupt)}
+                      inlineBlockedReason={onSendSteerNow ? draftInlineBlockedReason : null}
                       onModeChange={setActiveTurnSendMode}
                       onSend={submitActiveTurnDraft}
                     />
@@ -6990,13 +8339,15 @@ export function AgentChatComposer({
                     // queue affordance; it still explains itself on hover.
                     <SmartTooltip forceEnabled content={{ label: "Send steer message", description: "Queue this message and send it to the running chat after the current turn finishes." }}>
                       <button
+                        data-send-part=""
+                        data-send-control=""
                         type="button"
                         disabled={!activeSteerEnabled}
                         className={cn(
                           "inline-flex h-7 w-7 items-center justify-center rounded-full transition-all",
                           activeSteerEnabled
                             ? "bg-white/90 text-zinc-900 hover:bg-white"
-                            : "cursor-not-allowed bg-white/[0.06] text-muted-fg/20",
+                            : "cursor-not-allowed bg-fg/[0.06] text-muted-fg/20",
                         )}
                         onClick={submitComposerDraft}
                         aria-label="Send steer message"
@@ -7004,14 +8355,16 @@ export function AgentChatComposer({
                         <ArrowUp size={14} weight="bold" />
                       </button>
                     </SmartTooltip>
-                  )
+                  ),
                 ) : null}
                 <ActiveTurnStopButton
-                  mode={activeTurnStopMode}
-                  allowQueueChoice={sessionProvider === "claude"}
+                  mode={effectiveStopMode}
+                  allowQueueChoice={providerSupportsStopModeChoice(sessionProvider)}
                   backgroundJobCount={backgroundJobCount}
+                  childChatCount={childChatCount}
+                  provider={sessionProvider}
                   onModeChange={updateActiveTurnStopMode}
-                  onStop={() => onInterrupt(activeTurnStopMode)}
+                  onStop={() => onInterrupt(effectiveStopMode)}
                 />
               </>
             ) : (
@@ -7025,12 +8378,12 @@ export function AgentChatComposer({
                 const label = parallelChatMode
                   ? "Send to lanes"
                   : cloudMode
-                    ? "Send to Cursor Cloud"
+                    ? `Send to ${cloudTargetLabel}`
                     : "Send";
                 const description = parallelChatMode
                   ? "Create child lanes and send this prompt with its attachments to every configured model."
                   : cloudMode
-                    ? "Launch a Cursor Cloud agent with this prompt and the panel's settings."
+                    ? `Launch a ${cloudTargetLabel} session with this prompt and the panel's settings.`
                     : "Send this prompt to the selected model.";
                 const backgroundAvailable = Boolean(onSubmitInBackground) && !parallelChatMode && !cloudMode;
                 const sendIcon = cloudMode
@@ -7039,15 +8392,17 @@ export function AgentChatComposer({
 
                 // Without a background option this is a plain circular Send.
                 if (!backgroundAvailable) {
-                  return (
+                  return withThreadComments(
                     <SmartTooltip forceEnabled content={{ label, description, effect: sendButtonTitle() }}>
                       <button
+                        data-send-part=""
+                        data-send-control=""
                         type="button"
                         className={cn(
                           "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all",
                           sendEnabled
                             ? "bg-white/90 text-zinc-900 hover:bg-white"
-                            : "bg-white/[0.06] text-muted-fg/20",
+                            : "bg-fg/[0.06] text-muted-fg/20",
                         )}
                         disabled={!sendEnabled}
                         onClick={submitComposerDraft}
@@ -7055,11 +8410,11 @@ export function AgentChatComposer({
                       >
                         {sendIcon}
                       </button>
-                    </SmartTooltip>
+                    </SmartTooltip>,
                   );
                 }
 
-                return (
+                return withThreadComments(
                   <ComposerIdleSendButton
                     label={label}
                     description={description}
@@ -7071,7 +8426,8 @@ export function AgentChatComposer({
                     backgroundBusy={backgroundLaunchBusy}
                     onSend={submitComposerDraft}
                     onSendInBackground={onSubmitInBackground!}
-                  />
+                    onSchedule={scheduledSendContext ? openComposerSchedule : undefined}
+                  />,
                 );
               })()
             )}
@@ -7103,7 +8459,7 @@ export function AgentChatComposer({
         >
           {dragActive ? (
             <div className="pointer-events-none absolute inset-0 z-[1]">
-              <ChatAttachmentDropOverlay variant="composer" parallelChatMode={parallelChatMode} />
+              <ChatAttachmentDropOverlay variant="composer" parallelChatMode={parallelChatMode} kind={dragActive === "reference" ? "reference" : "files"} />
             </div>
           ) : null}
 
@@ -7115,6 +8471,31 @@ export function AgentChatComposer({
               registerAsDictationTarget();
             }}
           >
+            {modelChipEdit ? (() => {
+              const segmentNode = modelChipEdit.chip.querySelector<HTMLElement>(
+                `[data-model-segment='${modelChipEdit.segment}']`,
+              );
+              const mention = parseModelMentionToken(modelChipEdit.chip.dataset.composerChipText ?? "");
+              const options = modelChipOptions(
+                modelChipEdit.segment,
+                mention ? describeChipModel(mention.modelId) : null,
+              );
+              return segmentNode ? (
+                <ModelChipSegmentMenu
+                  anchor={segmentNode}
+                  segment={modelChipEdit.segment}
+                  options={options}
+                  activeIndex={modelChipEdit.index}
+                  onPick={(index) => {
+                    const { chip, segment } = modelChipEdit;
+                    applyModelChipOption(chip, segment, index, segment);
+                    setModelChipEdit({ chip, segment, index });
+                    stepModelChipEdit(1);
+                  }}
+                  onClose={closeModelChipEdit}
+                />
+              ) : null;
+            })() : null}
             <ChatCommandMenu
               ref={commandMenuRef}
               trigger={commandMenuTrigger}
@@ -7123,10 +8504,15 @@ export function AgentChatComposer({
                 description: c.description,
                 argumentHint: c.argumentHint,
                 source: c.source,
+                kind: c.kind,
+                origin: c.origin,
+                server: c.server,
               }))}
               onFileSearch={onSearchAttachments}
               onMentionSearch={onSearchMentions}
               onPrSearch={onSearchPullRequests}
+              modelOptions={modelMentionOptions}
+              recentModelIds={modelRecents}
               anchor={commandMenuAnchor}
               onSelect={handleCommandMenuSelect}
               onClose={closeCommandMenu}
@@ -7195,6 +8581,7 @@ export function AgentChatComposer({
                     cancelPromptHistorySequence();
                     captureRichSelection();
                     disarmAttachmentChip();
+                    closeModelChipEdit();
                   }}
                   onMouseOver={(event) => {
                     const chip = (event.target as HTMLElement | null)?.closest?.<HTMLElement>(COMPOSER_ATTACHMENT_CHIP_SELECTOR);
@@ -7217,6 +8604,14 @@ export function AgentChatComposer({
                       event.stopPropagation();
                       setAttachmentChipPeek(null);
                       openAttachmentChipPreview(attachmentChip.dataset.composerAttachmentPath);
+                      return;
+                    }
+                    const modelSegment = target?.closest?.("[data-model-segment]") as HTMLElement | null;
+                    const modelChip = modelSegment?.closest?.("[data-composer-chip='model']") as HTMLElement | null;
+                    if (modelSegment && modelChip) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      openModelChipSegment(modelChip, modelSegment.dataset.modelSegment as ModelChipSegment);
                       return;
                     }
                     const smartLinkChip = target?.closest?.("[data-smart-link-url]") as HTMLElement | null;
@@ -7341,7 +8736,7 @@ export function AgentChatComposer({
                   spellCheck={true}
                   aria-label={composerInputAccessibleLabel}
                   className={cn(
-                    "block w-full resize-none bg-transparent px-4 py-2.5 text-left text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
+                    "block min-h-[28px] w-full resize-none overflow-y-auto bg-transparent px-4 py-2.5 [field-sizing:content] text-left text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
                     // The textarea sits above the token overlay with transparent text, so the
                     // default (opaque) selection background would paint over the overlay and
                     // make the selected text vanish entirely. A translucent selection reads as
@@ -7350,7 +8745,7 @@ export function AgentChatComposer({
                     dragActive ? "opacity-30" : "",
                     parallelLaunchBusy || composerInputLocked ? "cursor-not-allowed opacity-50" : "",
                   )}
-                  style={plainOverlayContent ? { caretColor: "var(--color-fg)" } : undefined}
+                  style={{ maxHeight: textareaMaxHeightPx, ...(plainOverlayContent ? { caretColor: "var(--color-fg)" } : {}) }}
                   data-chat-layout-variant={layoutVariant}
                   data-chat-composer-text=""
                   placeholder={composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion || messagePlaceholder || "Type to vibecode..."))}
@@ -7400,6 +8795,24 @@ export function AgentChatComposer({
         </div>
         );
 
+        const secretRequestCard = askQuestionRequest ? readProjectSecretRequestCard(askQuestionRequest) : null;
+        if (askQuestionRequest && secretRequestCard) {
+          // The private secret card. Its value travels only as the answer to
+          // the request's `isSecret` question; the composer draft is never
+          // touched, so nothing typed here can ride a later message.
+          return (
+            <ProjectSecretRequestComposer
+              key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
+              request={askQuestionRequest}
+              card={secretRequestCard}
+              responding={approvalResponding ?? false}
+              onSave={(value) => { void onApproval("accept", null, projectSecretSaveAnswers(secretRequestCard, value)); }}
+              onKeepExisting={() => { void onApproval("accept", null, projectSecretKeepAnswers()); }}
+              onDecline={() => { void onApproval("decline"); }}
+            />
+          );
+        }
+
         if (askQuestionRequest) {
           return (
             <AskQuestionComposer
@@ -7436,28 +8849,46 @@ export function AgentChatComposer({
           );
         }
 
+        // The one thing the tags cannot say, kept visible because tooltips
+        // never show on a touch pointer: why a message has to wait.
+        const queueLimitNote = !pendingSteers.length ? null
+          : activeTurnSendCapability.modes.every((mode) => mode === "queue")
+            ? `${activeTurnSendCapability.agentLabel} cannot take a message mid-turn, so ${pendingSteers.length === 1 ? "it sends" : "they send"} when the turn ends.`
+            : onDispatchSteerInline ? pendingSteers.map(stagedSteerInlineBlock).find(Boolean) ?? null : null;
+        const firstSteerLabel = usageViewModel?.state === "compacting" ? "After compaction" : "Sends next";
         return (
           <>
       {/* Pending steers queue — shows queued messages above the input */}
       {pendingSteers.length > 0 ? (
-        <div className="border-b border-white/[0.06] bg-white/[0.02] px-3 py-2 space-y-1.5">
-          <div className="flex items-baseline gap-2">
-            <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.16em] text-fg/30">
-              Staged {pendingSteers.length === 1 ? "message" : `messages (${pendingSteers.length})`}
-            </span>
-            <span className="font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/30">
-              {stagedSteerHint({
-                capability: activeTurnSendCapability,
-                canSendNow: Boolean(onDispatchSteerInline),
-                canInterrupt: Boolean(onDispatchSteerInterrupt),
-              })}
-            </span>
-          </div>
-          {pendingSteers.map((steer) => (
+        <div className="px-2 pb-1 pt-2">
+        <div
+          className="space-y-1"
+          role="list"
+          aria-label={pendingSteers.length === 1 ? "Queued message" : `${pendingSteers.length} queued messages`}
+        >
+          {orderedPendingSteers.map((steer, index) => (
             <PendingSteerItem
               key={steer.steerId}
               steer={steer}
               capability={activeTurnSendCapability}
+              statusLabel={index > 0 ? "Queued" : firstSteerLabel}
+              statusHint={stagedSteerHint({
+                capability: activeTurnSendCapability,
+                canSendNow: Boolean(onDispatchSteerInline) && !stagedSteerInlineBlock(steer),
+                canInterrupt: Boolean(onDispatchSteerInterrupt),
+                canReorder: canReorderSteers,
+                inlineBlockedReason: onDispatchSteerInline ? stagedSteerInlineBlock(steer) ?? null : null,
+              })}
+              attachmentTray={steer.attachments.length || steer.contextAttachments.length ? (
+                <ChatAttachmentTray
+                  attachments={steer.attachments}
+                  contextAttachments={steer.contextAttachments}
+                  machinePin={composerMachineBinding}
+                  mode={surfaceMode}
+                  className="mt-1 gap-1.5 px-0 py-0"
+                />
+              ) : null}
+              reorder={canReorderSteers ? steerReorderPropsFor(steer.steerId, index) : undefined}
               onCancel={() => onCancelSteer?.(steer.steerId)}
               onEdit={() => onEditSteer?.(
                 steer.steerId,
@@ -7465,10 +8896,16 @@ export function AgentChatComposer({
                 steer.attachments,
                 steer.contextAttachments,
               )}
-              onSendNow={onDispatchSteerInline ? () => onDispatchSteerInline(steer.steerId) : undefined}
+              onSendNow={onDispatchSteerInline && !stagedSteerInlineBlock(steer)
+                ? () => onDispatchSteerInline(steer.steerId)
+                : undefined}
               onInterrupt={onDispatchSteerInterrupt ? () => onDispatchSteerInterrupt(steer.steerId) : undefined}
             />
           ))}
+        </div>
+          {queueLimitNote ? (
+            <p className="px-1 pt-0.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/40">{queueLimitNote}</p>
+          ) : null}
         </div>
       ) : null}
 

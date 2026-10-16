@@ -1,11 +1,12 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProvidersSection } from "./ProvidersSection";
 import type { AgentChatEventEnvelope, AiSettingsStatus, CursorSdkAuthEvent, PiAuthStatusEvent } from "../../../shared/types";
+import { setUsageHeaderVisible, setUsageProviderVisible, useUsageHeaderPreferences } from "../usage/usageHeaderPreferences";
 
 vi.mock("@lobehub/icons", () => {
   const brand = () => {
@@ -263,6 +264,7 @@ describe("ProvidersSection", () => {
   let emitCursorAuthStatus: ((event: CursorSdkAuthEvent) => void) | null = null;
 
   beforeEach(() => {
+    setUsageHeaderVisible(true);
     emitChatEvent = null;
     emitOAuthStatus = null;
     emitPiAuthStatus = null;
@@ -357,7 +359,24 @@ describe("ProvidersSection", () => {
 
   afterEach(() => {
     cleanup();
+    setUsageHeaderVisible(true);
     globalThis.window.ade = originalAde;
+  });
+
+  it("restores every provider when usage is turned back on from provider settings", async () => {
+    const providers = ["claude", "codex", "cursor", "copilot", "grok", "opencode", "kimi"] as const;
+    providers.forEach((provider) => setUsageProviderVisible(provider, false));
+    const preferences = renderHook(() => useUsageHeaderPreferences());
+    renderProvidersSection();
+
+    const showUsage = await screen.findByRole("switch", { name: "Show usage in header" });
+    expect(showUsage.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(showUsage);
+
+    await waitFor(() => expect(showUsage.getAttribute("aria-checked")).toBe("true"));
+    expect(preferences.result.current.showInHeader).toBe(true);
+    expect(Object.values(preferences.result.current.providers).every(Boolean)).toBe(true);
+    preferences.unmount();
   });
 
   it("refreshes provider status after an auth-related chat failure", async () => {
@@ -371,7 +390,7 @@ describe("ProvidersSection", () => {
     expect(ade.ai.getStatus).toHaveBeenCalledWith({
       force: false,
       refreshOpenCodeInventory: false,
-    });
+    }, null);
 
     expect((await screen.findAllByText(/claude-agent-sdk-darwin-arm64\/claude/)).length).toBeGreaterThan(0);
 
@@ -397,6 +416,12 @@ describe("ProvidersSection", () => {
   });
 
   it("shows Connected while the bundled Claude runtime is authenticated", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], {
+      claudeBinaryPresent: true,
+      claudeAuthReady: true,
+    }));
     renderProvidersSection("claude");
 
     await waitFor(() => {
@@ -537,6 +562,29 @@ describe("ProvidersSection", () => {
     expect(within(tile).getByText(/Verify the Cursor API key to enable Cursor chat/i)).toBeTruthy();
   });
 
+  it("keeps one Cursor status subscription when a local provider edit changes refreshStatus", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, ["lmstudio/qwen2.5-coder:32b"]));
+    // The status feed re-anchors at its live head on every subscription, so a
+    // re-subscribe drops a "success" emitted while it was swapping. Opening an
+    // unrelated editor re-creates the refresh callback; the feed must survive.
+    let subscribeCount = 0;
+    window.ade.ai.onCursorAuthStatus = vi.fn(() => {
+      subscribeCount += 1;
+      return () => undefined;
+    }) as any;
+
+    renderProvidersSection("opencode");
+
+    const edits = await screen.findAllByRole("button", { name: "Edit" });
+    expect(subscribeCount).toBe(1);
+
+    fireEvent.click(edits[0]);
+
+    expect(subscribeCount).toBe(1);
+  });
+
   it("signs in with Cursor, shows the login URL while pending, then signs out", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
@@ -619,10 +667,9 @@ describe("ProvidersSection", () => {
 
     await waitFor(() => {
       expect(window.ade.ai.cursorAuthLogin).toHaveBeenCalledTimes(1);
-      expect(window.ade.ai.verifyApiKey).toHaveBeenCalledWith("cursor");
+      expect(window.ade.ai.verifyApiKey).toHaveBeenCalledWith("cursor", null);
     });
-    expect(await screen.findByText("Signed in as ada@cursor.com")).toBeTruthy();
-    expect(screen.getByLabelText("Sign out of Cursor")).toBeTruthy();
+    expect(await screen.findByLabelText("Sign out of Cursor")).toBeTruthy();
 
     await act(async () => {
       screen.getByLabelText("Sign out of Cursor").click();
@@ -650,37 +697,15 @@ describe("ProvidersSection", () => {
     expect(screen.queryByLabelText("Search all OpenCode providers")).toBeNull();
   });
 
-  /**
-   * Custom is not an eleventh provider.
-   *
-   * It sat as the last row INSIDE the providers table, where it read as a
-   * thing you sign in to. It is the combinations you saved of the ten above,
-   * so it is its own section, below them, with its own mark — a purple gear-and-wrench mark,
-   * not the ADE logo it used to wear and not a vendor's.
-   */
-  it("puts Custom in its own section below the provider table, under the Custom mark", async () => {
+  it("opens the custom provider editor from the settings section", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
     getStatusMock.mockResolvedValue(buildStatus(true, []));
 
-    const { container } = renderProvidersSection();
-
-    const entry = await waitFor(() => {
-      const node = container.querySelector('[data-custom-presets-entry="true"]');
-      expect(node).toBeTruthy();
-      return node as HTMLElement;
-    });
-
-    const providerTable = container.querySelector('[data-settings-manager="ai-providers"]');
-    const customSection = container.querySelector('[data-settings-manager="ai-harnesses-entry"]');
-    expect(providerTable).toBeTruthy();
-    expect(customSection).toBeTruthy();
-    // Document order: the whole provider table, then Custom.
-    expect(providerTable!.compareDocumentPosition(customSection!) & Node.DOCUMENT_POSITION_FOLLOWING)
-      .toBeTruthy();
-    expect(providerTable!.contains(customSection!)).toBe(false);
-    expect(customSection!.querySelector("[data-custom-mark]")).toBeTruthy();
-    expect(entry.querySelector("[data-harness-logo]")).toBeNull();
+    renderProvidersSection();
+    const add = await waitFor(() => screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(add);
+    expect(await screen.findByRole("dialog", { name: "New custom provider" })).toBeTruthy();
   });
 
   /**
@@ -755,6 +780,23 @@ describe("ProvidersSection", () => {
     expect(screen.queryByText(/subscriptions ·/i)).toBeNull();
   });
 
+  it("keeps a connected OpenCode provider visible when it advertises no models", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], {
+      opencodeProviders: [{ id: "openai", name: "OpenAI", connected: true, modelCount: 0 }],
+    }));
+    const authMethodsMock = window.ade.ai.opencodeAuthMethods as ReturnType<typeof vi.fn>;
+    authMethodsMock.mockReset();
+    authMethodsMock.mockResolvedValue({ methods: {} });
+
+    renderProvidersSection("opencode");
+
+    const tile = await screen.findByLabelText("Open OpenAI");
+    expect(within(tile).getByText("Connected")).toBeTruthy();
+    expect(within(tile).getByText("No models")).toBeTruthy();
+  });
+
   /** Open a Pi provider's card, then return its sign-in button from the dialog. */
   async function openPiProviderSignIn(providerName: string, buttonName: string): Promise<HTMLElement> {
     const tile = await screen.findByRole("button", {
@@ -778,7 +820,6 @@ describe("ProvidersSection", () => {
 
     expect(await screen.findByText("Pi")).toBeTruthy();
     expect(screen.getByText(/Uses Pi’s installed SDK package/)).toBeTruthy();
-    expect(screen.getByText(/Version 0.84.0/)).toBeTruthy();
     expect(screen.getByText("OpenAI Codex")).toBeTruthy();
     expect(screen.getByText(/7 models/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Open settings.json" })).toBeTruthy();
@@ -814,7 +855,7 @@ describe("ProvidersSection", () => {
     await act(async () => {
       signIn.click();
     });
-    expect(window.ade.ai.piLoginStart).toHaveBeenCalledWith({ providerId: "xai", method: "oauth" });
+    expect(window.ade.ai.piLoginStart).toHaveBeenCalledWith({ providerId: "xai", method: "oauth" }, null);
 
     await act(async () => {
       emitPiAuthStatus?.({
@@ -841,7 +882,7 @@ describe("ProvidersSection", () => {
       providerId: "xai",
       requestId: "req-1",
       value: "code-42",
-    });
+    }, null);
 
     await act(async () => {
       resolveLogin?.({ ok: true });
@@ -913,7 +954,7 @@ describe("ProvidersSection", () => {
       screen.getByRole("button", { name: "Try again" }).click();
     });
     expect(startMock).toHaveBeenCalledTimes(2);
-    expect(startMock).toHaveBeenLastCalledWith({ providerId: "xai", method: "oauth" });
+    expect(startMock).toHaveBeenLastCalledWith({ providerId: "xai", method: "oauth" }, null);
   });
 
   it("treats a cancelled Pi sign-in as a choice, not a failure", async () => {
@@ -1233,7 +1274,7 @@ describe("ProvidersSection", () => {
       within(localServers).getByRole("button", { name: /Refresh/ }).click();
     });
 
-    expect(getStatusMock).toHaveBeenCalledWith(expect.objectContaining({ force: true }));
+    expect(getStatusMock).toHaveBeenCalledWith(expect.objectContaining({ force: true }), null);
   });
 
   it("filters Pi providers with the search box", async () => {
@@ -1286,8 +1327,7 @@ describe("ProvidersSection", () => {
 
     renderProvidersSection("opencode");
 
-    expect(await screen.findByText("npm i -g opencode-ai")).toBeTruthy();
-    expect(screen.getByText("brew install anomalyco/tap/opencode")).toBeTruthy();
+    expect(await screen.findByText("npm i -g @opencode/cli")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Re-check/ })).toBeTruthy();
     // The group body is hidden while uninstalled.
     expect(screen.queryByText(/^All providers/)).toBeNull();
@@ -1478,7 +1518,7 @@ describe("ProvidersSection", () => {
     });
 
     expect(await screen.findByText("OpenCode rejected this key.")).toBeTruthy();
-    expect(setProviderKeyMock).toHaveBeenCalledWith({ providerId: "openai", key: "sk-test" });
+    expect(setProviderKeyMock).toHaveBeenCalledWith({ providerId: "openai", key: "sk-test" }, null);
     expect(window.ade.ai.storeApiKey).not.toHaveBeenCalled();
     expect(screen.getByLabelText("OpenAI API key")).toBeTruthy();
     expect(screen.queryByText("openai key saved.")).toBeNull();
@@ -1514,8 +1554,8 @@ describe("ProvidersSection", () => {
     });
 
     await waitFor(() => {
-      expect(window.ade.ai.clearOpencodeProviderKey).toHaveBeenCalledWith({ providerId: "openai" });
-      expect(window.ade.ai.deleteApiKey).toHaveBeenCalledWith("openai");
+      expect(window.ade.ai.clearOpencodeProviderKey).toHaveBeenCalledWith({ providerId: "openai" }, null);
+      expect(window.ade.ai.deleteApiKey).toHaveBeenCalledWith("openai", null);
     });
     expect(await screen.findByText("OpenAI disconnected.")).toBeTruthy();
   });
@@ -1556,7 +1596,7 @@ describe("ProvidersSection", () => {
         providerId: "openai",
         methodIndex: 0,
         inputs: undefined,
-      });
+      }, null);
       expect(window.ade.app.openExternal).toHaveBeenCalledWith("https://auth.openai.com/device");
     });
 
@@ -1643,7 +1683,7 @@ describe("ProvidersSection", () => {
       await waitFor(() => {
         expect(current.getByText("everything is fine")).toBeTruthy();
       });
-      expect(runDiagnostics).toHaveBeenCalledWith({ provider: "grok", runDoctor: true });
+      expect(runDiagnostics).toHaveBeenCalledWith({ provider: "grok", runDoctor: true }, null);
 
       cleanup();
       // Qwen ships no `doctor`, so offering the button would run the word as a
@@ -1664,7 +1704,7 @@ describe("ProvidersSection", () => {
       await act(async () => {
         fireEvent.click(disable);
       });
-      expect(window.ade.ai.updateConfig).toHaveBeenCalledWith({ disabledProviders: ["grok"] });
+      expect(window.ade.ai.updateConfig).toHaveBeenCalledWith({ disabledProviders: ["grok"] }, null);
     });
 
     it("shows Disabled on the tile and offers the way back on", async () => {

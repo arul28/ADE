@@ -9,11 +9,15 @@ enum WorkToolChipKind: Equatable {
   /// The lane's Apple device, while it is up. Opens `AppleDeviceViewer`.
   /// `family` is the status's raw family, for the glyph.
   case simulator(name: String, family: String?)
-  /// The desktop browser's tabs. Opens `WorkToolsSheet`. `agentUsing`: a chat
+  /// The desktop browser, one chip for all its tabs. Opens the browser sheet,
+  /// which lists the tabs. `agentUsing`: a chat
   /// in this lane is driving the browser right now.
   case browser(tabCount: Int, agentUsing: Bool)
-  /// What App Control is attached to. Opens `WorkToolsSheet`.
-  case appControl(appName: String)
+  /// What App Control is attached to. Opens `AppControlViewer` when the host
+  /// streams its frames, otherwise the App Control sheet. `live`: the app is
+  /// attached over CDP, so frames flow. The chip reads "App": the host's
+  /// `appName` is often the launch command ("npm start"), which is not a name.
+  case appControl(appName: String, live: Bool = false)
   /// The lane's private macOS screen, while it has one. Opens
   /// `MacDesktopViewer`. `streamLive`: frames flow at full rate.
   /// `agentDriving`: an agent holds the screen's input lease.
@@ -33,15 +37,23 @@ enum WorkToolChipKind: Equatable {
 
 struct WorkToolChip: Equatable, Identifiable {
   let kind: WorkToolChipKind
+  var desktopPlatformLabel: String? = nil
 
   /// The chip's full name, derived from `kind` so the two cannot drift.
   var label: String {
     switch kind {
     case .simulator(let name, _): return name
     case .browser(let tabCount, _): return workBrowserChipLabel(tabCount: tabCount)
-    case .appControl(let appName): return appName
-    case .macDesktop: return "macOS"
+    case .appControl: return appControlTagLabel
+    case .macDesktop: return desktopPlatformLabel ?? "macOS"
     }
+  }
+
+  /// The chip's SF Symbol: the kind's, except a Windows host's screen, which
+  /// takes the four-pane mark the desktop uses for Windows.
+  var symbolName: String {
+    if case .macDesktop = kind, desktopPlatformLabel == "Windows" { return windowsDesktopSymbolName }
+    return kind.symbolName
   }
 
   /// The text on the chip. The simulator chip already shows the device icon,
@@ -74,7 +86,8 @@ struct WorkToolChip: Equatable, Identifiable {
 /// - Browser: when the desktop browser has tabs ("1 tab" / "N tabs"), or when
 ///   an agent is driving it with none listed ("Browser") — an agent on the
 ///   browser was always reason enough to surface it.
-/// - App Control: the attached app's name.
+/// - App Control: "App" while an app is attached. Live dot while it is
+///   attached and sending frames.
 func workToolChips(state: WorkToolsLaneState?, appleDevice: AppleDeviceStatus?) -> [WorkToolChip] {
   var chips: [WorkToolChip] = []
   if let name = appleDeviceRunningName(appleDevice) {
@@ -90,7 +103,7 @@ func workToolChips(state: WorkToolsLaneState?, appleDevice: AppleDeviceStatus?) 
   }
   if let appName = state?.appControl?.appName.trimmingCharacters(in: .whitespacesAndNewlines),
      !appName.isEmpty {
-    chips.append(WorkToolChip(kind: .appControl(appName: appName)))
+    chips.append(WorkToolChip(kind: .appControl(appName: appName, live: appControlIsLive(state?.appControl))))
   }
   return chips
 }
@@ -104,7 +117,38 @@ func macDesktopToolChip(_ macDesktop: WorkToolsMacDesktopState?) -> WorkToolChip
   return WorkToolChip(kind: .macDesktop(
     streamLive: stream?.running == true && stream?.idle != true,
     agentDriving: macDesktop.lease?.holder == "agent"
-  ))
+  ), desktopPlatformLabel: macDesktop.windowsDesktop == nil ? nil : "Windows")
+}
+
+/// The SF Symbol for a Windows host's screen: four panes, the shape of the
+/// Windows mark the desktop shows (SF Symbols has no Windows logo).
+let windowsDesktopSymbolName = "square.grid.2x2.fill"
+
+/// Which Windows seat the lane's screen is: `private` or `shared`. Nil on a Mac
+/// host (no `windowsDesktop`) and when the lane has no screen.
+///
+/// Reads the display's `seatMode`, then the host's, and on an older Windows
+/// host that sends neither falls back to the display mode the host itself
+/// checks before a viewer's Stop: `virtual` is the private seat.
+func windowsDesktopSeat(_ windowsDesktop: WindowsDesktopHostState?, display: WorkToolsMacDesktopDisplay?) -> String? {
+  guard let windowsDesktop, let display else { return nil }
+  for candidate in [display.seatMode, windowsDesktop.seatMode] {
+    if let seat = candidate?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+       seat == "private" || seat == "shared" {
+      return seat
+    }
+  }
+  return display.mode == "virtual" ? "private" : "shared"
+}
+
+/// The seat in the desktop's words, so nobody mistakes the private screen
+/// (the user's own wallpaper and taskbar) for their real one. Nil off Windows.
+func windowsDesktopSeatLabel(_ seat: String?) -> String? {
+  switch seat {
+  case "private": return "Private Windows screen"
+  case "shared": return "Using your main Windows desktop"
+  default: return nil
+  }
 }
 
 /// The lane state the chips show after one poll.
@@ -196,10 +240,13 @@ final class WorkLaneToolsModel: ObservableObject {
   static let refreshInterval: Duration = .seconds(10)
 
   /// The surface a chip opened.
-  enum Surface {
+  enum Surface: Equatable {
     case appleDevice
     case macDesktop
-    case toolsSheet
+    /// A sheet for one tool.
+    case toolSheet(WorkToolsSheet.Tool)
+    /// Live App Control frames, when the host is streaming.
+    case appControl
   }
 
   @Published private(set) var chips: [WorkToolChip] = []
@@ -208,11 +255,16 @@ final class WorkLaneToolsModel: ObservableObject {
   private(set) var appleStatus: AppleDeviceStatus?
   /// Handed to `MacDesktopViewer` the same way. Not published.
   private(set) var macDesktopState: WorkToolsMacDesktopState?
+  /// Handed to `AppControlViewer` the same way. Not published.
+  private(set) var appControlState: WorkToolsAppControlState?
+  /// The host streams App Control frames, read at the last refresh. `open`
+  /// has no sync service, so the chip's target is decided from this.
+  private(set) var appControlStream = false
   /// The last lane state the Mac answered with. A read that fails or times
   /// out keeps it, so one slow reply does not blank every chip.
   private var lastTools: WorkToolsLaneState?
 
-  /// True while the tools sheet or the device viewer is up. Both poll the same
+  /// True while a tool sheet or a viewer is up. Both poll the same
   /// reads faster and are the authoritative view, so a tick here would be a
   /// duplicate RPC for chips nobody can see. The next tick after dismissal
   /// catches up.
@@ -220,12 +272,13 @@ final class WorkLaneToolsModel: ObservableObject {
 
   /// `macDesktopStream`: the host can stream the lane's screen. A host
   /// without the live stream can still describe the screen, so the sheet shows
-  /// its last still instead of a viewer that could only fail.
+  /// its last still in the macOS sheet instead of a viewer that could only fail.
   func open(_ chip: WorkToolChip, macDesktopStream: Bool) {
     switch chip.kind {
     case .simulator: presented = .appleDevice
-    case .macDesktop: presented = macDesktopStream ? .macDesktop : .toolsSheet
-    case .browser, .appControl: presented = .toolsSheet
+    case .macDesktop: presented = macDesktopStream ? .macDesktop : .toolSheet(.macDesktop)
+    case .browser: presented = .toolSheet(.browser)
+    case .appControl: presented = appControlStream ? .appControl : .toolSheet(.appControl)
     }
   }
 
@@ -240,6 +293,7 @@ final class WorkLaneToolsModel: ObservableObject {
     chips = []
     appleStatus = nil
     macDesktopState = nil
+    appControlState = nil
     lastTools = nil
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
@@ -270,6 +324,8 @@ final class WorkLaneToolsModel: ObservableObject {
     lastTools = tools
     appleStatus = apple
     macDesktopState = tools?.macDesktop
+    appControlState = tools?.appControl
+    appControlStream = syncService.supportsAppControlStream
     let next = workToolChips(state: tools, appleDevice: apple)
     if next != chips { chips = next }
   }
@@ -279,6 +335,7 @@ final class WorkLaneToolsModel: ObservableObject {
   func installPreview(state: WorkToolsLaneState?, appleStatus: AppleDeviceStatus?) {
     self.appleStatus = appleStatus
     macDesktopState = state?.macDesktop
+    appControlState = state?.appControl
     chips = workToolChips(state: state, appleDevice: appleStatus)
   }
   #endif
@@ -315,19 +372,31 @@ struct WorkLaneToolsPresenter: ViewModifier {
         guard enabled else { return }
         await model.run(laneId: laneId, syncService: syncService)
       }
-      .sheet(isPresented: model.isPresented(.toolsSheet)) {
-        WorkToolsSheet(laneId: laneId)
-          .presentationDetents([.medium, .large])
-          .presentationDragIndicator(.visible)
+      .sheet(isPresented: model.isPresented(.toolSheet(.browser))) {
+        toolSheet(.browser)
       }
-      // Presented exactly as `AppleDeviceCard` presents it: full screen, seeded
-      // with the last status so the first frame is not an empty viewer.
+      .sheet(isPresented: model.isPresented(.toolSheet(.appControl))) {
+        toolSheet(.appControl)
+      }
+      .sheet(isPresented: model.isPresented(.toolSheet(.macDesktop))) {
+        toolSheet(.macDesktop)
+      }
+      // Full screen, seeded with the last status so the first frame is not an empty viewer.
       .fullScreenCover(isPresented: model.isPresented(.appleDevice)) {
         AppleDeviceViewer(laneId: laneId, initialStatus: model.appleStatus)
       }
       .fullScreenCover(isPresented: model.isPresented(.macDesktop)) {
         MacDesktopViewer(laneId: laneId, initialState: model.macDesktopState)
       }
+      .fullScreenCover(isPresented: model.isPresented(.appControl)) {
+        AppControlViewer(laneId: laneId, initialState: model.appControlState)
+      }
+  }
+
+  private func toolSheet(_ tool: WorkToolsSheet.Tool) -> some View {
+    WorkToolsSheet(laneId: laneId, tool: tool)
+      .presentationDetents([.medium, .large])
+      .presentationDragIndicator(.visible)
   }
 }
 
@@ -361,13 +430,14 @@ struct WorkLaneToolChipView: View {
     }
   }
 
-  private var symbol: String { chip.kind.symbolName }
+  private var symbol: String { chip.symbolName }
 
   private var showsLiveDot: Bool {
     switch chip.kind {
     case .simulator: return true
     case .macDesktop(let streamLive, _): return streamLive
-    case .browser, .appControl: return false
+    case .appControl(_, let live): return live
+    case .browser: return false
     }
   }
 
@@ -394,39 +464,14 @@ func workToolChipAccessibilityText(_ chip: WorkToolChip) -> String {
     return agentUsing
       ? "\(base). An agent is using the browser. Tap for details."
       : "\(base). Tap for details."
-  case .appControl:
-    return "App Control on your Mac, \(chip.label). Tap for details."
+  case .appControl(_, let live):
+    return live
+      ? "\(chip.label) on your Mac, live. Tap to watch."
+      : "\(chip.label) on your Mac. Tap for details."
   case .macDesktop(let streamLive, let agentDriving):
-    var text = "This lane's macOS desktop"
+    var text = chip.desktopPlatformLabel == "Windows" ? "This lane's Windows desktop" : "This lane's macOS desktop"
     if streamLive { text += ", live" }
     if agentDriving { text += ". An agent is driving it" }
     return text + ". Tap to watch."
-  }
-}
-
-// MARK: - Labels
-
-/// Human label for a `WorkToolId`. Unknown ids come from a newer desktop, so
-/// they are shown verbatim rather than dropped — the phone should not decide a
-/// tool does not exist because it has not shipped a name for it yet.
-func workToolsDisplayName(_ toolId: String?) -> String? {
-  guard let toolId, !toolId.isEmpty else { return nil }
-  switch toolId {
-  case "terminal": return "Terminal"
-  case "git": return "Git"
-  case "files": return "Files"
-  case "ios": return "Apple"
-  case "app-control": return "App Control"
-  case "browser": return "Browser"
-  case "mac-desktop": return "macOS"
-  case "pr": return "PR"
-  default: return toolId
-  }
-}
-
-func workToolsAccessibilityHint(_ toolId: String?) -> String? {
-  switch toolId {
-  case "ios": return "Apple simulators and previews"
-  default: return nil
   }
 }

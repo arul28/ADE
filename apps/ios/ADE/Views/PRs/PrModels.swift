@@ -242,6 +242,8 @@ enum PrDetailEditorSheet: Identifiable {
   case body(String)
   case labels(String)
   case review
+  case comment
+  case reviewers
 
   var id: String {
     switch self {
@@ -249,6 +251,8 @@ enum PrDetailEditorSheet: Identifiable {
     case .body: return "body"
     case .labels: return "labels"
     case .review: return "review"
+    case .comment: return "comment"
+    case .reviewers: return "reviewers"
     }
   }
 }

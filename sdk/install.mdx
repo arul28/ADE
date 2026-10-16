@@ -66,6 +66,8 @@ The platform package sits directly below the pinned path because installing it i
 
 `allowDownload: false` is what a shipping app wants. A packaging mistake then fails loudly in QA rather than working through a silent download on the developer's machine and failing on a locked-down user's.
 
+`channel: "latest"` downloads the newest runtime, which can be outside the range this SDK supports. See [Version compatibility](/sdk/runtime#version-compatibility).
+
 Downloads verify checksums before the binary is used. A mismatch is a hard error (`checksum_mismatch`), not a warning. The pinned and bundled routes skip that check by design: bytes you signed into your own bundle are verified by the OS.
 
 <Card title="Bundling" href="/sdk/bundling" icon="box" horizontal>

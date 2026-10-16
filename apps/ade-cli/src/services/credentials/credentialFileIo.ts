@@ -112,7 +112,7 @@ export type CredentialFileStatSnapshot = {
   size: number;
 } | null;
 
-function readCredentialFileStatSnapshot(filePath: string): CredentialFileStatSnapshot | undefined {
+export function readCredentialFileStatSnapshot(filePath: string): CredentialFileStatSnapshot | undefined {
   try {
     const stat = fs.statSync(filePath);
     return { ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size };
@@ -122,7 +122,7 @@ function readCredentialFileStatSnapshot(filePath: string): CredentialFileStatSna
   }
 }
 
-function isSameCredentialFileStat(
+export function isSameCredentialFileStat(
   left: CredentialFileStatSnapshot,
   right: CredentialFileStatSnapshot,
 ): boolean {

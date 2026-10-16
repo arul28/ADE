@@ -3,14 +3,21 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import YAML from "yaml";
 
+import {
+  PROJECT_ICON_EXTENSIONS,
+  PROJECT_ICON_MIME_TYPES_BY_EXTENSION,
+  PROJECT_ICON_TYPE_ERROR,
+  REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES,
+} from "../../../shared/projectIcons";
 import type { ProjectIcon } from "../../../shared/types";
+import type { RemoteRuntimeProjectIconUpload } from "../../../shared/types/remoteRuntime";
 import { isWithinDir, resolvePathWithinRoot } from "../shared/utils";
 import { writeFileAtomic } from "../state/durableFile";
 import { ensureSharedAdeProjectScaffold } from "./adeProjectService";
 
 const ICON_MAX_BYTES = 10 * 1024 * 1024;
 const ICON_MAX_LABEL = "10 MB";
-const SUPPORTED_ICON_EXTENSIONS = new Set([".svg", ".ico", ".png", ".jpg", ".jpeg", ".webp"]);
+const SUPPORTED_ICON_EXTENSIONS = new Set(PROJECT_ICON_EXTENSIONS);
 const IMPORTED_PROJECT_ICON_DIR = ".ade/project-icons";
 
 const IGNORED_ICON_DIRS = new Set([
@@ -92,6 +99,14 @@ function isLocalIconHref(href: string): boolean {
 
 function findExistingFile(projectRoot: string, candidates: readonly string[]): string | null {
   for (const candidate of candidates) {
+    // Most candidates do not exist. One stat says so; the containment walk
+    // below resolves every directory from the drive root, which on Windows is
+    // a slow call per level, and doing it for each missing candidate held the
+    // brain's event loop for seconds on every project-catalog read.
+    // A `..` segment is resolved against the real (symlink-followed) parent by
+    // the walk, which a plain join cannot predict, so those keep the full walk.
+    const plainRelative = !path.isAbsolute(candidate) && !candidate.split(/[\\/]/).includes("..");
+    if (plainRelative && !fs.existsSync(path.join(projectRoot, candidate))) continue;
     // resolvePathWithinRoot follows symlinks via fs.realpath, so a `public ->
     // /etc` symlink in the checked-out repo can't trick us into stat'ing or
     // reading outside the project root. Treat any failure (escape, missing
@@ -236,7 +251,8 @@ type ProjectIconPathCacheEntry = {
   sourceMtimeMs: number;
   sourceSize: number;
   expiresAtMs: number;
-  value: string;
+  /** Null: the project has no icon. Cached too, or every read rescans it. */
+  value: string | null;
 };
 
 const projectIconPathCache = new Map<string, ProjectIconPathCacheEntry>();
@@ -610,7 +626,7 @@ export function resolveProjectIconPath(
       return cached.value;
     }
   }
-  const cacheValue = (value: string): string => {
+  const cacheValue = <T extends string | null>(value: T): T => {
     const sourceSignature = fileSignature(value);
     setProjectIconPathCache(cacheKey, {
       rootMtimeMs,
@@ -627,7 +643,7 @@ export function resolveProjectIconPath(
   const configured = Object.prototype.hasOwnProperty.call(options, "iconPathOverride")
     ? options.iconPathOverride
     : readProjectIconOverride(root);
-  if (configured === null) return null;
+  if (configured === null) return cacheValue(null);
   const configuredMatch = resolveConfiguredProjectIconPath(root, configured);
   if (configuredMatch) return cacheValue(configuredMatch);
 
@@ -658,6 +674,9 @@ export function resolveProjectIconPath(
     }
   }
 
+  // No icon found: do not cache. A new icon can appear in any nested folder,
+  // and the cache checks only a few folder times. The scan is cheap since a
+  // missing candidate skips the containment walk.
   return null;
 }
 
@@ -698,11 +717,34 @@ function writeProjectIconPathOverride(projectRoot: string, iconPath: string | nu
   const project = config.project && typeof config.project === "object" && !Array.isArray(config.project)
     ? { ...(config.project as Record<string, unknown>) }
     : {};
+  const previousIconPath = typeof project.iconPath === "string" ? project.iconPath : null;
   project.iconPath = iconPath;
   config.project = project;
   config.version = typeof config.version === "number" ? config.version : 1;
 
   writeFileAtomic(localConfigPath, YAML.stringify(config, { indent: 2 }), { mode: 0o600 });
+  removeReplacedImportedIcon(projectRoot, previousIconPath, iconPath);
+}
+
+/**
+ * Each imported icon is a new content-hash file, so replacing or removing the
+ * icon would otherwise leave every earlier upload behind. Only files inside
+ * the import folder are ADE's to delete; an icon the project itself ships is
+ * never touched.
+ */
+function removeReplacedImportedIcon(
+  projectRoot: string,
+  previousIconPath: string | null,
+  nextIconPath: string | null,
+): void {
+  if (!previousIconPath || previousIconPath === nextIconPath) return;
+  const normalized = previousIconPath.replace(/\\/g, "/");
+  if (!normalized.startsWith(`${IMPORTED_PROJECT_ICON_DIR}/`)) return;
+  try {
+    fs.unlinkSync(resolvePathWithinRoot(projectRoot, normalized, { allowMissing: false }));
+  } catch {
+    // Already gone, or outside the root after all: nothing to clean up.
+  }
 }
 
 export function setProjectIconOverride(projectRoot: string, iconPath: string): ProjectIcon {
@@ -720,7 +762,7 @@ function assertUsableProjectIconFile(iconPath: string): void {
   const stat = fs.statSync(iconPath);
   if (!stat.isFile()) throw new Error("Project icon must be a file.");
   if (!isSupportedIconPath(iconPath)) {
-    throw new Error("Project icon must be an ico, jpg, png, svg, or webp file.");
+    throw new Error(PROJECT_ICON_TYPE_ERROR);
   }
   if (stat.size > ICON_MAX_BYTES) {
     throw new Error(`Project icon must be ${ICON_MAX_LABEL} or smaller.`);
@@ -728,8 +770,11 @@ function assertUsableProjectIconFile(iconPath: string): void {
 }
 
 function importedProjectIconRelativePath(sourcePath: string, data: Buffer): string {
-  const ext = path.extname(sourcePath).toLowerCase();
-  const rawBase = path.basename(sourcePath, path.extname(sourcePath));
+  // Split on both separators so a Windows-style name uploaded to a POSIX host
+  // (or the reverse) still reduces to its last segment.
+  const fileName = sourcePath.split(/[\\/]/).pop() ?? "";
+  const ext = path.extname(fileName).toLowerCase();
+  const rawBase = path.basename(fileName, path.extname(fileName));
   const safeBase = rawBase
     .trim()
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
@@ -752,11 +797,33 @@ export function setProjectIconOverrideFromSelection(projectRoot: string, iconPat
   }
 
   const data = fs.readFileSync(selectedPath);
-  // TOCTOU safety net: file may have grown between assertUsableProjectIconFile's stat and this read.
+  return importProjectIconBytes(root, selectedPath, data);
+}
+
+/**
+ * Store icon bytes that came from outside the project (a file picked elsewhere
+ * on this machine, or bytes a remote desktop uploaded) under the project's
+ * `.ade/project-icons` folder with a content-hash name, then point the
+ * project's icon override at that copy.
+ *
+ * `fileName` only supplies the extension and a readable base name; any
+ * directory part is dropped, so it can never steer the write outside the
+ * import folder.
+ */
+export function importProjectIconBytes(projectRoot: string, fileName: string, data: Buffer): ProjectIcon {
+  const root = canonicalProjectRoot(projectRoot);
+  if (!isSupportedIconPath(fileName)) {
+    throw new Error(PROJECT_ICON_TYPE_ERROR);
+  }
+  if (data.length === 0) {
+    throw new Error("Project icon file is empty.");
+  }
+  // Also the TOCTOU safety net for the selection path: the file may have
+  // grown between assertUsableProjectIconFile's stat and the read.
   if (data.length > ICON_MAX_BYTES) {
     throw new Error(`Project icon must be ${ICON_MAX_LABEL} or smaller.`);
   }
-  const relativeImportPath = importedProjectIconRelativePath(selectedPath, data);
+  const relativeImportPath = importedProjectIconRelativePath(fileName, data);
   const importDir = resolvePathWithinRoot(root, IMPORTED_PROJECT_ICON_DIR, { allowMissing: true });
   fs.mkdirSync(importDir, { recursive: true });
   const importPath = resolvePathWithinRoot(root, relativeImportPath, { allowMissing: true });
@@ -770,6 +837,24 @@ export function setProjectIconOverrideFromSelection(projectRoot: string, iconPat
   }
 
   return setProjectIconOverride(root, relativeImportPath);
+}
+
+/**
+ * Reads a picked icon file so it can be sent to a host. The size check runs
+ * after the read, so a file that grows after it was picked is still caught.
+ */
+export async function readProjectIconForUpload(filePath: string): Promise<RemoteRuntimeProjectIconUpload> {
+  const extension = path.extname(filePath).toLowerCase();
+  const mimeType = PROJECT_ICON_MIME_TYPES_BY_EXTENSION[extension]?.[0];
+  if (!mimeType) throw new Error(PROJECT_ICON_TYPE_ERROR);
+  const data = await fs.promises.readFile(filePath);
+  if (data.length === 0) throw new Error("Project icon file is empty.");
+  if (data.length > REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES) {
+    throw new Error(
+      `Project icon must be ${REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES / (1024 * 1024)} MB or smaller for a project on another machine.`,
+    );
+  }
+  return { fileName: path.basename(filePath), mimeType, dataBase64: data.toString("base64") };
 }
 
 export function removeProjectIconOverride(projectRoot: string): ProjectIcon {

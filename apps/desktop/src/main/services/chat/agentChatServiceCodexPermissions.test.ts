@@ -2,6 +2,7 @@ import {
   AgentChatEventEnvelope,
   createAgentChatService,
   createService,
+  mapPermissionToClaude,
   mapPermissionToCodex,
   mockState,
   path,
@@ -12,6 +13,105 @@ import {
 import { describe, expect, it, test, vi } from "vitest";
 
 describe("createAgentChatService", () => {
+  describe("permission ceiling for agents", () => {
+    it.each([
+      ["claude", "subagent", undefined, "full-auto"],
+      ["codex", "subagent", undefined, "full-auto"],
+      ["claude", "subagent", "plan", "plan"],
+      ["codex", "subagent", "default", "default"],
+    ] as const)("resolves %s %s permissions with child choice %s", async (provider, spawnKind, permissionMode, expectedMode) => {
+      const mapping = await vi.importActual<typeof import("./permissionMapping")>("./permissionMapping");
+      const previousClaudeMapping = vi.mocked(mapPermissionToClaude).getMockImplementation()!;
+      const previousCodexMapping = vi.mocked(mapPermissionToCodex).getMockImplementation()!;
+      try {
+        vi.mocked(mapPermissionToClaude).mockImplementation(mapping.mapPermissionToClaude);
+        vi.mocked(mapPermissionToCodex).mockImplementation(mapping.mapPermissionToCodex);
+        const { service } = createService();
+        const parent = await service.createSession({
+          laneId: "lane-1", provider: "claude", model: "sonnet", permissionMode: "full-auto",
+        });
+        const child = await service.createSession({
+          laneId: "lane-1", provider, model: provider === "codex" ? "gpt-5.5" : "sonnet",
+          orchestrationParentSessionId: parent.id, spawnKind, permissionMode,
+          runtimeActor: { kind: "agent", chatSessionId: parent.id },
+        });
+        if (provider === "codex") {
+          expect(child.codexSandbox).toBe(expectedMode === "full-auto" ? "danger-full-access" : "workspace-write");
+          expect(child.codexApprovalPolicy).toBe(expectedMode === "full-auto" ? "never" : "on-request");
+        } else {
+          expect(child.claudePermissionMode).toBe(expectedMode === "full-auto" ? "bypassPermissions" : "default");
+          expect(child.interactionMode).toBe(expectedMode === "plan" ? "plan" : "default");
+        }
+        expect(readPersistedChatState(child.id).permissionMode).toBe(expectedMode);
+      } finally {
+        vi.mocked(mapPermissionToClaude).mockImplementation(previousClaudeMapping);
+        vi.mocked(mapPermissionToCodex).mockImplementation(previousCodexMapping);
+      }
+    });
+
+    it("caps what an agent can start or raise at its own level, and leaves a person free", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const parent = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        claudePermissionMode: "default",
+      });
+      const defaultsBefore = service.getLaunchDefaults();
+      expect(defaultsBefore?.provider).toBe("claude");
+      const actor = { kind: "agent" as const, chatSessionId: parent.id };
+
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        codexSandbox: "danger-full-access",
+        codexApprovalPolicy: "never",
+        runtimeActor: actor,
+      });
+      // Unparented, yet capped at the calling agent's own level (ask), in Codex's vocabulary.
+      expect(child.codexSandbox).toBe("workspace-write");
+      expect(child.codexApprovalPolicy).toBe("on-request");
+      await vi.waitFor(() => expect(events.some((event) =>
+        event.sessionId === child.id
+        && event.event.type === "system_notice"
+        && /capped/i.test(event.event.message),
+      )).toBe(true));
+      // An agent's launch never moves the machine's defaults.
+      expect(service.getLaunchDefaults()).toEqual(defaultsBefore);
+
+      // Every route to more access is refused for the agent: the native
+      // fields and a model switch onto an open provider.
+      await expect(service.updateSession({
+        sessionId: child.id,
+        codexSandbox: "danger-full-access",
+        codexApprovalPolicy: "never",
+        runtimeActor: actor,
+      })).rejects.toThrow(/more access/i);
+      await expect(service.updateSession({
+        sessionId: child.id,
+        modelId: "anthropic/claude-opus-5",
+        claudePermissionMode: "bypassPermissions",
+        runtimeActor: actor,
+      })).rejects.toThrow(/more access/i);
+      // Nor can the agent raise its own chat.
+      await expect(service.updateSession({ sessionId: parent.id, claudePermissionMode: "bypassPermissions", runtimeActor: actor }))
+        .rejects.toThrow(/more access/i);
+
+      // A person is not capped.
+      const raised = await service.updateSession({
+        sessionId: child.id,
+        codexSandbox: "danger-full-access",
+        codexApprovalPolicy: "never",
+      });
+      expect(raised.codexSandbox).toBe("danger-full-access");
+      expect(raised.codexApprovalPolicy).toBe("never");
+    });
+  });
+
   describe("Codex permissions and reasoning", () => {
     it("keeps fast mode switching away from Codex only onto a model with a fast tier", async () => {
       const { service } = createService();
@@ -20,6 +120,7 @@ describe("createAgentChatService", () => {
         provider: "codex",
         model: "gpt-5.5",
         fastMode: true,
+        fastTier: "ultrafast",
       });
 
       const onOpus = await service.updateSession({
@@ -28,6 +129,9 @@ describe("createAgentChatService", () => {
       });
       expect(onOpus.provider).toBe("claude");
       expect(onOpus.fastMode).toBe(true);
+      // Fast carries over; Codex's Ultrafast tier does not.
+      expect(onOpus.fastTier).toBeUndefined();
+      expect(readPersistedChatState(session.id).fastTier).toBeUndefined();
       expect(readPersistedChatState(session.id).fastMode).toBe(true);
 
       const onSonnet = await service.updateSession({
@@ -37,6 +141,57 @@ describe("createAgentChatService", () => {
       expect(onSonnet.fastMode).not.toBe(true);
       expect((await service.getSessionSummary(session.id))?.fastMode).not.toBe(true);
       expect(readPersistedChatState(session.id).fastMode).not.toBe(true);
+    });
+
+    it("runs Codex turns on Ultrafast until Fast turns off, whatever Fast-only clients send", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        fastMode: true,
+        fastTier: "ultrafast",
+      });
+      expect(session.fastTier).toBe("ultrafast");
+      expect(readPersistedChatState(session.id).fastTier).toBe("ultrafast");
+
+      await service.sendMessage({ sessionId: session.id, text: "Ultrafast turn." });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      // No catalog has said this model lacks the tier, so the chosen tier is sent.
+      const turnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      expect((turnStart?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBe("ultrafast");
+
+      // The TUI and the phone know Fast only and resend it with other changes.
+      const fromFastOnlyClient = await service.updateSession({
+        sessionId: session.id,
+        fastMode: true,
+        reasoningEffort: "high",
+      });
+      expect(fromFastOnlyClient.fastTier).toBe("ultrafast");
+
+      const off = await service.updateSession({ sessionId: session.id, fastMode: false });
+      expect(off.fastTier).toBeUndefined();
+      const backOn = await service.updateSession({ sessionId: session.id, fastMode: true });
+      expect(backOn.fastMode).toBe(true);
+      expect(backOn.fastTier).toBeUndefined();
+      expect(readPersistedChatState(session.id).fastTier).toBeUndefined();
+    });
+
+    it("never stores Ultrafast for a provider that has no such tier", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-5",
+        fastMode: true,
+        fastTier: "ultrafast",
+      });
+      expect(session.fastMode).toBe(true);
+      expect(session.fastTier).toBeUndefined();
+      const updated = await service.updateSession({ sessionId: session.id, fastTier: "ultrafast" });
+      expect(updated.fastTier).toBeUndefined();
     });
 
     it("re-resumes Codex threads when fast mode changes mid-session", async () => {
@@ -498,6 +653,7 @@ describe("createAgentChatService", () => {
           itemId: "cmd-switch-1",
           turnId: "  turn-1  ",
           command: "/bin/zsh -lc 'npm test'",
+          reason: "Need approval for API_KEY=fixture",
         },
       });
       mockState.emitCodexPayload({
@@ -525,6 +681,12 @@ describe("createAgentChatService", () => {
           event.event.type === "approval_request"
           && event.event.itemId === "perm-switch-1"
         )).toBe(true);
+      });
+      expect(events.find((event) =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "cmd-switch-1"
+      )?.event).toMatchObject({
+        description: "Need approval for API_KEY=<redacted>",
       });
 
       await service.updateSession({

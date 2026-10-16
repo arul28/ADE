@@ -5,9 +5,9 @@
  * assembly of them, not a required entry point.
  */
 
-export { AdeChat, type AdeChatProps } from "./AdeChat";
+export { AdeChat, type AdeChatProps, type AdeChatSendResult } from "./AdeChat";
 
-export { Composer, type ComposerProps } from "./composer/Composer";
+export { Composer, mergeAttachments, type ComposerProps } from "./composer/Composer";
 export {
   resolveComposerAction,
   resolveComposerState,
@@ -27,7 +27,7 @@ export {
   DEFAULT_APPROVAL_WAITING_LABEL,
   type TranscriptProps,
 } from "./transcript/Transcript";
-export { ToolChip, type ToolChipProps } from "./transcript/ToolChip";
+export { ToolChip, type ToolChipAction, type ToolChipProps } from "./transcript/ToolChip";
 export {
   ApprovalCard,
   approvalRequestFromRow,
@@ -49,6 +49,7 @@ export {
   formatStructuredValue,
   eventHasPayload,
   resolveToolName,
+  TranscriptRowBuilder,
   type ApprovalRow,
   type ApprovalRowState,
   type ToolChipRow,
@@ -61,6 +62,13 @@ export {
   parseInline,
   safeHref,
 } from "./transcript/markdown";
+export {
+  AdeLink,
+  AdeLinkHandlerProvider,
+  type AdeLinkClickHandler,
+  type AdeLinkClickInfo,
+  type AdeLinkSource,
+} from "./transcript/links";
 
 export { ModelPicker, type ModelPickerProps } from "./models/ModelPicker";
 export {
@@ -94,9 +102,12 @@ export {
   type ActivityLabelSource,
   type ActivityPhase,
 } from "./activity/labels";
+export { parseToolIdentity, type ToolIdentity } from "./activity/toolIdentity";
 
 export {
   adaptSdkClient,
+  attachmentKind,
+  inferAttachmentType,
   modelDescriptorsFromSdk,
   providerStatusesFromSdk,
   threadStatusFromEnvelope,
@@ -117,6 +128,7 @@ export {
   useAdeChatContext,
   useAdeProviders,
   useAdeThread,
+  DEFAULT_HISTORY_PAGE_SIZE,
   type AdeChatContextValue,
   type AdeChatProviderProps,
   type ProvidersState,
@@ -132,24 +144,32 @@ export {
   type AdeChatToken,
   type CreateThemeInput,
 } from "./theme/createTheme";
-export { AdeChatStyles } from "./theme/AdeChatStyles";
-export { adeChatCss, injectAdeChatStyles } from "./theme/styles";
+export { AdeChatStyles, type AdeChatStylesProps } from "./theme/AdeChatStyles";
+export { adeChatCss, injectAdeChatStyles, type InjectAdeChatStylesOptions } from "./theme/styles";
 
 export type {
   AdeChatClient,
+  AdeChatClientEventMap,
   AdeThread,
   AgentChatEvent,
   AgentChatEventEnvelope,
+  AgentChatResourceLink,
   ApprovalDecision,
   ApprovalKind,
   ApprovalRequest,
   ChatAttachment,
+  ChatEventMcpSource,
+  HistoryPageOptions,
   ModelDescriptor,
   ProviderId,
   ProviderStatus,
   SendInput,
+  ThreadHistoryPage,
+  ThreadModelSelection,
   ThreadOpenOptions,
   ThreadStatus,
+  ThreadUpdatePatch,
+  ThreadUpdateReply,
   ThreadUsage,
   ToolCallStatus,
   Unsubscribe,

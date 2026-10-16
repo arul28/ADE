@@ -11,18 +11,15 @@
  *
  * Engine: react-markdown + remark-gfm + rehype-raw (all installed). We
  * implement slug generation in a tiny visitor instead of pulling in
- * rehype-slug, and render mermaid via the installed `mermaid` package using
- * a lazy dynamic import (no remark-mermaid plugin needed).
+ * rehype-slug, and render mermaid through the shared `MermaidDiagram` (one
+ * lazy loader for chat, PRs and files).
  */
 
 import {
   type CSSProperties,
   type ReactNode,
-  useEffect,
-  useId,
   useMemo,
   useRef,
-  useState,
 } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -31,6 +28,8 @@ import rehypeSanitize, { defaultSchema, type Options as RehypeSanitizeOptions } 
 import type { Root, Element as HastElement, Text as HastText } from "hast";
 import { cn } from "../../../ui/cn";
 import { openUrlInAdeBrowser } from "../../../../lib/openExternal";
+import { MermaidDiagram } from "../../../shared/MermaidDiagram";
+import { fgTint } from "../../../lanes/laneDesignTokens";
 
 export type RichMarkdownProps = {
   source: string;
@@ -142,89 +141,6 @@ function rehypeSectionAnchors() {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
-   Mermaid block.
-   We render a single `<MermaidBlock>` per fenced mermaid code; it lazily
-   loads the `mermaid` package the first time it mounts. If the import fails
-   (offline / not installed) we fall back to a `<pre>` with the original
-   source so users still see something useful.
-   ────────────────────────────────────────────────────────────────────────── */
-type MermaidModule = { default: { initialize: (opts: object) => void; render: (id: string, src: string) => Promise<{ svg: string }>; } };
-
-let mermaidPromise: Promise<MermaidModule> | null = null;
-function loadMermaid(): Promise<MermaidModule> {
-  if (mermaidPromise) return mermaidPromise;
-  mermaidPromise = import("mermaid").then((mod) => {
-    const m = mod as unknown as MermaidModule;
-    try {
-      m.default.initialize({
-        startOnLoad: false,
-        securityLevel: "strict",
-        theme: "dark",
-        fontFamily: "var(--font-mono)",
-      });
-    } catch {
-      /* ignore: re-init is harmless */
-    }
-    return m;
-  }).catch((err) => {
-    mermaidPromise = null;
-    throw err;
-  });
-  return mermaidPromise;
-}
-
-function MermaidBlock({ source }: { source: string }) {
-  const renderId = useId().replace(/[:]/g, "_");
-  const [svg, setSvg] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    loadMermaid()
-      .then((m) => m.default.render(`mermaid-${renderId}`, source))
-      .then((res) => {
-        if (cancelled) return;
-        setSvg(res.svg);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : String(err));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [renderId, source]);
-
-  if (error) {
-    return (
-      <pre
-        className="mb-3 overflow-auto rounded-md border border-amber-300/20 bg-amber-300/[0.04] p-3 font-mono text-[11px] text-amber-200/80"
-        title={`Mermaid render error: ${error}`}
-      >
-        {source}
-      </pre>
-    );
-  }
-  if (svg == null) {
-    return (
-      <div
-        className="mb-3 flex items-center justify-center rounded-md border border-white/[0.06] bg-white/[0.02] py-6 text-[10px] uppercase tracking-[0.16em] text-muted-fg/55"
-        role="status"
-      >
-        Rendering diagram…
-      </div>
-    );
-  }
-  return (
-    <div
-      data-mermaid-block=""
-      className="mb-3 overflow-auto rounded-md border border-white/[0.06] bg-white/[0.02] p-3"
-      dangerouslySetInnerHTML={{ __html: svg }}
-    />
-  );
-}
-
-/* ──────────────────────────────────────────────────────────────────────────
    Component overrides factory.
    ────────────────────────────────────────────────────────────────────────── */
 function buildComponents({
@@ -289,7 +205,7 @@ function buildComponents({
       <ol className="mb-2.5 list-decimal space-y-1 pl-5 text-[12.5px] text-fg/75 last:mb-0">{children}</ol>
     ),
     li: ({ children }) => <li className="leading-[1.5]">{children}</li>,
-    hr: () => <hr className="my-3 border-white/[0.06]" />,
+    hr: () => <hr className="my-3 border-fg/[0.06]" />,
     blockquote: ({ children }) => (
       <blockquote className="mb-3 border-l-2 border-violet-300/30 bg-violet-300/[0.04] py-1 pl-3 text-[12px] text-fg/70 last:mb-0">
         {children}
@@ -305,7 +221,7 @@ function buildComponents({
     th: ({ children }) => (
       <th
         className="break-words px-2 py-1 font-semibold text-fg/80"
-        style={{ border: "1px solid rgba(255,255,255,0.08)" }}
+        style={{ border: `1px solid ${fgTint(8)}` }}
       >
         {children}
       </th>
@@ -313,7 +229,7 @@ function buildComponents({
     td: ({ children }) => (
       <td
         className="break-words px-2 py-1 align-top text-fg/70"
-        style={{ border: "1px solid rgba(255,255,255,0.06)" }}
+        style={{ border: `1px solid ${fgTint(6)}` }}
       >
         {children}
       </td>
@@ -338,15 +254,23 @@ function buildComponents({
             }
           };
           walk(props?.children);
-          return <MermaidBlock source={codeText.trim()} />;
+          return (
+            <MermaidDiagram
+              source={codeText.trim()}
+              variant="file"
+              renderCode={(code) => (
+                <pre className="overflow-auto font-mono text-[11px] text-fg/80">{code}</pre>
+              )}
+            />
+          );
         }
       }
       return (
         <pre
           className="mb-3 overflow-auto rounded-md p-3 font-mono text-[11px] leading-[1.55]"
           style={{
-            background: "rgba(255,255,255,0.025)",
-            border: "1px solid rgba(255,255,255,0.06)",
+            background: fgTint(2.5),
+            border: `1px solid ${fgTint(6)}`,
           }}
         >
           {children}
@@ -360,7 +284,7 @@ function buildComponents({
       return (
         <code
           className="rounded-sm px-1 py-0.5 font-mono text-[11px] text-fg/80"
-          style={{ background: "rgba(255,255,255,0.05)" }}
+          style={{ background: fgTint(5) }}
         >
           {children}
         </code>
@@ -390,7 +314,7 @@ function buildComponents({
         <img
           src={srcStr}
           alt={alt ?? ""}
-          className="my-3 max-w-full rounded-md border border-white/[0.06] bg-black/30"
+          className="my-3 max-w-full rounded-md border border-fg/[0.06] bg-black/30"
           style={{ height: "auto", maxHeight: 360 }}
         />
       );

@@ -24,8 +24,14 @@ export {
   registerAdeIpc,
   navigationEndsRendererWorld,
   adeErrorCodeOf,
+  type AdeChatClientSource,
+  type AdeIpcBridgeHandle,
+  type AdeIpcOpenContext,
   type RegisterAdeIpcOptions,
+  type ThreadRemovalKind,
 } from "./main.js";
+export { ADE_IPC_RENDERER_OPEN_FIELDS } from "./rendererOptions.js";
+export { checkAdeBridge, type CheckAdeBridgeOptions } from "./bridgeCheck.js";
 
 export {
   ADE_DEFAULT_BRIDGE_KEY,
@@ -41,6 +47,7 @@ export {
 
 export type {
   AdeBridge,
+  AdeIpcClientEvent,
   AdeIpcErrorPayload,
   AdeIpcEventPayload,
   AdeIpcInvokeRequest,

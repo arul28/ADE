@@ -11,9 +11,10 @@ import SwiftUI
 
 /// The accounts on `provider` that have a credit banked.
 ///
-/// Codex is the only provider that grants reset credits today, so every other
-/// provider gets an empty list and renders nothing — which is also what a host
-/// that predates the `resetCredits` field reports.
+/// Codex and Claude both grant banked reset credits; a provider that does not,
+/// or a host that predates the `resetCredits` field, gets an empty list and
+/// renders nothing. A macOS host withholds Claude's control because its OAuth
+/// token lives in the Keychain, which ADE will not read unattended.
 func resetCreditAccounts(
   in snapshot: MobileUsageQuotaSnapshot,
   provider: String
@@ -43,33 +44,36 @@ struct ADEResetCreditRows: View {
 
   var body: some View {
     ForEach(accounts) { account in
-      HStack(spacing: 6) {
-        Text("Reset credit banked")
-          .font(ADEUsageType.microFont())
+      HStack(spacing: 8) {
+        Image(systemName: "arrow.counterclockwise.circle")
+          .font(.system(size: 13))
           .foregroundStyle(ADEColor.textSecondary)
-        Text(account.email ?? account.label ?? account.id)
-          .font(ADEUsageType.microFont())
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-          .truncationMode(.middle)
+        VStack(alignment: .leading, spacing: 1) {
+          Text("Reset credit banked")
+            .font(ADEUsageType.detailFont(.medium))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(account.email ?? account.label ?? account.id)
+            .font(ADEUsageType.microFont())
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+            .truncationMode(.middle)
+        }
         Spacer(minLength: 4)
         if let outcome = workUsageResetOutcome(accountId: account.id, outcomes: resetOutcomes) {
           Text(outcome)
             .font(ADEUsageType.microFont())
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(2)
+            .multilineTextAlignment(.trailing)
         } else if syncService.canInvokeRemoteAction("usage.consumeResetCredit") {
           Button("Use reset") {
             Task { await spendResetCredit(accountId: account.id) }
           }
-          .buttonStyle(.plain)
-          .font(ADEUsageType.microFont(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
+          .buttonStyle(ADEKitButtonStyle())
           .disabled(spendingAccountIds.contains(account.id))
-          .adeTapTarget(visual: 16)
           .accessibilityHint("Clears this account's limit windows now.")
         } else {
-          Text("Use reset on the host device.")
+          Text("Use it on the computer.")
             .font(ADEUsageType.microFont())
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(2)

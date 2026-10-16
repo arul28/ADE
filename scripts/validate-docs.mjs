@@ -78,7 +78,10 @@ async function walkDocs(dir, docFiles) {
 export function normalizeTarget(rawTarget, fromFile) {
   const stripped = rawTarget.split("#")[0]?.split("?")[0] ?? "";
   if (stripped === "…" || stripped === "...") return null;
-  if (!stripped || stripped.startsWith("http://") || stripped.startsWith("https://") || stripped.startsWith("mailto:") || stripped.startsWith("tel:")) {
+  // A target with a URL scheme is not a repo route: http(s), mailto, tel, and
+  // ADE's own `ade-proof:` citation scheme all point somewhere this validator
+  // cannot check. Only scheme-less targets are resolved as relative paths.
+  if (!stripped || /^[a-z][a-z0-9+.-]*:/i.test(stripped)) {
     return null;
   }
 

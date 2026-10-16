@@ -8,6 +8,7 @@ import {
   createAcpSessionPool,
   createMockAcpAgent,
   createService,
+  fs,
   getDynamicAcpModelDescriptors,
   getModelById,
   path,
@@ -15,6 +16,7 @@ import {
   respondWithSession,
   spawn,
   startup,
+  tmpRoot,
   waitFor,
   writePersistedChatState,
 } from "./agentChatService.testHarness";
@@ -996,6 +998,113 @@ describe("acp chat runtime", () => {
     expect(names).not.toContain("/login");
   });
 
+  describe("leading-slash prompts", () => {
+    // Only a command the agent advertised reaches it as a command. Kimi answers
+    // any other `/word` itself ("Unknown ACP command") with no model turn, and
+    // Qwen fails the turn for a name it knows only from its terminal UI.
+    it.each([
+      {
+        label: "expands an ADE skill the agent does not advertise",
+        sends: ["/ship resume for lane x"],
+        advertised: ["compact"],
+        expectStart: "Ship the lane.",
+      },
+      {
+        label: "sends an unadvertised name as text",
+        sends: ["/nonexistentcmd hello"],
+        advertised: ["compact"],
+        expectStart: "The user's message below starts with",
+        expectContains: "/nonexistentcmd hello",
+      },
+      {
+        label: "sends an advertised command bare",
+        sends: ["/compact now"],
+        advertised: ["compact"],
+        expectExact: "/compact now",
+      },
+      {
+        label: "runs the agent's own command over a same-named ADE skill on the first turn",
+        sends: ["/ship resume for lane x"],
+        advertised: ["compact", "ship"],
+        expectExact: "/ship resume for lane x",
+      },
+      {
+        label: "sends an advertised command bare after an earlier turn",
+        sends: ["hello", "/compact now"],
+        advertised: ["compact"],
+        expectExact: "/compact now",
+      },
+    ])("$label", async ({ sends, advertised, expectStart, expectContains, expectExact }) => {
+      const skillDir = path.join(tmpRoot, ".claude", "skills", "ship");
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(skillDir, "SKILL.md"),
+        "---\nname: ship\ndescription: Ship the lane\n---\n\nShip the lane.\n\nTask: $ARGUMENTS\n",
+      );
+      const harness = await openAcpHarness({
+        provider: "kimi",
+        model: "kimi-for-coding",
+        modelId: "moonshot/kimi-for-coding",
+      });
+      // The agent advertises its commands just after `session/new` answers.
+      harness.agent.on("session/new", () => {
+        setTimeout(() => agentEmitCommands(
+          harness.agent,
+          "acp-session-1",
+          advertised.map((name) => ({ name, description: name })),
+        ), 0);
+        return { result: { sessionId: "acp-session-1" } };
+      });
+      scriptPrompt(harness.agent, []);
+
+      for (const [index, text] of sends.entries()) {
+        await harness.service.sendMessage({ sessionId: harness.session.id, text });
+        await vi.waitFor(() => {
+          expect(eventsOfType(harness, "done")).toHaveLength(index + 1);
+        });
+      }
+
+      const prompts = harness.agent.received.filter((entry) => entry.method === "session/prompt");
+      const sent = ((prompts.at(-1)?.params as { prompt: Array<{ type: string; text?: string }> }).prompt)
+        .filter((block) => block.type === "text")
+        .map((block) => block.text ?? "")
+        .join("\n");
+      if (expectExact) expect(sent).toBe(expectExact);
+      if (expectStart) expect(sent.startsWith(expectStart)).toBe(true);
+      if (expectContains) expect(sent).toContain(expectContains);
+    });
+
+    it("recognizes a command list delivered in the same turn as the session/new result", async () => {
+      // The agent can write its first `available_commands_update` in the same
+      // stdout chunk as the `session/new` response. The runtime object does not
+      // exist yet, so the coordinator buffers the list and replays it; without
+      // that, an advertised command would be sent as text with the "not a
+      // command" note.
+      const harness = await openAcpHarness({
+        provider: "kimi",
+        model: "kimi-for-coding",
+        modelId: "moonshot/kimi-for-coding",
+      });
+      harness.agent.on("session/new", () => {
+        agentEmitCommands(harness.agent, "acp-session-1", [{ name: "compact", description: "compact" }]);
+        return { result: { sessionId: "acp-session-1" } };
+      });
+      scriptPrompt(harness.agent, []);
+
+      await harness.service.sendMessage({ sessionId: harness.session.id, text: "/compact now" });
+      await vi.waitFor(() => {
+        expect(eventsOfType(harness, "done")).toHaveLength(1);
+      });
+
+      const prompts = harness.agent.received.filter((entry) => entry.method === "session/prompt");
+      const sent = ((prompts.at(-1)?.params as { prompt: Array<{ type: string; text?: string }> }).prompt)
+        .filter((block) => block.type === "text")
+        .map((block) => block.text ?? "")
+        .join("\n");
+      expect(sent).toBe("/compact now");
+    });
+  });
+
   it("emits one visible error and a terminal done when the agent cannot start", async () => {
     // A chat that never reaches `done` leaves the composer locked with nothing
     // on screen explaining why.
@@ -1030,6 +1139,89 @@ describe("acp chat runtime", () => {
     expect(errors[0]?.errorInfo?.category).toBe("agent_cli_auth");
     expect(errors[0]?.errorInfo?.agentCli?.agent).toBe("qwen");
     expect(errors[0]?.errorInfo?.agentCli?.authCommand).toBe("qwen --auth-type=openai");
+    const done = events.map((e) => e.event as Record<string, any>).filter((e) => e.type === "done").at(-1);
+    expect(done?.status).toBe("failed");
+  });
+
+  it("leads the card with the agent's stderr when the process dies during startup", async () => {
+    // The generic "connection closed" sentence hides the one line that explains
+    // the failure; the agent's own stderr must lead the card instead.
+    const agent = createMockAcpAgent();
+    agent.on("session/new", async () => {
+      // A misconfigured CLI prints its reason and dies. Let the stderr write
+      // reach the connection before the exit, as a draining OS pipe would.
+      agent.writeStderr("Error: unknown model 'gpt-x'\nsupported models: auto, qwen3-coder-plus\n");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      agent.exit(1);
+      return { error: { code: -32000, message: "agent exited" } };
+    });
+    const pool = createAcpSessionPool();
+    acpTeardown.push(() => pool.disposeAll("test teardown"));
+    const events: AgentChatEventEnvelope[] = [];
+    const harness = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      acpSpawnOverride: () => agent.child,
+      acpSessionPool: pool,
+    });
+    acpTeardown.push(() => { void harness.service.disposeAll(); });
+    const session = await harness.service.createSession({
+      laneId: "lane-1",
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+
+    await harness.service.sendMessage({ sessionId: session.id, text: "hi" });
+    await vi.waitFor(() => {
+      expect(events.some((envelope) => envelope.event.type === "done")).toBe(true);
+    });
+
+    const errors = events.map((e) => e.event as Record<string, any>).filter((e) => e.type === "error");
+    expect(errors).toHaveLength(1);
+    const presentation = errors[0]?.errorInfo?.presentation;
+    expect(presentation?.body).toContain("unknown model 'gpt-x'");
+    expect(presentation?.body).not.toContain("connection closed");
+    expect(presentation?.technicalDetail).toContain("supported models: auto, qwen3-coder-plus");
+    const done = events.map((e) => e.event as Record<string, any>).filter((e) => e.type === "done").at(-1);
+    expect(done?.status).toBe("failed");
+  });
+
+  it("keeps the stderr of an agent that dies before the handshake completes", async () => {
+    // The pool initializes the connection before any exit handler exists, so a
+    // crash during `initialize` must ride the rethrown error, not onProcessExit.
+    const agent = createMockAcpAgent();
+    agent.on("initialize", async () => {
+      agent.writeStderr("Error: unknown flag --model\n");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      agent.exit(1);
+      return { error: { code: -32000, message: "initialize failed" } };
+    });
+    const pool = createAcpSessionPool();
+    acpTeardown.push(() => pool.disposeAll("test teardown"));
+    const events: AgentChatEventEnvelope[] = [];
+    const harness = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      acpSpawnOverride: () => agent.child,
+      acpSessionPool: pool,
+    });
+    acpTeardown.push(() => { void harness.service.disposeAll(); });
+    const session = await harness.service.createSession({
+      laneId: "lane-1",
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+
+    await harness.service.sendMessage({ sessionId: session.id, text: "hi" });
+    await vi.waitFor(() => {
+      expect(events.some((envelope) => envelope.event.type === "done")).toBe(true);
+    });
+
+    const errors = events.map((e) => e.event as Record<string, any>).filter((e) => e.type === "error");
+    expect(errors).toHaveLength(1);
+    const presentation = errors[0]?.errorInfo?.presentation;
+    expect(presentation?.body).toContain("unknown flag --model");
+    expect(presentation?.technicalDetail).toContain("unknown flag --model");
     const done = events.map((e) => e.event as Record<string, any>).filter((e) => e.type === "done").at(-1);
     expect(done?.status).toBe("failed");
   });

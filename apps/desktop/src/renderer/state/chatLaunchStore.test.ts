@@ -11,6 +11,7 @@ import {
   getChatLaunchEntry,
   getChatLaunchOriginClientId,
   hydrateChatLaunches,
+  hydrateChatLaunchFromHost,
   insertOptimisticChatLaunch,
   markChatLaunchStartFailed,
   resetChatLaunchStartFailure,
@@ -274,6 +275,26 @@ describe("chat launch render isolation", () => {
     expect(getChatLaunchEntry("launch-1")!.snapshot.stages).toBe(after.stages);
   });
 
+  it("shows a running fetch's explanation instead of the generic label", () => {
+    const snapshot = optimistic("launch-fetch");
+    snapshot.stages = snapshot.stages.map((stage) => (
+      stage.id === "fetch"
+        ? { ...stage, status: "running" as const, detail: "Fetching latest main (last fetched 2 days ago)" }
+        : stage
+    ));
+    applyChatLaunchSnapshot(BINDING_A, snapshot);
+    const status = renderHook(() => useChatLaunchStatusLine("launch-fetch"));
+    expect(status.result.current).toBe("Fetching latest main (last fetched 2 days ago)");
+
+    const blank = optimistic("launch-blank");
+    blank.stages = blank.stages.map((stage) => (
+      stage.id === "fetch" ? { ...stage, status: "running" as const, detail: "  " } : stage
+    ));
+    applyChatLaunchSnapshot(BINDING_A, blank);
+    const generic = renderHook(() => useChatLaunchStatusLine("launch-blank"));
+    expect(generic.result.current).toBe("Fetching base branch");
+  });
+
   it("does not re-render the Work roster, the sidebar row or the chat pane on a checkout tick", () => {
     applyChatLaunchSnapshot(BINDING_A, checkoutAt("launch-1", 10, 1));
     applyChatLaunchSnapshot(BINDING_A, checkoutAt("launch-2", 50, 1));
@@ -321,5 +342,65 @@ describe("chat launch render isolation", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("hydrateChatLaunchFromHost", () => {
+  afterEach(() => {
+    delete (window as unknown as { ade?: unknown }).ade;
+  });
+
+  it("fetches a failed launch from the chat's machine and installs it as host-seen", async () => {
+    const failed = optimistic("launch-remote", {
+      phase: "failed",
+      error: "Claude Code is detected, but ADE chat could not authenticate it.",
+      stages: [
+        { id: "fetch", status: "done", startedAt: null, endedAt: null, percent: null, detail: null, error: null },
+        { id: "checkout", status: "done", startedAt: null, endedAt: null, percent: null, detail: null, error: null },
+        { id: "agent", status: "failed", startedAt: null, endedAt: null, percent: null, detail: null, error: "not signed in" },
+      ],
+    });
+    const get = vi.fn(async () => failed);
+    (window as unknown as { ade: unknown }).ade = { chatLaunch: { get } };
+
+    await act(async () => {
+      hydrateChatLaunchFromHost("launch-remote", BINDING_B);
+    });
+
+    expect(get).toHaveBeenCalledWith({ launchId: "launch-remote" }, BINDING_B);
+    const entry = getChatLaunchEntry("launch-remote");
+    // Host-seen and bound to the machine that answered, so Retry targets it
+    // and the live card replaces the transcript payload.
+    expect(entry?.hostSeen).toBe(true);
+    expect(entry?.binding).toEqual(BINDING_B);
+    expect(entry?.snapshot.phase).toBe("failed");
+  });
+
+  it("asks an unknown launch once, then waits out the cooldown instead of polling", async () => {
+    const get = vi.fn(async () => null);
+    (window as unknown as { ade: unknown }).ade = { chatLaunch: { get } };
+
+    await act(async () => {
+      hydrateChatLaunchFromHost("launch-missing", BINDING_B);
+    });
+    await act(async () => {
+      hydrateChatLaunchFromHost("launch-missing", BINDING_B);
+    });
+
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(getChatLaunchEntry("launch-missing")).toBeNull();
+  });
+
+  it("does not re-read a launch the store already holds", async () => {
+    applyChatLaunchSnapshot(BINDING_A, optimistic("launch-known", { phase: "failed", sequence: 1 }));
+    const get = vi.fn(async () => null);
+    (window as unknown as { ade: unknown }).ade = { chatLaunch: { get } };
+
+    await act(async () => {
+      hydrateChatLaunchFromHost("launch-known", BINDING_A);
+    });
+
+    expect(get).not.toHaveBeenCalled();
+    expect(getChatLaunchEntry("launch-known")?.binding).toEqual(BINDING_A);
   });
 });

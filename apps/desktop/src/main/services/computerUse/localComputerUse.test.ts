@@ -22,6 +22,16 @@ describe("createComputerUseArtifactPath", () => {
     }
     expect(paths.size).toBe(500);
   });
+
+  it("caps a long caption's file-name component below the filesystem limit", () => {
+    const longCaption = "a deliberately long proof caption ".repeat(30);
+    const artifactPath = createComputerUseArtifactPath(projectRoot, longCaption, "png");
+    const name = path.basename(artifactPath);
+    // The caption is the stem; the file name must not carry all of it.
+    expect(Buffer.byteLength(name, "utf8")).toBeLessThan(255);
+    expect(name.endsWith(".png")).toBe(true);
+    expect(name).not.toContain(longCaption.trim());
+  });
 });
 
 describe("getLocalComputerUseCapabilities", () => {

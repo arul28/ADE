@@ -1,15 +1,15 @@
 import React from "react";
-import { SpeakerHigh } from "@phosphor-icons/react";
+import { BellRinging, Check, Play, SpeakerSlash } from "@phosphor-icons/react";
 import {
   AGENT_TURN_COMPLETION_SOUND_IDS,
   useAppStore,
   type AgentTurnCompletionSound,
 } from "../../state/appStore";
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
-import { COLORS, MONO_FONT, SANS_FONT, primaryButton } from "../lanes/laneDesignTokens";
 import {
-  SettingsCard,
-  SettingsSelect,
+  ModernRow,
+  ModernRows,
+  ModernSection,
   SettingsSlider,
   SettingsToggle,
 } from "./primitives";
@@ -19,7 +19,20 @@ function soundLabel(id: AgentTurnCompletionSound): string {
   return id.charAt(0).toUpperCase() + id.slice(1);
 }
 
-export function AgentCompletionSoundSection() {
+/** A tiny waveform per tone, so the cards read as sounds, not words. */
+const SOUND_BARS: Record<Exclude<AgentTurnCompletionSound, "off">, number[]> = {
+  chime: [10, 18, 28, 22, 30, 20, 12, 8],
+  ping: [6, 30, 14, 8, 5, 4],
+  bell: [24, 30, 26, 20, 16, 12, 9, 6, 4],
+};
+
+/**
+ * The completion chime: a card per sound (picking one plays it), then volume
+ * and the focus rule as rows. Volume and the focus rule only show once a
+ * sound is picked; with the sound off they do nothing. `extraRows` lets the
+ * page add its other sound rows to the same panel.
+ */
+export function AgentCompletionSoundSection({ extraRows }: { extraRows?: React.ReactNode } = {}) {
   const agentTurnCompletionSound = useAppStore((s) => s.agentTurnCompletionSound);
   const setAgentTurnCompletionSound = useAppStore((s) => s.setAgentTurnCompletionSound);
   const agentTurnCompletionSoundVolume = useAppStore((s) => s.agentTurnCompletionSoundVolume);
@@ -34,113 +47,100 @@ export function AgentCompletionSoundSection() {
   const volumePercent = Math.round(agentTurnCompletionSoundVolume * 100);
   const soundIsOff = agentTurnCompletionSound === "off";
 
-  // No `SettingsGroup` here: Notifications already renders this card inside its
-  // own "Sound" group, and a second heading over one card is noise.
+  const preview = (id: AgentTurnCompletionSound) => {
+    if (id === "off") return;
+    playAgentTurnCompletionSound(id, {
+      volume: agentTurnCompletionSoundVolume,
+      skipWhenFocused: false,
+    });
+  };
+
   return (
-    <SettingsCard
+    <ModernSection
+      group="Sound"
       anchor="agent-completion-sound"
-      title="Completion sound"
-      description="Play a short chime when an agent finishes a turn and the chat goes idle. Rapid back-to-back turns collapse into a single chime so long runs do not spam audio."
-      control={
-        <span style={{ display: "inline-flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-          <SettingsSelect
-            ariaLabel="Sound"
-            value={agentTurnCompletionSound}
-            onChange={(next) => setAgentTurnCompletionSound(next as AgentTurnCompletionSound)}
-            options={AGENT_TURN_COMPLETION_SOUND_IDS.map((id) => ({ value: id, label: soundLabel(id) }))}
-          />
-          <button
-            type="button"
-            disabled={soundIsOff}
-            onClick={() => {
-              if (soundIsOff) return;
-              playAgentTurnCompletionSound(agentTurnCompletionSound, {
-                volume: agentTurnCompletionSoundVolume,
-                skipWhenFocused: false,
-              });
-            }}
-            style={{
-              ...primaryButton({ height: 30, padding: "0 14px", fontSize: 12 }),
-              opacity: soundIsOff ? 0.45 : 1,
-              cursor: soundIsOff ? "not-allowed" : "pointer",
-            }}
-          >
-            Preview
-          </button>
-        </span>
-      }
-    >
-      {soundIsOff ? (
-        <p style={{ margin: 0, fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-          Pick a sound above to configure volume and focus behavior.
-        </p>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <SoundField
-            label={
-              <>
-                <SpeakerHigh size={16} weight="duotone" style={{ color: COLORS.accent }} />
-                Volume
-              </>
-            }
-          >
-            <SettingsSlider
-              min={0}
-              max={100}
-              step={5}
-              value={volumePercent}
-              onChange={(next) => setAgentTurnCompletionSoundVolume(next / 100)}
-              ariaLabel={`Volume · ${volumePercent}%`}
-              valueLabel={`${volumePercent}%`}
-            />
-          </SoundField>
-
-          <SoundField
-            label="Only when ADE is in the background"
-            hint="Skips the chime while ADE is the focused window."
-          >
-            <SettingsToggle
-              label="Only when ADE is in the background"
-              checked={agentTurnCompletionSoundQuietWhenFocused}
-              onChange={setAgentTurnCompletionSoundQuietWhenFocused}
-            />
-          </SoundField>
-        </div>
+      title="Sound"
+      hint="A chime when an agent finishes a turn. Back-to-back turns chime once."
+      actions={(
+        <button
+          type="button"
+          className="ade-nt-preview"
+          aria-label="Preview the chime"
+          title="Preview"
+          disabled={soundIsOff}
+          onClick={() => preview(agentTurnCompletionSound)}
+        >
+          <Play size={10} weight="fill" />
+          Preview
+        </button>
       )}
-    </SettingsCard>
-  );
-}
-
-/** A labelled control inside the card — the in-card field shape Appearance uses. */
-function SoundField({
-  label,
-  hint,
-  children,
-}: {
-  label: React.ReactNode;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div style={{ display: "grid", gap: 6, minWidth: 0 }}>
-      <span
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 8,
-          fontFamily: SANS_FONT,
-          fontSize: 11,
-          color: COLORS.textMuted,
-        }}
-      >
-        {label}
-      </span>
-      {children}
-      {hint ? (
-        <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim, lineHeight: 1.5 }}>
-          {hint}
-        </span>
-      ) : null}
-    </div>
+    >
+      <div className="ade-nt-sounds" role="radiogroup" aria-label="Sound">
+        {AGENT_TURN_COMPLETION_SOUND_IDS.map((id) => {
+          const active = id === agentTurnCompletionSound;
+          return (
+            <button
+              key={id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              className="ade-ap-choice"
+              data-active={active}
+              onClick={() => {
+                setAgentTurnCompletionSound(id);
+                preview(id);
+              }}
+            >
+              <div className="ade-nt-sound-art" aria-hidden>
+                {id === "off" ? (
+                  <span className="ade-nt-sound-off" />
+                ) : (
+                  SOUND_BARS[id].map((height, index) => <i key={index} style={{ height }} />)
+                )}
+              </div>
+              <div className="ade-ap-choice-foot">
+                {id === "off" ? <SpeakerSlash size={13} /> : <BellRinging size={13} />}
+                <span>{soundLabel(id)}</span>
+                {active ? <Check size={12} weight="bold" className="ade-ap-check" /> : null}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {soundIsOff && !extraRows ? null : (
+      <ModernRows>
+        {soundIsOff ? null : (
+          <>
+            <ModernRow
+              title="Volume"
+              control={
+                <SettingsSlider
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={volumePercent}
+                  onChange={(next) => setAgentTurnCompletionSoundVolume(next / 100)}
+                  ariaLabel={`Volume · ${volumePercent}%`}
+                  valueLabel={`${volumePercent}%`}
+                />
+              }
+            />
+            <ModernRow
+              title="Only in the background"
+              hint="Skip the chime while ADE is the focused window."
+              control={
+                <SettingsToggle
+                  label="Only when ADE is in the background"
+                  checked={agentTurnCompletionSoundQuietWhenFocused}
+                  onChange={setAgentTurnCompletionSoundQuietWhenFocused}
+                />
+              }
+            />
+          </>
+        )}
+        {extraRows}
+      </ModernRows>
+      )}
+    </ModernSection>
   );
 }

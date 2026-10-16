@@ -184,13 +184,19 @@ export function useRevealedLength(
  * that arrived since the last one, and the settled string keeps its identity
  * while the cut point does not move — which is what lets the settled body's
  * memo bail out instead of reparsing the whole message every frame.
+ *
+ * A `paced` row keeps the split even when the reveal has caught up with the
+ * store. The reveal catches up between most bursts of deltas; handing the
+ * whole text over as one settled string there, and splitting again when the
+ * next delta lands, reparsed the entire message twice per burst.
  */
 export function useSplitRevealed(
   text: string,
   revealedLength: number,
+  paced = false,
 ): { settled: string; tail: string } {
   const cacheRef = useRef<{ scan: SplitScanState; settled: string } | null>(null);
-  if (revealedLength >= text.length) {
+  if (!paced && revealedLength >= text.length) {
     cacheRef.current = null;
     return { settled: text, tail: "" };
   }

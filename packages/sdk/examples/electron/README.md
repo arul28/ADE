@@ -49,11 +49,14 @@ A sandboxed preload has no module resolution: `require` reaches Electron's own
 built-ins and nothing else. So a preload is either one self-contained file or it
 is bundled.
 
-By default `main.mjs` points at the SDK's own published preload:
+By default `main.mjs` points at the SDK's self-running preload:
 
 ```js
-preload: require.resolve("@ade-dev/sdk/electron/preload")
+preload: require.resolve("@ade-dev/sdk/electron/preload-auto")
 ```
+
+Do not point it at `@ade-dev/sdk/electron/preload`. That file exports
+`exposeAdeBridge` and does not call it, so `window.ade` stays undefined.
 
 Set `ADE_EXAMPLE_PRELOAD=local` to load `preload.cjs` next to `main.mjs`
 instead. That file is hand-written, imports nothing, and is the shape to copy

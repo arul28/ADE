@@ -763,6 +763,14 @@ public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
     /// Additive planning hint. Absent on every payload from an older publisher,
     /// which is why it is optional rather than defaulted.
     public let chatActivityMode: AccountChatActivityMode?
+    /// The Work-board column the publishing brain filed this agent item under
+    /// (`needs_you`, `working`, `waiting`, `done`). Kept as a raw wire string so
+    /// an unknown value falls back to the phase instead of dropping the item.
+    /// Read it through `activityBoardColumn(_:)`, never directly.
+    public private(set) var boardColumn: String?
+    /// Why a Waiting item waits (`snoozed`, `ci`, `review`). Read it through
+    /// `activityWaitingReason(_:)`.
+    public private(set) var waitingReason: String?
     public let statusSince: Date?
     public private(set) var machine: AccountAttentionMachine
     public let project: AccountAttentionProject
@@ -794,6 +802,8 @@ public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
         phase: AccountAttentionPhase,
         activityTier: String? = nil,
         chatActivityMode: AccountChatActivityMode? = nil,
+        boardColumn: String? = nil,
+        waitingReason: String? = nil,
         statusSince: Date? = nil,
         machine: AccountAttentionMachine,
         project: AccountAttentionProject,
@@ -824,6 +834,8 @@ public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
         self.phase = phase
         self.activityTier = activityTier
         self.chatActivityMode = chatActivityMode
+        self.boardColumn = boardColumn
+        self.waitingReason = waitingReason
         self.statusSince = statusSince
         self.machine = machine
         self.project = project
@@ -1083,4 +1095,32 @@ public func accountAttentionSnapshotForCommit(
     incoming: AccountAttentionSnapshot
 ) -> AccountAttentionSnapshot {
     current?.merging(incoming) ?? normalizedAccountAttentionSnapshot(incoming)
+}
+
+extension AccountAttentionItem {
+    /// This live row with the wait a relay row for the same session reported.
+    ///
+    /// A row built from the connected machine's socket has no Work-board
+    /// column, so it would read Working (or Done) where the brain filed the
+    /// session under Waiting. The rule is the brain's own (`withRosterWait`):
+    /// keep a CI, review or snooze wait over a working row, and a scheduled
+    /// wait over a finished one. A row that needs the user never inherits a
+    /// wait.
+    public func inheritingWait(from relay: AccountAttentionItem) -> AccountAttentionItem {
+        guard activityBoardColumn(relay) == .waiting,
+              let column = activityBoardColumn(self),
+              column != .needsYou else { return self }
+        let reason = ActivityWaitingReason(wireValue: relay.waitingReason)
+        let keepsWait: Bool
+        switch reason {
+        case .ci, .review, .snoozed, .subagent: keepsWait = column == .working
+        case .scheduled: keepsWait = column == .done
+        case nil: keepsWait = column == .working
+        }
+        guard keepsWait else { return self }
+        var copy = self
+        copy.boardColumn = ActivityBoardColumn.waiting.wireValue
+        copy.waitingReason = relay.waitingReason
+        return copy
+    }
 }

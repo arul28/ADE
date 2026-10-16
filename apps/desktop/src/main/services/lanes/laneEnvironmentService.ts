@@ -16,6 +16,7 @@ import type {
   LaneSummary
 } from "../../../shared/types";
 import { laneSetupScriptHasWork } from "../../../shared/types";
+import { stripHostRuntimeEnv } from "../shared/hostRuntimeEnv";
 
 import type { Logger } from "../logging/logger";
 import {
@@ -541,7 +542,7 @@ export function createLaneEnvironmentService({
     laneVars: Record<string, string>,
     laneId: string
   ): Promise<string | null> {
-    const env: NodeJS.ProcessEnv = { ...process.env, ...laneVars };
+    const env: NodeJS.ProcessEnv = stripHostRuntimeEnv({ ...process.env, ...laneVars });
     if (resolved.injectPrimaryPath) {
       // The primary lane's root is the project checkout ADE manages lanes from.
       env.PRIMARY_WORKTREE_PATH = projectRoot;

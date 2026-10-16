@@ -23,6 +23,11 @@
  *
  * `x.ai/models/update` carries `{ currentModelId, availableModels: [{ modelId,
  * _meta: { totalContextTokens } }] }`, the requested model and each window.
+ * `totalContextTokens` is the effective window, and it moved with the CLI:
+ * 1.0.41 reported grok-4.6 and grok-4.5 at 500000, while 1.0.46 reports every
+ * model at 256000 and adds `_meta.contextWindows: [256000, 500000]`, the sizes
+ * its TUI-only picker offers. ADE reads `totalContextTokens`, not the menu, so
+ * its context meter follows whatever the installed CLI advertises.
  *
  * Grok 1.0.13 spelled these methods without the leading underscore and 1.0.40
  * adds it. Both spellings are registered.

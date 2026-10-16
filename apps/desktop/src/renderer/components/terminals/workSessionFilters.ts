@@ -9,6 +9,7 @@
  * Pure by design: the sidebar hands over the session plus the two lane lookups
  * it can answer, so the matching rules are unit-testable without a store.
  */
+import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import type { TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
 import { sessionFilingBucket, type SessionFilingBucket } from "../../lib/terminalAttention";
 
@@ -20,6 +21,7 @@ import { sessionFilingBucket, type SessionFilingBucket } from "../../lib/termina
 export type WorkToolFamily =
   | "claude"
   | "codex"
+  | "muse"
   | "cursor"
   | "droid"
   | "opencode"
@@ -29,6 +31,7 @@ export type WorkToolFamily =
 export const WORK_TOOL_FAMILIES: readonly WorkToolFamily[] = [
   "claude",
   "codex",
+  "muse",
   "cursor",
   "droid",
   "opencode",
@@ -38,6 +41,7 @@ export const WORK_TOOL_FAMILIES: readonly WorkToolFamily[] = [
 const TOOL_FAMILY_LABELS: Record<WorkToolFamily, string> = {
   claude: "Claude",
   codex: "Codex",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   cursor: "Cursor",
   droid: "Droid",
   opencode: "OpenCode",
@@ -55,6 +59,9 @@ export function workToolFamily(toolType: TerminalToolType | null | undefined): W
     case "codex-chat":
     case "codex-orchestrated":
       return "codex";
+    case "muse":
+    case "muse-chat":
+      return "muse";
     case "cursor":
     case "cursor-cli":
       return "cursor";
@@ -103,6 +110,8 @@ export type WorkSessionFilters = {
   hasPr: boolean;
   /** Only sessions in a lane with uncommitted changes. */
   dirtyLane: boolean;
+  /** Machine ids (`THIS_MACHINE_ID` or a remote target id). Empty means all machines. */
+  machine: string[];
 };
 
 export const EMPTY_WORK_SESSION_FILTERS: WorkSessionFilters = {
@@ -110,13 +119,15 @@ export const EMPTY_WORK_SESSION_FILTERS: WorkSessionFilters = {
   tool: [],
   hasPr: false,
   dirtyLane: false,
+  machine: [],
 };
 
 export function isWorkSessionFilterEmpty(filters: WorkSessionFilters): boolean {
   return filters.status.length === 0
     && filters.tool.length === 0
     && !filters.hasPr
-    && !filters.dirtyLane;
+    && !filters.dirtyLane
+    && filters.machine.length === 0;
 }
 
 export function normalizeWorkSessionFilters(value: unknown): WorkSessionFilters {
@@ -128,11 +139,15 @@ export function normalizeWorkSessionFilters(value: unknown): WorkSessionFilters 
   const tool = Array.isArray(candidate.tool)
     ? WORK_TOOL_FAMILIES.filter((family) => candidate.tool!.includes(family))
     : [];
+  const machine = Array.isArray(candidate.machine)
+    ? [...new Set(candidate.machine.filter((id): id is string => typeof id === "string" && id.trim().length > 0))]
+    : [];
   return {
     status,
     tool,
     hasPr: candidate.hasPr === true,
     dirtyLane: candidate.dirtyLane === true,
+    machine,
   };
 }
 
@@ -140,6 +155,8 @@ export type WorkSessionFilterContext = {
   nowMs: number;
   laneHasPr: (laneId: string) => boolean;
   laneIsDirty: (laneId: string) => boolean;
+  /** The machine that owns the session. Needed only when a machine filter is set. */
+  machineId: string;
   /** Optional full-roster filing map so attached children follow settled parents. */
   effectiveFilingBuckets?: ReadonlyMap<string, SessionFilingBucket>;
 };
@@ -164,6 +181,8 @@ export function matchesWorkSessionFilters(
     && !filters.tool.includes(workToolFamily(session.toolType))
   ) return false;
 
+  if (filters.machine.length > 0 && !filters.machine.includes(ctx.machineId)) return false;
+
   if (filters.hasPr && !ctx.laneHasPr(session.laneId)) return false;
   if (filters.dirtyLane && !ctx.laneIsDirty(session.laneId)) return false;
 
@@ -171,7 +190,10 @@ export function matchesWorkSessionFilters(
 }
 
 /** Human labels for whatever is active — powers the filtered empty state. */
-export function activeWorkSessionFilterLabels(filters: WorkSessionFilters): string[] {
+export function activeWorkSessionFilterLabels(
+  filters: WorkSessionFilters,
+  machineName: (machineId: string) => string = (machineId) => machineId,
+): string[] {
   const labels: string[] = [];
   for (const bucket of WORK_STATUS_FILTERS) {
     if (filters.status.includes(bucket)) labels.push(workStatusFilterLabel(bucket));
@@ -181,5 +203,6 @@ export function activeWorkSessionFilterLabels(filters: WorkSessionFilters): stri
   }
   if (filters.hasPr) labels.push("Has PR");
   if (filters.dirtyLane) labels.push("Dirty");
+  for (const machineId of filters.machine) labels.push(machineName(machineId));
   return labels;
 }

@@ -33,6 +33,7 @@ import {
   zlib,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 
 const HANDOFF_TEST_SHA = "1234567890abcdef1234567890abcdef12345678";
 
@@ -49,6 +50,7 @@ function installCleanCrossMachineGitFixture(
   vi.mocked(runGit).mockImplementation(async (args) => {
     const command = args.join(" ");
     if (command === "status --porcelain=v1") return { stdout: porcelain, stderr: "", exitCode: 0 };
+    if (command === "symbolic-ref --quiet HEAD") return { stdout: `refs/heads/${branchRef}\n`, stderr: "", exitCode: 0 };
     if (command === "rev-parse HEAD") return { stdout: `${HANDOFF_TEST_SHA}\n`, stderr: "", exitCode: 0 };
     if (command === "rev-parse @{upstream}") return { stdout: `${HANDOFF_TEST_SHA}\n`, stderr: "", exitCode: 0 };
     if (command === "remote get-url origin") return { stdout: `${originUrl}\n`, stderr: "", exitCode: 0 };
@@ -189,6 +191,11 @@ function installCliCaptureMock(
 }
 
 
+/** Claude writes a thread at its first message; until then there is nothing to fork or move. */
+async function startClaudeThread(service: { runSessionTurn: (args: { sessionId: string; text: string }) => Promise<unknown> }, sessionId: string): Promise<void> {
+  await service.runSessionTurn({ sessionId, text: "Start." });
+}
+
 describe("createAgentChatService", () => {
   describe("handoffSession", () => {
     it("rejects handoff while the source chat is still outputting", async () => {
@@ -219,12 +226,12 @@ describe("createAgentChatService", () => {
       const { service, sessionService } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
         sessionProfile: "light",
         reasoningEffort: "high",
-        opencodePermissionMode: "full-auto",
+        permissionMode: "full-auto",
       });
       source.executionMode = "parallel";
       sessionService.updateMeta({
@@ -238,17 +245,15 @@ describe("createAgentChatService", () => {
 
       const result = await service.handoffSession({
         sourceSessionId: source.id,
-        targetModelId: "opencode/openai/gpt-5.4-mini",
+        targetModelId: "openai/gpt-5.5",
       });
 
       expect(result.usedFallbackSummary).toBe(true);
       expect(result.session.laneId).toBe(source.laneId);
-      expect(result.session.modelId).toBe("opencode/openai/gpt-5.4-mini");
+      expect(result.session.modelId).toBe("openai/gpt-5.5");
       expect(result.session.sessionProfile).toBe("light");
       expect(result.session.reasoningEffort).toBe("high");
-      expect(result.session.opencodePermissionMode).toBe("full-auto");
       expect(result.session.executionMode).toBe("parallel");
-      expect(mockState.sessions.get(result.session.id)?.goal).toBe("Fix the work-tab handoff UI.");
 
       const transcriptPath = mockState.sessions.get(result.session.id)?.transcriptPath;
       expect(transcriptPath).toBeTruthy();
@@ -269,34 +274,34 @@ describe("createAgentChatService", () => {
       const { service } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
       });
 
       const result = await service.handoffSession({
         sourceSessionId: source.id,
-        targetModelId: "opencode/openai/gpt-5.4-mini",
+        targetModelId: "openai/gpt-5.5",
         targetLaneId: "lane-2",
       });
 
       expect(result.session.laneId).toBe("lane-2");
-      expect(result.session.provider).toBe("opencode");
-      expect(result.session.modelId).toBe("opencode/openai/gpt-5.4-mini");
+      expect(result.session.provider).toBe("codex");
+      expect(result.session.modelId).toBe("openai/gpt-5.5");
     });
 
     it("brief handoff rejects an unknown target lane", async () => {
       const { service } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
       });
 
       await expect(service.handoffSession({
         sourceSessionId: source.id,
-        targetModelId: "opencode/openai/gpt-5.4-mini",
+        targetModelId: "openai/gpt-5.5",
         targetLaneId: "lane-nope",
       })).rejects.toThrow("Unknown or unavailable lane");
       expect(source.laneId).toBe("lane-1");
@@ -446,6 +451,123 @@ describe("createAgentChatService", () => {
       expect(handoffPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
     });
 
+    it("forks a Codex chat in a process that has closed before the forked chat resumes", async () => {
+      // Codex holds a thread's writer lock in whichever app-server loaded it.
+      // A fork run on the source chat's process stays locked there, and the
+      // forked chat's own process is refused ("already has an active writer").
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-lock";
+      mockState.codexResponseOverrides.set("thread/fork", () => ({ thread: { id: "forked-thread-lock" } }));
+      const spawned = vi.mocked(spawn).mock.results.length;
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+
+      type FakeProc = { stdin: { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> } };
+      const procs = vi.mocked(spawn).mock.results.map((entry) => entry.value as FakeProc);
+      const writesTo = (proc: FakeProc) => proc.stdin.write.mock.calls.map((call, index) => ({
+        payload: JSON.parse(String(call[0])) as { method?: string; params?: { threadId?: string } },
+        order: proc.stdin.write.mock.invocationCallOrder[index]!,
+      }));
+      const procFor = (method: string, threadId: string) => procs.find((proc) => writesTo(proc).some(
+        ({ payload }) => payload.method === method && payload.params?.threadId === threadId,
+      ));
+      const forkProc = procFor("thread/fork", "source-thread-lock");
+      const sourceProc = procFor("thread/goal/clear", "source-thread-lock");
+      const forkedChatProc = procFor("thread/goal/clear", "forked-thread-lock");
+
+      expect(result.session.threadId).toBe("forked-thread-lock");
+      expect(forkProc, "a process received the fork").toBeDefined();
+      expect(procs.indexOf(forkProc!)).toBeGreaterThanOrEqual(spawned);
+      expect(forkProc).not.toBe(sourceProc);
+      expect(forkProc).not.toBe(forkedChatProc);
+      expect(forkProc!.stdin.end).toHaveBeenCalled();
+      const forkProcClosedAt = forkProc!.stdin.end.mock.invocationCallOrder[0]!;
+      const firstForkedChatRequestAt = Math.min(
+        ...writesTo(forkedChatProc!).map(({ order }) => order),
+      );
+      expect(forkProcClosedAt).toBeLessThan(firstForkedChatRequestAt);
+    });
+
+    it("runs a native fork as the source chat's account, whatever the default is", async () => {
+      // The forked thread lives in the source account's config home, so a
+      // fork launched as the default account would resume nothing.
+      const work = getMachineProviderInstanceStore().create({ provider: "codex", label: "Work" }).instance;
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+        instanceId: work.id,
+      });
+      source.threadId = "source-thread-account";
+      mockState.codexResponseOverrides.set("thread/fork", () => ({ thread: { id: "forked-thread-account" } }));
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+
+      expect(result.session.threadId).toBe("forked-thread-account");
+      expect((await service.getSessionSummary(result.session.id))?.instanceId).toBe(work.id);
+      expect((await service.getSessionSummary(source.id))?.instanceId).toBe(work.id);
+    });
+
+    it("forks from an earlier turn with only the turns through it", async () => {
+      installRealTranscriptParser();
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-fork-point";
+      const turn = (turnId: string, minute: number, text: string): AgentChatEventEnvelope[] => [
+        { sessionId: source.id, timestamp: `2026-07-10T11:0${minute}:00.000Z`, event: { type: "user_message", messageId: `${turnId}-user`, text: `${text} question`, turnId } },
+        { sessionId: source.id, timestamp: `2026-07-10T11:0${minute}:10.000Z`, event: { type: "text", messageId: `${turnId}-reply`, text: `${text} answer`, turnId } },
+        { sessionId: source.id, timestamp: `2026-07-10T11:0${minute}:20.000Z`, event: { type: "done", turnId, status: "completed" } },
+      ] as AgentChatEventEnvelope[];
+      writeTestTranscriptEnvelopes(source.id, [...turn("turn-1", 1, "KEEP-ONE"), ...turn("turn-2", 2, "DROP-TWO")]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+        throughTurnId: "turn-1",
+      });
+
+      const targetTranscript = path.join(tmpRoot, ".ade", "transcripts", "chat", `${result.session.id}.jsonl`);
+      await vi.waitFor(() => {
+        const copied = fs.readFileSync(targetTranscript, "utf8");
+        expect(copied).toContain("KEEP-ONE answer");
+        expect(copied).not.toContain("DROP-TWO");
+      });
+      await expect(service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+        throughTurnId: "turn-missing",
+      })).rejects.toThrow(/finished turn/i);
+      await expect(service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "brief",
+        throughTurnId: "turn-1",
+      })).rejects.toThrow(/only applies to a fork/i);
+    });
+
     it("seeds local fork history with handoff provenance", async () => {
       installRealTranscriptParser();
       const { service } = createService();
@@ -550,48 +672,6 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("forks an OpenCode chat from the source session without injecting a summary prompt", async () => {
-      vi.mocked(streamText).mockReturnValue({
-        fullStream: (async function* () {
-          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
-        })(),
-      } as any);
-
-      const { service, aiIntegrationService } = createService();
-      const source = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-      await service.sendMessage({
-        sessionId: source.id,
-        text: "hi",
-      }, { awaitDispatch: true });
-      await vi.waitFor(() => {
-        expect(source.status).toBe("idle");
-      });
-      const promptCountBeforeFork = [...mockState.openCodeSessions.values()]
-        .reduce((count, state) => count + state.promptBodies.length, 0);
-
-      const result = await service.handoffSession({
-        sourceSessionId: source.id,
-        targetModelId: "opencode/openai/gpt-5.4-mini",
-        mode: "fork",
-      });
-      const persisted = readPersistedChatState(result.session.id);
-      const promptCountAfterFork = [...mockState.openCodeSessions.values()]
-        .reduce((count, state) => count + state.promptBodies.length, 0);
-
-      expect(result.usedFallbackSummary).toBe(false);
-      expect(result.session.provider).toBe("opencode");
-      expect(mockState.openCodeForkCalls.length).toBeGreaterThanOrEqual(1);
-      expect(persisted.providerSessionId).toEqual(expect.stringMatching(/-fork$/));
-      expect(promptCountAfterFork).toBe(promptCountBeforeFork);
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
-        expect.objectContaining({ taskType: "handoff_summary" }),
-      );
-    });
 
     it("forks a Droid chat and resumes the forked session id", async () => {
       const { service, aiIntegrationService } = createService();
@@ -2049,6 +2129,7 @@ describe("createAgentChatService", () => {
             files: [{ path: "src/safe.ts", additions: 1, deletions: 0 }],
             totalAdditions: 1,
             totalDeletions: 0,
+            dirtyAtStart: [] as string[],
           },
         } as AgentChatEventEnvelope,
       ];
@@ -2081,8 +2162,8 @@ describe("createAgentChatService", () => {
       // A personal chat whose host named a `requestedCwd` runs in the user's
       // own repository while its lane still points at the synthetic scratch
       // worktree. Re-resolving the directory from the lane id ran
-      // `git checkout <sha> -- <path>` somewhere the user never asked about and
-      // reported success against it.
+      // `git restore --source=<sha> -- <path>` somewhere the user never asked
+      // about and reported success against it.
       const hostCwd = path.join(tmpRoot, "host-project");
       fs.mkdirSync(hostCwd, { recursive: true });
       const { service, sessionService } = createService();
@@ -2122,6 +2203,7 @@ describe("createAgentChatService", () => {
             files: [{ path: "src/safe.ts", additions: 1, deletions: 0 }],
             totalAdditions: 1,
             totalDeletions: 0,
+            dirtyAtStart: [] as string[],
           },
         } as AgentChatEventEnvelope,
       ];
@@ -2131,9 +2213,100 @@ describe("createAgentChatService", () => {
 
       await service.rewindFiles({ sessionId: source.id, userMessageId: "user-1" });
 
-      const checkout = vi.mocked(runGit).mock.calls.find(([args]) => args[0] === "checkout");
-      expect(checkout).toBeTruthy();
-      expect((checkout?.[1] as { cwd?: string })?.cwd).toBe(hostCwd);
+      const restore = vi.mocked(runGit).mock.calls.find(([args]) => args[0] === "restore");
+      expect(restore).toBeTruthy();
+      expect((restore?.[1] as { cwd?: string })?.cwd).toBe(hostCwd);
+    });
+
+    it.each([
+      {
+        name: "restores a file that was clean at turn start, in the index too",
+        dirtyAtStart: [] as string[] | undefined,
+        peerTouches: false,
+        restored: ["src/a.ts"],
+        skipped: [] as Array<{ path: string; reason: string }>,
+      },
+      {
+        name: "leaves a file that already had uncommitted changes",
+        dirtyAtStart: ["src/a.ts"],
+        peerTouches: false,
+        restored: [],
+        skipped: [{ path: "src/a.ts", reason: "dirty_before_turn" }],
+      },
+      {
+        name: "leaves a file another chat in the worktree changed since",
+        dirtyAtStart: [],
+        peerTouches: true,
+        restored: [],
+        skipped: [{ path: "src/a.ts", reason: "other_chat" }],
+      },
+      {
+        name: "leaves every file of a summary recorded before ADE kept the start state",
+        dirtyAtStart: undefined,
+        peerTouches: false,
+        restored: [],
+        skipped: [{ path: "src/a.ts", reason: "unknown_start_state" }],
+      },
+    ])("Codex file rewind $name", async ({ dirtyAtStart, peerTouches, restored, skipped }) => {
+      mockState.codexResponseOverrides.set("thread/rollback", () => ({ thread: { id: "source-thread-1" } }));
+      const { service, sessionService } = createService();
+      const source = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.5", modelId: "openai/gpt-5.5" });
+      source.threadId = "source-thread-1";
+      source.status = "idle";
+      const peer = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.5", modelId: "openai/gpt-5.5" });
+      const envelopes: AgentChatEventEnvelope[] = [
+        {
+          sessionId: source.id,
+          timestamp: "2026-07-07T20:00:00.000Z",
+          event: { type: "user_message", messageId: "user-1", text: "edit a", turnId: "turn-1" },
+        } as AgentChatEventEnvelope,
+        {
+          sessionId: source.id,
+          timestamp: "2026-07-07T20:00:01.000Z",
+          event: {
+            type: "turn_diff_summary",
+            turnId: "turn-1",
+            beforeSha: "before-sha",
+            afterSha: "after-sha",
+            files: [{ path: "src/a.ts", additions: 1, deletions: 0 }],
+            totalAdditions: 1,
+            totalDeletions: 0,
+            ...(dirtyAtStart ? { dirtyAtStart } : {}),
+          },
+        } as AgentChatEventEnvelope,
+        ...(peerTouches
+          ? [{
+              sessionId: peer.id,
+              timestamp: "2026-07-07T20:00:05.000Z",
+              event: {
+                type: "turn_diff_summary",
+                turnId: "peer-turn",
+                beforeSha: "before-sha",
+                afterSha: "before-sha",
+                files: [{ path: "src/a.ts", additions: 2, deletions: 0 }],
+                totalAdditions: 2,
+                totalDeletions: 0,
+                dirtyAtStart: [] as string[],
+              },
+            } as AgentChatEventEnvelope]
+          : []),
+      ];
+      for (const id of [source.id, peer.id]) {
+        fs.writeFileSync(String(sessionService.get(id)?.transcriptPath), "{}\n", "utf8");
+      }
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(envelopes);
+      vi.mocked(runGit).mockImplementation(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+      const preview = await service.rewindFiles({ sessionId: source.id, userMessageId: "user-1", dryRun: true });
+      expect(preview.filesChanged).toEqual(restored);
+      expect(preview.skippedFiles ?? []).toEqual(skipped);
+
+      const result = await service.rewindFiles({ sessionId: source.id, userMessageId: "user-1" });
+      expect(result.filesChanged).toEqual(restored);
+      const writes = vi.mocked(runGit).mock.calls.map(([args]) => args).filter((args) => args[0] === "restore" || args[0] === "checkout");
+      // Index and worktree: the file was clean at turn start, so whatever is
+      // staged for it the turn staged, and the next commit must not carry it.
+      expect(writes).toEqual(restored.map((file) => ["restore", "--source=before-sha", "--staged", "--worktree", "--", file]));
     });
 
     it("does not recursively delete directories during Codex rewind", async () => {
@@ -2177,6 +2350,7 @@ describe("createAgentChatService", () => {
             files: [{ path: "src/generated", additions: 1, deletions: 0 }],
             totalAdditions: 1,
             totalDeletions: 0,
+            dirtyAtStart: [] as string[],
           },
         } as AgentChatEventEnvelope,
       ];
@@ -2311,6 +2485,7 @@ describe("createAgentChatService", () => {
         permissionMode: "default",
       });
 
+      await startClaudeThread(service, source.id);
       await vi.waitFor(() => {
         expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy();
       });
@@ -2358,24 +2533,22 @@ describe("createAgentChatService", () => {
       const { service } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
       });
       source.interactionMode = "plan";
       source.permissionMode = "plan";
 
       const result = await service.handoffSession({
         sourceSessionId: source.id,
-        targetModelId: "opencode/openai/gpt-5.4-mini",
-        opencodePermissionMode: "full-auto",
+        targetModelId: "openai/gpt-5.5",
         permissionMode: "full-auto",
       });
 
-      expect(result.session.provider).toBe("opencode");
+      expect(result.session.provider).toBe("codex");
       expect(result.session.interactionMode).toBeUndefined();
-      expect(result.session.permissionMode).toBe("full-auto");
-      expect(result.session.opencodePermissionMode).toBe("full-auto");
+      expect(result.session.permissionMode).toBe("default");
     });
 
     it("uses AI-generated handoff summaries when a summary model is available", async () => {
@@ -2405,7 +2578,7 @@ describe("createAgentChatService", () => {
         ].join("\n"),
         structuredOutput: null,
         provider: "codex",
-        model: "opencode/openai/gpt-5.4",
+        model: "openai/gpt-5.5",
         sessionId: null,
         inputTokens: null,
         outputTokens: null,
@@ -2413,9 +2586,9 @@ describe("createAgentChatService", () => {
       } as any);
       const source = await service.createSession({
         laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
       });
       sessionService.updateMeta({
         sessionId: source.id,
@@ -2424,13 +2597,137 @@ describe("createAgentChatService", () => {
 
       const result = await service.handoffSession({
         sourceSessionId: source.id,
-        targetModelId: "opencode/openai/gpt-5.4-mini",
+        targetModelId: "openai/gpt-5.5",
       });
 
       expect(result.usedFallbackSummary).toBe(false);
       expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(expect.objectContaining({
         taskType: "handoff_summary",
       }));
+    });
+  });
+
+  describe("switchAccount", () => {
+    /** Signs an account in the way the provider CLI does: a login file in its config home. */
+    async function signIn(provider: "codex" | "claude", configHome: string, email: string): Promise<void> {
+      fs.mkdirSync(configHome, { recursive: true });
+      if (provider === "codex") {
+        const claims = Buffer.from(JSON.stringify({ email })).toString("base64url");
+        fs.writeFileSync(path.join(configHome, "auth.json"), JSON.stringify({ tokens: { id_token: `h.${claims}.s` } }));
+      } else {
+        fs.writeFileSync(path.join(configHome, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: email } }));
+      }
+      await getMachineProviderInstanceStore().refreshAccounts(provider);
+    }
+
+    function writeCodexRollout(configHome: string, threadId: string): string {
+      const relative = path.join("sessions", "2026", "10", "05", `rollout-2026-10-05T00-00-00-${threadId}.jsonl`);
+      fs.mkdirSync(path.dirname(path.join(configHome, relative)), { recursive: true });
+      fs.writeFileSync(path.join(configHome, relative), '{"type":"session_meta"}\n', "utf8");
+      return relative;
+    }
+
+    async function codexChatOnWorkAccount(overrides: Record<string, unknown> = {}) {
+      const store = getMachineProviderInstanceStore();
+      const work = store.create({ provider: "codex", label: "Work" }).instance;
+      const personal = store.create({ provider: "codex", label: "Personal" }).instance;
+      const events: AgentChatEventEnvelope[] = [];
+      const onAccountSwitched = vi.fn();
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event), onAccountSwitched, ...overrides });
+      const chat = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+        instanceId: work.id,
+      });
+      chat.threadId = "thread-to-switch";
+      const rollout = writeCodexRollout(work.configHome, "thread-to-switch");
+      return { service, chat, work, personal, rollout, events, onAccountSwitched };
+    }
+
+    it("moves an idle chat to another account in place, keeping its thread", async () => {
+      const { service, chat, work, personal, rollout, events, onAccountSwitched } = await codexChatOnWorkAccount();
+      await signIn("codex", personal.configHome, "personal@example.com");
+
+      const result = await service.switchAccount({ sessionId: chat.id, instanceId: personal.id });
+
+      expect(result).toEqual({ ok: true, instanceId: personal.id });
+      expect((await service.getSessionSummary(chat.id))?.instanceId).toBe(personal.id);
+      // The new account can resume the same thread id; the old one keeps its copy.
+      expect(fs.existsSync(path.join(personal.configHome, rollout))).toBe(true);
+      expect(fs.existsSync(path.join(work.configHome, rollout))).toBe(true);
+      expect(events).toContainEqual(expect.objectContaining({
+        sessionId: chat.id,
+        event: expect.objectContaining({ type: "session_meta_updated", instanceId: personal.id }),
+      }));
+      expect(onAccountSwitched).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      { name: "a turn is running", reason: "busy", signedIn: true, arrange: (chat: { status: string }) => { chat.status = "active"; } },
+      { name: "the account is signed out", reason: "signed_out", signedIn: false, arrange: () => {} },
+      { name: "a saved key pays for the chat", reason: "failed", signedIn: true, arrange: (chat: { credentialId?: string }) => { chat.credentialId = "cred-1"; } },
+    ])("refuses the switch when $name and leaves the chat where it was", async ({ reason, signedIn, arrange }) => {
+      const { service, chat, work, personal, rollout, onAccountSwitched } = await codexChatOnWorkAccount();
+      if (signedIn) await signIn("codex", personal.configHome, "personal@example.com");
+      arrange(chat as never);
+
+      const result = await service.switchAccount({ sessionId: chat.id, instanceId: personal.id });
+
+      expect(result).toMatchObject({ ok: false, reason });
+      expect((await service.getSessionSummary(chat.id))?.instanceId).toBe(work.id);
+      expect(fs.existsSync(path.join(personal.configHome, rollout))).toBe(false);
+      expect(onAccountSwitched).not.toHaveBeenCalled();
+    });
+
+    it("moves a fresh Claude fork with the source thread its first turn forks", async () => {
+      const makeWarmHandle = (sdkSessionId: string) => ({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          yield { type: "result", subtype: "success", is_error: false, session_id: sdkSessionId, usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: vi.fn(),
+        sessionId: sdkSessionId,
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(claudeSdkCreateSessionCompat)
+        .mockReturnValueOnce(makeWarmHandle("fork-source-sdk") as any)
+        .mockReturnValueOnce(makeWarmHandle("fork-target-warmup-sdk") as any);
+      // The fork's own id exists before any file for it does.
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(makeWarmHandle("fork-own-sdk") as any);
+      const store = getMachineProviderInstanceStore();
+      const work = store.create({ provider: "claude", label: "Work" }).instance;
+      const personal = store.create({ provider: "claude", label: "Personal" }).instance;
+      await signIn("claude", personal.configHome, "personal@example.com");
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        modelId: "anthropic/claude-sonnet-5",
+        instanceId: work.id,
+      });
+      await startClaudeThread(service, source.id);
+      await vi.waitFor(() => {
+        expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy();
+      });
+      const sourceSdkSessionId = readPersistedChatState(source.id).sdkSessionId as string;
+      const sourceThread = path.join("projects", "-lane-1", `${sourceSdkSessionId}.jsonl`);
+      fs.mkdirSync(path.dirname(path.join(work.configHome, sourceThread)), { recursive: true });
+      fs.writeFileSync(path.join(work.configHome, sourceThread), '{"type":"user"}\n', "utf8");
+      const fork = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      });
+      expect(readPersistedChatState(fork.session.id).forkFromSdkSessionId).toBe(sourceSdkSessionId);
+
+      const result = await service.switchAccount({ sessionId: fork.session.id, instanceId: personal.id });
+
+      expect(result).toEqual({ ok: true, instanceId: personal.id });
+      expect(fs.existsSync(path.join(personal.configHome, sourceThread))).toBe(true);
+      expect((await service.getSessionSummary(fork.session.id))?.instanceId).toBe(personal.id);
     });
   });
 
@@ -2529,11 +2826,12 @@ describe("createAgentChatService", () => {
 
         const missingTransport = structuredClone(capsule);
         delete missingTransport.forkTransport;
+        delete (missingTransport as { transcriptEnvelopes?: unknown }).transcriptEnvelopes;
         await expect(service.validateCrossMachineSource({
           sourceSessionId: source.id,
           capsule: missingTransport,
           capsuleFingerprint: createHash("sha256").update(stableStringify(missingTransport)).digest("hex"),
-        })).rejects.toThrow("missing its fork transport");
+        })).rejects.toThrow("missing its fork history");
 
         const briefWithTranscript = structuredClone(capsule);
         briefWithTranscript.mode = "brief";
@@ -2615,26 +2913,6 @@ describe("createAgentChatService", () => {
         expect(settings.specModeModelId).toBeTruthy();
       });
 
-      it("refuses a cross-machine Droid fork with the portability message", async () => {
-        installCleanCrossMachineGitFixture();
-        const { service } = createService();
-        const source = await service.createSession({
-          laneId: "lane-1",
-          provider: "droid",
-          model: "custom:claude-sonnet-5-thinking-32000",
-          modelId: "droid/custom:claude-sonnet-5-thinking-32000",
-        });
-
-        await expect(service.prepareCrossMachineHandoff({
-          sourceSessionId: source.id,
-          handoffId: "handoff-droid-fork-1",
-          targetModelId: "droid/custom:claude-sonnet-5-thinking-32000",
-          mode: "fork",
-        })).rejects.toThrow(
-          "Droid sessions aren't portable between machines yet. Use a brief handoff instead.",
-        );
-      });
-
       it("packages Claude native history and bounded ADE transcript envelopes", async () => {
         installCleanCrossMachineGitFixture();
         installRealTranscriptParser();
@@ -2647,6 +2925,7 @@ describe("createAgentChatService", () => {
           model: "claude-sonnet-5",
           modelId: "anthropic/claude-sonnet-5",
         });
+        await startClaudeThread(service, source.id);
         await vi.waitFor(() => expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy());
         const sourceSdkSessionId = String(readPersistedChatState(source.id).sdkSessionId);
         const providerTranscript = `${JSON.stringify({
@@ -2735,474 +3014,6 @@ describe("createAgentChatService", () => {
           prepared.capsule.forkTransport!.mainFile.contentBase64Gzip,
           "base64",
         )).toString("utf8")).toBe(rolloutContent);
-      });
-
-      it("offers brief fallback when a Claude transcript exceeds the fork cap", async () => {
-        installCleanCrossMachineGitFixture();
-        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-fork-oversize");
-        installClaudeResponseFixture({ sdkSessionId: "claude-fork-oversize", responseText: "ready" });
-        const { service } = createService();
-        const source = await service.createSession({
-          laneId: "lane-1",
-          provider: "claude",
-          model: "claude-sonnet-5",
-          modelId: "anthropic/claude-sonnet-5",
-        });
-        await vi.waitFor(() => expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy());
-        const sourceSdkSessionId = String(readPersistedChatState(source.id).sdkSessionId);
-        const providerDir = path.join(
-          process.env.CLAUDE_CONFIG_DIR,
-          "projects",
-          tmpRoot.replace(/[^A-Za-z0-9]/g, "-"),
-        );
-        fs.mkdirSync(providerDir, { recursive: true });
-        fs.writeFileSync(
-          path.join(providerDir, `${sourceSdkSessionId}.jsonl`),
-          Buffer.alloc(18 * 1024 * 1024 + 1, 0x61),
-        );
-
-        await expect(service.prepareCrossMachineHandoff({
-          sourceSessionId: source.id,
-          handoffId: "handoff-claude-oversize-1",
-          targetModelId: "anthropic/claude-sonnet-5",
-          mode: "fork",
-        })).rejects.toThrow(/too large/);
-      });
-
-      it("materializes a Claude fork, seeds provenance, and reuses it idempotently", async () => {
-        const branchRef = "feature/handoff-fork";
-        installCleanCrossMachineGitFixture(branchRef);
-        installRealTranscriptParser();
-        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-fork-accept");
-        installClaudeResponseFixture({ sdkSessionId: "destination-warmup", responseText: "ready" });
-        vi.mocked(detectAllAuth).mockResolvedValue([
-          { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
-        ] as any);
-        const values = new Map<string, unknown>();
-        const { service, sessionService, laneService } = createService({
-          db: {
-            getJson: vi.fn((key: string) => values.get(key) ?? null),
-            setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
-          },
-        });
-        const sourceEnvelope: AgentChatEventEnvelope = {
-          sessionId: "source-session",
-          timestamp: "2026-07-10T10:00:00.000Z",
-          event: { type: "user_message", messageId: "accepted-envelope", text: "Seed this history" },
-          provenance: { messageId: "native-message" },
-        };
-        const capsule = makeForkCapsule({
-          transcriptEnvelopes: {
-            ...gzipForkContent(`${JSON.stringify(sourceEnvelope)}\n`),
-            truncated: false,
-          },
-        });
-        const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
-
-        const first = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
-        const destinationLane = await laneService.getSummary(first.laneId);
-        const targetProviderDir = path.join(
-          process.env.CLAUDE_CONFIG_DIR,
-          "projects",
-          String(destinationLane.worktreePath).replace(/[^A-Za-z0-9]/g, "-"),
-        );
-        const providerFilesAfterFirst = fs.readdirSync(targetProviderDir).filter((name) => name.endsWith(".jsonl"));
-        const targetTranscript = path.join(tmpRoot, ".ade", "transcripts", "chat", `${first.session.id}.jsonl`);
-        await vi.waitFor(() => {
-          const envelopes = fs.readFileSync(targetTranscript, "utf8").split(/\r?\n/).filter(Boolean)
-            .map((line) => JSON.parse(line) as AgentChatEventEnvelope);
-          expect(envelopes).toEqual(expect.arrayContaining([
-            expect.objectContaining({
-              sessionId: first.session.id,
-              provenance: expect.objectContaining({
-                messageId: "native-message",
-                providerOrigin: "handoff_fork",
-                sourceSessionId: "source-session",
-              }),
-            }),
-          ]));
-        });
-
-        const second = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
-        expect(second.reusedSession).toBe(true);
-        expect(second.session.id).toBe(first.session.id);
-        expect(sessionService.create).toHaveBeenCalledTimes(1);
-        expect(fs.readdirSync(targetProviderDir).filter((name) => name.endsWith(".jsonl"))).toEqual(providerFilesAfterFirst);
-      });
-
-      it("re-materializes a fork when the first accept fails after creating the chat", async () => {
-        const branchRef = "feature/handoff-fork-retry";
-        installCleanCrossMachineGitFixture(branchRef);
-        installRealTranscriptParser();
-        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-fork-retry");
-        installClaudeResponseFixture({ sdkSessionId: "destination-warmup", responseText: "ready" });
-        vi.mocked(detectAllAuth).mockResolvedValue([
-          { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
-        ] as any);
-        const values = new Map<string, unknown>();
-        const { service, sessionService, laneService } = createService({
-          db: {
-            getJson: vi.fn((key: string) => values.get(key) ?? null),
-            setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
-          },
-        });
-        const sourceEnvelope: AgentChatEventEnvelope = {
-          sessionId: "source-session",
-          timestamp: "2026-07-10T10:00:00.000Z",
-          event: { type: "user_message", messageId: "retry-envelope", text: "Retry this history" },
-        };
-        const capsule = makeForkCapsule({
-          handoffId: "handoff-claude-retry-1",
-          source: {
-            machineName: "Source Mac",
-            sessionId: "source-session",
-            provider: "claude",
-            model: "claude-sonnet-5",
-            title: "Retry fork",
-            laneName: "Retry fork",
-            branchRef,
-            headSha: HANDOFF_TEST_SHA,
-            originUrl: "https://github.com/example/ade.git",
-          },
-          transcriptEnvelopes: {
-            ...gzipForkContent(`${JSON.stringify(sourceEnvelope)}\n`),
-            truncated: false,
-          },
-        });
-        const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
-        const realWriteFile = fs.promises.writeFile.bind(fs.promises);
-        let materializeAttempts = 0;
-        const writeFile = vi.spyOn(fs.promises, "writeFile").mockImplementation((async (filePath, ...args: unknown[]) => {
-          if (String(filePath).startsWith(process.env.CLAUDE_CONFIG_DIR!) && String(filePath).endsWith(".jsonl")) {
-            materializeAttempts += 1;
-            if (materializeAttempts === 1) throw new Error("mock materialize failure");
-          }
-          return (realWriteFile as (...writeArgs: unknown[]) => Promise<void>)(filePath, ...args);
-        }) as typeof fs.promises.writeFile);
-
-        try {
-          await expect(service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint }))
-            .rejects.toThrow("mock materialize failure");
-          expect([...values.values()]).toEqual(expect.arrayContaining([
-            expect.objectContaining({ state: "failed", sessionId: expect.any(String) }),
-          ]));
-
-          const accepted = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
-          const destinationLane = await laneService.getSummary(accepted.laneId);
-          const targetProviderDir = path.join(
-            process.env.CLAUDE_CONFIG_DIR,
-            "projects",
-            String(destinationLane.worktreePath).replace(/[^A-Za-z0-9]/g, "-"),
-          );
-          expect(materializeAttempts).toBe(2);
-          expect(fs.readdirSync(targetProviderDir).some((name) => name.endsWith(".jsonl"))).toBe(true);
-          await vi.waitFor(() => {
-            expect(fs.readFileSync(
-              path.join(tmpRoot, ".ade", "transcripts", "chat", `${accepted.session.id}.jsonl`),
-              "utf8",
-            )).toContain("Retry this history");
-          });
-          expect(sessionService.create).toHaveBeenCalledTimes(1);
-        } finally {
-          writeFile.mockRestore();
-        }
-      });
-
-      it("skips re-materializing and re-importing history when retrying after a post-materialization failure", async () => {
-        const branchRef = "feature/handoff-fork-late-retry";
-        installCleanCrossMachineGitFixture(branchRef);
-        installRealTranscriptParser();
-        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-fork-late-retry");
-        installClaudeResponseFixture({ sdkSessionId: "destination-warmup", responseText: "ready" });
-        vi.mocked(detectAllAuth).mockResolvedValue([
-          { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
-        ] as any);
-        const values = new Map<string, unknown>();
-        const { service } = createService({
-          db: {
-            getJson: vi.fn((key: string) => values.get(key) ?? null),
-            setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
-          },
-        });
-        const sourceEnvelope: AgentChatEventEnvelope = {
-          sessionId: "source-session",
-          timestamp: "2026-07-10T10:00:00.000Z",
-          event: { type: "user_message", messageId: "late-retry-envelope", text: "Late retry history" },
-        };
-        const capsule = makeForkCapsule({
-          handoffId: "handoff-claude-late-retry-1",
-          source: {
-            machineName: "Source Mac",
-            sessionId: "source-session",
-            provider: "claude",
-            model: "claude-sonnet-5",
-            title: "Late retry fork",
-            laneName: "Late retry fork",
-            branchRef,
-            headSha: HANDOFF_TEST_SHA,
-            originUrl: "https://github.com/example/ade.git",
-          },
-          transcriptEnvelopes: {
-            ...gzipForkContent(`${JSON.stringify(sourceEnvelope)}\n`),
-            truncated: false,
-          },
-        });
-        const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
-        const realWriteFile = fs.promises.writeFile.bind(fs.promises);
-        let materializeAttempts = 0;
-        const writeFile = vi.spyOn(fs.promises, "writeFile").mockImplementation((async (filePath, ...args: unknown[]) => {
-          if (String(filePath).startsWith(process.env.CLAUDE_CONFIG_DIR!) && String(filePath).endsWith(".jsonl")) {
-            materializeAttempts += 1;
-          }
-          return (realWriteFile as (...writeArgs: unknown[]) => Promise<void>)(filePath, ...args);
-        }) as typeof fs.promises.writeFile);
-
-        try {
-          const first = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
-          expect(materializeAttempts).toBe(1);
-
-          // Simulate a failure that happened AFTER materialization (e.g. the
-          // continuation sendMessage): the durable record keeps the
-          // forkMaterializedAt marker but drops back to "failed".
-          const recordEntry = [...values.entries()].find(([key, value]) =>
-            key.includes("handoff-claude-late-retry-1")
-            && Boolean((value as { forkMaterializedAt?: string | null })?.forkMaterializedAt));
-          expect(recordEntry, "persisted handoff record with forkMaterializedAt").toBeTruthy();
-          values.set(recordEntry![0], {
-            ...(recordEntry![1] as Record<string, unknown>),
-            state: "failed",
-            lastError: "mock post-materialization failure",
-          });
-
-          const second = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
-          expect(second.session.id).toBe(first.session.id);
-          expect(materializeAttempts).toBe(1);
-          await vi.waitFor(() => {
-            const transcript = fs.readFileSync(
-              path.join(tmpRoot, ".ade", "transcripts", "chat", `${first.session.id}.jsonl`),
-              "utf8",
-            );
-            expect(transcript.match(/Late retry history/g)?.length).toBe(1);
-          });
-        } finally {
-          writeFile.mockRestore();
-        }
-      });
-
-      it("re-materializes into a recreated destination chat even when the fork marker is set", async () => {
-        const branchRef = "feature/handoff-fork-recreated";
-        installCleanCrossMachineGitFixture(branchRef);
-        installRealTranscriptParser();
-        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-fork-recreated");
-        installClaudeResponseFixture({ sdkSessionId: "destination-warmup", responseText: "ready" });
-        vi.mocked(detectAllAuth).mockResolvedValue([
-          { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
-        ] as any);
-        const values = new Map<string, unknown>();
-        const { service, sessionService } = createService({
-          db: {
-            getJson: vi.fn((key: string) => values.get(key) ?? null),
-            setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
-          },
-        });
-        const sourceEnvelope: AgentChatEventEnvelope = {
-          sessionId: "source-session",
-          timestamp: "2026-07-10T10:00:00.000Z",
-          event: { type: "user_message", messageId: "recreated-envelope", text: "Recreated history" },
-        };
-        const capsule = makeForkCapsule({
-          handoffId: "handoff-claude-recreated-1",
-          source: {
-            machineName: "Source Mac",
-            sessionId: "source-session",
-            provider: "claude",
-            model: "claude-sonnet-5",
-            title: "Recreated fork",
-            laneName: "Recreated fork",
-            branchRef,
-            headSha: HANDOFF_TEST_SHA,
-            originUrl: "https://github.com/example/ade.git",
-          },
-          transcriptEnvelopes: {
-            ...gzipForkContent(`${JSON.stringify(sourceEnvelope)}\n`),
-            truncated: false,
-          },
-        });
-        const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
-        const realWriteFile = fs.promises.writeFile.bind(fs.promises);
-        let materializeAttempts = 0;
-        const writeFile = vi.spyOn(fs.promises, "writeFile").mockImplementation((async (filePath, ...args: unknown[]) => {
-          if (String(filePath).startsWith(process.env.CLAUDE_CONFIG_DIR!) && String(filePath).endsWith(".jsonl")) {
-            materializeAttempts += 1;
-          }
-          return (realWriteFile as (...writeArgs: unknown[]) => Promise<void>)(filePath, ...args);
-        }) as typeof fs.promises.writeFile);
-
-        try {
-          const first = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
-          expect(materializeAttempts).toBe(1);
-
-          // Simulate: post-materialization failure recorded AND the destination
-          // chat deleted before the retry. The marker alone must not skip
-          // seeding a freshly recreated session.
-          const recordEntry = [...values.entries()].find(([key, value]) =>
-            key.includes("handoff-claude-recreated-1")
-            && Boolean((value as { forkMaterializedAt?: string | null })?.forkMaterializedAt));
-          expect(recordEntry, "persisted handoff record with forkMaterializedAt").toBeTruthy();
-          values.set(recordEntry![0], {
-            ...(recordEntry![1] as Record<string, unknown>),
-            state: "failed",
-            lastError: "mock failure before dispatch",
-          });
-          mockState.sessions.delete(first.session.id);
-
-          const second = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
-          expect(second.session.id).toBe(first.session.id);
-          expect(second.reusedSession).toBe(false);
-          expect(materializeAttempts).toBe(2);
-          expect(sessionService.create).toHaveBeenCalledTimes(2);
-        } finally {
-          writeFile.mockRestore();
-        }
-      });
-
-      it("does not clobber a pre-existing Codex rollout and still forks the thread", async () => {
-        const branchRef = "feature/handoff-codex-fork";
-        installCleanCrossMachineGitFixture(branchRef);
-        process.env.CODEX_HOME = path.join(tmpHomeRoot, "codex-fork-accept");
-        vi.mocked(detectAllAuth).mockResolvedValue([
-          { type: "cli-subscription", cli: "codex", path: "/usr/local/bin/codex", authenticated: true, verified: true },
-        ] as any);
-        mockState.codexResponseOverrides.set("thread/fork", { thread: { id: "forked-thread" } });
-        const { service, sessionService } = createService();
-        const rollout = '{"type":"session_meta","payload":{"id":"source-codex-thread"}}\n';
-        const capsule = makeForkCapsule({
-          handoffId: "handoff-codex-accept-1",
-          source: {
-            machineName: "Source Mac",
-            sessionId: "source-session",
-            provider: "codex",
-            model: "gpt-5.5",
-            title: null,
-            laneName: "Codex fork",
-            branchRef,
-            headSha: HANDOFF_TEST_SHA,
-            originUrl: "https://github.com/example/ade.git",
-          },
-          target: { targetModelId: "openai/gpt-5.5" },
-          forkTransport: {
-            provider: "codex",
-            nativeSessionId: "source-codex-thread",
-            kind: "codex-rollout",
-            mainFile: { name: "rollout-source-codex-thread.jsonl", ...gzipForkContent(rollout) },
-          },
-        });
-        const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
-        const now = new Date();
-        const rolloutPath = path.join(
-          process.env.CODEX_HOME,
-          "sessions",
-          String(now.getFullYear()).padStart(4, "0"),
-          String(now.getMonth() + 1).padStart(2, "0"),
-          String(now.getDate()).padStart(2, "0"),
-          "rollout-source-codex-thread.jsonl",
-        );
-        fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
-        fs.writeFileSync(rolloutPath, "existing local rollout", "utf8");
-
-        const accepted = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
-
-        expect(fs.readFileSync(rolloutPath, "utf8")).toBe("existing local rollout");
-        expect(mockState.codexRequestPayloads).toEqual(expect.arrayContaining([
-          expect.objectContaining({
-            method: "thread/fork",
-            params: { threadId: "source-codex-thread", excludeTurns: true },
-          }),
-        ]));
-        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(accepted.session.id, "chat:codex:forked-thread");
-      });
-
-      it.each([
-        ["plain-text", "Imported session: ses_imported1", "ses_imported1"],
-        ["JSON", JSON.stringify({ sessionID: "ses_json1" }), "ses_json1"],
-      ])("exports, imports, and forks an OpenCode session with %s import output", async (_shape, importStdout, importedId) => {
-        installCleanCrossMachineGitFixture();
-        installCliCaptureMock((args) => {
-          if (args[0] === "export") return { stdout: JSON.stringify({ id: args[1], messages: [] }) };
-          if (args[0] === "import") return { stdout: importStdout };
-          return { stdout: "", stderr: "unexpected CLI call", exitCode: 1 };
-        });
-        vi.mocked(streamText).mockReturnValue({
-          fullStream: (async function* () {
-            yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
-          })(),
-        } as any);
-        const { service, sessionService } = createService();
-        const source = await service.createSession({
-          laneId: "lane-1",
-          provider: "opencode",
-          model: "",
-          modelId: "opencode/openai/gpt-5.4",
-        });
-        await service.sendMessage({ sessionId: source.id, text: "Create provider history" }, { awaitDispatch: true });
-        await vi.waitFor(() => expect(source.status).toBe("idle"));
-
-        const prepared = await service.prepareCrossMachineHandoff({
-          sourceSessionId: source.id,
-          handoffId: "handoff-opencode-fork-1",
-          targetModelId: "opencode/openai/gpt-5.4",
-          mode: "fork",
-        });
-        expect(prepared.capsule.forkTransport?.kind).toBe("opencode-export");
-
-        const accepted = await service.acceptCrossMachineHandoff({
-          capsule: prepared.capsule,
-          capsuleFingerprint: prepared.capsuleFingerprint,
-        });
-        expect(mockState.openCodeForkCalls).toEqual(expect.arrayContaining([{ id: importedId }]));
-        expect(readPersistedChatState(accepted.session.id).providerSessionId).toBe(`${importedId}-fork`);
-        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(
-          accepted.session.id,
-          `chat:opencode:${accepted.session.id}`,
-        );
-      });
-
-      it("reports destination fork capability without changing legacy brief preflight", async () => {
-        installCleanCrossMachineGitFixture();
-        vi.mocked(detectAllAuth).mockResolvedValue([
-          { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
-        ] as any);
-        const { service } = createService();
-        const baseArgs = {
-          targetModelId: "anthropic/claude-sonnet-5" as const,
-          sourceBranchRef: "feature/primary",
-          sourceHeadSha: HANDOFF_TEST_SHA,
-        };
-
-        await expect(service.preflightCrossMachineDestination({
-          ...baseArgs,
-          mode: "fork",
-          sourceProvider: "claude",
-        })).resolves.toMatchObject({ forkHandoffSupport: { supported: true } });
-        await expect(service.preflightCrossMachineDestination({
-          ...baseArgs,
-          mode: "fork",
-          sourceProvider: "droid",
-        })).resolves.toMatchObject({
-          forkHandoffSupport: {
-            supported: false,
-            reason: "Droid sessions aren't portable between machines yet",
-          },
-        });
-        await expect(service.preflightCrossMachineDestination({
-          ...baseArgs,
-          mode: "fork",
-          sourceProvider: "cursor",
-        })).resolves.toMatchObject({
-          forkHandoffSupport: { supported: false, reason: "Cursor forks can't move between machines." },
-        });
-        const brief = await service.preflightCrossMachineDestination(baseArgs);
-        expect(brief).not.toHaveProperty("forkHandoffSupport");
       });
     });
 
@@ -3476,8 +3287,11 @@ describe("createAgentChatService", () => {
         manuallyNamed: true,
       });
       const lane = await laneService.getSummary("lane-1");
+      // A worktree lane travels under its own name (a primary lane travels
+      // under its branch), so that name is what must be scrubbed.
       laneService.getSummary.mockResolvedValue({
         ...lane,
+        laneType: "worktree",
         name: "Deploy password=super-secret-value",
       });
 
@@ -3496,19 +3310,26 @@ describe("createAgentChatService", () => {
 
     it("blocks a dirty source lane before generating or transferring context", async () => {
       installCleanCrossMachineGitFixture("feature/primary", " M src/dirty.ts\n");
-      const { service } = createService();
+      const { service, aiIntegrationService } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
         provider: "opencode",
         model: "",
         modelId: "opencode/openai/gpt-5.4",
       });
+      vi.mocked(streamText).mockClear();
+      vi.mocked(aiIntegrationService.summarizeTerminal).mockClear();
 
+      // The refusal names the blocker (the dirty file count), not a generic error.
       await expect(service.prepareCrossMachineHandoff({
         sourceSessionId: source.id,
         handoffId: "handoff-dirty-1",
         targetModelId: "opencode/openai/gpt-5.4-mini",
-      })).rejects.toThrow("Commit or discard every source lane change");
+      })).rejects.toThrow(/1 uncommitted change\b/);
+      // Nothing was generated from the chat, and nothing reached git's remote.
+      expect(streamText).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(vi.mocked(runGit).mock.calls.some(([args]) => args[0] === "bundle" || args[0] === "push")).toBe(false);
     });
 
     it("revalidates source cleanliness immediately before destination acceptance", async () => {
@@ -3531,10 +3352,10 @@ describe("createAgentChatService", () => {
         sourceSessionId: source.id,
         capsule: prepared.capsule,
         capsuleFingerprint: prepared.capsuleFingerprint,
-      })).rejects.toThrow("Commit or discard every source lane change");
+      })).rejects.toThrow(/1 uncommitted change\b/);
     });
 
-    it("invalidates a capsule when chat activity arrives while the handoff brief is being generated", async () => {
+    it("blocks handoff when a source turn starts during brief generation", async () => {
       vi.useFakeTimers();
       try {
         vi.setSystemTime(new Date("2026-07-10T12:00:00.000Z"));
@@ -3563,21 +3384,21 @@ describe("createAgentChatService", () => {
         const { service, aiIntegrationService } = createService();
         const source = await service.createSession({
           laneId: "lane-1",
-          provider: "opencode",
-          model: "",
-          modelId: "opencode/openai/gpt-5.4",
+          provider: "codex",
+          model: "gpt-5.5",
+          modelId: "openai/gpt-5.5",
         });
         vi.mocked(aiIntegrationService.summarizeTerminal).mockImplementationOnce(async () => {
           vi.setSystemTime(new Date("2026-07-10T12:00:01.000Z"));
-          await service.runSessionTurn({
+          await service.sendMessage({
             sessionId: source.id,
             text: "This arrived while the handoff brief was being generated.",
-          });
+          }, { awaitDispatch: true });
           return {
             text: "## Current goal\n- Continue after the source chat changed.",
             structuredOutput: null,
             provider: "codex",
-            model: "openai/gpt-5.4-mini",
+            model: "openai/gpt-5.5",
             sessionId: null,
             inputTokens: null,
             outputTokens: null,
@@ -3588,7 +3409,7 @@ describe("createAgentChatService", () => {
         const prepared = await service.prepareCrossMachineHandoff({
           sourceSessionId: source.id,
           handoffId: "handoff-mid-prepare-activity-1",
-          targetModelId: "opencode/openai/gpt-5.4-mini",
+          targetModelId: "openai/gpt-5.5",
         });
 
         expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalled();
@@ -3597,7 +3418,7 @@ describe("createAgentChatService", () => {
           sourceSessionId: source.id,
           capsule: prepared.capsule,
           capsuleFingerprint: prepared.capsuleFingerprint,
-        })).rejects.toThrow("source chat changed after the handoff brief was prepared");
+        })).rejects.toThrow("Wait for the current response to finish before handing off this chat.");
       } finally {
         vi.useRealTimers();
       }
@@ -3631,15 +3452,15 @@ describe("createAgentChatService", () => {
         source: {
           machineName: "MacBook",
           sessionId: "source-session",
-          provider: "opencode",
-          model: "opencode/openai/gpt-5.4",
+          provider: "codex",
+          model: "openai/gpt-5.5",
           title: "Cross-machine handoff",
           laneName: "Feature handoff",
           branchRef,
           headSha: HANDOFF_TEST_SHA,
           originUrl: "https://github.com/example/ade.git",
         },
-        target: { targetModelId: "opencode/openai/gpt-5.4" },
+        target: { targetModelId: "openai/gpt-5.5" },
         brief: "## Current goal\n- Finish the handoff.",
         artifacts: { fileChanges: ["modify src/handoff.ts"], commands: [], errors: [] },
         linearIssues: [],
@@ -3666,13 +3487,20 @@ describe("createAgentChatService", () => {
       // Preflight now fetches before evaluating whether an existing lane is a
       // strict ancestor; acceptance fetches again at its mutation boundary.
       expect(remoteAuthCalls).toHaveLength(3);
+      const extraHeaderKey = "http.https://github.com/.extraheader";
       for (const [, options] of remoteAuthCalls) {
-        expect(options?.env).toMatchObject({
-          GIT_TERMINAL_PROMPT: "0",
-          GCM_INTERACTIVE: "Never",
-          GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-          GIT_CONFIG_VALUE_0: expectedAuthorization,
-        });
+        const env = options?.env ?? {};
+        expect(env).toMatchObject({ GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" });
+        const entries = Array.from({ length: Number(env.GIT_CONFIG_COUNT ?? 0) }, (_, index) => [
+          env[`GIT_CONFIG_KEY_${index}`],
+          env[`GIT_CONFIG_VALUE_${index}`],
+        ]);
+        // A reset entry first clears any extraheader a clone left behind, so
+        // GitHub sees exactly one Authorization header: this machine's token.
+        expect(entries[0]).toEqual([extraHeaderKey, ""]);
+        expect(entries.filter(([key, value]) => key === extraHeaderKey && value)).toEqual([
+          [extraHeaderKey, expectedAuthorization],
+        ]);
       }
       expect(Array.from(values.values())).toEqual(expect.arrayContaining([
         expect.objectContaining({
@@ -3704,15 +3532,15 @@ describe("createAgentChatService", () => {
         source: {
           machineName: "MacBook",
           sessionId: "source-session",
-          provider: "opencode",
-          model: "opencode/openai/gpt-5.4",
+          provider: "codex",
+          model: "openai/gpt-5.5",
           title: "Concurrent handoff",
           laneName: "Concurrent handoff",
           branchRef,
           headSha: HANDOFF_TEST_SHA,
           originUrl: "https://github.com/example/ade.git",
         },
-        target: { targetModelId: "opencode/openai/gpt-5.4" },
+        target: { targetModelId: "openai/gpt-5.5" },
         brief: "Continue the same task.",
         artifacts: { fileChanges: [], commands: [], errors: [] },
         linearIssues: [],
@@ -3728,7 +3556,7 @@ describe("createAgentChatService", () => {
       expect(second.session.id).toBe(first.session.id);
       expect(laneService.importBranch).toHaveBeenCalledTimes(1);
       expect(sessionService.create).toHaveBeenCalledTimes(1);
-      expect(streamText).toHaveBeenCalledTimes(1);
+      expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "thread/start")).toHaveLength(1);
     });
 
     it("does not treat an optimistic user message as a successful dispatch acknowledgement", async () => {

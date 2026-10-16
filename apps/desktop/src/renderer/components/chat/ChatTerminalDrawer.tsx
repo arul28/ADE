@@ -463,6 +463,8 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
 
   // Drop drawer tabs when their session is deleted from the sidebar so the user
   // can't keep working in a shell whose backing session no longer exists.
+  // Keyed on the pin's key: re-subscribing a pinned pump on every rebuilt pin
+  // object would drop the events buffered in between.
   useEffect(() => {
     const sessionsBridge = window.ade?.sessions;
     if (!sessionsBridge?.onChanged) return undefined;
@@ -473,7 +475,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         if (!removed) return prev;
         if (removed.ptyId) {
           window.ade.pty
-            .dispose({ ptyId: removed.ptyId, sessionId: removed.sessionId }, pin)
+            .dispose({ ptyId: removed.ptyId, sessionId: removed.sessionId }, pinRef.current)
             .catch(() => {});
         }
         const next = prev.filter((tab) => tab.sessionId !== event.sessionId);
@@ -483,21 +485,26 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         });
         return next;
       });
-    });
-  }, [pin]);
+    }, pinRef.current);
+  }, [pinKey]);
 
   useEffect(() => {
     if (!open) return undefined;
     const appControlBridge = window.ade?.appControl;
     if (!appControlBridge) return undefined;
     let cancelled = false;
-    void appControlBridge.getStatus(pin)
+    // App Control keeps one session per lane: this drawer's lane is the one
+    // whose app terminal it can show, and other lanes' events are not ours.
+    void appControlBridge.getStatus({ laneId }, pin)
       .then((status) => {
         if (cancelled) return;
         setAppControlTabState(deriveAppControlTabState(status?.activeSession ?? null));
       })
       .catch(() => {});
     const unsubscribe = appControlBridge.onEvent((event) => {
+      // Only this drawer's lane: an event that names no lane, or another
+      // lane, is never this drawer's app.
+      if (!laneId || !("laneId" in event) || event.laneId !== laneId) return;
       if (event.type === "session-started" || event.type === "session-updated") {
         setAppControlTabState(deriveAppControlTabState(event.session));
       } else if (event.type === "session-stopped") {
@@ -508,7 +515,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       cancelled = true;
       unsubscribe();
     };
-  }, [open, pin]);
+  }, [laneId, open, pin]);
 
   const closeTab = useCallback((tabId: string) => {
     const entry = tabsRef.current.find((tab) => tab.id === tabId);
@@ -592,10 +599,10 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
           "group/pill relative flex h-6 min-w-0 max-w-[144px] shrink-0 items-center gap-1.5 rounded-[6px] pl-2 pr-1",
           "text-[12px] transition-colors duration-[120ms] ease-out",
           isActive
-            ? "bg-white/[0.08] text-fg"
+            ? "bg-fg/[0.08] text-fg"
             : isSplit
-              ? "bg-white/[0.04] text-fg/75"
-              : "text-muted-fg hover:bg-white/[0.05] hover:text-fg/85",
+              ? "bg-fg/[0.04] text-fg/75"
+              : "text-muted-fg hover:bg-fg/[0.05] hover:text-fg/85",
         )}
         title={appControlTone ? appControlTabState?.title : undefined}
       >
@@ -635,7 +642,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
           className={cn(
             "flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] text-muted-fg",
             "opacity-0 transition-opacity duration-[120ms] ease-out",
-            "hover:bg-white/[0.08] hover:text-fg group-hover/pill:opacity-100",
+            "hover:bg-fg/[0.08] hover:text-fg group-hover/pill:opacity-100",
             "focus-visible:opacity-100 focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
           )}
         >
@@ -761,7 +768,7 @@ export const ChatTerminalToggle = memo(function ChatTerminalToggle({
         "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border font-sans transition-all",
         open
           ? "border-violet-400/20 bg-violet-500/[0.08] text-violet-200/80"
-          : "border-white/[0.08] bg-white/[0.03] text-fg/45 hover:border-white/[0.12] hover:text-fg/65",
+          : "border-fg/[0.08] bg-fg/[0.03] text-fg/45 hover:border-fg/[0.12] hover:text-fg/65",
       )}
       title={label}
       aria-label={label}

@@ -1,0 +1,251 @@
+import fs from "node:fs";
+import path from "node:path";
+import { resolveAdeOpenCodeStoreDir } from "../../../shared/opencodeDataHome";
+import type { HarnessSourceSignInKind } from "../../../shared/harnessRoutes";
+import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
+import { OPENCODE_HOUSE_PROVIDER_IDS, openCodeSignInViaProvider } from "../../../shared/opencodeProviders";
+
+/**
+ * Non-secret facts about the credentials in an OpenCode 2.0 store.
+ *
+ * 2.0 keeps logins and saved keys in the `credential` table instead of
+ * `auth.json`. `value` is JSON holding the secret itself, so only `type`,
+ * `metadata.accountID`, and an external (cloud) login's metadata are
+ * extracted, inside SQLite: token fields never reach this process. An
+ * external login holds no secret at all; its metadata is the answers it was
+ * set up with (a project, a location, an AWS profile name).
+ */
+export type OpenCodeCredentialSummary = {
+  id: string;
+  integrationId: string;
+  label: string;
+  methodId: string | null;
+  type: HarnessSourceSignInKind | null;
+  accountId: string | null;
+  /** An external login's string metadata; empty for every other type. */
+  externalDetails: Record<string, string>;
+  active: boolean;
+  updatedAt: number;
+};
+
+function externalDetailsFrom(raw: unknown): Record<string, string> {
+  if (typeof raw !== "string" || !raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "string" && value.trim()) out[key] = value.trim();
+      else if (typeof value === "number" && Number.isFinite(value)) out[key] = String(value);
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+let credentialsGeneration = 0;
+
+/**
+ * Bumped whenever ADE changes which credential OpenCode uses (a switch, a
+ * sign-in, a removal), so caches of "who pays" drop their copy at once
+ * instead of naming the previous account for minutes.
+ */
+export function bumpOpenCodeCredentialsGeneration(): void {
+  credentialsGeneration += 1;
+}
+
+export function openCodeCredentialsGeneration(): number {
+  return credentialsGeneration;
+}
+
+/** `opencode.db` of ADE's owned store, the one every ADE-managed server writes. */
+export function resolveAdeOpenCodeDbPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveAdeOpenCodeStoreDir(env), "opencode.db");
+}
+
+function textOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+type ReadOnlyOpenCodeDb = ReturnType<typeof openReadOnlyDatabase>;
+
+/**
+ * Run `read` against an OpenCode store opened read-only. A missing or
+ * unreadable store answers `fallback`. A running server may hold the write
+ * lock, so a busy store answers at once rather than waiting.
+ */
+export function readOpenCodeDb<T>(dbPath: string, fallback: T, read: (db: ReadOnlyOpenCodeDb) => T): T {
+  if (!fs.existsSync(dbPath)) return fallback;
+  let db: ReadOnlyOpenCodeDb | null = null;
+  try {
+    db = openReadOnlyDatabase(dbPath);
+    db.exec("PRAGMA busy_timeout = 0");
+    return read(db);
+  } catch {
+    return fallback;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // Closing a read-only handle cannot lose anything.
+    }
+  }
+}
+
+/**
+ * Every credential row, active ones first. A missing, locked, or older store
+ * (no `credential` table) reads as none — never an error.
+ */
+export function readOpenCodeCredentials(dbPath: string = resolveAdeOpenCodeDbPath()): OpenCodeCredentialSummary[] {
+  return readOpenCodeDb(dbPath, [], (db) => {
+    const rows = db.prepare(`
+      SELECT id AS id,
+             integration_id AS integrationId,
+             label AS label,
+             COALESCE(NULLIF(method_id, ''), json_extract(value, '$.methodID')) AS methodId,
+             active AS active,
+             time_updated AS updatedAt,
+             json_extract(value, '$.type') AS type,
+             json_extract(value, '$.metadata.accountID') AS accountId,
+             CASE WHEN json_extract(value, '$.type') = 'external'
+                  THEN json_extract(value, '$.metadata') END AS externalMetadata
+        FROM credential
+       ORDER BY (active = 1) DESC, time_updated DESC
+    `).all() as Array<Record<string, unknown>>;
+    const out: OpenCodeCredentialSummary[] = [];
+    for (const row of rows) {
+      const id = textOrNull(row.id);
+      const integrationId = textOrNull(row.integrationId);
+      if (!id || !integrationId) continue;
+      const type = row.type === "key" || row.type === "oauth" || row.type === "external" ? row.type : null;
+      out.push({
+        id,
+        integrationId,
+        label: textOrNull(row.label) ?? integrationId,
+        methodId: textOrNull(row.methodId),
+        type,
+        accountId: textOrNull(row.accountId),
+        externalDetails: type === "external" ? externalDetailsFrom(row.externalMetadata) : {},
+        active: row.active === 1 || row.active === 1n,
+        updatedAt: typeof row.updatedAt === "number" ? row.updatedAt : Number(row.updatedAt ?? 0) || 0,
+      });
+    }
+    return out;
+  });
+}
+
+/**
+ * The secret a launch needs to call an OpenCode-connected provider directly.
+ *
+ * The one place ADE reads a token out of OpenCode's store, and it stays in the
+ * main process: the value goes into a child process's environment (or ADE's
+ * private proxy config) and nowhere else — never IPC, sync, logs, or a preset.
+ * `expiresAt` is only set for OAuth logins; a saved key never expires.
+ */
+export type OpenCodeLaunchSecret = {
+  token: string;
+  expiresAt: number | null;
+  orgId: string | null;
+  /**
+   * The credential's kind. An `oauth` login is the vendor's own subscription
+   * flow and may answer only inside OpenCode; a `key` is a pasted API key,
+   * which every client can use.
+   */
+  methodType: HarnessSourceSignInKind | null;
+};
+
+/**
+ * The OpenCode integration whose credential signs a provider in. OpenCode Go
+ * has no sign-in of its own: it rides the opencode.ai account (`opencode`).
+ */
+export function openCodeIntegrationForProvider(providerId: string): string {
+  const id = providerId.trim();
+  return openCodeSignInViaProvider(id) ?? id;
+}
+
+export function readOpenCodeLaunchSecret(
+  providerId: string,
+  dbPath: string = resolveAdeOpenCodeDbPath(),
+): OpenCodeLaunchSecret | null {
+  const integrationId = openCodeIntegrationForProvider(providerId);
+  return readOpenCodeDb<OpenCodeLaunchSecret | null>(dbPath, null, (db) => {
+    const row = db.prepare(`
+      SELECT json_extract(value, '$.type') AS type,
+             json_extract(value, '$.access') AS access,
+             json_extract(value, '$.key') AS key,
+             json_extract(value, '$.expires') AS expires,
+             json_extract(value, '$.metadata.orgID') AS orgId
+        FROM credential
+       WHERE integration_id = ?
+       ORDER BY (active = 1) DESC, time_updated DESC
+       LIMIT 1
+    `).get(integrationId) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const token = row.type === "oauth" ? textOrNull(row.access) : textOrNull(row.key);
+    if (!token) return null;
+    const expires = typeof row.expires === "number" ? row.expires : Number(row.expires ?? NaN);
+    return {
+      token,
+      expiresAt: row.type === "oauth" && Number.isFinite(expires) && expires > 0 ? expires : null,
+      orgId: textOrNull(row.orgId),
+      methodType: row.type === "key" || row.type === "oauth" || row.type === "external" ? row.type : null,
+    };
+  });
+}
+
+/** OpenCode provider ids to offer for a set of signed-in integrations. */
+function providerIdsForIntegrations(integrations: ReadonlySet<string>): string[] {
+  // The house services ride the opencode.ai sign-in. OpenCode Go first: it is
+  // the flat subscription people route; Zen bills a separate balance that is
+  // often empty.
+  const ids: string[] = integrations.has("opencode")
+    ? ["opencode-go", ...OPENCODE_HOUSE_PROVIDER_IDS.filter((id) => id !== "opencode-go")]
+    : [];
+  for (const id of integrations) if (id !== "opencode") ids.push(id);
+  return ids;
+}
+
+/**
+ * One provider a sign-in on this machine backs, with the kind of its
+ * credential.
+ *
+ * `signInKind` follows the same first-row rule a launch reads: one credential
+ * per integration decides, active first and newest first. The route catalog and
+ * a launch therefore can never disagree about which credential is in use — the
+ * reason this lives beside the launch's own read instead of in the catalog.
+ */
+export type OpenCodeSignedInSource = {
+  providerId: string;
+  /** The integration that holds the sign-in; OpenCode Go rides `opencode`. */
+  integrationId: string;
+  signInKind: HarnessSourceSignInKind | null;
+};
+
+/** OpenCode provider ids with a usable sign-in on this machine (no secrets). */
+export function readOpenCodeSignedInProviderIds(dbPath: string = resolveAdeOpenCodeDbPath()): string[] {
+  return providerIdsForIntegrations(new Set(readOpenCodeCredentials(dbPath).map((row) => row.integrationId)));
+}
+
+/**
+ * The same list, each with its credential's kind, from one store read — so a
+ * caller that needs both (the route catalog) does not open the store twice.
+ */
+export function readOpenCodeSignedInSources(
+  dbPath: string = resolveAdeOpenCodeDbPath(),
+): OpenCodeSignedInSource[] {
+  const signInKindByIntegration = new Map<string, HarnessSourceSignInKind | null>();
+  for (const row of readOpenCodeCredentials(dbPath)) {
+    if (!signInKindByIntegration.has(row.integrationId)) {
+      signInKindByIntegration.set(row.integrationId, row.type);
+    }
+  }
+  return providerIdsForIntegrations(new Set(signInKindByIntegration.keys())).map((providerId) => {
+    const integrationId = openCodeIntegrationForProvider(providerId);
+    return {
+      providerId,
+      integrationId,
+      signInKind: signInKindByIntegration.get(integrationId) ?? null,
+    };
+  });
+}

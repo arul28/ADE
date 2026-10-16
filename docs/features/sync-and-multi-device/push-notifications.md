@@ -1,14 +1,13 @@
 # Activity, notifications, and Live Activities
 
 ADE uses one account-wide Activity stream for agent work and pull requests
-across every signed-in machine and project. Desktop Activity, ADE Notch, the
+across every signed-in machine and project. Desktop Activity, the
 iOS Activity drawer, APNs notifications, Lock Screen widgets, and Live
 Activities all render the same items and route to the same destination.
 
-The product name for the shared system is **Activity**. The compact native
-macOS presentation is **ADE Notch**. Compatibility contracts still use
-`attention` names, including `AttentionItem`, relay routes, IPC channels,
-persistence fields, analytics/log identifiers, and the native helper product.
+The product name for the shared system is **Activity**. Compatibility contracts
+still use `attention` names, including `AttentionItem`, relay routes, IPC
+channels, persistence fields, and analytics/log identifiers.
 
 ## Product rules
 
@@ -17,10 +16,13 @@ persistence fields, analytics/log identifiers, and the native helper product.
   toasting, but they render in a separate **Notifications** column rather than
   as rows beside the agent working on them — one lane with an open PR used to
   appear twice.
-- Running work is ambient. It belongs in Activity, ADE Notch, widgets, and
+- Running work is ambient. It belongs in Activity, widgets, and
   Live Activities, not in a stream of toast or push interruptions.
-- `needs_you`, failures, failing checks, changes requested, and review requests
-  can notify according to the user's policy.
+- Only urgent events push by default: an agent that needs you, an agent that
+  failed, and failing checks. Everything else updates Activity and the Live
+  Activity without a push. Users can turn other events on per kind.
+- A push is two short lines: the session or PR title, then the state and where
+  it is. Agent text never goes in a push.
 - Completed and merged work remains visible until it is seen or dismissed.
 - Every row owns an exact ADE destination. A PR can target Overview, Checks, or
   Review; an agent item can target a session, question, approval, or event.
@@ -31,43 +33,59 @@ persistence fields, analytics/log identifiers, and the native helper product.
   user's own words when it cannot.
 - Remote actions are conservative. Account items from another machine open the
   correct context; they do not execute a current-host App Intent by accident.
-- Notification previews, Live Activity content, and ADE Notch honor the same
+- Notification previews and Live Activity content honor the same
   `hideDetails` preference.
 
-## The state glyph language
+## The four states
 
-Every surface that summarizes Activity reads from one six-group table. The
-canonical implementation is `activityStateGroup` plus `ACTIVITY_STATE_GLYPHS` in
-`apps/desktop/src/renderer/components/activity/activityPresentation.ts`.
+Every surface that counts agents uses the Work board's four columns. The desktop
+Activity panel, the Work board, the iOS Hub and Activity drawer, the widgets, and
+the Live Activity all show the same numbers.
 
-| Group | Tone | Glyph identity | Means |
-| --- | --- | --- | --- |
-| `needs-you` | amber | filled dot | the reader's move |
-| `failed` | red | warning triangle | it stopped on an error, or checks/review failed |
-| `planning` | violet | note-pencil | the agent is deliberating |
-| `working` | blue | dashed circle | live work, plus someone else's move (review requested, merge ready, blocked) |
-| `idle` | neutral | clock | went quiet mid-work, including the `stale` phase and a snoozed running chat |
-| `done` | emerald | check circle | finished, and nobody has looked yet |
+| Column | Tone | Means |
+| --- | --- | --- |
+| `needs_you` | amber | the user's move: a question, an approval, or a failure |
+| `working` | blue | an agent is mid-turn |
+| `waiting` | neutral | snoozed, a scheduled wake is pending, a subagent is busy, or the lane's PR has CI running or a review requested |
+| `done` | emerald | finished, resting, or settled |
 
-The array order above is also the priority order (`ACTIVITY_STATE_GROUPS`), so
-"which state does this surface lead with" is a lookup rather than a ladder. Two
-rules matter more than the table itself: an `idle`-tier item is `idle` no matter
-which phase it preserved — never `done`, because a session that went quiet
-mid-work is not a session that finished — and `planning` is never derived from a
-phase; it comes only from `chatActivityMode`. The desktop header popover omits
-the two resting bands `idle` and `done` so a dropdown does not open onto quiet
-work. The island compact pill shows only the one or two highest-priority groups
-that fit. The Mac notch compact strip, Hub tree headers, and the full Activity
-list keep every nonzero group, including resting bands.
+A failure files under Needs you, with its own red status mark. A failed turn is
+the user's move until they settle the session or send a new turn. Pull requests
+are notifications, not agents, so they are never counted in a column.
 
-Section headings, glyph counts, the notch strip, the iOS rows, and the Live
-Activity all mirror this table, and the mirrors cannot share code — the renderer
-is TypeScript, the notch and iOS are Swift, and the relay is a hermetic Worker
-that imports nothing from this repo. `apps/desktop/src/shared/attention/
-activityStateGroup.cases.json` is the pin: every implementation runs the same
-cases through its own mapper, so a change made anywhere but the canonical table
-fails the other suites. Change the rule there first, update the cases, then let
-the mirrors follow.
+The publishing brain decides the column and writes it on each agent item as
+`boardColumn`, with `waitingReason` (`snoozed`, `ci`, `review`, `scheduled`,
+`subagent`) for Waiting:
+
+- A roster row maps its status: awaiting and failed are Needs you, running is
+  Working, idle and ended are Done.
+- A running row waits instead when its lane's open PR has CI pending or a review
+  requested. The roster builder reads that from the `pull_requests` table into
+  `SyncRosterLane.prWaitingReason`, with the same `lanePrWaitingReason` rule the
+  renderer's board uses.
+- An idle row whose chat has a pending scheduled wake (`SyncRosterChat.nextWakeAt`,
+  read from the booted chat service) is Waiting with reason `scheduled`.
+- A snoozed row that is not failed or asking is Waiting with reason `snoozed`.
+- The board also parks a finished parent while a nested subagent is busy
+  (`subagent`). The roster has no spawn links, so the brain cannot see that
+  yet; such a parent reads Done in Activity. Clients still accept the reason.
+- A live run maps its phase (`runBoardColumn`). When it replaces a roster row
+  that waits on CI or review, it keeps that wait, because a run knows its lane
+  only by name.
+
+Readers group with `activityBoardColumn` in
+`apps/desktop/src/shared/attention/activityBoardColumn.ts`. It trusts a valid
+published column and otherwise derives one from the phase for items an older
+brain sent (it never derives Waiting). The function is implemented in
+TypeScript, in Swift for iOS, and in the push relay, which imports nothing from
+this repo. `activityBoardColumn.cases.json` beside it pins all three: change the
+rule there first, update the cases, then let the mirrors follow.
+
+The older six-group table (needs-you, failed, planning, working, idle, done) now
+lives only in the relay, which still fills the Live Activity's `groups` field
+from it for app builds that predate the four-column Live Activity.
+`activityStateGroup.cases.json` pins that relay mapping (and the iOS mirror
+until it moves); desktop, the hosted web client and ADE Code no longer read it.
 
 ## Topology
 
@@ -82,10 +100,6 @@ prPollingService ─┘          │
                     │ account snapshots     │ APNs alert / Live Activity
                     ▼                       ▼
  Desktop + web + ADE Code + iOS        iPhone system surfaces
-                    │
-                    └─ desktop renderer snapshot
-                              ▼
-                     native ADE Notch helper
 ```
 
 Each brain publishes a bounded full snapshot for its machine, covering every
@@ -282,6 +296,7 @@ The account routes are:
 GET    /attention/account/snapshot?since=<revision>
 POST   /attention/account/ack
 POST   /attention/account/presence
+POST   /attention/account/notify
 GET    /attention/account/preferences
 PUT    /attention/account/preferences
 PATCH  /attention/account/preferences/devices/:deviceId
@@ -465,7 +480,7 @@ The projection itself lives in
 `apps/ade-cli/src/services/push/attentionItemBuilder.ts`:
 `(runs, recentRuns, prActivities, roster) → AttentionItem[]`, holding no state
 and doing no I/O beyond the roster loader it is handed, so the one function every
-phone, notch, and desktop row derives from can be exercised without booting a
+phone and desktop row derives from can be exercised without booting a
 publisher.
 
 What it filters and how:
@@ -566,15 +581,41 @@ device so a sibling phone's success cannot falsely satisfy the retry.
 
 ## Delivery policy and preferences
 
-Balanced defaults:
+Defaults (`defaultPolicy` in `apps/desktop/src/shared/activityCatalog.ts`,
+mirrored by `DEFAULT_NOTIFY_EVENTS` in the relay):
 
 | Event | Default |
 | --- | --- |
-| Running / progress | Ambient |
 | Needs you | Notify |
-| Failed / checks failing / changes requested | Notify |
-| Review requested / merge ready | Notify |
+| Failed | Notify |
+| Checks failing | Notify |
+| Running / progress | Ambient |
+| Review requested / changes requested / merge ready | Ambient |
 | Completed / merged / opened / closed | Ambient |
+
+Review requests, requested changes and merge-ready PRs notified by default
+before policy-defaults version 2. Every save writes the whole `eventPolicies`
+map, so a saved "notify" for one of them cannot tell a choice from the old
+default. `eventPolicyDefaultsVersion` on the account scope settles it: a scope
+without version 2 reads those three "notify" values as the new default
+("ambient"). The desktop settings model applies the same upgrade on load
+(`upgradeAttentionEventPolicies`) and saves version 2, so a choice the user makes
+after that stays.
+
+### Push copy
+
+`attentionAlertCopy` in the relay builds every account push:
+
+| Kind | Title | Body |
+| --- | --- | --- |
+| Agent | the session title | state · project · machine, for example `Needs you · ADE · Arul's Mac Studio` |
+| Pull request | `#1514` and the PR title | state · project, for example `Checks failing · ADE` |
+| Hide details on | `Agent: Needs you` or `Pull request: Checks failing` | none |
+
+Each line is cut at 64 characters with an ellipsis. The agent's preview text
+never goes in a push: it is a paragraph nobody reads on a Lock Screen, and the
+row the push opens shows it in full. An agent item that offers both Approve and
+Deny carries the `ADE_APPROVAL` category, so the banner shows the two buttons.
 
 Preferences support account defaults plus device, project, and machine
 overrides. The `machines` scope is keyed by machine key and is what "mute this
@@ -638,7 +679,7 @@ publisher classifies with the shared `isQuestionKind` from
 The category *is* the notification's inline Approve/Deny buttons. A question has
 nothing for them to do, so it ships without them — the same shape
 `structured_question` already published. Before this, every `AskUserQuestion`
-went out as `waiting_for_approval`, so the notch and the phone offered
+went out as `waiting_for_approval`, so the phone offered
 Approve/Deny for something that wants prose, and the answer branch in the
 attention item builder was dead code. Both flavours share the
 `alert:<sessionId>:approval` dedupe key: it is one prompt per session either way,
@@ -646,18 +687,73 @@ and sharing it keeps a question from re-alerting over an approval it replaced.
 An event with no `requestKind` is an approval, which is what older hosts meant.
 
 The `needs_you` privacy preview reads **"An ADE agent needs you."** — the same
-two words the status label, the title suffix, and the notch's own section
-heading use. "needs your input" was a third phrasing for one state, on the
+two words the status label and the title suffix use. "needs your input" was a third phrasing for one state, on the
 surface with the least room to explain itself. Where a specific line is
 available instead, chat surfaces supply `waitingOnYouDescription()` from
 `shared/types/chat.ts` (`Waiting on your answer.` / `…answers.`), which is also
-the notch card's subtitle and the lock-screen preview.
+the lock-screen preview.
 
 Quiet hours, muted sessions, preview privacy, sound, and exact deep links are
 applied before APNs fan-out. `needs_you` can use time-sensitive interruption;
 other notifying events use active interruption. Alert pushes also carry
 `content-available`, so the visible alert doubles as a background wake for a
 snapshot refresh — foreground polling remains the guaranteed path, not this.
+
+## Custom notifications
+
+`ade notify --title "<t>" [--body "<b>"] [--open <ade link>]` sends a push the
+caller wrote to every phone on the account. Agents use it when the user asked to
+be told ("tell me when the deploy is done"), and automations use it through the
+**Send notification to mobile app** step (an ADE-action step for
+`attention.sendNotification`).
+
+The path is CLI or automation → the brain → the account relay client →
+`POST /attention/account/notify` with the account's Clerk bearer token, like
+every other account route. The brain sends its own relay machine key, so a
+phone that muted this machine stays quiet. An automation calls
+`attention.sendNotification` in its project. The CLI calls the machine-wide
+`notify.send` RPC (agent role or higher), so it works from any folder and with
+sync off, and it never registers the folder it runs in as a project. A chat or
+pull request link is stamped with the caller's project only when that folder is
+a registered ADE project.
+
+| Field | Limit |
+| --- | --- |
+| `title` | required, up to 64 characters |
+| `body` | optional, up to 160 characters |
+| `deepLink` | optional, `ade://` links only (the brain converts an `https://ade-app.dev/open` link) |
+| `machineKey` | optional, the sending machine |
+
+A link is only worth sending if the phone can open it, so
+`normalizeCustomNotificationLink` (`shared/customNotificationLink.ts`) accepts
+what ADE opens — a chat, a pull request (`ade://pr/<number>` included),
+Activity with an optional `state=<column>`, `ade://workspace`, a Linear issue,
+and the lane, file, commit, branch and proof links the phone hands to the
+computer — and refuses the rest, such as `ade://pr/` or `ade://prs`. `ade
+notify` refuses a bad link; an automation whose link resolves badly at run time
+sends without it and reports `linkSkipped`. Before sending, the sender stamps
+its account machine key and the canonical project id onto a chat or pull
+request link that names no machine (`stampCustomNotificationLinkOwner`), so the
+phone opens it on the machine that owns it rather than the one in front.
+
+The relay sends the text exactly as written: no agent text, no state suffix.
+Each phone gets the alert unless its notifications are off, it is in quiet
+hours, or it muted the sending machine (`machines[<key>].notificationsEnabled`).
+With Hide previews on, the phone gets the title only: the body never reaches
+the lock screen, and the tap still opens the link.
+`soundsEnabled` applies as it does to other alerts. The response counts
+`devices`, `delivered`, `skipped` and `failed`, plus `remaining` for the hour.
+
+An account may send **60 per hour window**. The relay counts them in
+`rate_counters` (bucket `notify:<account>`) before the fan-out, so parallel
+calls cannot slip past the cap, and keeps those rows past the 15-minute rate
+prune so a quiet spell cannot reopen the hour early. Past the cap it answers
+`429` with `retryAfterSeconds` and a `Retry-After` header; `ade notify` exits
+non-zero and says when to try again. It also exits non-zero when this machine
+is signed out. Every call still counts against the daily request budget.
+
+Cost: APNs is free. One custom push costs about one Worker request and one D1
+row write (the counter upsert); a rejected call over the cap writes nothing.
 
 ## Desktop Activity
 
@@ -676,55 +772,58 @@ surface reports which component failed and how to recover rather than inventing
 an empty account.
 
 `useActivitySync` remains mounted in `AppShell`, so the global-header control
-and ADE Notch stay truthful across project switches and while `/activity` is
-closed. The header count is the `needs-you` group and nothing else; live work is
+stays truthful across project switches and while `/activity` is
+closed. The header count is the Needs you column (failures included) and nothing else; live work is
 an ambient pulse rather than an inflated inbox count.
 
-Both surfaces are built from `activityPriority.ts`, which projects the snapshot
-into agent sections and a notification tail:
+Both sizes of Activity are one panel, `ActivityPanel.tsx`, fed by
+`activityPriority.ts`:
 
 - `activityFeedItems` — live, non-dismissed `kind: "agent"` rows.
-- `activitySections` — those rows grouped by state, always returning all six
-  descriptors (including empty ones) so the popover, pane, and notch share
-  headings without re-declaring order. A section **is** a state group;
-  they were separate vocabularies once, and the drift showed up as a
-  "Working 0" heading above rows that were plainly working.
+- `activitySections` — those rows grouped by Work-board column with
+  `activityBoardColumn`, always returning all four descriptors in board order.
 - `activityNotificationItems` — everything that is not an agent and is
   inbox-eligible, sorted. Eligibility rather than "every PR", because an open
   pull request nobody is waiting on is not a notification.
-- `activityFeedOrder` — the flattened agent sections followed by the
-  notification tail. The notch projects from this so its Agents and Events views
-  read one ordering instead of re-deriving priority in Swift.
+- `summarizeActivity` — the counts the trigger, the chips and the footer share.
+  The badge is the Needs you column, failures included.
 
-The keyboard-accessible header popover shows every section except the two
-resting bands (`idle` and `done`): those are the most common states, and a
-dropdown that opens onto a wall of finished and gone-quiet work buries the two
-rows that wanted a human. Both stay one click away in the pane, and the footer
-keeps counting them.
+The panel, in both sizes, is a **Sessions / Inbox** switch with counts, then
+for Sessions the chips **All · Needs you · Working · Waiting · Done** with
+counts (single-select; the counts never narrow with the chip, so every column
+stays one click away), then the rows grouped by column. Done folds into one
+"N done" line until it is opened, from that line or the Done chip, and folds
+back from its heading. A row shows the lane or branch, the machine chip, its
+column state with time in that state (`activityRowStatus`), the title, one
+quiet line (the status note or preview) and the provider mark. A failed agent
+reads **Failed** in red under Needs you; a Waiting row carries its reason tag
+(**Snoozed**, **CI running**, **Review requested**). An offline machine's rows
+sit below a labelled divider. The Inbox groups pull request, check and review
+outcomes by project, with per-row dismiss and a single-call **Clear all**.
 
-The `/activity` pane's filter row includes a **state strip**: one glyph and
-count per populated group, single-select, AND-ed with machine / project / chat
-type / model. Counts come from the unfiltered item set so the strip cannot hide
-its own escape routes. Pressing the lit glyph clears the filter.
+The **compact** size is the top-bar popover (`HeaderActivityControl`). It is
+mounted only while open, so it costs nothing while idle; the always-visible
+trigger is the badge and a stepped live pulse. It shows six rows per column and
+hands the rest to the expanded view. A row click opens its destination.
 
-The full `/activity` route provides:
+The **expanded** size is the "Open all" view (`ActivityPane`), a modal over
+whatever tab is in front. It adds:
 
-- an **Agents** column of state-group sections and a **Notifications** column of
-  PR/CI and review outcomes grouped by project, each with per-row dismiss and a
-  single-call Clear all;
-- collapsible section headers — the whole strip is the button, and the collapsed
-  set is remembered per surface (`ade:activity:collapsed-sections-popover` and
-  `-pane`), because folding Done in a glance is not the same choice as folding it
-  in the list you opened to read it;
-- an all-clear beat when the last raised hand goes down: a quiet `role="status"`
-  strip, fired on the transition only and never on arrival, held for 1.8 s;
-- all-machine, machine, and project scopes, and a machine → project → item
-  roster;
-- an exact detail view with the plain-language state sentence
-  (`activityStateSentence` — "Claude is asking a question"), time in the current
-  state derived from the immutable `statusSince`, plan progress, recent activity,
-  safe actions, seen/dismiss state, offline explanation, and retryable
-  acknowledgment;
+- Machine / Project / Type / Model filters (`ActivityFilters`), AND-ed;
+- multi-select: a checkbox on hover, on a checked row, and on every row while
+  anything is checked, with bulk **Mark seen**, **Dismiss** (both through the
+  account acknowledgement path, one call, partial outcomes said out loud) and
+  **Open** (the first eight, stopping at the first that fails). Snooze and
+  Settle are not offered: they are session mutations on the owning machine, and
+  a window can only reach its own (see the note at the top of
+  `ActivityCard.tsx`);
+- an all-clear beat when the last raised hand goes down: a quiet
+  `role="status"` strip, fired on the transition only and held for 1.8 s;
+- an exact detail sheet that slides over the list: the plain-language state
+  sentence (`activityStateSentence` — "Claude needs you", "Claude is waiting on
+  CI"), time in the current state from the immutable `statusSince`, plan
+  progress, recent activity, safe actions, seen/dismiss state, offline
+  explanation, and retryable acknowledgment;
 - account delivery/privacy controls.
 
 ### Opening an item from another machine
@@ -776,7 +875,9 @@ leaving the header pinned on syncing.
 
 ## Hosted web Activity
 
-The hosted browser adapter reads account Activity directly from the relay with
+The hosted web client renders the desktop renderer, so it shows the same
+Activity panel in both sizes, with the same four columns and chips. Only the
+data source differs: the hosted browser adapter reads account Activity directly from the relay with
 its in-memory Clerk access token, independently of the paired machine and
 selected project used for Work, Files, and PR commands. It validates the entire
 snapshot/preferences contract at the network boundary and performs at most one
@@ -796,280 +897,26 @@ snapshot is rejected until Activity refreshes under the new owner.
 
 ## ADE Code Activity
 
-`/activity` opens an account-wide right pane with five headings — `NEEDS YOU`,
-`FAILING OR BLOCKED`, `DONE, UNREVIEWED`, `LIVE NOW`, `RECENT`. The TUI calls
-machine-global `attention.call`, not the selected project's action scope, so
-changing lanes or projects does not change the account source. Enter opens the
-exact ADE destination first and only then sends the owner-fenced seen mutation.
-`/attention` remains an unadvertised compatibility alias.
+`/activity` opens an account-wide right pane with the same four columns as
+desktop: `NEEDS YOU`, `WORKING`, `WAITING`, `DONE`, then the `NOTIFICATIONS`
+tail. A chip line under the status message (`All 12 · Needs you 2 · Working 5 ·
+Waiting 1 · Done 4`) is the summary and the filter: keys 0–4 pick All or one
+column, and the choice survives `R` refresh. Under All, Done folds into one
+`✓ N done · 4 to show` line. A failed agent sits under `NEEDS YOU` with a red
+`×` instead of the `!`; a waiting row names its reason first in its context
+line. The TUI calls machine-global `attention.call`, not the selected project's
+action scope, so changing lanes or projects does not change the account source.
+Enter opens the exact ADE destination first and only then sends the
+owner-fenced seen mutation. `/attention` remains an unadvertised compatibility
+alias.
 
-Its headings are a projection of the shared six-group table rather than a
-second phase ladder: `activityPane.ts` maps each state group onto a pane group
-through `ACTIVITY_PANE_GROUP_BY_STATE_GROUP` (`failed` → failing, `planning` and
-`working` → live, `idle` → recent), then splits the `done` band into
-`DONE, UNREVIEWED` versus `RECENT` on seen state and idle tier. The TUI has no
-separate planning or idle heading, so planning rows sit under `LIVE NOW` and
-idle/stale rows sit under `RECENT` rather than claiming live agents hours after
-they stopped. Because the table is now the single source, `review_requested`,
-`merge_ready`, and `blocked` file under `LIVE NOW` as someone else's move rather
-than borrowing an amber heading, and `open` is live rather than recent.
-`activityPane.test.ts` runs the shared conformance fixture.
+The grouping is `activitySections` from the desktop tree, so the pane cannot
+disagree with the desktop about which column a row is in.
 
 When signed out, ADE Code asks the connected host for its real machine snapshot
 and labels the subset. Account failure may degrade to that same connected-host
 view. A host without the Attention capability remains connected but shows its
 name with update-and-restart guidance instead of a blank pane.
-
-## ADE Notch
-
-ADE launches one native SwiftUI/AppKit helper from the desktop lifecycle. The
-Electron renderer supplies the already-synced Attention snapshot and settings;
-the helper does not create a second account poller.
-
-While ADE is hidden or minimized, the running helper asks the existing
-renderer/runtime Attention path to refresh. A visible window ignores that
-request and keeps its own 15 s renderer-owned poll, so the helper never
-duplicates foreground work or talks to the relay independently.
-
-The helper's cadence follows what is actually on screen: 15 s while it has a
-live surface and the display is awake, 60 s otherwise — before the child has
-reported a surface at all, and whenever the screen is locked or the system is
-suspended, because nobody is reading a notch on a sleeping display. Lock and
-suspend are tracked as two independent facts, since sleeping does not always
-lock the machine and a resume must not declare the screen awake while it is
-still locked. Changing the interval rebuilds the timer rather than leaving the
-old one running, and a respawned helper starts with no surface again instead of
-inheriting the dead child's.
-
-If a connected host is too old to expose `attention.call`, ADE surfaces
-update-and-restart guidance instead of presenting an empty notch as if no work
-existed.
-
-The helper uses a borderless non-activating `NSPanel` above the status bar,
-joins Spaces/full-screen, and keeps the outer window fixed while the inner
-silhouette animates.
-
-On a MacBook with a physical notch:
-
-- geometry comes from `safeAreaInsets`, `auxiliaryTopLeftArea`, and
-  `auxiliaryTopRightArea`;
-- compact content lives in the visible side ears, never under the camera
-  housing;
-- the black silhouette remains visually connected to the hardware notch.
-
-On a display without a physical notch, ADE uses a menu-bar status item as the
-persistent entry rather than pretending the display has hardware it does not.
-The status item uses the shipped ADE app icon plus a small state badge whose
-tint follows the same six-group table. Hover or click opens a transient,
-screen-edge-safe panel anchored under that icon; the resting top-center
-imitation notch is absent. Right-click uses the same icon as the anchor for
-controls.
-
-### Two reveal modes
-
-There are exactly two, and they are deliberately indistinguishable once the strip
-is on screen:
-
-| Mode | At rest | Pointer | Click |
-| --- | --- | --- | --- |
-| `always` | strip pinned to the menu bar | draws feedback only | opens the panel |
-| `hover` | dormant | a bounded top-edge hot zone reveals the identical strip | opens the panel |
-
-`hover` is the default. Dormancy is keyed on the pointer rather than on a second
-presentation state, and the hot zone sits strictly inside the strip rect. In both
-modes a click — and only a click — opens the full panel; with the expanded panel
-disabled, that click opens Activity in ADE instead of growing, so no surface is
-ever inert. The retired `minimal` and `click` values described a third "peek"
-layout that no longer exists; both normalize to `always`, so an upgrade keeps a
-visible strip rather than silently hiding it.
-
-`automaticRevealEnabled` and `tickerEnabled` are gone rather than deprecated. The
-helper stopped reading them, so carrying them through the wire, the validators,
-and the settings UI moved no pixel. An older peer may still send them; they are
-ignored.
-
-### The compact strip
-
-`NotchStripModel.swift` models two wings around the cutout. The leading wing is
-`notchStripGroups` — every non-zero state group as a glyph plus a count, in
-priority order. The tally is agent-only and skips dismissed rows, then floors
-itself against the host's `AttentionCounts` (using `failed`, `planning`, and
-`idle` only when the host actually sent them; a missing count is not zero). The
-trailing wing
-is `notchTopSignal`: a stream problem outranks rows, then the top notable row —
-needs-you, failed, planning, or an unseen merged/completed PR — then a
-machines-online line, then "All clear".
-
-The strip replaced a row of repeated provider logos, which said "three Claudes"
-when the useful sentence was "one is asking you something and two are working".
-The strip is still counts-only for that reason. Individual rows and the takeover
-card do carry identity, through `NotchItemMark` (`NotchItemMark.swift`): the
-provider's mark with the state tone as a dot on it, so one element answers both
-"who" and "what state" — see [Item marks](#item-marks). Width is computed from the groups and the
-signal and clamped, rather than fixed, so the ears stay inside the visible area
-on either side of the camera housing.
-
-Each compact-strip control is a click target: a group badge opens the Agents
-panel already showing that band, the trailing signal opens the row it names (or
-expands the panel for a quiet machine summary), and "+N more" opens Activity in
-ADE. The rest of the strip still toggles the panel.
-
-`AttentionCounts` gained optional `failed`, `planning`, and `idle` for the same
-reason. They are optional rather than defaulted because an older publisher
-cannot send them, and a reader that has them floors its own groups from them
-instead of inventing a residual — which is what the deleted unattributed-count
-fudge was doing to paper over the gap. A reader that does not get `idle` falls
-back to counting the rows it can see, and the projection is capped, so a machine
-with fifty resting sessions under-reports until both sides ship together.
-
-### Panel, tabs, and cards
-
-The panel has two tabs, **Agents** and **Events**; an item files under Events
-exactly when it is a pull request. Events cluster by repo and PR number, so six
-rows from one PR read as one fact. The panel's rows are one flattened draw order
-that doubles as the keyboard model — arrows move focus and collapse/expand, Tab
-cycles tabs, Return acts, Escape closes — so what is drawn and what is navigable
-cannot disagree. The two resting bands, Idle and Done, start collapsed — the
-same pair the desktop header popover leaves out. The whole projection comes from the
-renderer's `activityFeedOrder`, so priority is not re-derived in Swift.
-
-### Item marks
-
-`NotchItemMark` draws the provider's mark with the state tone as a dot on it,
-and is used by panel rows and the takeover card. The marks ship as **SVG**, not
-PNG: the same file has to look right at 18pt in a row and 22pt on a card, on 1x
-and 2x, and AppKit reads SVG into a vector representation, so one asset covers
-all of it. They are the monochrome Lobe glyphs, drawn as templates and tinted
-like any other symbol — Droid is the deliberate exception, a full-colour badge
-that already draws its own disc and would flatten to a filled circle as a
-template. Lookups are memoized by file name behind a **double** optional, so a
-provider with no mark is not sent back through `Bundle.module` on every redraw.
-
-`NotchProviderMark.fileByProvider` accepts both `providerDisplayName` spellings
-and raw provider ids. **Mirror it** with the renderer's provider→mark tables —
-`ProviderLogo` in `renderer/components/shared/ProviderLogos.tsx` and `LOGO_MAP`
-in `renderer/components/terminals/ToolLogos.tsx` — so one provider never wears
-two different marks across ADE's surfaces. Third-party mark licensing is
-recorded in `native/ADEAttentionNotch/THIRD_PARTY_NOTICES.md`.
-
-`hideDetails` is honoured: with previews hidden the mark falls back to the state
-glyph rather than naming the provider.
-
-### The takeover card
-
-`NotchPresentationState.isTakeover` (flash **or** celebration) is spelled once
-in `NotchInteractionState.swift`, because every caller that treats the two alike
-— dismissal, click-through, key activation, drain-to-zero — has to keep treating
-them alike.
-
-A needs-you **flash card** appears for about ten seconds and ends on any of four
-things: the timeout, an explicit close, a click through, or the item being
-acknowledged on another device. A remote acknowledgment skips the out-animation
-— the card should not linger politely over work that is already handled.
-Takeovers are never gated on the reveal mode, and never replace a card currently
-under the pointer.
-
-**One card, one meaning.** The card draws exactly one action button and the
-whole card taps to the same thing: `openSelected()`, which goes to the item that
-needs you. It used to expand the panel instead, so the same card had two
-different answers depending on which pixel you hit; the expanded panel is still
-one click away from the menu-bar item. Opening also collapses the card
-immediately rather than waiting for the host's acknowledgement to round-trip
-back in a snapshot.
-
-The button's word comes from `NotchPrimaryAction(item:)`:
-
-| Case | Chosen when | Label | Subtitle when the row has no preview |
-|---|---|---|---|
-| `answer` | the item offers an `answer` action | **Answer** | Waiting on your answer. |
-| `approve` | it offers `approve` | **Approve** | Waiting on your approval. |
-| `review` | it is a pull request in `review_requested` / `changes_requested` | **Review** | Waiting on your review. |
-| `open` | anything else | **Open** | *(none — the caller keeps its preview)* |
-
-An item from a publisher older than the question/approval split falls back to
-the approve verb, which is exactly what that build meant by
-`waiting_for_approval`. `takeoverSubtitle` prefers the row's own subtitle, then
-the waiting line, then `visiblePreview` — never a blank line where the reason
-should be.
-
-The panel's own per-item buttons use `notchNavigationLabel(forActionKind:)`,
-which is now the bare verb (**Approve**, **Deny**, **Answer**, **Restart**,
-**Rerun checks**, **Open**) rather than "Open to approve". Every one of them
-navigates — the helper has no authority to approve anything on its own — but
-making the mechanism the label read as a second, lesser Open beside the real
-one. The verb is the promise; the accessibility hint still says it opens ADE.
-`notchSecondaryActions` drops a plain `open` because the panel's own prominent
-button is "Open all in ADE"; it is used by the **panel** only, follows the
-panel's selection, and the takeover card makes no claim on it.
-
-**Close means seen, not dismissed.** The card's `×` calls `acknowledge(item)`,
-which emits `dismiss_item` with `mode: "seen"`: it stops the row interrupting
-but leaves it in Activity, because the user closed a card, they did not throw
-the work away. The panel's own dismiss keeps `mode: "dismiss"`, which files the
-row away. A timeout acknowledges nothing — a timeout means "you were not
-looking", a close means "I saw it", and only the second earns the right to stop
-interrupting for this state. A genuinely new event republishes the row with a
-new phase and toasts again.
-
-`mode` is additive on the wire, so `AttentionNotchWireOutput` types it as an
-unnarrowed string and `normalizeAttentionNotchOutput` resolves it before it
-leaves `attentionNotchHelper.ts` — no consumer re-decides what an unknown mode
-meant. The two unknown cases differ:
-
-- **absent** → `"dismiss"`. A helper too old to have the field, and that message
-  has always meant "file this away".
-- **present but unrecognised** → `"seen"`. A helper *newer* than this build,
-  naming a mode we cannot interpret. Guessing `dismiss` would file a row away on
-  the user's behalf; `seen` only stops it interrupting, so a future mode degrades
-  to the less destructive action.
-
-The guard deliberately does not gate on `mode`, so an unknown word can never
-cost the whole acknowledgement.
-
-**Making the controls actually clickable** took three fixes in
-`NotchPanelController`, all of the same shape — the panel is a large transparent
-sheet with a small drawn pill:
-
-- `acceptsFirstMouse` on the hosting view. The panel is non-activating and
-  usually not key, so the first click was being spent activating it; the close
-  `×` needed two clicks and the card had timed out by the second.
-- `allowsKeyActivation` now also true for a takeover, since a takeover carries
-  real controls even though the user never asked for it.
-- `ignoresMouseEvents` is the real hit region and is recomputed from the
-  pointer's **actual** position on every event. `hitTest` returning nil does not
-  hand a click back to the window below — it eats it. So the global mouse
-  monitor is handled inline via `MainActor.assumeIsolated` rather than hopped
-  onto the next main-actor turn (the hop meant `ignoresMouseEvents` was still
-  true when the move that entered the surface was followed by a mouse-down), and
-  the 30 Hz throttle applies only while the pointer is *outside* the surface,
-  where the sampling is pure hover detection.
-
-`NotchIconButtonStyle` separates `diameter` (what is drawn) from `hitDiameter`
-(what is clickable) by padding the reach on and taking it straight back off, so
-the target grows without the row growing with it — and the larger target is what
-wins the click against the card-wide tap gesture underneath.
-
-Interaction rules that survive unchanged: right-click anywhere on the surface or
-the menu-bar item opens the same native menu (Open Activity, Refresh,
-presentation mode, expanded-panel policy, hide details, celebrations, and a
-confirmed Hide with restore guidance); ordinary running work and needs-you
-changes update status without overriding the reveal policy; completion remains
-until seen or dismissed; and hit testing covers only the drawn shape, leaving the
-menu bar usable.
-
-Availability problems name ADE rather than the surface: a degraded stream reads
-**"ADE is out of sync"** and an unavailable one **"ADE can't show your
-activity"**. The elapsed label on a row is announced as "*54s* in this state"
-(or "Just now"), because a bare duration beside a headline reads as a countdown
-on the card.
-
-Confetti is one `Canvas` layer with 44 ballistic particles emitted from the two
-cutout corners, generated once from a deterministic seed rather than a view and
-timer per particle. Reduced Motion replaces it with a static gradient wash, and
-the same preference removes the flash card's collapse animation.
-
-The helper sends open and acknowledgment requests back through typed IPC. Exact
-ADE destinations are validated before the desktop navigates.
 
 ## iOS Activity drawer
 
@@ -1097,10 +944,11 @@ inboxes. Tapping an item follows its exact destination. Remote items expose only
 actions that are safe without assuming the currently paired host owns them.
 
 Rows are unified across the drawer, the widgets, and the Live Activity through
-`ActivityRowPresentation.swift`, which owns iOS's copy of the six-group table
-(`ActivityStateGroup`, with its wire spelling kept separate from the Swift case
-name and lenient aliases on decode) and is pinned by the shared conformance
-fixture. A row leads with a state mark — the group's glyph on a tone-tinted disc,
+`ActivityRowPresentation.swift`, which owns iOS's copy of the four-column rule
+(`activityBoardColumn`, pinned by `activityBoardColumn.cases.json`) and of the
+older six-group table (`ActivityStateGroup`, pinned by its own fixture). The
+drawer and the Hub filter with the same five chips (All plus the four
+columns); the drawer groups Sessions by column with Done folded. A row leads with a state mark — the group's glyph on a tone-tinted disc,
 with a pulse while the work is live — rather than a provider logo plus a separate
 status dot, and the model is a compact brand chip. `chatActivityMode` decodes
 losslessly into `planning` or an unrecognized value, and no `planning` member was
@@ -1115,12 +963,29 @@ and paired-machine route; omitted tokens preserve the existing registration.
 
 ## Live Activity and widgets
 
-There is one account-wide `agent-runs` Live Activity per iPhone. The relay
-prioritizes and caps up to three agent rows and two PR rows.
+There is one account-wide `agent-runs` Live Activity per iPhone, and only the
+relay starts it. A brain never starts a Live Activity of its own: the per-machine
+activity it used to start when account delivery was unavailable is how a phone
+came to show two. The relay's legacy `/machines/:key/publish` route still lets an
+older brain end the activity it started, and reports its start and update frames
+as suppressed so the brain stops retrying.
 
-- Ordinary open PRs do not keep the activity alive.
-- Running, starting, needs-you, and blocked agent work contributes to the active
-  count.
+The content state leads with `columns`: `{ needsYou, working, waiting, done }`,
+the account-wide agent counts in the four states. It is always present, zeros
+included. The relay still sends the older `runs`, `prs`, `groups` and
+`activeCount` fields for app builds that predate the four-tile design.
+
+- The activity lives while any agent needs you, works, or waits. When only Done
+  remains, the relay ends it.
+- A push-to-start carries an alert, as ActivityKit requires. Its title is `ADE`
+  and its body is the counts, for example `2 need you · 5 working`.
+- A needs-you change pushes at once. A change to the working, waiting or done
+  counts pushes at most once every 5 minutes
+  (`LIVE_ACTIVITY_COUNT_REFRESH_MS`), so a busy account cannot use up the
+  ActivityKit budget while every number still settles within minutes. Each
+  machine's presence heartbeat re-runs the check, so a count the window held
+  back goes out on the first heartbeat after the window, even when nothing else
+  changes. With nothing pending, that check only reads.
 - Completed/merged outcomes remain until seen, then disappear.
 - Disabling Live Activities actively ends an existing account activity.
 - When `hideDetails` is enabled, per-device content is redacted before APNs
@@ -1138,6 +1003,22 @@ that does not receive them derives the tally locally. The relay's tally counts
 agent rows only and is account-wide rather than derived from the capped roster —
 counting PR rows there inflated every group they touched, because a pull request
 is not planning.
+
+**iOS rendering.** The Lock Screen is four equal tiles in one row — Needs you,
+Working, Waiting, Done — each an SF Symbol, a big number and a label in the
+column colour; a zero tile dims, and each tile links to
+`ade://activity?state=<column>`. The Dynamic Island's compact leading is the
+Needs-you count (amber) when it is above zero, else the Working count (blue);
+the compact trailing is Working when the leading shows Needs you; the expanded
+island is the four tiles. A frame without `columns` (an older relay) is counted
+from `groups`, or from the run roster. On launch and on foreground the app ends
+every machine-scoped activity at once and never observes its tokens, and keeps
+one account-wide activity. Home Screen small and medium widgets show the same
+four tiles; the rectangular accessory shows four count pairs, the circular one
+the Needs-you count (or Working), and the inline one "2 need you · 5 working".
+
+The rest of this section describes the older row layout that builds predating
+the four tiles still render.
 
 The Lock Screen and Dynamic Island lead with one focused item and show a small
 overflow count instead of presenting a miniature monitoring dashboard. The

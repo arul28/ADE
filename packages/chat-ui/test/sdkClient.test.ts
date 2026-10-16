@@ -384,7 +384,7 @@ describe("adaptSdkClient", () => {
     // rather than failing inside the runtime.
     expect(thread.sent[1]).toEqual([
       "with a file",
-      { attachments: [{ path: "/tmp/a.pdf", name: "a.pdf", mimeType: "application/pdf", bytes: 12 }] },
+      { attachments: [{ path: "/tmp/a.pdf", name: "a.pdf", mimeType: "application/pdf", bytes: 12, type: "file" }] },
     ]);
   });
 

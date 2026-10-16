@@ -5,6 +5,13 @@ import type {
   PrSummary,
 } from "../../../../shared/types";
 import { buildPrListRows } from "../shared/prListGrouping";
+import {
+  compareGitHubRows,
+  compareGitHubRowsByUpdated,
+  githubRowBlockedTier,
+  resolveGitHubRowNextStepKind,
+  type GitHubTabSort,
+} from "./prBlockedSort";
 import type { OptimisticTerminalState } from "../state/PrsContext";
 import {
   GITHUB_TAB_HISTORY_MAX_PAGE_LIMIT,
@@ -26,6 +33,7 @@ export function useGitHubTabListModel({
   prsByIdMap,
   prsByCoordinateMap,
   filter,
+  sort,
   renderedHydrationItems,
   lastSeenRowByCoordRef,
   currentHistoryPageLimit,
@@ -36,6 +44,7 @@ export function useGitHubTabListModel({
   prsByIdMap: Map<string, PrSummary>;
   prsByCoordinateMap: Map<string, PrSummary>;
   filter: GitHubFilter;
+  sort: GitHubTabSort;
   renderedHydrationItems: GitHubPrListItem[];
   lastSeenRowByCoordRef: React.MutableRefObject<Map<string, GitHubPrListItem>>;
   currentHistoryPageLimit: () => number;
@@ -88,13 +97,35 @@ export function useGitHubTabListModel({
     () => (overlayItems.length === 0 ? reconciledItems : [...reconciledItems, ...overlayItems]),
     [reconciledItems, overlayItems],
   );
+  // "Blocked on me" tiers, keyed by row id. Built once per list change from the
+  // linked local rows; no network/diff work is triggered by sorting. A row with
+  // no linked status at all is "nothing outstanding" (tier 2).
+  const blockedTierByItemId = React.useMemo(() => {
+    if (sort !== "blocked") return null;
+    const tiers = new Map<string, number>();
+    for (const item of displayedItems) {
+      const linked = (item.linkedPrId ? prsByIdMap.get(item.linkedPrId) : null)
+        ?? prsByCoordinateMap.get(githubCoordKey(item))
+        ?? null;
+      const kind = resolveGitHubRowNextStepKind({
+        state: item.state,
+        isDraft: item.isDraft,
+        baseBranch: item.baseBranch ?? linked?.baseBranch ?? null,
+        source: linked,
+      });
+      tiers.set(item.id, githubRowBlockedTier(kind));
+    }
+    return tiers;
+  }, [displayedItems, prsByIdMap, prsByCoordinateMap, sort]);
   const filteredItems = React.useMemo(
     () => displayedItems
       .filter((item) => matchesFilter(item, filter) && matchesSearch(item))
-      .sort((a, b) =>
-        new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()
-      ),
-    [displayedItems, filter, matchesSearch],
+      // A live search keeps relevance order: the blocked sort is a browse aid,
+      // not a way to override what the query matched.
+      .sort((a, b) => blockedTierByItemId && !searchQuery.trim()
+        ? compareGitHubRows(a, b, (item) => blockedTierByItemId.get(item.id) ?? 2)
+        : compareGitHubRowsByUpdated(a, b)),
+    [blockedTierByItemId, displayedItems, filter, matchesSearch, searchQuery],
   );
   const hydrationItems = filteredItems.length > GITHUB_TAB_VIRTUALIZE_AT
     ? renderedHydrationItems

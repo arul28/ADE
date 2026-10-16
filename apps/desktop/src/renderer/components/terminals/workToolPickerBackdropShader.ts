@@ -1,4 +1,5 @@
 import type { ThemeId } from "../../state/appStore";
+import type { ResolvedAdeThemePalette } from "../../../shared/theme";
 
 /**
  * The tools picker backdrop's shader source, palettes and size policy.
@@ -168,6 +169,14 @@ void main() {
 }
 `;
 
+/** `a` moved `ratio` of the way to `b`, both `#rrggbb`. */
+function mixHex(a: string, b: string, ratio: number): string {
+  const [ar, ag, ab] = rgb(a);
+  const [br, bg, bb] = rgb(b);
+  const channel = (x: number, y: number) => Math.round((x + (y - x) * ratio) * 255).toString(16).padStart(2, "0");
+  return `#${channel(ar, br)}${channel(ag, bg)}${channel(ab, bb)}`;
+}
+
 /** `#rrggbb` → the 0…1 triple the shader wants. */
 function rgb(hex: string): readonly [number, number, number] {
   const value = Number.parseInt(hex.replace("#", ""), 16);
@@ -195,7 +204,45 @@ export type WorkToolPickerBackdropTheme = {
  * starts from `--color-surface` and walks the same hues at well under half
  * the intensity — on a light canvas the same amount of colour reads as a stain.
  */
-export function backdropThemeFor(theme: ThemeId): WorkToolPickerBackdropTheme {
+export function backdropThemeFor(theme: ThemeId, palette?: ResolvedAdeThemePalette): WorkToolPickerBackdropTheme {
+  // Any theme other than the two stylesheet themes walks its own colours the
+  // same way: base, deep accent, the second lobe, accent, bright accent.
+  // The ramp is pulled towards the base: ADE's violet is dark enough to wash a
+  // pane at full strength, but a gold, white or coral accent at the same
+  // strength floods it.
+  if (palette) {
+    const lobe = mixHex(palette.accentDeep, palette.info, 0.5);
+    if (theme === "light") {
+      const base = palette.surface;
+      return {
+        colors: [
+          rgb(base),
+          rgb(mixHex(base, palette.accentBright, 0.16)),
+          rgb(mixHex(base, palette.accentBright, 0.5)),
+          rgb(mixHex(base, lobe, 0.4)),
+          rgb(mixHex(base, palette.accent, 0.45)),
+        ],
+        intensity: 0.22,
+        vignette: 0.12,
+        brightness: 0.03,
+        saturation: 0.62,
+      };
+    }
+    const base = palette.bg;
+    return {
+      colors: [
+        rgb(base),
+        rgb(mixHex(base, palette.accentDeep, 0.6)),
+        rgb(mixHex(base, lobe, 0.5)),
+        rgb(mixHex(base, palette.accent, 0.45)),
+        rgb(mixHex(base, palette.accentBright, 0.4)),
+      ],
+      intensity: 0.4,
+      vignette: 0.24,
+      brightness: -0.16,
+      saturation: 0.72,
+    };
+  }
   if (theme === "light") {
     return {
       colors: [rgb("#faf8f5"), rgb("#EDE9FE"), rgb("#C4B5FD"), rgb("#A5B4FC"), rgb("#A78BFA")],

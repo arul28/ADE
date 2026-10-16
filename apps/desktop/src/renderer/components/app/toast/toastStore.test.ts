@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { act, cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   LaneLifecycleEvent,
@@ -26,6 +26,7 @@ import {
   resetChatLaunchStoreForTests,
 } from "../../../state/chatLaunchStore";
 import type { DiagnosticsAutoSentPayload } from "../../../../shared/types/diagnostics";
+import { connectSentry } from "../../../../shared/sentry/capture";
 
 // The store is a module-level singleton with no reset hook; each test clears
 // the stack it created so state doesn't leak between cases.
@@ -179,6 +180,48 @@ describe("toastStore", () => {
     // No lingering timer should fire and error.
     vi.advanceTimersByTime(6000);
     expect(getToasts()).toHaveLength(0);
+  });
+
+  it("logs error toasts to Sentry under one event name per kind of failure, not per lane or file name", () => {
+    const logs: Array<{ message: string; attributes: Record<string, unknown> }> = [];
+    const captured: unknown[] = [];
+    connectSentry({
+      withScope: (callback) => {
+        callback({
+          setTag: () => undefined,
+          setExtras: () => undefined,
+          setFingerprint: () => undefined,
+          setLevel: () => undefined,
+        });
+      },
+      captureException: (error) => { captured.push(error); },
+      addBreadcrumb: () => undefined,
+      logger: {
+        warn: (message, attributes) => { logs.push({ message, attributes: attributes ?? {} }); },
+        error: () => undefined,
+      },
+    });
+    try {
+      showToast({ title: "Push failed: lane-one", tone: "error" });
+      showToast({ title: "Push failed: lane-two", tone: "error", message: "x".repeat(1_000) });
+      showToast({ title: "Could not open \"notes.md\"", tone: "error" });
+      showToast({ title: "Pushed lane-one", tone: "success" });
+
+      // An error toast is a Sentry Log and a breadcrumb, never an issue of its
+      // own: the failure behind it (an IPC call, a render crash) already opened
+      // one, with a stack; a toast only repeats it under its title.
+      expect(captured).toHaveLength(0);
+      // One log per error toast; the success toast says nothing.
+      expect(logs).toHaveLength(3);
+      for (const log of logs) expect(log.message.startsWith("toast.")).toBe(true);
+      // Titles that differ only by the lane (or file) name share one event name.
+      expect(logs[0]!.message).toBe(logs[1]!.message);
+      expect(logs[0]!.message).not.toBe(logs[2]!.message);
+      // The text rides along, cut short: an error message can quote what it failed on.
+      expect(logs[1]!.attributes).toMatchObject({ title: "Push failed: lane-two", message: "x".repeat(300) });
+    } finally {
+      connectSentry(null as never);
+    }
   });
 });
 
@@ -408,7 +451,6 @@ describe("useAutoDiagnosticsToast", () => {
           };
         }),
         revealReport: vi.fn(async () => {}),
-        setSharing: vi.fn(async () => ({ enabled: false, sendsInWindow: 1, limit: 3 })),
         ackAutoSent: vi.fn(async () => {}),
       },
     };
@@ -435,7 +477,7 @@ describe("useAutoDiagnosticsToast", () => {
     delete (window as { ade?: unknown }).ade;
   });
 
-  it("tells the user what was sent, and offers the report and the off switch", () => {
+  it("tells the user what was sent, and offers the report", () => {
     const api = installDiagnosticsApi();
     render(React.createElement(AutoDiagnosticsHarness));
 
@@ -447,12 +489,9 @@ describe("useAutoDiagnosticsToast", () => {
       message: "Reference abcd1234",
     });
     expect(toast?.actions?.[0]?.label).toBe("View");
-    expect(toast?.actions?.[1]?.label).toBe("Turn off");
 
     toast?.actions?.[0]?.onClick?.();
     expect(api.bridge.diagnostics.revealReport).toHaveBeenCalledWith("/reports/x.md");
-    toast?.actions?.[1]?.onClick?.();
-    expect(api.bridge.diagnostics.setSharing).toHaveBeenCalledWith(false);
   });
 
   it("tells main the toast exists, so the next launch does not repeat it", () => {
@@ -489,28 +528,6 @@ describe("useAutoDiagnosticsToast", () => {
     expect(api.bridge.diagnostics.ackAutoSent).toHaveBeenCalledWith(["abcd1234"]);
   });
 
-  it("says so when turning sharing off did not save", async () => {
-    // `ToastStack` dismisses the toast as soon as the click returns, so a
-    // refused write would otherwise leave the user believing auto-send is off.
-    const api = installDiagnosticsApi();
-    api.bridge.diagnostics.setSharing.mockResolvedValue({
-      enabled: true,
-      sendsInWindow: 1,
-      limit: 3,
-    });
-    render(React.createElement(AutoDiagnosticsHarness));
-
-    api.emit({ failureCode: "disk_full", reportPath: "/reports/x.md", reference: "abcd1234" });
-    const [toast] = getToasts();
-    act(() => {
-      toast?.actions?.[1]?.onClick?.();
-    });
-
-    await waitFor(() => {
-      expect(getToasts().some((entry) => entry.title === "ADE could not turn this off")).toBe(true);
-    });
-  });
-
   it("shows one toast for a report delivered twice", () => {
     // Main keeps a successful send marked pending REGARDLESS of whether a
     // window was sent the notice, because `webContents.send` cannot report that
@@ -528,16 +545,14 @@ describe("useAutoDiagnosticsToast", () => {
     expect(getToasts()[0]?.id).toBe("diagnostics-auto-sent-abcd1234");
   });
 
-  it("still offers the off switch when the local copy could not be written", () => {
+  it("offers no View button when the local copy could not be written", () => {
     const api = installDiagnosticsApi();
     render(React.createElement(AutoDiagnosticsHarness));
 
     api.emit({ failureCode: "disk_full", reportPath: "", reference: "abcd1234" });
 
+    // Nothing to reveal, so no dead "View" button.
     const [toast] = getToasts();
-    // Nothing to reveal, so no dead "View" button — but turning it off must
-    // always be one click away from the message that says it happened.
-    expect(toast?.actions?.map((action) => action.label)).toEqual(["Turn off"]);
-    expect(toast?.actions?.[0]?.variant).toBe("secondary");
+    expect(toast?.actions ?? []).toHaveLength(0);
   });
 });

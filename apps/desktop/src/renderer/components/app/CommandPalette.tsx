@@ -36,8 +36,10 @@ import type {
 import type { SearchResultItem } from "../../../shared/types/search";
 import { parseDeeplink } from "../../../shared/deeplinks";
 import { extractError } from "../../lib/format";
-import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { linearIssueRef } from "../../../shared/issueRefs";
+import { openIssueInSheet } from "../../lib/issueNavigation";
 import { isChatToolType } from "../../lib/sessions";
+import { restartAgentSession, setChatGoal as setChatGoalFromPalette } from "../terminals/sessionLifecycleActions";
 import {
   appendWorkSearchFilter,
   parseWorkSearchQuery,
@@ -98,6 +100,7 @@ import {
 } from "./commandPaletteWork";
 import { requestWorkTool } from "../terminals/workToolRequests";
 import type { WorkToolContext } from "../terminals/workTools";
+import { desktopToolContext, useMacDesktopSupport } from "../terminals/useMacDesktopSupport";
 import { fadeScale } from "../../lib/motion";
 import {
   captureGestureChord,
@@ -113,7 +116,12 @@ import {
   useRootAppStore,
 } from "../../state/appStore";
 import { cn } from "../ui/cn";
+import { Z_LAYERS } from "../ui/zLayers";
 import { setPendingSessionAnchor } from "../terminals/pendingSessionAnchors";
+import {
+  CHAT_FIND_PALETTE_GROUP,
+  useChatFindPaletteCommand,
+} from "../chat/chatFindPalette";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
 import { writeStoredProjectRoute } from "./projectRouteStorage";
 import { AddProjectChooser } from "../projects/AddProjectChooser";
@@ -189,6 +197,21 @@ const PALETTE_SNOOZE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
 /** Stable empty array so the "no sessions yet" case never re-memoizes the index. */
 const EMPTY_SESSIONS: TerminalSessionSummary[] = [];
 
+/**
+ * Anchor a session's content at the hit a search result's deep link names: the
+ * message (chat, event seq) or scrollback byte (terminal, offset). The surface
+ * consumes the anchor when it next mounts.
+ */
+function anchorSessionHit(sessionId: string, deepLink: string | null | undefined): void {
+  const linkTarget = deepLink ? parseDeeplink(deepLink) : null;
+  if (linkTarget?.ok && linkTarget.target.kind === "session") {
+    setPendingSessionAnchor(sessionId, {
+      event: linkTarget.target.event,
+      offset: linkTarget.target.offset,
+    });
+  }
+}
+
 export function CommandPalette({
   open,
   onOpenChange,
@@ -242,6 +265,27 @@ export function CommandPalette({
     const key = selectActiveProjectStateKey(s);
     return key ? (s.workViewByProject[key]?.activeItemId ?? null) : null;
   });
+  // The session in front of the user, for the commands that act on it. The
+  // Work tab's mirrored list answers at once when it has the row; otherwise it
+  // is read when the palette opens.
+  const [fetchedActiveSession, setFetchedActiveSession] = useState<Pick<TerminalSessionSummary, "id" | "toolType"> | null>(null);
+  const cachedActiveSession = activeSessionId
+    ? threadSessions.find((session) => session.id === activeSessionId) ?? null
+    : null;
+  useEffect(() => {
+    if (!open || !activeSessionId || cachedActiveSession) return;
+    let cancelled = false;
+    void window.ade.sessions.get(activeSessionId)
+      .then((detail) => {
+        if (!cancelled) setFetchedActiveSession(detail ? { id: detail.id, toolType: detail.toolType } : null);
+      })
+      .catch(() => {
+        if (!cancelled) setFetchedActiveSession(null);
+      });
+    return () => { cancelled = true; };
+  }, [activeSessionId, cachedActiveSession, open]);
+  const activeSessionTarget: Pick<TerminalSessionSummary, "id" | "toolType"> | null = cachedActiveSession
+    ?? (fetchedActiveSession?.id === activeSessionId ? fetchedActiveSession : null);
   // The Work sidebar is a union across every connected machine, always. The
   // palette is that sidebar's search, so it reads the same union — otherwise it
   // would report "no matches" for a thread visible one pane over. Read straight
@@ -544,12 +588,17 @@ export function CommandPalette({
       cancelled = true;
     };
   }, [projectBinding]);
+  // The lane-screen tool follows the HOST platform, from the same cached
+  // support read the Work tools use: a Windows host offers Windows Desktop
+  // only, a Mac host Mac Desktop only.
+  const macDesktopSupport = useMacDesktopSupport({ runtimePin: projectBinding, enabled: open });
   const workToolContext = useMemo<WorkToolContext>(
     () => ({
       supportsIosSimulator,
       isWebClient: isWebClientMode(),
+      ...desktopToolContext(macDesktopSupport),
     }),
-    [supportsIosSimulator],
+    [macDesktopSupport, supportsIosSimulator],
   );
 
   const commands: Command[] = useMemo(() => {
@@ -570,14 +619,15 @@ export function CommandPalette({
         closeOnRun: false,
         run: startProjectCreate,
       },
-      {
+      // Clones onto this machine, and the web client has no clone surface for it.
+      ...(isWebClientMode() ? [] : [{
         id: "project-clone",
         title: "Clone from GitHub",
         hint: "Paste a URL or pick a repo",
         group: "Projects",
         closeOnRun: false,
         run: startProjectClone,
-      },
+      }]),
       {
         id: "project-remote",
         title: "Connect to another machine",
@@ -695,7 +745,7 @@ export function CommandPalette({
         hint: `${settingsTabLabel(entry.tab)} · ${entry.group}`,
         group: "Settings",
         // Keywords never render; they widen what the palette's own filter
-        // matches on, so "telemetry" reaches "Product analytics".
+        // matches on, so "crash" reaches "Send a report to ADE".
         keywords: entry.keywords,
         run: () => navigate(settingsEntryPath(entry)),
       })),
@@ -791,6 +841,30 @@ export function CommandPalette({
       },
     ];
 
+    // The chat in front of the user can be restarted from here: a fresh
+    // provider process with the same conversation.
+    const activeChat = activeSessionTarget && isChatToolType(activeSessionTarget.toolType)
+      ? activeSessionTarget
+      : null;
+    if (activeChat) {
+      next.push({
+        id: "action-restart-agent-session",
+        title: "Restart agent session",
+        hint: "Fresh process, same conversation — picks up new skills, plugins, and MCP servers",
+        group: "Actions",
+        run: () => { void restartAgentSession(activeChat); },
+      });
+      if (activeChat.toolType === "codex-chat" || activeChat.toolType === "claude-chat") {
+        next.push({
+          id: "action-set-goal",
+          title: "Set goal…",
+          hint: "The agent keeps working across turns until the goal is met",
+          group: "Actions",
+          run: () => { void setChatGoalFromPalette(activeChat); },
+        });
+      }
+    }
+
     if (!hasActiveProject) {
       return next.filter(
         (command) =>
@@ -805,6 +879,7 @@ export function CommandPalette({
 
     return next;
   }, [
+    activeSessionTarget,
     hasActiveProject,
     lanes,
     navigate,
@@ -848,9 +923,29 @@ export function CommandPalette({
     }
     return groups;
   }, [filtered]);
+  // The order the command rows render in. `grouped` can differ from `filtered`:
+  // a command pushed after the others but filed under an earlier group (e.g.
+  // "Restart agent session" under Actions) renders with that group. The keyboard
+  // index must resolve against this order, not `filtered`.
+  const renderedCommands = useMemo(
+    () => grouped.flatMap((group) => group.items),
+    [grouped],
+  );
 
   const trimmedQuery = q.trim();
   const entityQuery = parsedWorkQuery.backendQuery.trim();
+
+  // "Find "…" in this chat" and the hand-off of the typed words to a chat opened
+  // from a palette hit both come from chatFindPalette.ts.
+  const chatFindWords = useMemo(
+    () => parsedWorkQuery.terms.join(" "),
+    [parsedWorkQuery.terms],
+  );
+  const {
+    command: chatFindCommand,
+    keepFocusOnCloseRef,
+    handOffChatFind,
+  } = useChatFindPaletteCommand({ open, inDefaultMode: mode === "default", words: chatFindWords });
   const canEntitySearch =
     open &&
     mode === "default" &&
@@ -966,6 +1061,7 @@ export function CommandPalette({
     q,
     filtered.map((command) => command.title),
   );
+  const chatFindOffered = chatFindCommand != null;
   const paletteSections = useMemo(
     () =>
       buildPaletteSections({
@@ -973,8 +1069,10 @@ export function CommandPalette({
         threadCount: visibleWorkResults.length,
         commandCount: filtered.length,
         entityCount: flatEntities.length,
+        chatFindOffered,
       }),
     [
+      chatFindOffered,
       commandsLead,
       filtered.length,
       flatEntities.length,
@@ -1290,8 +1388,6 @@ export function CommandPalette({
     projectRoot: project?.rootPath ?? null,
     projectBinding,
     setWorkViewState,
-    switchProjectToPath,
-    switchRemoteProject,
   });
 
   const removeWorkFilter = useCallback(
@@ -1371,6 +1467,18 @@ export function CommandPalette({
     [navigate, onOpenChange],
   );
 
+  /** A thread row; one that matched on a message opens at that message, with find ready. */
+  const activateThreadResult = useCallback(
+    (entry: ThreadIndexEntry, contentHit: SearchResultItem | null) => {
+      if (contentHit?.kind === "chat" && contentHit.sessionId === entry.session.id && !entry.binding) {
+        anchorSessionHit(entry.session.id, contentHit.deepLink);
+        handOffChatFind(entry.session.id);
+      }
+      activateThread(entry);
+    },
+    [activateThread, handOffChatFind],
+  );
+
   const activateResult = useCallback(
     (item: SearchResultItem) => {
       switch (item.kind) {
@@ -1381,13 +1489,9 @@ export function CommandPalette({
           // Message/chunk hits carry an anchor in their deep link (event seq
           // for chat, byte offset for terminal scrollback) — hand it off so
           // the session's content surface positions to the hit.
-          const linkTarget = parseDeeplink(item.deepLink);
-          if (linkTarget.ok && linkTarget.target.kind === "session") {
-            setPendingSessionAnchor(sessionId, {
-              event: linkTarget.target.event,
-              offset: linkTarget.target.offset,
-            });
-          }
+          anchorSessionHit(sessionId, item.deepLink);
+          // The jump above lands on the hit; the find bar then walks the rest.
+          if (item.kind === "chat") handOffChatFind(sessionId);
           // The Work tab stays mounted (keep-alive), so its select-session
           // listener focuses the target; the navigate switches the visible tab.
           window.dispatchEvent(
@@ -1481,11 +1585,9 @@ export function CommandPalette({
           const identifier = item.id.startsWith("linear:")
             ? item.id.slice(7)
             : item.id;
-          if (identifier) {
-            requestLinearIssueQuickView({
-              issueIdentifier: identifier,
-              source: "manual",
-            });
+          const ref = identifier ? linearIssueRef(identifier) : null;
+          if (ref) {
+            openIssueInSheet({ ref, source: "palette" });
           } else {
             navigate("/lanes");
           }
@@ -1500,7 +1602,7 @@ export function CommandPalette({
       }
       onOpenChange(false);
     },
-    [lanes, navigate, onOpenChange, project?.rootPath],
+    [handOffChatFind, lanes, navigate, onOpenChange, project?.rootPath],
   );
 
   const activateFlat = useCallback(
@@ -1509,15 +1611,19 @@ export function CommandPalette({
       // that produced the row on screen.
       const hit = paletteSectionAt(paletteSections, index);
       if (!hit) return;
+      if (hit.section.key === "chatFind") {
+        if (chatFindCommand) runCommand(chatFindCommand);
+        return;
+      }
       if (hit.section.key === "threads") {
         const result = visibleWorkResults[hit.offset];
         if (!result) return;
-        if (result.type === "thread") activateThread(result.match.entry);
+        if (result.type === "thread") activateThreadResult(result.match.entry, result.contentHit);
         else activateResult(result.item);
         return;
       }
       if (hit.section.key === "commands") {
-        const command = filtered[hit.offset];
+        const command = renderedCommands[hit.offset];
         if (command) runCommand(command);
         return;
       }
@@ -1528,10 +1634,11 @@ export function CommandPalette({
     },
     [
       activateResult,
-      activateThread,
-      filtered,
+      activateThreadResult,
+      chatFindCommand,
       flatEntities,
       paletteSections,
+      renderedCommands,
       runCommand,
       toggleExpandKind,
       visibleWorkResults,
@@ -1889,7 +1996,8 @@ export function CommandPalette({
                 // the import browser): dim, then a light blur. `blur-2xl` over
                 // the whole window read as a different app taking over — and it
                 // is a full-window backdrop filter per frame of the fade.
-                className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm"
+                className="fixed inset-0 bg-black/60 backdrop-blur-sm"
+                style={{ zIndex: Z_LAYERS.commandPalette }}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
@@ -1899,6 +2007,11 @@ export function CommandPalette({
             <Dialog.Content
               asChild
               onOpenAutoFocus={(event) => event.preventDefault()}
+              onCloseAutoFocus={(event) => {
+                if (!keepFocusOnCloseRef.current) return;
+                keepFocusOnCloseRef.current = false;
+                event.preventDefault();
+              }}
             >
               <motion.div
                 data-tour={isBrowsing ? "project.browser" : undefined}
@@ -2535,7 +2648,7 @@ export function CommandPalette({
                                                 result.match.matchFields
                                               }
                                               onHover={setSelectedIdx}
-                                              onActivate={activateThread}
+                                              onActivate={(entry) => activateThreadResult(entry, result.contentHit)}
                                               onAction={handleThreadAction}
                                             />
                                           );
@@ -2549,17 +2662,20 @@ export function CommandPalette({
                                   ]
                                 : [];
 
-                            const buildCommandNodes = (startIndex: number) => {
-                              // The groups are consecutive slices of `filtered`,
-                              // so a group's first flat index is the running sum
-                              // of the groups before it.
+                            const renderCommandGroups = (
+                              groups: { label: string; items: Command[] }[],
+                              startIndex: number,
+                            ) => {
+                              // The groups are consecutive slices of
+                              // `renderedCommands`, so a group's first flat index
+                              // is the running sum of the groups before it.
                               let cursor = startIndex;
-                              const groupStarts = grouped.map((group) => {
+                              const groupStarts = groups.map((group) => {
                                 const start = cursor;
                                 cursor += group.items.length;
                                 return start;
                               });
-                              return grouped.map((group, groupIndex) => (
+                              return groups.map((group, groupIndex) => (
                                 <li key={group.label}>
                                   <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
                                     {group.label}
@@ -2578,8 +2694,8 @@ export function CommandPalette({
                                             className={cn(
                                               "mx-2 flex w-[calc(100%-1rem)] items-center gap-3 rounded-lg border border-transparent px-2.5 py-2 text-left transition-colors",
                                               isSelected
-                                                ? "bg-white/[0.06]"
-                                                : "hover:bg-white/[0.04]",
+                                                ? "bg-fg/[0.06]"
+                                                : "hover:bg-fg/[0.04]",
                                             )}
                                             onMouseEnter={() =>
                                               setSelectedIdx(index)
@@ -2617,6 +2733,9 @@ export function CommandPalette({
                                 </li>
                               ));
                             };
+
+                            const buildCommandNodes = (startIndex: number) =>
+                              renderCommandGroups(grouped, startIndex);
 
                             const buildEntityNodes = (startIndex: number) => {
                               // A section claims one index per visible row plus
@@ -2690,6 +2809,14 @@ export function CommandPalette({
                             return walkPaletteSections(
                               paletteSections,
                               (section, startIndex) => {
+                                if (section.key === "chatFind") {
+                                  return chatFindCommand
+                                    ? renderCommandGroups(
+                                        [{ label: CHAT_FIND_PALETTE_GROUP, items: [chatFindCommand] }],
+                                        startIndex,
+                                      )
+                                    : [];
+                                }
                                 if (section.key === "threads") {
                                   return buildThreadNodes(startIndex);
                                 }
@@ -2796,7 +2923,7 @@ function ProjectLocationChooser({
                   : "Projects on this computer"}
               </span>
               {isRemote ? (
-                <span className="mt-2 inline-flex rounded-full border border-[#F59E0B66] bg-[#F59E0B1A] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#FBBF24]">
+                <span className="mt-2 inline-flex rounded-full border border-[#F59E0B66] bg-[#F59E0B1A] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-tone-[#FBBF24]">
                   Connected
                 </span>
               ) : null}

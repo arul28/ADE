@@ -116,7 +116,9 @@ describe("modelRegistry", () => {
     }
   });
 
-  it("prefers a Qwen model discovered from the CLI settings over curated Alibaba rows", () => {
+  it("shows only the live Qwen list once one exists, in place of the curated Alibaba rows", () => {
+    const curatedId = listModelDescriptorsForProvider("qwen").find((model) => model.providerModelId === "qwen3-coder-plus")?.id;
+    expect(curatedId, "curated qwen3-coder-plus row").toBeTruthy();
     try {
       replaceDynamicAcpModelDescriptors("qwen", [
         createDynamicAcpModelDescriptor("qwen", "gpt-5.5"),
@@ -124,7 +126,10 @@ describe("modelRegistry", () => {
       const models = listModelDescriptorsForProvider("qwen");
       expect(models[0]?.providerModelId).toBe("gpt-5.5");
       expect(getDefaultModelDescriptor("qwen")?.providerModelId).toBe("gpt-5.5");
-      expect(models.some((model) => model.providerModelId === "qwen3-coder-plus")).toBe(true);
+      expect(models.some((model) => model.providerModelId === "qwen3-coder-plus")).toBe(false);
+      // Hidden from the picker, not deleted: a chat saved on it still resolves and launches.
+      expect(getModelById(curatedId!)?.providerModelId).toBe("qwen3-coder-plus");
+      expect(resolveModelDescriptor(curatedId!)?.providerModelId).toBe("qwen3-coder-plus");
     } finally {
       clearDynamicAcpModelDescriptors();
     }
@@ -458,10 +463,10 @@ describe("modelRegistry", () => {
     expect(byId).toBe("anthropic/claude-opus-5");
     expect(resolveModelSlug("gpt-5.4")).toBe("openai/gpt-5.4");
     expect(resolveModelSlug("gpt-5.5")).toBe("openai/gpt-5.5");
-    expect(resolveModelSlug("sol", "codex")).toBe("openai/gpt-6-sol");
+    expect(resolveModelSlug("sol", "codex")).toBe("openai/gpt-6.1-sol");
     expect(resolveModelSlug("gpt-5.6-sol", "codex")).toBe("openai/gpt-5.6-sol");
     expect(resolveModelSlug("astra", "codex")).toBe("openai/gpt-6-astra");
-    expect(resolveModelSlug("gpt-5.4", "codex")).toBe("openai/gpt-5.4");
+    expect(resolveModelSlug("gpt-5.4", "codex")).toBeUndefined();
     expect(resolveModelSlug("gpt-5.5", "codex")).toBe("openai/gpt-5.5");
     expect(resolveModelSlug("")).toBeUndefined();
     expect(resolveModelSlug("   ")).toBeUndefined();
@@ -489,6 +494,7 @@ describe("modelRegistry", () => {
 
   it("keeps only the allowed OpenAI chat models in the registry defaults", () => {
     expect(listModelDescriptorsForProvider("codex").map((model) => model.id)).toEqual([
+      "openai/gpt-6.1-sol",
       "openai/gpt-6-astra",
       "openai/gpt-6-sol",
       "openai/gpt-6-luna",
@@ -496,11 +502,6 @@ describe("modelRegistry", () => {
       "openai/gpt-5.6-terra",
       "openai/gpt-5.6-luna",
       "openai/gpt-5.5",
-      "openai/gpt-5.4",
-      "openai/gpt-5.4-mini",
-      "openai/gpt-5.3-codex",
-      "openai/gpt-5.3-codex-spark",
-      "openai/gpt-5.2",
     ]);
 
     // API-key OpenAI models are now discovered dynamically through OpenCode,
@@ -552,7 +553,7 @@ describe("modelRegistry", () => {
       serviceTiers: ["fast"],
     });
     // The bare family names follow the newest generation (model-manifest.json).
-    expect(resolveModelAlias("sol")?.id).toBe("openai/gpt-6-sol");
+    expect(resolveModelAlias("sol")?.id).toBe("openai/gpt-6.1-sol");
     expect(resolveModelAlias("gpt-5.6-sol")?.id).toBe("openai/gpt-5.6-sol");
     expect(resolveModelAlias("terra")?.id).toBe("openai/gpt-5.6-terra");
     expect(resolveModelAlias("luna")?.id).toBe("openai/gpt-6-luna");
@@ -633,9 +634,8 @@ describe("modelRegistry", () => {
     expect(resolved?.id).toBe("openai/gpt-5.5");
   });
 
-  it("resolves gpt-5.4 to the real OpenAI model when the provider is codex", () => {
-    const resolved = resolveModelDescriptorForProvider("gpt-5.4", "codex");
-    expect(resolved?.id).toBe("openai/gpt-5.4");
+  it("does not resolve deprecated GPT-5.4 as an available Codex model", () => {
+    expect(resolveModelDescriptorForProvider("gpt-5.4", "codex")).toBeUndefined();
   });
 
   it("resolves gpt-5.5 to the real OpenAI model when the provider is codex", () => {
@@ -708,11 +708,12 @@ describe("modelRegistry", () => {
 
   describe("Claude descriptors", () => {
     it("orders the Claude model registry for picker display", () => {
-      expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 5).map((model) => model.id)).toEqual([
+      expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 6).map((model) => model.id)).toEqual([
         "anthropic/claude-fable-5-1",
         "anthropic/claude-opus-5-5",
+        "anthropic/claude-sonnet-5-5",
+        "anthropic/claude-haiku-5-5",
         "anthropic/claude-sonnet-5",
-        "anthropic/claude-haiku-4-5",
         "anthropic/claude-opus-5",
       ]);
       const fable = getModelById("anthropic/claude-fable-5-1");
@@ -779,12 +780,34 @@ describe("modelRegistry", () => {
       expect(sonnet).toBeTruthy();
       expect(sonnet).toMatchObject({
         displayName: "Claude Sonnet 5",
-        shortId: "sonnet",
+        shortId: "sonnet-5",
         providerModelId: "claude-sonnet-5",
         contextWindow: 1_000_000,
         maxOutputTokens: 128_000,
       });
       expect(getRuntimeModelRefForDescriptor(sonnet!, "claude")).toBe("claude-sonnet-5");
+    });
+
+    it("adds Claude Sonnet 5.5 and keeps the generic sonnet alias on it", () => {
+      const sonnet = getModelById("anthropic/claude-sonnet-5-5");
+      expect(sonnet).toBeTruthy();
+      expect(sonnet).toMatchObject({
+        displayName: "Claude Sonnet 5.5",
+        shortId: "sonnet",
+        providerModelId: "claude-sonnet-5-5",
+        contextWindow: 1_000_000,
+        maxOutputTokens: 128_000,
+        reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+        defaultReasoningEffort: "high",
+        inputPricePer1M: 2,
+        outputPricePer1M: 10,
+      });
+      expect(sonnet?.serviceTiers).toBeUndefined();
+      expect(getRuntimeModelRefForDescriptor(sonnet!, "claude")).toBe("claude-sonnet-5-5");
+      expect(resolveModelAlias("sonnet")?.id).toBe("anthropic/claude-sonnet-5-5");
+      expect(resolveModelAlias("sonnet-5.5")?.id).toBe("anthropic/claude-sonnet-5-5");
+      expect(resolveModelAlias("claude-sonnet-5")?.id).toBe("anthropic/claude-sonnet-5");
+      expect(normalizeAnthropicRuntimeAlias("sonnet")?.modelId).toBe("claude-sonnet-5-5");
     });
 
     it("drops Opus 4.8 entirely and forwards its aliases to Opus 5", () => {
@@ -815,6 +838,26 @@ describe("modelRegistry", () => {
       expect(normalizeAnthropicRuntimeAlias("anthropic/claude-opus-4-8-1m")?.modelId).toBe("claude-opus-5");
       expect(normalizeAnthropicRuntimeAlias("claude-opus-4-8")?.wasAlias).toBe(true);
       expect(normalizeAnthropicRuntimeAlias("claude-opus-5")?.wasAlias).toBe(false);
+    });
+
+    it("retires every Haiku 4.5 spelling onto Haiku 5.5 without touching a harness's own row", () => {
+      for (const spelling of [
+        "haiku-4.5",
+        "haiku-4-5",
+        "claude-haiku-4-5",
+        "claude-haiku-4-5-20251001",
+        "anthropic/claude-haiku-4-5",
+        "anthropic/claude-haiku-4-5-api",
+      ]) {
+        expect(resolveModelAlias(spelling)?.id).toBe("anthropic/claude-haiku-5-5");
+      }
+      expect(MODEL_REGISTRY.some((model) => model.id === "anthropic/claude-haiku-4-5")).toBe(false);
+      expect(resolveModelAlias("anthropic/claude-haiku-5-5")?.id).toBe("anthropic/claude-haiku-5-5");
+
+      // A harness's own Haiku 4.5 row keeps the model it actually serves: the
+      // runtime alias normalizer deliberately has no 4.5 branch.
+      expect(normalizeAnthropicRuntimeAlias("claude-haiku-4-5")).toBeNull();
+      expect(openCodeRegistryIdFor("anthropic", "claude-haiku-4-5")).toBe("opencode/anthropic/claude-haiku-4-5");
     });
 
     it("maps removed Sonnet aliases forward without listing Sonnet 4.6 as a row", () => {

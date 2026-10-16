@@ -7,8 +7,9 @@
  * ModelPickerContent, ModelListRow) — including the vertical rail with
  * per-provider status dots and arrow-key roving focus. The data layer is
  * rewritten against `AdeChatClient` rather than ADE's runtime catalog cache,
- * and ADE-only affordances (favourites, recents, reasoning-effort, per-surface
- * defaults, cloud launch) are out of scope for this package.
+ * and ADE-only affordances (favourites, recents, per-surface defaults, cloud
+ * launch) are out of scope for this package. Reasoning effort is in scope: a
+ * row of levels under the list for the selected model, when it lists any.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -34,6 +35,18 @@ export type ModelPickerProps = {
   searchable?: boolean;
   /** Rendered under a provider group that cannot be selected from. */
   renderProviderNotice?: (status: ProviderStatus | null, providerId: string) => React.ReactNode;
+  /**
+   * The selected reasoning effort for the selected model. Null or omitted
+   * shows the model's `defaultReasoningEffort` as selected.
+   */
+  reasoningEffort?: string | null;
+  /**
+   * Called when the person picks an effort level. The control is drawn only
+   * when this is set AND the selected model (`value`) lists
+   * `reasoningEfforts`; a model without them shows no control. The picker does
+   * not apply the effort anywhere — the host sends it to its thread.
+   */
+  onReasoningEffortChange?: (effort: string, model: ModelDescriptor) => void;
   className?: string;
 };
 
@@ -73,6 +86,8 @@ function ModelPickerView({
   providers = [],
   searchable = true,
   renderProviderNotice,
+  reasoningEffort,
+  onReasoningEffortChange,
   className,
 }: ModelPickerProps) {
   const [query, setQuery] = useState("");
@@ -124,6 +139,9 @@ function ModelPickerView({
   );
 
   const activeGroup = groups.find((group) => group.providerId === activeProvider) ?? null;
+  const selectedModel = value ? models.find((model) => model.id === value) ?? null : null;
+  const efforts = selectedModel?.reasoningEfforts ?? [];
+  const currentEffort = reasoningEffort ?? selectedModel?.defaultReasoningEffort ?? null;
 
   return (
     <div className={["adechat-modelpicker", className].filter(Boolean).join(" ")}>
@@ -181,6 +199,27 @@ function ModelPickerView({
             </li>
           )}
         </ul>
+        {onReasoningEffortChange && selectedModel && efforts.length ? (
+          <div
+            className="adechat-modelpicker-effort"
+            role="radiogroup"
+            aria-label={`Reasoning effort for ${selectedModel.displayName}`}
+          >
+            <span className="adechat-modelpicker-effortlabel">Effort</span>
+            {efforts.map((effort) => (
+              <button
+                key={effort}
+                type="button"
+                role="radio"
+                className="adechat-modelpicker-effortoption"
+                aria-checked={effort === currentEffort}
+                onClick={() => onReasoningEffortChange(effort, selectedModel)}
+              >
+                {effort}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
     </div>
   );

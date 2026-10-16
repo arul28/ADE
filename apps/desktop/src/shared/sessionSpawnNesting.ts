@@ -4,7 +4,12 @@ import {
   isSessionFiledAsSnoozed,
   type CanonicalSessionPhase,
 } from "./sessionCanonicalState";
-import { sessionStatusPresentation, sessionStatusShoutsLabel } from "./sessionStatusPresentation";
+import {
+  scheduledWakeState,
+  sessionStatusPresentation,
+  sessionStatusShoutsLabel,
+  type SessionStatusTone,
+} from "./sessionStatusPresentation";
 import type { TerminalSessionSummary } from "./types/sessions";
 
 /**
@@ -49,9 +54,10 @@ export type SpawnNestingSession = Pick<
   | "usageLimitResume"
   | "chatActivityMode"
   | "nextWakeAt"
+  | "archivedAt"
 >;
 
-export type NestedSubagentDrawerAttention = "failed" | "needs_you" | null;
+type NestedSubagentDrawerAttention = "failed" | "needs_you" | null;
 
 export type SpawnNestingIndex<T extends SpawnNestingSession = SpawnNestingSession> = {
   childrenByRootParentId: Map<string, T[]>;
@@ -94,6 +100,13 @@ export function isChatToolType(toolType: string | null | undefined): boolean {
   if (!toolType) return false;
   const normalized = toolType.trim().toLowerCase();
   return normalized === "cursor" || normalized.endsWith("-chat");
+}
+
+/** The provider of an ADE chat's tool type (`claude-chat` → `claude`); null for a session that is not a chat. */
+export function chatToolProvider(toolType: string | null | undefined): string | null {
+  if (!toolType || !isChatToolType(toolType)) return null;
+  const normalized = toolType.trim().toLowerCase();
+  return normalized === "cursor" ? "cursor" : normalized.slice(0, -"-chat".length);
 }
 
 function phaseOf(session: SpawnNestingSession, nowMs: number): CanonicalSessionPhase {
@@ -287,14 +300,21 @@ export function workNestingDrawers<T extends SpawnNestingSession>(
     ? indexNestedSubagents(sessions, options)
     : emptySpawnNestingIndex<T>();
   const visibleParentIds = options?.visibleParentIds ?? new Set(sessions.map((session) => session.id));
-  const shellsByParentId = groupAttachedShellsByParentId(
+  const attachedShellsByParentId = groupAttachedShellsByParentId(
     sessions,
     index.nestedChildToRootParentId,
     visibleParentIds,
   );
+  // Every attached shell is filed under its chat, so none resurfaces as a
+  // top-level card. An archived one is then left out of the drawer: dead agent
+  // shells are archived on purpose (`agentShellCleanup`) to keep it quiet, and
+  // the transcript stays on disk.
   const excludedTopLevelIds = new Set(index.nestedChildIds);
-  for (const list of shellsByParentId.values()) {
+  const shellsByParentId = new Map<string, T[]>();
+  for (const [parentId, list] of attachedShellsByParentId) {
     for (const child of list) excludedTopLevelIds.add(child.id);
+    const listed = list.filter((child) => !child.archivedAt);
+    if (listed.length > 0) shellsByParentId.set(parentId, listed);
   }
   return {
     subagentsByParentId: index.childrenByRootParentId,
@@ -303,6 +323,40 @@ export function workNestingDrawers<T extends SpawnNestingSession>(
     nestedChildToRootParentId: index.nestedChildToRootParentId,
     excludedTopLevelIds,
   };
+}
+
+/**
+ * Does this subagent keep its parent's work open? True while it is mid-turn or
+ * parked on a scheduled wake that has not come due (`scheduledWakeState`): it
+ * reports back and wakes its parent when that turn ends, so the parent's real
+ * Done is still to come. An archived, snoozed, settled, finished or failed
+ * child does not.
+ */
+export function subagentKeepsParentBusy(child: SpawnNestingSession, nowMs: number = Date.now()): boolean {
+  if (child.archivedAt) return false;
+  const phase = phaseOf(child, nowMs);
+  if (isSessionFiledAsSnoozed(child, phase, nowMs)) return false;
+  if (phase === "starting" || phase === "running" || phase === "stale") return true;
+  return (phase === "ready" || phase === "idle") && scheduledWakeState(child.nextWakeAt, nowMs) === "pending";
+}
+
+/**
+ * Chats with at least one nested subagent that keeps them busy, keyed by the
+ * root parent each subagent files under. The board files such a parent in
+ * Waiting rather than Done; attached shells are never subagents, so a dev
+ * server left running cannot keep a chat busy.
+ */
+export function parentsWithBusySubagents<T extends SpawnNestingSession>(
+  sessions: readonly T[],
+  nowMs: number = Date.now(),
+): Set<string> {
+  const parents = new Set<string>();
+  const byId = new Map(sessions.map((session) => [session.id, session] as const));
+  for (const [childId, parentId] of indexNestedSubagents(sessions, { nowMs }).nestedChildToRootParentId) {
+    const child = byId.get(childId);
+    if (child && subagentKeepsParentBusy(child, nowMs)) parents.add(parentId);
+  }
+  return parents;
 }
 
 export function isTopLevelWorkSession(
@@ -317,7 +371,7 @@ export function isTopLevelWorkSession(
   return true;
 }
 
-export function nestedSubagentDrawerAttention(
+function nestedSubagentDrawerAttention(
   children: readonly SpawnNestingSession[],
   nowMs: number = Date.now(),
 ): NestedSubagentDrawerAttention {
@@ -342,4 +396,34 @@ export function nestedSubagentDrawerAttention(
     }
   }
   return needsYou ? "needs_you" : null;
+}
+
+export type NestedDrawerStatus = "failed" | "needs_you" | "running" | null;
+
+/** How each drawer status reads on every surface: one word, one tone. */
+export const NESTED_DRAWER_STATUS_PRESENTATION: Record<
+  NonNullable<NestedDrawerStatus>,
+  { label: string; tone: SessionStatusTone }
+> = {
+  failed: { label: "Failed", tone: "red" },
+  needs_you: { label: "Needs you", tone: "amber" },
+  running: { label: "Running", tone: "blue" },
+};
+
+/**
+ * The one state a COLLAPSED drawer shows next to its count: failed, then needs
+ * you (both via `nestedSubagentDrawerAttention`), then running. Ended and done
+ * children add nothing — a drawer of finished work shows only its count.
+ */
+export function nestedDrawerStatus(
+  children: readonly SpawnNestingSession[],
+  nowMs: number = Date.now(),
+): NestedDrawerStatus {
+  const attention = nestedSubagentDrawerAttention(children, nowMs);
+  if (attention) return attention;
+  for (const child of children) {
+    const phase = phaseOf(child, nowMs);
+    if (phase === "running" || phase === "starting") return "running";
+  }
+  return null;
 }

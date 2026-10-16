@@ -4,6 +4,7 @@ import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import { safeJsonParse, writeTextAtomic } from "../shared/utils";
+import { doNotTrackRequested } from "../../../shared/doNotTrack";
 import {
   PRODUCT_ANALYTICS_EVENTS,
   type ProductAnalyticsCapture,
@@ -628,8 +629,11 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
     fs.unwatchFile(optOutMarkerPath, onOptOutMarkerChanged);
   };
 
+  // `DO_NOT_TRACK=1` is the environment opt-out. It sits here with the other
+  // runtime gates, so capture, identify, status and export all honor it.
   const isRuntimeDisabled = () =>
     process.env.ADE_DISABLE_PRODUCT_ANALYTICS === "1"
+    || doNotTrackRequested()
     || (
       (
         process.env.NODE_ENV === "development"

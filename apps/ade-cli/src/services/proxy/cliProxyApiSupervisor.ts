@@ -30,6 +30,7 @@ import {
   pathsFor,
   readCliProxyApiConfig,
   readCliProxyApiState,
+  withCliProxyApiConfigLock,
   writeCliProxyApiConfig,
   writeCliProxyApiState,
   type CliProxyApiConfig,
@@ -472,31 +473,34 @@ export class CliProxyApiSupervisor {
     // and the api-key are reused: launched CLIs are pointed at them, so they
     // must survive a restart.
     const managementKey = randomBytes(32).toString("hex");
-    if (fs.existsSync(this.paths.configPath)) {
-      const existing = configSummary(this.paths.configPath);
-      const config: CliProxyApiConfig = {
-        ...existing.config,
-        "auth-dir": ownedAuthDir(existing.config["auth-dir"], this.paths.proxyDir, this.paths.authDir),
-        "remote-management": { "allow-remote": false, "secret-key": managementKey },
-      };
+    const port = await findFreeLoopbackPort();
+    return withCliProxyApiConfigLock(this.paths.configPath, () => {
+      if (fs.existsSync(this.paths.configPath)) {
+        const existing = configSummary(this.paths.configPath);
+        const config: CliProxyApiConfig = {
+          ...existing.config,
+          "auth-dir": ownedAuthDir(existing.config["auth-dir"], this.paths.proxyDir, this.paths.authDir),
+          "remote-management": { "allow-remote": false, "secret-key": managementKey },
+        };
+        this.secureDirectory(config["auth-dir"]);
+        writeCliProxyApiConfig(this.paths.configPath, config, this.fileSecurity());
+        writePrivateFile(this.paths.managementKeyPath, managementKey, this.fileSecurity());
+        this.managementKey = managementKey;
+        return { config, apiKey: existing.apiKey, managementKey, port: existing.port };
+      }
+
+      const config = createCliProxyApiConfig({
+        port,
+        apiKey: randomBytes(32).toString("hex"),
+        managementKey,
+        authDir: this.paths.authDir,
+      });
       this.secureDirectory(config["auth-dir"]);
       writeCliProxyApiConfig(this.paths.configPath, config, this.fileSecurity());
       writePrivateFile(this.paths.managementKeyPath, managementKey, this.fileSecurity());
       this.managementKey = managementKey;
-      return { config, apiKey: existing.apiKey, managementKey, port: existing.port };
-    }
-
-    const config = createCliProxyApiConfig({
-      port: await findFreeLoopbackPort(),
-      apiKey: randomBytes(32).toString("hex"),
-      managementKey,
-      authDir: this.paths.authDir,
+      return { config, apiKey: config["api-keys"][0]!, managementKey, port: config.port };
     });
-    this.secureDirectory(config["auth-dir"]);
-    writeCliProxyApiConfig(this.paths.configPath, config, this.fileSecurity());
-    writePrivateFile(this.paths.managementKeyPath, managementKey, this.fileSecurity());
-    this.managementKey = managementKey;
-    return { config, apiKey: config["api-keys"][0]!, managementKey, port: config.port };
   }
 
   private async startProcess(): Promise<void> {

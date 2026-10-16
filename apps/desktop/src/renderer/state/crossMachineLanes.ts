@@ -63,6 +63,7 @@ import {
   type WorkLaneSortMode,
 } from "../components/terminals/workLaneOrder";
 import {
+  projectStateKeyForBinding,
   rootAppStoreApi,
   selectActiveProjectStateKey,
   useAppStore,
@@ -219,10 +220,11 @@ export type CrossMachineUnion = {
  * against — and that exception is worth being explicit about rather than
  * implicit in a second component.
  *
- * The glyph is amber, in an amber pill. Amber is machine identity everywhere in
- * ADE (top bar, connections panel, Activity pane, session hover card), and
- * `SessionCard` states the rule directly: amber appears exactly once per row, on
- * the machine tower, because that glyph is identity and never status.
+ * Only an OFFLINE machine's marker is drawn (`isMachineMarkerShown`): a dimmed
+ * tower that says why those rows went quiet. An online machine's work just works
+ * wherever it lives, and the top bar's connection dot already says the machines
+ * are linked. Online markers are still resolved, because the session hover card
+ * names the machine and the Files pane labels whose disk it shows.
  */
 export type CrossMachineLaneMarker = {
   machineId: string;
@@ -534,6 +536,26 @@ export function useLanesForPin(
   );
 }
 
+const EMPTY_SESSIONS: TerminalSessionSummary[] = [];
+
+/**
+ * The pinned machine's sessions, the twin of {@link useLanesForPin}: the union
+ * slice when the Work tab has loaded one, else the project-scoped session cache
+ * that `useWorkSessions` keeps for the same checkout. A local chat often has no
+ * union slice at all, so reading only the slice left every chat id unresolved.
+ */
+export function useSessionsForPin(
+  pin: OpenProjectBinding | null | undefined,
+): TerminalSessionSummary[] | null {
+  const entry = useMachineEntryForBinding(pin);
+  const cached = useAppStore((state) =>
+    (pin ? state.sessionsCacheByProject[projectStateKeyForBinding(pin)] ?? null : null));
+  return useMemo(
+    () => (!pin ? null : entry?.sessions ?? cached ?? EMPTY_SESSIONS),
+    [cached, entry, pin],
+  );
+}
+
 /**
  * Immediately projects a foreign launch into its owning machine slice. The
  * periodic union refresh replaces this optimistic summary by stable session id.
@@ -814,11 +836,15 @@ export function orderCrossMachineRows(
     .map(({ row }) => row);
 }
 
+/** Whether a marker is drawn at all: only for a machine that is offline. */
+export function isMachineMarkerShown(marker: CrossMachineLaneMarker): boolean {
+  return !marker.online;
+}
+
 /**
  * Resolves the marker for every lane that is not on this physical Mac. Rows on
- * this machine get no entry at all — "work isn't here" is the only thing the
- * marker communicates, so on a single-machine setup this map is empty and the
- * header is untouched.
+ * this machine get no entry at all, so on a single-machine setup this map is
+ * empty. Whether a resolved marker is drawn is `isMachineMarkerShown`'s call.
  *
  * Note what this does NOT consult: `isActiveBinding`. A lane on the machine the
  * project tab happens to point at is still foreign work if you are sitting at a
@@ -1079,6 +1105,8 @@ type SyncRuntime = {
   pendingLaneReadDepth: LaneReadDepth;
   /** Lane ids a completed lane read did not explain, so we stop re-asking. */
   unresolvedLaneIdsByMachineId: Map<string, Set<string>>;
+  /** `connectionsReadSignature` of the last snapshot that forced a read. */
+  connectionsReadSignature: string | null;
 };
 
 /**
@@ -1125,6 +1153,7 @@ const runtime: SyncRuntime = {
   laneStatusReadAtMsByMachineId: new Map(),
   pendingLaneReadDepth: "identity",
   unresolvedLaneIdsByMachineId: new Map(),
+  connectionsReadSignature: null,
 };
 
 /**
@@ -1970,13 +1999,38 @@ function resetMachineTracking(): void {
   runtime.laneReadAtMsByMachineId.clear();
   runtime.laneStatusReadAtMsByMachineId.clear();
   runtime.unresolvedLaneIdsByMachineId.clear();
+  runtime.connectionsReadSignature = null;
+}
+
+/**
+ * What in a connection snapshot can change which machines the union reads, or
+ * what it finds there. Everything else (timestamps, errors on a machine that
+ * stays down) is not a reason to read anyone.
+ */
+function connectionsReadSignature(connections: readonly RemoteRuntimeConnectionStatus[]): string {
+  return connections
+    .map((connection) => [
+      connection.target.id,
+      connection.state,
+      connection.projects
+        .map((project) => `${project.projectId}@${project.rootPath}@${project.gitOriginUrl ?? ""}`)
+        .sort()
+        .join(","),
+    ].join("|"))
+    .sort()
+    .join("\n");
 }
 
 function applySnapshot(snapshot: RemoteRuntimeConnectionSnapshot): void {
   runtime.connections = Array.isArray(snapshot?.connections) ? snapshot.connections : [];
   applyReachability();
   // A machine that just appeared has no rows at all, so its first read has to be
-  // the full one or it renders statusless until the cadence comes round.
+  // the full one or it renders statusless until the cadence comes round. A
+  // snapshot that changes nothing the union reads is not one: forcing a status
+  // read of every machine on each of those made the reads produce the snapshots.
+  const signature = connectionsReadSignature(runtime.connections);
+  if (signature === runtime.connectionsReadSignature) return;
+  runtime.connectionsReadSignature = signature;
   scheduleRefresh("status");
 }
 
@@ -2140,6 +2194,178 @@ export function resetCrossMachineLaneSyncForTest(): void {
 // ── React entry point ───────────────────────────────────────────────────────
 
 /**
+ * Joins the shared, ref-counted union sync for the active project tab's repo,
+ * without deriving any rows. Every surface that shows other machines' lanes
+ * (Work, Lanes, Files) mounts this while visible; the runtime below keeps ONE
+ * set of subscriptions and one bounded refresh across all of them, so a second
+ * consumer adds no reads.
+ */
+export function useCrossMachineLaneSync(active = true): void {
+  const projectBinding = useAppStore((state) => state.projectBinding);
+  const scopeKey = useAppStore((state) => selectActiveProjectStateKey(state));
+  const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
+  const projectDisplayName = useAppStore((state) => state.project?.displayName ?? null);
+  const [localRepoIdentity, setLocalRepoIdentity] = useState<{
+    scopeKey: string | null;
+    originUrl: string | null;
+    thisMachineBinding: Extract<OpenProjectBinding, { kind: "local" }> | null;
+  } | null>(null);
+
+  const repoDisplayName = projectBinding?.displayName ?? projectDisplayName;
+  const boundTargetId = projectBinding?.kind === "remote" ? projectBinding.targetId : null;
+  const boundProjectId = projectBinding?.kind === "remote" ? projectBinding.projectId : null;
+  const repoOriginUrl = localRepoIdentity?.scopeKey === scopeKey
+    ? localRepoIdentity.originUrl
+    : undefined;
+  const thisMachineBinding = localRepoIdentity?.scopeKey === scopeKey
+    ? localRepoIdentity.thisMachineBinding
+    : null;
+
+  useEffect(() => {
+    if (!projectRoot) return;
+    let cancelled = false;
+    const listRecent = window.ade?.project?.listRecent;
+    if (typeof listRecent !== "function") {
+      setLocalRepoIdentity({
+        scopeKey,
+        originUrl: null,
+        thisMachineBinding: null,
+      });
+      return;
+    }
+    // The latest snapshot this effect has applied, so a slow initial
+    // `getConnectionSnapshot` cannot resolve after a newer pushed snapshot and
+    // overwrite it. `useDraftMachineRouting` orders the same feed the same way.
+    let latestAppliedSnapshotUpdatedAt = Number.NEGATIVE_INFINITY;
+    // Only write when something the sync scope keys on actually changed. The
+    // scope effect depends on `thisMachineBinding`'s identity, so an unguarded
+    // write would tear down and restart the whole union on every connection tick.
+    const commitIdentity = (identity: {
+      originUrl: string | null;
+      thisMachineBinding: Extract<OpenProjectBinding, { kind: "local" }> | null;
+    }) => {
+      setLocalRepoIdentity((current) =>
+        current
+        && current.scopeKey === scopeKey
+        && current.originUrl === identity.originUrl
+        && current.thisMachineBinding?.key === identity.thisMachineBinding?.key
+          ? current
+          : { scopeKey, ...identity });
+    };
+    const applySnapshotIdentity = (
+      snapshot: RemoteRuntimeConnectionSnapshot | null,
+      projects: readonly RecentProjectSummary[],
+    ) => {
+      if (!boundTargetId || !boundProjectId) {
+        const project = projects.find((candidate) => candidate.rootPath === projectRoot);
+        commitIdentity({ originUrl: project?.gitOriginUrl ?? null, thisMachineBinding: null });
+        return;
+      }
+      if (snapshot == null || snapshot.updatedAt < latestAppliedSnapshotUpdatedAt) return;
+      latestAppliedSnapshotUpdatedAt = snapshot.updatedAt;
+      const connection = snapshot.connections.find(
+        (candidate) => candidate.target.id === boundTargetId,
+      );
+      const boundProject = connection?.projects?.find(
+        (candidate) => candidate.projectId === boundProjectId,
+      );
+      if (connection) {
+        rememberProjectOriginSummaries(
+          (connection.projects ?? []).map((project) => ({
+            rootPath: project.rootPath,
+            kind: "remote" as const,
+            remote: {
+              targetId: connection.target.id,
+              projectId: project.projectId,
+              runtimeName: connection.target.name,
+              hostname: connection.target.hostname,
+            },
+            gitOriginUrl: project.gitOriginUrl,
+          })),
+        );
+      }
+      // Only a CONNECTED bound target is authoritative about its project list.
+      // While it dials, is idle, or is unreachable, a missing project is
+      // inconclusive, so keep the counterpart already resolved rather than
+      // dropping This Mac's chats on every reconnect blip. A connected target
+      // that no longer lists the project has genuinely dropped it, and the same
+      // module treats that as removable in `applyReachability`; clear then.
+      if (!boundProject && connection?.state !== "connected") return;
+      commitIdentity({
+        originUrl: boundProject?.gitOriginUrl ?? null,
+        thisMachineBinding: resolveThisMachineBindingForOrigin(
+          projects,
+          boundProject?.gitOriginUrl,
+        ),
+      });
+    };
+    // Recents are stable for the life of this effect — opening a local project
+    // changes `projectRoot`/`scopeKey` and re-runs it — so the snapshot
+    // subscription reuses this promise instead of re-reading on every tick.
+    const projectsPromise = listRecent().then((projects) => {
+      if (cancelled) return projects;
+      rememberProjectOriginSummaries(projects, { replace: true });
+      return projects;
+    });
+    const resolveAndApply = (snapshotOverride?: RemoteRuntimeConnectionSnapshot) => {
+      void (async () => {
+        const projects = await projectsPromise;
+        if (cancelled) return;
+        let snapshot = snapshotOverride ?? null;
+        if (snapshotOverride === undefined && boundTargetId && boundProjectId) {
+          snapshot = await window.ade.remoteRuntime.getConnectionSnapshot();
+          if (cancelled) return;
+        }
+        applySnapshotIdentity(snapshot, projects);
+      })().catch(() => {
+        if (cancelled) return;
+        // A failed read must not clobber an identity already resolved for this
+        // scope; only seed the empty one on a first-run failure.
+        setLocalRepoIdentity((current) =>
+          current && current.scopeKey === scopeKey
+            ? current
+            : { scopeKey, originUrl: null, thisMachineBinding: null });
+      });
+    };
+    resolveAndApply();
+    // The bound machine's project list — and with it the origin that locates the
+    // local checkout of the same repo — only arrives once its connection
+    // snapshot has loaded. When a tab restores straight to a remote binding that
+    // snapshot is usually still dialing on the first pass, so `thisMachineBinding`
+    // resolved to null and This Mac's chats never entered the union until the
+    // user switched machines and back. Re-resolve on every snapshot change.
+    const unsubscribe = boundTargetId && boundProjectId
+      ? window.ade.remoteRuntime.onConnectionSnapshotChanged?.(
+          (snapshot) => resolveAndApply(snapshot),
+        )
+      : undefined;
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [boundProjectId, boundTargetId, projectRoot, scopeKey]);
+
+  useEffect(
+    () => {
+      if (!active) return undefined;
+      if (repoOriginUrl === undefined) {
+        rootAppStoreApi.getState().applyCrossMachineLaneScope(scopeKey);
+        return undefined;
+      }
+      return startCrossMachineLaneSync({
+        scopeKey,
+        repoDisplayName,
+        repoOriginUrl,
+        boundTargetId,
+        boundProjectId,
+        thisMachineBinding,
+      });
+    },
+    [active, boundProjectId, boundTargetId, repoDisplayName, repoOriginUrl, scopeKey, thisMachineBinding],
+  );
+}
+
+/**
  * The one subscription for the union. Every other surface reads the union out of
  * the store as derived state; nothing else opens its own feed.
  *
@@ -2178,117 +2404,8 @@ export function useCrossMachineLaneUnion(
   }, [localSessions]);
   const localLanes = useAppStore((state) => state.lanes);
   const projectBinding = useAppStore((state) => state.projectBinding);
-  const scopeKey = useAppStore((state) => selectActiveProjectStateKey(state));
-  const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
-  const projectDisplayName = useAppStore((state) => state.project?.displayName ?? null);
   const machines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
-  const [localRepoIdentity, setLocalRepoIdentity] = useState<{
-    scopeKey: string | null;
-    originUrl: string | null;
-    thisMachineBinding: Extract<OpenProjectBinding, { kind: "local" }> | null;
-  } | null>(null);
-
-  const repoDisplayName = projectBinding?.displayName ?? projectDisplayName;
-  const boundTargetId = projectBinding?.kind === "remote" ? projectBinding.targetId : null;
-  const boundProjectId = projectBinding?.kind === "remote" ? projectBinding.projectId : null;
-  const repoOriginUrl = localRepoIdentity?.scopeKey === scopeKey
-    ? localRepoIdentity.originUrl
-    : undefined;
-  const thisMachineBinding = localRepoIdentity?.scopeKey === scopeKey
-    ? localRepoIdentity.thisMachineBinding
-    : null;
-
-  useEffect(() => {
-    if (!projectRoot) return;
-    let cancelled = false;
-    const listRecent = window.ade?.project?.listRecent;
-    if (typeof listRecent !== "function") {
-      setLocalRepoIdentity({
-        scopeKey,
-        originUrl: null,
-        thisMachineBinding: null,
-      });
-      return;
-    }
-    const loadIdentity = async () => {
-      const projects = await listRecent();
-      if (cancelled) return null;
-      rememberProjectOriginSummaries(projects, { replace: true });
-      if (!boundTargetId || !boundProjectId) {
-        const project = projects.find((candidate) => candidate.rootPath === projectRoot);
-        return {
-          originUrl: project?.gitOriginUrl ?? null,
-          thisMachineBinding: null,
-        };
-      }
-      const snapshot = await window.ade.remoteRuntime.getConnectionSnapshot();
-      if (cancelled) return null;
-      const connection = snapshot.connections.find(
-        (candidate) => candidate.target.id === boundTargetId,
-      );
-      const boundProject = connection?.projects?.find(
-        (candidate) => candidate.projectId === boundProjectId,
-      );
-      if (connection) {
-        rememberProjectOriginSummaries(
-          (connection.projects ?? []).map((project) => ({
-            rootPath: project.rootPath,
-            kind: "remote" as const,
-            remote: {
-              targetId: connection.target.id,
-              projectId: project.projectId,
-              runtimeName: connection.target.name,
-              hostname: connection.target.hostname,
-            },
-            gitOriginUrl: project.gitOriginUrl,
-          })),
-        );
-      }
-      return {
-        originUrl: boundProject?.gitOriginUrl ?? null,
-        thisMachineBinding: resolveThisMachineBindingForOrigin(
-          projects,
-          boundProject?.gitOriginUrl,
-        ),
-      };
-    };
-    void loadIdentity()
-      .then((identity) => {
-        if (cancelled || identity == null) return;
-        setLocalRepoIdentity({ scopeKey, ...identity });
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setLocalRepoIdentity({
-            scopeKey,
-            originUrl: null,
-            thisMachineBinding: null,
-          });
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [boundProjectId, boundTargetId, projectRoot, scopeKey]);
-
-  useEffect(
-    () => {
-      if (!active) return undefined;
-      if (repoOriginUrl === undefined) {
-        rootAppStoreApi.getState().applyCrossMachineLaneScope(scopeKey);
-        return undefined;
-      }
-      return startCrossMachineLaneSync({
-        scopeKey,
-        repoDisplayName,
-        repoOriginUrl,
-        boundTargetId,
-        boundProjectId,
-        thisMachineBinding,
-      });
-    },
-    [active, boundProjectId, boundTargetId, repoDisplayName, repoOriginUrl, scopeKey, thisMachineBinding],
-  );
+  useCrossMachineLaneSync(active);
 
   const rows = useMemo(
     () => buildCrossMachineLaneRows({

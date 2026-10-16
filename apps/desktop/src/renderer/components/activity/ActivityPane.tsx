@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowClockwise,
-  WarningCircle,
+  ArrowSquareOut,
+  Checks,
   WifiHigh,
   WifiSlash,
   X,
@@ -33,8 +34,7 @@ import {
   EMPTY_ACTIVITY_FILTERS,
   type ActivityFilterState,
 } from "./ActivityFilters";
-import { ActivityInboxColumn } from "./ActivityInboxColumn";
-import { ActivitySessionsColumn } from "./ActivitySessionsColumn";
+import { ActivityPanel } from "./ActivityPanel";
 import { ActivitySettingsPopover } from "./ActivitySettingsPopover";
 import { activityFooterLine, summarizeActivity } from "./activityPriority";
 import { refreshActivitySnapshot } from "./useActivitySync";
@@ -107,6 +107,22 @@ function unreachedClearMessage(
   return `${head}${detail ? ` ${detail}` : ""}${alsoStale}`;
 }
 
+/** "Couldn't mark 2 of 5 seen", or null when every row took the mark. */
+function seenOutcomeMessage(
+  outcome: { stale: readonly string[]; unreached: readonly string[] },
+  total: number,
+): string | null {
+  const missed = outcome.stale.length + outcome.unreached.length;
+  if (missed === 0) return null;
+  return `ADE couldn’t mark ${missed} of ${total} seen. Refresh Activity, then try again.`;
+}
+
+/**
+ * The most rows one Open press opens. Each one is a chat tab, or a window for
+ * another machine's project, so an unbounded press is a tab storm.
+ */
+const MAX_BULK_OPEN = 8;
+
 /** Nothing to say when every row cleared; otherwise the honest sentence. */
 function clearOutcomeMessage(
   outcome: { stale: readonly string[]; unreached: readonly string[]; unreachedReason?: string },
@@ -124,15 +140,17 @@ function clearOutcomeMessage(
 }
 
 /**
- * The expanded Activity surface: a modal popup over whatever tab is in front,
- * modelled on `app/LinearPaneModal` so ADE's two big overlay surfaces feel like
- * the same object. It replaces the `/attention` full-page route and the
- * tabs-plus-roster-plus-detail IA that route encoded.
+ * The expanded Activity view, behind "Open all": the same panel as the top-bar
+ * popover (`ActivityPanel`), wider, with what only fits here — the machine /
+ * project / type / model filters, multi-select with bulk actions, and the
+ * detail sheet that slides over the list so opening a row never costs you
+ * your place in it.
  *
- * Split view, not a master/detail swap. Sessions and Inbox are both always
- * visible because they answer different questions — "what is running" and
- * "what is waiting on me" — and the detail slides over the top so opening one
- * row never costs you your place in either list.
+ * Bulk actions are only the ones that are safe for rows from other machines:
+ * Mark seen and Dismiss go through the account acknowledgement path, and Open
+ * goes through the same cross-machine open as a click. Snooze and Settle are
+ * not offered: they are session mutations on the owning machine, and this
+ * window can only reach its own (see the note at the top of `ActivityCard`).
  */
 export function ActivityPane({
   open,
@@ -154,6 +172,15 @@ export function ActivityPane({
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [pendingActionId, setPendingActionId] = useState<string | null>(null);
   const [navigationError, setNavigationError] = useState<string | null>(null);
+  /**
+   * Checked rows, each with the alert fingerprint it had when the user checked
+   * it. A row whose alert changes since (a working agent that now asks a
+   * question) leaves the selection, so a bulk action never acknowledges an
+   * alert the user did not see.
+   */
+  const [checked, setChecked] = useState<ReadonlyMap<string, string | null>>(() => new Map());
+  const checkedIds = useMemo<ReadonlySet<string>>(() => new Set(checked.keys()), [checked]);
+  const [bulkPending, setBulkPending] = useState(false);
 
   const allItems = useMemo(() => Object.values(itemsById), [itemsById]);
   const visibleItems = useMemo(
@@ -205,25 +232,52 @@ export function ActivityPane({
     }
   }, [closeSheet, selectedItemId]);
 
-  // A dismissed or expired row cannot keep a sheet open over an empty list.
+  // A dismissed or expired row cannot keep a sheet open over an empty list, and
+  // cannot stay counted in a selection the user can no longer see.
   useEffect(() => {
     if (selectedItemId && !itemsById[selectedItemId]) setSelectedItemId(null);
+    setChecked((current) => {
+      if (current.size === 0) return current;
+      const next = new Map([...current].filter(([id, fingerprint]) => {
+        const item = itemsById[id];
+        return Boolean(item) && !item.dismissedAt && (item.alertFingerprint ?? null) === fingerprint;
+      }));
+      return next.size === current.size ? current : next;
+    });
   }, [itemsById, selectedItemId]);
 
-  const openItem = useCallback(async (item: AttentionItem) => {
-    setNavigationError(null);
+  useEffect(() => {
+    if (!open) setChecked(new Map());
+  }, [open]);
+
+  const toggleChecked = useCallback((item: AttentionItem) => {
+    setChecked((current) => {
+      const next = new Map(current);
+      if (next.has(item.id)) next.delete(item.id);
+      else next.set(item.id, item.alertFingerprint ?? null);
+      return next;
+    });
+  }, []);
+
+  /** Opens one row's destination; resolves false when it could not. */
+  const openDestination = useCallback(async (item: AttentionItem): Promise<boolean> => {
     try {
       const bridge = typeof window !== "undefined" ? window.ade?.attention : null;
       if (bridge?.openItem) await bridge.openItem(item);
       else openAdeDeeplink(attentionDestinationDeepLink(item.destination, item));
     } catch (error) {
       setNavigationError(navigationErrorMessage(error));
-      return;
+      return false;
     }
     // Only a destination that actually resolved earns the item leaving unseen.
     await acknowledgeActivityItem(item.id, "seen").catch(() => {});
-    onClose();
-  }, [onClose]);
+    return true;
+  }, []);
+
+  const openItem = useCallback(async (item: AttentionItem) => {
+    setNavigationError(null);
+    if (await openDestination(item)) onClose();
+  }, [onClose, openDestination]);
 
   const runAction = useCallback(async (item: AttentionItem, action: AttentionAction) => {
     if (pendingActionId) return;
@@ -287,6 +341,52 @@ export function ActivityPane({
       });
   }, []);
 
+  const checkedItems = useMemo(
+    () => [...checkedIds].map((id) => itemsById[id]).filter((item): item is AttentionItem => Boolean(item)),
+    [checkedIds, itemsById],
+  );
+
+  const bulkAcknowledge = useCallback(async (kind: "seen" | "dismiss") => {
+    if (checkedItems.length === 0 || bulkPending) return;
+    setNavigationError(null);
+    setBulkPending(true);
+    try {
+      const outcome = await acknowledgeActivityItems(checkedItems.map((item) => item.id), kind);
+      const message = kind === "seen"
+        ? seenOutcomeMessage(outcome, checkedItems.length)
+        : clearOutcomeMessage(outcome, checkedItems.length);
+      if (message) setNavigationError(message);
+      setChecked(new Map());
+    } catch (error) {
+      setNavigationError(
+        kind === "seen"
+          ? "ADE couldn’t mark those items seen. Refresh Activity, then try again."
+          : dismissErrorMessage(error, checkedItems.length),
+      );
+    } finally {
+      setBulkPending(false);
+    }
+  }, [bulkPending, checkedItems]);
+
+  /**
+   * Opens each checked row in turn and stops at the first one that fails, so
+   * the error names the row that broke rather than the last one tried.
+   */
+  const bulkOpen = useCallback(async () => {
+    if (checkedItems.length === 0 || bulkPending) return;
+    setNavigationError(null);
+    setBulkPending(true);
+    try {
+      for (const item of checkedItems.slice(0, MAX_BULK_OPEN)) {
+        if (!(await openDestination(item))) return;
+      }
+      setChecked(new Map());
+      onClose();
+    } finally {
+      setBulkPending(false);
+    }
+  }, [bulkPending, checkedItems, onClose, openDestination]);
+
   if (!open || typeof document === "undefined") return null;
 
   const degraded = availability != null
@@ -314,7 +414,7 @@ export function ActivityPane({
       hideHeader
       testId="activity-pane"
       panelClassName="activity-pane"
-      width={1280}
+      width={880}
       height="min(820px, calc(100dvh - 28px))"
       maxHeight="calc(100dvh - 28px)"
       bodyPadding={false}
@@ -384,22 +484,65 @@ export function ActivityPane({
         ) : null}
 
         <div className="activity-pane-body">
-          <ActivitySessionsColumn
+          <ActivityPanel
+            size="expanded"
             items={visibleItems}
+            now={now}
             hideDetails={hideDetails}
-            selectedItemId={selectedItemId}
+            loading={allItems.length === 0 && !generatedAt && syncStatus !== "error"}
             filtered={filtered}
-            loading={allItems.length === 0 && syncStatus !== "ready" && syncStatus !== "error"}
+            selectedItemId={selectedItemId}
+            checkedIds={checkedIds}
+            onToggleChecked={toggleChecked}
             onOpenItem={(item) => setSelectedItemId(item.id)}
             onDismissItem={dismissItem}
-          />
-          <ActivityInboxColumn
-            items={visibleItems}
-            selectedItemId={selectedItemId}
-            filtered={filtered}
-            onOpenItem={(item) => setSelectedItemId(item.id)}
-            onDismissItem={dismissItem}
-            onClearAll={clearInbox}
+            onClearInbox={clearInbox}
+            toolbarEnd={checkedItems.length > 0 ? (
+              <div className="activity-bulk-bar" role="toolbar" aria-label="Selected sessions">
+                <span className="activity-bulk-count">
+                  <span className="kit-num">{checkedItems.length}</span> selected
+                </span>
+                <button
+                  type="button"
+                  className="kit-btn kit-btn-ghost"
+                  disabled={bulkPending}
+                  onClick={() => void bulkAcknowledge("seen")}
+                >
+                  <Checks size={13} />
+                  Mark seen
+                </button>
+                <button
+                  type="button"
+                  className="kit-btn kit-btn-ghost"
+                  disabled={bulkPending}
+                  onClick={() => void bulkAcknowledge("dismiss")}
+                >
+                  <X size={12} />
+                  Dismiss
+                </button>
+                <button
+                  type="button"
+                  className="kit-btn kit-btn-ghost"
+                  disabled={bulkPending}
+                  title={checkedItems.length > MAX_BULK_OPEN
+                    ? `Opens the first ${MAX_BULK_OPEN}`
+                    : undefined}
+                  onClick={() => void bulkOpen()}
+                >
+                  <ArrowSquareOut size={13} />
+                  Open
+                </button>
+                <button
+                  type="button"
+                  className="kit-icon-btn"
+                  aria-label="Clear selection"
+                  title="Clear selection"
+                  onClick={() => setChecked(new Map())}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ) : null}
           />
           {selectedItem ? (
             <ActivityDetailSheet

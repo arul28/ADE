@@ -123,6 +123,15 @@ with `X-Webhook-Signature: sha256=<hex>` (HMAC-SHA256 of the raw body),
 `X-Webhook-ID`, and `X-Webhook-Event: statusChange`. ADE registers the signing
 secret at `POST /cursor/register` and polls `GET /cursor/events?after=seq:N`.
 Bad signatures return 401. Optional worker secret: `CURSOR_WEBHOOK_SECRET`.
+ADE only registers and polls while a project has an enabled `cursor.*`
+automation rule. Poll auth is an indexed lookup of the bearer secret, which is
+stamped `last_polled_at` at most hourly. Unowned secrets idle for 30 days are
+swept on registration; a returning client gets a 401 and re-registers its
+stored secret.
+
+D1 reads are billed per row scanned, so every hot query must be an index seek
+(check with `EXPLAIN QUERY PLAN` against the migrations). Retention deletes run
+at most once per 10 minutes per isolate (`claimPeriodicRun`), not per webhook.
 
 Only self-hosted legacy project-token routes need `RELAY_ACCESS_TOKEN`:
 
@@ -264,6 +273,35 @@ ADE_GITHUB_RELAY_REMOTE_PROJECT_ID=<stable-project-id>
 ADE_GITHUB_RELAY_ACCESS_TOKEN=<relay-token>
 ```
 
+## Custom webhook URLs
+
+Any service can ring an automation's URL: `GET|POST|PUT|PATCH /hooks/:hookId/:token`
+(`src/customHooks.ts`, D1 tables from `migrations/0010_custom_hooks.sql`).
+
+- **The relay is a mailbox, not a judge.** It stores only a SHA-256 of the
+  token and compares it in constant time; a wrong token and an unknown hook are
+  the same `404`. It never sees the signing secret: the ADE machine that runs
+  the automation verifies signatures after it drains the request.
+- **Held until drained.** Each request (method, query, headers minus
+  `cf-*`/`x-forwarded-*`/cookies/hop-by-hop, raw body; base64 when it is not
+  UTF-8) is written to `custom_hook_events` and answered `202 {queued:true}`.
+  Limits: 1 MiB per body (`413`), 200 undelivered requests per hook
+  (`503 inbox_full`), 100 hooks per account. Undelivered requests expire after
+  3 days.
+- **Drain, then acknowledge.** `GET /hooks/events?hooks=<ids>` (account
+  token) returns every request still held for those hooks, oldest first. ADE
+  processes them, then `POST /hooks/ack {eventIds}` deletes exactly those. There
+  is no cursor, so a lost or stale cursor can neither skip a request nor delete
+  one ADE has not seen; a lost acknowledgement only redelivers, and ADE's
+  duplicate check (keyed on the relay's delivery id) keeps it from running twice.
+- **Wake-ups.** `GET /hooks/subscribe` (WebSocket, account token) joins the
+  `hooks-account:<accountId>` topic on `RepoEventsDurableObject`; every delivery
+  sends one `hook_delivery` hint after the response.
+- **Registration.** `POST /hooks/register {hookId, token, label?}` (account
+  token) creates or rotates a hook; rotating replaces the hash so the old URL
+  dies at once. `DELETE` removes the hook and everything it holds. Unlinking the
+  account through `DELETE /account/integrations` removes all of its hooks.
+
 ## Linear setup
 
 ADE performs the Linear setup flow after the user connects a workspace with a
@@ -310,6 +348,20 @@ webhooks keep working alongside. When creating the OAuth app in Linear
 (Settings → API → OAuth applications), enable webhooks with the same ingest
 URL above; data-change webhook categories require the app to request the
 `admin` scope.
+
+### Linear agent (optional)
+
+The ADE agent (Linear `actor=app`) needs one more Worker secret, a base64
+32-byte AES-GCM key that encrypts each workspace's app token at rest:
+
+```bash
+openssl rand -base64 32 | npx wrangler secret put LINEAR_AGENT_TOKEN_KEY
+```
+
+`LINEAR_APP_CLIENT_ID` (a plain var in `wrangler.jsonc`) is the ADE Linear
+app's public PKCE client id; the relay uses it to refresh app tokens. Without
+the key, the `/linear/agent/*` routes answer 503 `agent_not_configured`.
+Migration `0009_linear_agent.sql` adds the install, member, and session tables.
 
 ## GitHub App setup
 

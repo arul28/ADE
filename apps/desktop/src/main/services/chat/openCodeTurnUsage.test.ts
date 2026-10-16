@@ -11,7 +11,7 @@ import {
   buildOpenCodeLiveContextUsage,
   createOpenCodeTurnUsage,
   createOpenCodeUsageAccountResolver,
-  parseOpenCodeAuthEntries,
+  type OpenCodeAuthEntry,
   readOpenCodePlanEmail,
   recordOpenCodeStepFinish,
   resolveOpenCodeServedModel,
@@ -150,8 +150,8 @@ describe("OpenCode turn usage", () => {
 });
 
 describe("OpenCode usage account", () => {
-  it("maps the auth.json credential type to the account kind", () => {
-    expect(resolveOpenCodeUsageAccount({ providerID: "anthropic", auth: { type: "api", accountId: null } }))
+  it("maps an OpenCode 2.0 key credential to the account kind", () => {
+    expect(resolveOpenCodeUsageAccount({ providerID: "anthropic", auth: { type: "key", accountId: null } }))
       .toEqual({ provider: "opencode", kind: "api_key", upstream: "anthropic" });
     expect(resolveOpenCodeUsageAccount({ providerID: "openai", auth: { type: "oauth", accountId: "acct-1" } }))
       .toEqual({ provider: "opencode", kind: "subscription", upstream: "openai", accountId: "acct-1" });
@@ -180,20 +180,6 @@ describe("OpenCode usage account", () => {
       .toBe("http://192.168.1.5:1234");
   });
 
-  it("keeps only type and accountId from auth.json", () => {
-    const entries = parseOpenCodeAuthEntries(JSON.stringify({
-      openai: { type: "oauth", access: "secret-a", refresh: "secret-r", accountId: "acct-9", expires: 1 },
-      anthropic: { type: "api", key: "secret-k" },
-      broken: "nope",
-    }));
-    expect([...entries.entries()]).toEqual([
-      ["openai", { type: "oauth", accountId: "acct-9" }],
-      ["anthropic", { type: "api", accountId: null }],
-    ]);
-    expect(JSON.stringify([...entries.values()])).not.toContain("secret");
-    expect(parseOpenCodeAuthEntries("{not json").size).toBe(0);
-  });
-
   describe("resolver cache", () => {
     let dataDir: string;
     beforeEach(() => {
@@ -203,15 +189,14 @@ describe("OpenCode usage account", () => {
       fs.rmSync(dataDir, { recursive: true, force: true });
     });
 
-    it("reads auth.json once per TTL, not once per turn", () => {
-      fs.writeFileSync(path.join(dataDir, "auth.json"), JSON.stringify({ anthropic: { type: "api", key: "k" } }));
+    it("reads the owned OpenCode database once per TTL, not once per turn", () => {
       let reads = 0;
       let now = 0;
       const resolve = createOpenCodeUsageAccountResolver({
         dataDirs: () => [dataDir],
-        readText: (filePath) => {
+        readAuthEntries: (_dbPath) => {
           reads += 1;
-          return fs.readFileSync(filePath, "utf8");
+          return new Map([["anthropic", { type: "key", accountId: null } satisfies OpenCodeAuthEntry]]);
         },
         readPlanEmail: () => null,
         now: () => now,
@@ -219,9 +204,8 @@ describe("OpenCode usage account", () => {
       expect(resolve({ providerID: "anthropic" }).kind).toBe("api_key");
       expect(resolve({ providerID: "anthropic" }).kind).toBe("api_key");
       expect(reads).toBe(1);
-      fs.writeFileSync(path.join(dataDir, "auth.json"), JSON.stringify({ anthropic: { type: "oauth" } }));
       now = 10 * 60_000;
-      expect(resolve({ providerID: "anthropic" }).kind).toBe("subscription");
+      expect(resolve({ providerID: "anthropic" }).kind).toBe("api_key");
       expect(reads).toBe(2);
     });
 
@@ -266,12 +250,16 @@ describe("OpenCode usage account", () => {
       expect(readOpenCodePlanEmail(dbPath)).toBe("me@example.com");
     });
 
-    it("reads an isolated server's own store when the call names it", () => {
+    it("reads the explicitly named ADE-owned isolated store", () => {
       const isolatedDir = path.join(dataDir, "isolated", "opencode");
       fs.mkdirSync(isolatedDir, { recursive: true });
-      fs.writeFileSync(path.join(dataDir, "auth.json"), JSON.stringify({ anthropic: { type: "oauth" } }));
-      fs.writeFileSync(path.join(isolatedDir, "auth.json"), JSON.stringify({ anthropic: { type: "api", key: "k" } }));
-      const resolve = createOpenCodeUsageAccountResolver({ dataDirs: () => [dataDir], readPlanEmail: () => null });
+      const resolve = createOpenCodeUsageAccountResolver({
+        dataDirs: () => [dataDir],
+        readPlanEmail: () => null,
+        readAuthEntries: (dbPath) => dbPath.includes("empty")
+          ? new Map()
+          : new Map([["anthropic", { type: dbPath.includes("isolated") ? "key" : "oauth", accountId: null }]]),
+      });
       expect(resolve({ providerID: "anthropic" }).kind).toBe("subscription");
       expect(resolve({ providerID: "anthropic", dataDirs: [isolatedDir] }).kind).toBe("api_key");
       expect(resolve({ providerID: "anthropic", dataDirs: [path.join(dataDir, "empty")] }).kind).toBe("unknown");
@@ -282,7 +270,7 @@ describe("OpenCode usage account", () => {
       let now = 0;
       const resolve = createOpenCodeUsageAccountResolver({
         dataDirs: () => [dataDir],
-        readText: () => null,
+        readAuthEntries: () => new Map(),
         readPlanEmail: () => null,
         localEndpoint: (providerID) => {
           asked.push(providerID);
@@ -303,7 +291,6 @@ describe("OpenCode usage account", () => {
       const emailReads: string[] = [];
       const resolve = createOpenCodeUsageAccountResolver({
         dataDirs: () => [dataDir],
-        readText: () => null,
         readPlanEmail: (dbPath) => {
           emailReads.push(dbPath);
           return "zen@example.com";

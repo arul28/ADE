@@ -46,14 +46,18 @@ const connectedSession: AppControlSession = {
 const connectedStatus: AppControlStatus = {
   platform: "darwin",
   supported: true,
+  laneId: "lane-1",
   activeSession: connectedSession,
+  sessions: [connectedSession],
   providers: [{ provider: "cdp", available: true }],
 };
 
 const idleStatus: AppControlStatus = {
   platform: "darwin",
   supported: true,
+  laneId: "lane-1",
   activeSession: null,
+  sessions: [],
   providers: [{ provider: "cdp", available: true }],
 };
 
@@ -322,7 +326,7 @@ describe("ChatAppControlPanel", () => {
     expect(screen.getByRole("button", { name: "Maximize pane" })).toBeTruthy();
   });
 
-  it("offers the launch target picker with no session, and inserts the CDP help draft", async () => {
+  it("offers Launch and Attach on the Off card with no session, and inserts the CDP help draft", async () => {
     installAdeMock();
     const onInsertDraft = vi.fn();
 
@@ -335,22 +339,22 @@ describe("ChatAppControlPanel", () => {
       />,
     );
 
-    // The empty state is the launchpad, not a dead end.
-    expect(await screen.findByRole("button", { name: "Pick an app" })).toBeTruthy();
-    expect(screen.getByText("No app attached")).toBeTruthy();
+    // The Off card is the launchpad: both ways in are on its face.
+    expect(await screen.findByText("No app attached")).toBeTruthy();
+    expect(screen.getByLabelText("App Control launch command")).toBeTruthy();
+    expect(screen.getByLabelText("CDP port")).toBeTruthy();
     // One line and one action. The CLI hint under the button was a third thing
     // to read on a page whose whole job is the button.
     expect(screen.queryByText(/ade app-control launch/)).toBeNull();
     // …and the phrase is not repeated in the footer either.
     expect(screen.queryAllByText(/no app/iu)).toHaveLength(1);
 
-    await openAppPicker();
     fireEvent.click(screen.getByText("Help wire CDP"));
 
     expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("Set up this Electron app for ADE App Control."));
   });
 
-  it("launches from the picker and remembers the command as a recent", async () => {
+  it("launches from the Off card and remembers the command as a recent", async () => {
     const api = installAdeMock();
     api.appControl.launchInTerminal.mockResolvedValue({ ...connectedSession, status: "starting" });
 
@@ -358,15 +362,14 @@ describe("ChatAppControlPanel", () => {
       <ChatAppControlPanel sessionId="chat-launch" laneId="lane-1" projectRoot="/repo" />,
     );
 
-    await openAppPicker();
-    fireEvent.change(screen.getByLabelText("App Control launch command"), {
+    fireEvent.change(await screen.findByLabelText("App Control launch command"), {
       target: { value: "pnpm dev" },
     });
     fireEvent.click(screen.getByLabelText("Launch App Control command"));
 
     await waitFor(() => {
       expect(api.appControl.launchInTerminal).toHaveBeenCalledWith(
-        expect.objectContaining({ command: "pnpm dev", projectRoot: "/repo" }),
+        expect.objectContaining({ command: "pnpm dev", projectRoot: "/repo", laneId: "lane-1" }),
         null,
       );
     });
@@ -390,9 +393,9 @@ describe("ChatAppControlPanel", () => {
       />,
     );
 
-    // The toolbar names the app and says it is attached.
+    // The toolbar names the app and says it is live.
     expect(await screen.findByText("ADE Test")).toBeTruthy();
-    expect(screen.getByText("attached")).toBeTruthy();
+    expect(screen.getByText("live")).toBeTruthy();
 
     await openOverflow();
     fireEvent.click(screen.getByRole("menuitem", { name: "Reveal terminal" }));
@@ -422,10 +425,10 @@ describe("ChatAppControlPanel", () => {
       expect(screen.queryByText("Snapshot refreshed.")).toBeNull();
     });
 
-    fireEvent.click(screen.getByText("Inspect"));
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
     expect(screen.getByText("Click an element to insert its source context.")).toBeTruthy();
 
-    fireEvent.click(screen.getByText("Control"));
+    fireEvent.click(screen.getByRole("button", { name: "Stop inspecting" }));
     const typeInput = screen.getByLabelText("Text to type into the focused app element") as HTMLInputElement;
     fireEvent.change(typeInput, { target: { value: "hello from fixture" } });
     expect(typeInput.value).toBe("hello from fixture");
@@ -437,7 +440,7 @@ describe("ChatAppControlPanel", () => {
     expect(switcher).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Switch to Settings"));
     await waitFor(() => {
-      expect(api.appControl.switchWindow).toHaveBeenCalledWith({ targetId: "target-2" }, null);
+      expect(api.appControl.switchWindow).toHaveBeenCalledWith({ laneId: "lane-1", targetId: "target-2" }, null);
     });
   });
 
@@ -448,7 +451,8 @@ describe("ChatAppControlPanel", () => {
       <ChatAppControlPanel sessionId="chat-drivers" laneId="lane-1" projectRoot="/repo" />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "App Control driver" }));
+    await screen.findByText("ADE Test");
+    await openOverflow();
     const computerUse = await screen.findByRole("menuitemcheckbox", { name: "Computer use" });
     expect((computerUse as HTMLButtonElement).disabled).toBe(true);
     expect(computerUse.getAttribute("title"))
@@ -525,11 +529,12 @@ describe("ChatAppControlPanel", () => {
     const image = await screen.findByAltText("Electron app screenshot") as HTMLImageElement;
     stubImageBounds(image);
 
-    fireEvent.click(screen.getByText("Inspect"));
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
     fireEvent.mouseMove(image, { clientX: 15, clientY: 15 });
 
     await waitFor(() => {
       expect(api.appControl.inspectPoint).toHaveBeenCalledWith({
+        laneId: "lane-1",
         projectRoot: "/repo",
         x: 15,
         y: 15,
@@ -543,6 +548,7 @@ describe("ChatAppControlPanel", () => {
 
     await waitFor(() => {
       expect(api.appControl.selectPoint).toHaveBeenCalledWith({
+        laneId: "lane-1",
         projectRoot: "/repo",
         x: 60,
         y: 60,
@@ -578,7 +584,7 @@ describe("ChatAppControlPanel", () => {
 
     render(
       <ChatAppControlPanel
-        sessionId="chat-inspect"
+        sessionId="chat-inspect-forward"
         laneId="lane-1"
         projectRoot="/repo"
         onAddContext={onAddContext}
@@ -587,7 +593,7 @@ describe("ChatAppControlPanel", () => {
 
     const image = await screen.findByAltText("Electron app screenshot") as HTMLImageElement;
     stubImageBounds(image);
-    fireEvent.click(screen.getByText("Inspect"));
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
     fireEvent.click(image, { clientX: 60, clientY: 60 });
 
     await waitFor(() => {
@@ -648,7 +654,7 @@ describe("ChatAppControlPanel", () => {
     // numbers match the ones `ade app-control observe` reports. Indices are
     // assigned after the bound, so a smaller bound would renumber elements.
     expect(api.appControl.observe).toHaveBeenCalledWith(
-      { includeDom: true, includeDiagnostics: true, includeDataUrl: false },
+      { laneId: "lane-1", includeDom: true, includeDiagnostics: true, includeDataUrl: false },
       null,
     );
     expect(badge.textContent).toBe("①");
@@ -683,7 +689,7 @@ describe("ChatAppControlPanel", () => {
     );
 
     await waitFor(() => {
-      expect(api.appControl.getTrace).toHaveBeenCalledWith({ limit: 20 }, null);
+      expect(api.appControl.getTrace).toHaveBeenCalledWith({ laneId: "lane-1", limit: 20 }, null);
     });
     expect(await screen.findByText("last: click ① · 1.2s")).toBeTruthy();
 
@@ -727,9 +733,10 @@ describe("ChatAppControlPanel", () => {
   function emitLiveFrame(): void {
     // `session-updated` first: the frame handler drops frames whose CDP target
     // is not the one the panel is tracking.
-    emitAppControlEvent({ type: "session-updated", session: connectedSession });
+    emitAppControlEvent({ type: "session-updated", laneId: "lane-1", session: connectedSession });
     emitAppControlEvent({
       type: "frame",
+      laneId: "lane-1",
       frame: {
         cdpTargetId: "target-1",
         mimeType: "image/png",
@@ -756,7 +763,7 @@ describe("ChatAppControlPanel", () => {
     emitLiveFrame();
     // A stale frame now exists — the precondition the old gate keyed on.
     api.appControl.getStatus.mockResolvedValue(idleStatus);
-    emitAppControlEvent({ type: "session-stopped", previousSession: connectedSession });
+    emitAppControlEvent({ type: "session-stopped", laneId: "lane-1", previousSession: connectedSession });
 
     await waitFor(() => {
       expect(screen.queryByText("The app stopped responding")).toBeNull();
@@ -777,7 +784,7 @@ describe("ChatAppControlPanel", () => {
 
     emitLiveFrame();
     api.appControl.getStatus.mockResolvedValue({ ...connectedStatus, activeSession: failedSession });
-    emitAppControlEvent({ type: "session-updated", session: failedSession });
+    emitAppControlEvent({ type: "session-updated", laneId: "lane-1", session: failedSession });
 
     expect(await screen.findByText("The app stopped responding")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Reconnect/ })).toBeTruthy();
@@ -810,9 +817,9 @@ describe("ChatAppControlPanel", () => {
     expect(screen.queryByRole("menuitem", { name: /Insert as context/ })).toBeNull();
   });
 
-  it("shows launch progress while an app attaches", async () => {
+  it("shows the starting card while a launch is in flight, then once the app is starting", async () => {
     const api = installAdeMock();
-    let release: (session: unknown) => void = () => {};
+    let release: (session: AppControlSession) => void = () => {};
     api.appControl.launchInTerminal.mockImplementation(
       () => new Promise((resolve) => {
         release = resolve;
@@ -822,19 +829,21 @@ describe("ChatAppControlPanel", () => {
     render(<ChatAppControlPanel sessionId="chat-frame" laneId="lane-1" projectRoot="/repo" />);
 
     expect((await screen.findByText("No app attached")).textContent).toBe("No app attached");
-    expect(screen.queryByTestId("app-control-progress")).toBeNull();
+    expect(screen.queryByTestId("app-control-starting")).toBeNull();
 
-    await openAppPicker();
     fireEvent.change(screen.getByLabelText("App Control launch command"), {
       target: { value: "pnpm dev" },
     });
     fireEvent.click(screen.getByLabelText("Launch App Control command"));
 
-    expect((await screen.findByTestId("app-control-progress")).isConnected).toBe(true);
+    const launchButton = screen.getByLabelText("Launch App Control command") as HTMLButtonElement;
+    expect(launchButton.disabled).toBe(true);
+    expect(screen.getByText("No app attached")).toBeTruthy();
+    expect(api.appControl.switchWindow).not.toHaveBeenCalled();
 
     release({ ...connectedSession, status: "starting" });
-    await waitFor(() => {
-      expect(api.appControl.launchInTerminal).toHaveBeenCalled();
-    });
+    expect(await screen.findByTestId("app-control-starting")).toBeTruthy();
+    expect(screen.getByText("Starting ADE Test…")).toBeTruthy();
+    expect(screen.queryByText("No app attached")).toBeNull();
   });
 });

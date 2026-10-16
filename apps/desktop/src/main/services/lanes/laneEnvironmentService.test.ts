@@ -789,7 +789,9 @@ describe("laneEnvironmentService", () => {
         const [, progress] = await Promise.all([cleanup, init]);
 
         expect(dockerArgs()).toContain("down");
-        expect(dockerArgs()).not.toContain("up");
+        // The fake docker prints one argument per line, so match whole args —
+        // the randomly-named temp paths can contain "up" as a substring.
+        expect(dockerArgs().split("\n")).not.toContain("up");
         expect(progress.steps).toEqual([]);
         // Nothing ran, so nothing was announced to the UI either.
         expect(events).toEqual([]);

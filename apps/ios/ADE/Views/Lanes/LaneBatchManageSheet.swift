@@ -108,64 +108,59 @@ struct LaneBatchManageSheet: View {
   var body: some View {
     NavigationStack {
       ScrollView {
-        VStack(spacing: 14) {
-          GlassSection(title: "Selected lanes (\(laneIds.count))") {
-            VStack(alignment: .leading, spacing: 8) {
-              ForEach(snapshots) { snapshot in
-                HStack(alignment: .center, spacing: 10) {
-                  LaneStatusIndicator(bucket: snapshot.runtime.bucket, size: 8)
-                  VStack(alignment: .leading, spacing: 2) {
-                    Text(snapshot.lane.name)
-                      .font(.subheadline.weight(.semibold))
-                      .foregroundStyle(ADEColor.textPrimary)
-                    Text(snapshot.lane.branchRef)
-                      .font(.system(.caption, design: .monospaced))
-                      .foregroundStyle(ADEColor.textSecondary)
-                  }
-                  Spacer()
-                  if snapshot.lane.status.dirty {
-                    LaneMicroChip(icon: "circle.fill", text: "Dirty", tint: ADEColor.warning)
-                  }
-                  if snapshot.lane.archivedAt != nil {
-                    LaneMicroChip(icon: "archivebox.fill", text: "Archived", tint: ADEColor.textMuted)
-                  }
+        VStack(alignment: .leading, spacing: 24) {
+          LaneFormSection(title: "Selected lanes (\(laneIds.count))") {
+            LaneChoiceList(items: snapshots) { snapshot in
+              HStack(alignment: .center, spacing: 10) {
+                WorkLaneLogoMark(
+                  color: LaneColorPalette.displayColor(forHex: snapshot.lane.color, fallback: ADEColor.textSecondary),
+                  laneIcon: snapshot.lane.icon,
+                  size: 13
+                )
+                .frame(width: 18)
+                VStack(alignment: .leading, spacing: 2) {
+                  Text(snapshot.lane.name)
+                    .font(.system(size: 14.5, weight: .medium))
+                    .foregroundStyle(ADEColor.textPrimary)
+                    .lineLimit(1)
+                  Text(normalizedPrBranchName(snapshot.lane.branchRef))
+                    .font(.adeMono(11))
+                    .foregroundStyle(ADEColor.textMuted)
+                    .lineLimit(1)
+                }
+                Spacer()
+                if snapshot.lane.status.dirty {
+                  ADEKitTag(text: "Dirty", tone: .warn)
+                }
+                if snapshot.lane.archivedAt != nil {
+                  ADEKitTag(text: "Archived")
                 }
               }
+              .padding(.vertical, 8)
             }
           }
 
-          GlassSection(title: "Archive") {
+          LaneFormSection(title: "Archive") {
             Button {
               Task { await archiveSelected() }
             } label: {
-              HStack {
-                Image(systemName: "archivebox.fill")
-                Text("Archive active lanes")
-                  .font(.subheadline.weight(.semibold))
-                Spacer()
-              }
-              .foregroundStyle(ADEColor.warning)
-              .padding(12)
-              .background(ADEColor.warning.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-              .glassEffect(in: .rect(cornerRadius: 12))
+              Label("Archive active lanes", systemImage: "archivebox")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ADEKitButtonStyle(tone: .warn, wide: true))
             .disabled(busy || archivableLaneIds.isEmpty)
           }
 
-          GlassSection(title: "Delete") {
+          LaneFormSection(title: "Delete") {
             VStack(alignment: .leading, spacing: 12) {
-              LazyVStack(spacing: 8) {
-                ForEach(LaneDeleteMode.allCases) { mode in
-                  LaneOptionButton(
-                    title: mode.title,
-                    subtitle: mode.detail,
-                    systemImage: mode.symbol,
-                    isSelected: deleteMode == mode,
-                    tint: ADEColor.danger
-                  ) {
-                    deleteMode = mode
-                  }
+              LaneChoiceList(items: LaneDeleteMode.allCases) { mode in
+                LaneChoiceRow(
+                  title: mode.title,
+                  subtitle: mode.detail,
+                  systemImage: mode.symbol,
+                  monoSubtitle: false,
+                  isSelected: deleteMode == mode
+                ) {
+                  deleteMode = mode
                 }
               }
 
@@ -176,8 +171,9 @@ struct LaneBatchManageSheet: View {
               }
 
               Toggle("Force delete", isOn: $deleteForce)
-                .font(.subheadline)
-                .foregroundStyle(ADEColor.textSecondary)
+                .font(.system(size: 14.5))
+                .foregroundStyle(ADEColor.textPrimary)
+                .tint(ADEColor.accent)
 
               LaneTextField("Type delete open lanes to confirm", text: $confirmText)
                 .textInputAutocapitalization(.never)
@@ -186,37 +182,15 @@ struct LaneBatchManageSheet: View {
               Button(role: .destructive) {
                 Task { await deleteSelected() }
               } label: {
-                HStack {
-                  Image(systemName: "trash.fill")
-                  Text("Delete selected lanes")
-                    .font(.subheadline.weight(.semibold))
-                  Spacer()
-                }
-                .padding(12)
-                .background(ADEColor.danger.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .glassEffect(in: .rect(cornerRadius: 12))
+                Label("Delete selected lanes", systemImage: "trash")
               }
-              .buttonStyle(.plain)
+              .buttonStyle(ADEKitButtonStyle(tone: .crit, wide: true))
               .disabled(confirmText.lowercased() != "delete open lanes" || busy || laneIds.isEmpty)
             }
           }
-          .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-              .stroke(ADEColor.danger.opacity(0.4), lineWidth: 1)
-              .allowsHitTesting(false)
-          )
 
           if let errorMessage {
-            HStack(alignment: .top, spacing: 10) {
-              Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(ADEColor.danger)
-              Text(errorMessage)
-                .font(.caption)
-                .foregroundStyle(ADEColor.danger)
-                .fixedSize(horizontal: false, vertical: true)
-              Spacer(minLength: 0)
-            }
-            .adeGlassCard(cornerRadius: 12, padding: 12)
+            ADESettingsNotice(message: errorMessage, tone: .crit)
           }
         }
         .padding(16)

@@ -15,6 +15,7 @@ import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import type { TimelineEvent } from "./timelineTypes";
 import { getStatusClasses, getEventMeta, CATEGORY_META } from "./eventTaxonomy";
+import { EventMachineChip } from "./EventMachineChip";
 import { relativeWhen, formatDate, formatDurationMs } from "../../lib/format";
 
 /* ─── helpers ─────────────────────────────────────────────────────── */
@@ -80,7 +81,7 @@ function ShaButton({ sha }: { sha: string | null }) {
 type EventDetailPanelProps = {
   event: TimelineEvent | null;
   onClose: () => void;
-  onNavigateToLane?: (laneId: string) => void;
+  onNavigateToLane?: (laneId: string, machineId?: string | null) => void;
   navigate?: (path: string) => void;
 };
 
@@ -129,7 +130,7 @@ function PanelContent({
 }: {
   event: TimelineEvent;
   onClose: () => void;
-  onNavigateToLane?: (laneId: string) => void;
+  onNavigateToLane?: (laneId: string, machineId?: string | null) => void;
   navigate?: (path: string) => void;
   metadataExpanded: boolean;
   setMetadataExpanded: (v: boolean) => void;
@@ -190,7 +191,7 @@ function PanelContent({
       )}
 
       {/* ── Metadata grid ─────────────────────────────────────── */}
-      <div className="mx-3 border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl rounded-xl p-3">
+      <div className="mx-3 border border-fg/[0.06] bg-fg/[0.03] backdrop-blur-xl rounded-xl p-3">
         <div className="grid grid-cols-2 gap-x-6 gap-y-3">
           <MetaCell label="Kind">
             <span className="font-mono text-[11px] text-fg">{event.kind}</span>
@@ -276,7 +277,7 @@ function PanelContent({
 
       {/* ── Lane section ──────────────────────────────────────── */}
       {event.laneId && (
-        <div className="mx-3 mt-3 border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl rounded-xl p-3">
+        <div className="mx-3 mt-3 border border-fg/[0.06] bg-fg/[0.03] backdrop-blur-xl rounded-xl p-3">
           <span className="font-sans text-[10px] font-bold uppercase tracking-[1px] text-muted-fg">
             Lane
           </span>
@@ -289,12 +290,13 @@ function PanelContent({
               <span className="font-mono text-[11px] text-fg">
                 {event.laneName ?? event.laneId}
               </span>
+              <EventMachineChip event={event} />
             </span>
             {onNavigateToLane && (
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => onNavigateToLane(event.laneId!)}
+                onClick={() => onNavigateToLane(event.laneId!, event.machine && !event.machine.isActiveBinding ? event.machine.machineId : null)}
               >
                 <span className="inline-flex items-center gap-1">
                   Open Lane
@@ -308,7 +310,7 @@ function PanelContent({
 
       {/* ── SHA transition ────────────────────────────────────── */}
       {(event.preHeadSha || event.postHeadSha) && (
-        <div className="mx-3 mt-3 border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl rounded-xl p-3">
+        <div className="mx-3 mt-3 border border-fg/[0.06] bg-fg/[0.03] backdrop-blur-xl rounded-xl p-3">
           <span className="font-sans text-[10px] font-bold uppercase tracking-[1px] text-muted-fg">
             HEAD Transition
           </span>
@@ -323,7 +325,7 @@ function PanelContent({
 
       {/* ── Raw metadata (collapsible) ────────────────────────── */}
       {event.metadata && Object.keys(event.metadata).length > 0 && (
-        <div className="mx-3 mt-3 border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl rounded-xl p-3">
+        <div className="mx-3 mt-3 border border-fg/[0.06] bg-fg/[0.03] backdrop-blur-xl rounded-xl p-3">
           <button
             type="button"
             onClick={() => setMetadataExpanded(!metadataExpanded)}
@@ -348,7 +350,7 @@ function PanelContent({
                 transition={{ duration: 0.12, ease: "easeOut" }}
                 className="overflow-hidden"
               >
-                <pre className="mt-2 overflow-x-auto border border-white/[0.04] bg-white/[0.02] rounded-lg p-3 font-mono text-[10px] leading-relaxed text-muted-fg">
+                <pre className="mt-2 overflow-x-auto border border-fg/[0.04] bg-fg/[0.02] rounded-lg p-3 font-mono text-[10px] leading-relaxed text-muted-fg">
                   {JSON.stringify(event.metadata, null, 2)}
                 </pre>
               </motion.div>
@@ -359,7 +361,9 @@ function PanelContent({
 
       {/* ── Action buttons ────────────────────────────────────── */}
       <div className="mt-auto flex flex-wrap items-center gap-2 p-3 pt-4">
-        {event.postHeadSha && event.laneId && navigate ? (
+        {/* The commit graph reads the bound machine's worktrees; a commit
+            recorded on another machine can't be opened there. */}
+        {event.postHeadSha && event.laneId && navigate && event.machine?.isActiveBinding !== false ? (
           <Button
             variant="outline"
             size="sm"
@@ -383,7 +387,9 @@ function PanelContent({
             </span>
           </Button>
         ) : null}
-        {event.category === "session" && event.laneId && navigate ? (
+        {/* The Work deep link names a lane by bare id; for another machine's
+            lane, "Open Lane" (which carries the machine) is the way there. */}
+        {event.category === "session" && event.laneId && navigate && event.machine?.isActiveBinding !== false ? (
           <Button
             variant="outline"
             size="sm"
@@ -399,7 +405,7 @@ function PanelContent({
           <Button
             variant="outline"
             size="sm"
-            onClick={() => onNavigateToLane(event.laneId!)}
+            onClick={() => onNavigateToLane(event.laneId!, event.machine && !event.machine.isActiveBinding ? event.machine.machineId : null)}
           >
             <span className="inline-flex items-center gap-1">
               <ArrowSquareOut size={10} weight="bold" />

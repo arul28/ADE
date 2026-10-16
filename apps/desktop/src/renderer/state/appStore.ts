@@ -1,7 +1,14 @@
-import React, { createContext, useContext, type ReactNode } from "react";
+import React, { useContext, type ReactNode } from "react";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
+import { shallow } from "zustand/shallow";
+import { reuseStructurallyEqualArray } from "../lib/stableIdentity";
 import type { StateCreator } from "zustand";
+import {
+  DEFAULT_CODEX_VOICE_PREFERENCES,
+  normalizeCodexVoicePreferences,
+  type CodexVoicePreferences,
+} from "../../shared/codexVoice";
 import type { CtoAttentionState, KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, PrSummary, ProjectInfo, ProjectPathInspection, ProviderMode, RecentProjectSummary, TerminalSessionSummary } from "../../shared/types";
 import { recentProjectStateKey } from "../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
@@ -14,8 +21,9 @@ import {
   serializeAppleDevicePreferences,
   type AppleDevicePreferences,
 } from "../../shared/appleDeviceSettings";
-import { parseCodedErrorMessage } from "../lib/codedError";
-import { toAdeRecoveryErrorCode, type AdeRecoveryErrorCode } from "../../shared/types/recovery";
+import { GIT_UNTRUSTED_FOLDER_CODE, parseCodedErrorMessage } from "../lib/codedError";
+import { RECOVERY_COPY, toAdeRecoveryErrorCode, type AdeRecoveryErrorCode, type ProjectDataProblem } from "../../shared/types/recovery";
+import { defaultLaneId, pickRestoredLaneId } from "../lib/laneSelection";
 import { isWebClientMode } from "../lib/webClientMode";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
 import { hasConfiguredAiProvider } from "../lib/aiProviderStatus";
@@ -36,8 +44,44 @@ import {
   normalizeWorkSessionFilters,
   type WorkSessionFilters,
 } from "../components/terminals/workSessionFilters";
+import {
+  DEFAULT_THEME_ID,
+  baseModeForThemeId,
+  normalizeAdeThemeList,
+  resolveTheme,
+  resolveThemeById,
+  type AdeTheme,
+} from "../../shared/theme";
+import { applyAdeTheme } from "../theme/applyTheme";
+import {
+  AppearanceStoreContext,
+  USER_PREFERENCES_STORAGE_KEY,
+  coerceTheme,
+  coerceThemeId,
+  effectiveThemeId,
+  normalizeInterfacePreferences,
+  parseStoredAppearance,
+  readSystemColorScheme,
+  registerRootAppearanceStore,
+  systemColorSchemeChange,
+  type InterfacePreferences,
+  type ThemeId,
+} from "./appearanceStore";
 
-export type ThemeId = "dark" | "light";
+// The appearance values and their parsing live in `appearanceStore.ts`, so the
+// components that paint the look do not have to import this file. Everything
+// that was exported from here still is.
+export {
+  DEFAULT_INTERFACE_PREFERENCES,
+  effectiveThemeId,
+  normalizeInterfacePreferences,
+  readSystemColorScheme,
+  selectEffectiveThemeId,
+} from "./appearanceStore";
+export type { InterfaceMonoFont, InterfacePreferences, InterfaceSansFont, ThemeId } from "./appearanceStore";
+import { captureHomeTabOpened } from "../components/home/homeAnalytics";
+import { applyInterfacePreferences } from "../theme/applyInterface";
+
 export const THEME_IDS: ThemeId[] = ["dark", "light"];
 export const DEFAULT_TERMINAL_FONT_FAMILY = [
   "ui-monospace",
@@ -49,6 +93,10 @@ export const DEFAULT_TERMINAL_FONT_FAMILY = [
   "\"Geist Mono\"",
   "monospace",
 ].join(", ");
+
+export { DEFAULT_SCENE_PREFERENCES, normalizeScenePreferences } from "../scene/scenePreferences";
+export type { SceneMode, ScenePreferences, SceneTexture } from "../scene/scenePreferences";
+
 export type TerminalPreferences = {
   fontFamily: string;
   fontSize: number;
@@ -158,7 +206,9 @@ export type WorkSidebarTab =
   | "app-control"
   | "browser"
   | "mac-desktop"
-  | "pr";
+  | "windows-desktop"
+  | "pr"
+  | "issues";
 export type WorkDraftKind = "chat" | "cli";
 /** How sessions are grouped in the Work sidebar list. */
 export type WorkSessionListOrganization =
@@ -267,6 +317,24 @@ export type WorkProjectViewState = {
   /** Funnel-panel chip selections. OR within an axis, AND across axes. */
   workSessionFilters: WorkSessionFilters;
   /**
+   * By-lane "Fold busy lanes": lanes whose live work is all running or waiting
+   * on a PR collapse into a Working shelf until something needs the user.
+   * Optional and off by default, so an older blob keeps today's list.
+   */
+  workFoldBusyLanes?: boolean;
+  /**
+   * Focus grid: while Focus (`workFoldBusyLanes`) is on, the work area shows
+   * every chat that waits for the user as a live tile instead of one open
+   * chat. Optional and off by default.
+   */
+  workFocusGrid?: boolean;
+  /**
+   * When the user last looked at each session, keyed by session id. A finished
+   * row seen after it finished no longer keeps its lane out of the Working
+   * shelf. Bounded by `stampWorkSeenAt`.
+   */
+  workSeenAtBySessionId?: Record<string, string>;
+  /**
    * Lanes-tab view state. The Lanes route is unmounted whenever it isn't active
    * (unlike Work, which is kept warm), so component state there cannot survive a
    * tab switch by construction — it has to live here to be preserved at all.
@@ -314,9 +382,12 @@ const EMPTY_CTO_ATTENTION: CtoAttentionState = {
 
 const WORK_VIEW_STORAGE_KEY = "ade.workViewState.v1";
 const TERMINAL_PREFERENCES_STORAGE_KEY = "ade.terminalPreferences.v1";
-const USER_PREFERENCES_STORAGE_KEY = "ade.userPreferences.v1";
 const LANE_CACHE_STORAGE_PREFIX = "ade.laneCache.v1:";
 const LANE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** Lane status older than this is re-measured when a surface shows it. */
+const LANE_STATUS_MAX_AGE_MS = 30_000;
+/** Delay before a scheduled status read, so a burst of identity reads collapses into one. */
+const LANE_STATUS_READ_DELAY_MS = 1_200;
 
 export function createDefaultWorkProjectViewState(): WorkProjectViewState {
   return {
@@ -352,6 +423,9 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workLaneSortMode: "created",
     workLaneOrder: [],
     workSessionFilters: EMPTY_WORK_SESSION_FILTERS,
+    workFoldBusyLanes: false,
+    workFocusGrid: false,
+    workSeenAtBySessionId: {},
     lanesFilter: "",
     lanesGroupBy: "state",
     lanesCollapsedGroupIds: [],
@@ -386,7 +460,9 @@ function normalizeWorkSidebarTool(value: unknown): WorkSidebarTab | null {
     || value === "app-control"
     || value === "browser"
     || value === "mac-desktop"
+    || value === "windows-desktop"
     || value === "pr"
+    || value === "issues"
   ) return value;
   return null;
 }
@@ -468,6 +544,11 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workLaneSortMode: normalizeWorkLaneSortMode(candidate.workLaneSortMode),
     workLaneOrder: normalizeUniqueStringArray(candidate.workLaneOrder),
     workSessionFilters: normalizeWorkSessionFilters(candidate.workSessionFilters),
+    // Additive, no version bump: an older blob has neither key and lands on the
+    // unfolded list with nothing seen, which is the behaviour it already had.
+    workFoldBusyLanes: candidate.workFoldBusyLanes === true,
+    workFocusGrid: candidate.workFocusGrid === true,
+    workSeenAtBySessionId: normalizeWorkSeenAt(candidate.workSeenAtBySessionId),
     lanesFilter: typeof candidate.lanesFilter === "string" ? candidate.lanesFilter : "",
     // Additive like the other lanes keys: an older blob has no grouping and
     // lands on the State default.
@@ -505,6 +586,16 @@ function normalizeWorkGridSets(value: unknown): WorkGridSet[] {
     if (sessionIds.length < 2) continue;
     seenSetIds.add(id);
     out.push({ id, layoutId, sessionIds });
+  }
+  return out;
+}
+
+function normalizeWorkSeenAt(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [sessionId, at] of Object.entries(value as Record<string, unknown>)) {
+    if (!sessionId.trim() || typeof at !== "string" || !Number.isFinite(Date.parse(at))) continue;
+    out[sessionId] = at;
   }
   return out;
 }
@@ -943,12 +1034,20 @@ function removePersistedLaneCache(projectRoot: string | null | undefined): void 
 
 type PersistedUserPreferences = {
   theme: ThemeId;
+  /** The active theme's id — one of the shipped ids or a custom theme's id. */
+  themeId: string;
+  /** User-authored / imported themes. Shipped themes are not in this list. */
+  customThemes: AdeTheme[];
+  /** Paint the shipped theme's variant for the OS colour scheme. */
+  themeFollowsSystem: boolean;
+  interfacePreferences: InterfacePreferences;
   terminalPreferences: TerminalPreferences;
   smartTooltipsEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
-  promptStashButtonEnabled: boolean;
+  draftsButtonEnabled: boolean;
   voiceInputEnabled: boolean;
+  codexVoice: CodexVoicePreferences;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
   agentTurnCompletionSoundVolume: number;
@@ -1004,29 +1103,22 @@ export type ActiveDictationTarget = {
   focus: () => void;
 };
 
-function coerceTheme(value: unknown): ThemeId | null {
-  if (value === "dark" || value === "light") return value;
-  if (value === "github" || value === "bloomberg" || value === "rainbow" || value === "pats") return "dark";
-  if (value === "e-paper" || value === "sky") return "light";
-  return null;
-}
-
 function readUnifiedUserPreferences(): PersistedUserPreferences | null {
   try {
     const raw = window.localStorage.getItem(USER_PREFERENCES_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<PersistedUserPreferences>;
     return {
-      theme: coerceTheme(parsed.theme) ?? "dark",
+      ...parseStoredAppearance(parsed as Record<string, unknown>),
       terminalPreferences: normalizeTerminalPreferences(parsed.terminalPreferences),
-      // Detailed tooltips are an onboarding aid that defaults OFF in the browser
-      // web client (clutter for an already oriented user), and ON on desktop. An
-      // explicit toggle is still honored.
-      smartTooltipsEnabled: parsed.smartTooltipsEnabled ?? !isWebClientMode(),
       launchPromptClipboardEnabled: parsed.launchPromptClipboardEnabled !== false,
       launchPromptClipboardNoticeEnabled: parsed.launchPromptClipboardNoticeEnabled !== false,
-      promptStashButtonEnabled: parsed.promptStashButtonEnabled !== false,
+      // The setting was `promptStashButtonEnabled` before drafts replaced
+      // stashes; keep honoring a value persisted under the old key so an
+      // upgrade does not silently flip a hidden button back on.
+      draftsButtonEnabled: (parsed.draftsButtonEnabled ?? (parsed as { promptStashButtonEnabled?: boolean }).promptStashButtonEnabled) !== false,
       voiceInputEnabled: parsed.voiceInputEnabled !== false,
+      codexVoice: normalizeCodexVoicePreferences(parsed.codexVoice),
       codeBlockCopyButtonPosition: normalizeCodeBlockCopyButtonPosition(parsed.codeBlockCopyButtonPosition),
       agentTurnCompletionSound: normalizeAgentTurnCompletionSound(parsed.agentTurnCompletionSound),
       agentTurnCompletionSoundVolume: normalizeAgentTurnCompletionSoundVolume(parsed.agentTurnCompletionSoundVolume),
@@ -1070,12 +1162,18 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
   }
   return {
     theme,
+    themeId: theme,
+    customThemes: [],
+    themeFollowsSystem: false,
+    // Normalised, not copied: the scene default depends on where this runs (the web client's own default).
+    interfacePreferences: normalizeInterfacePreferences({}),
     terminalPreferences,
     smartTooltipsEnabled,
     launchPromptClipboardEnabled: true,
     launchPromptClipboardNoticeEnabled: true,
-    promptStashButtonEnabled: true,
+    draftsButtonEnabled: true,
     voiceInputEnabled: true,
+    codexVoice: { ...DEFAULT_CODEX_VOICE_PREFERENCES },
     codeBlockCopyButtonPosition: "top",
     agentTurnCompletionSound: "off",
     agentTurnCompletionSoundVolume: DEFAULT_AGENT_TURN_COMPLETION_SOUND_VOLUME,
@@ -1106,12 +1204,17 @@ function persistUserPreferences(prefs: PersistedUserPreferences) {
 /** Assemble the persisted-prefs payload from current store state. Keeps setters DRY as we add prefs. */
 function persistUserPreferencesFrom(state: {
   theme: ThemeId;
+  themeId: string;
+  customThemes: AdeTheme[];
+  themeFollowsSystem: boolean;
+  interfacePreferences: InterfacePreferences;
   terminalPreferences: TerminalPreferences;
   smartTooltipsEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
-  promptStashButtonEnabled: boolean;
+  draftsButtonEnabled: boolean;
   voiceInputEnabled: boolean;
+  codexVoice: CodexVoicePreferences;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
   agentTurnCompletionSoundVolume: number;
@@ -1127,12 +1230,17 @@ function persistUserPreferencesFrom(state: {
 }) {
   persistUserPreferences({
     theme: state.theme,
+    themeId: state.themeId,
+    customThemes: state.customThemes,
+    themeFollowsSystem: state.themeFollowsSystem,
+    interfacePreferences: state.interfacePreferences,
     terminalPreferences: state.terminalPreferences,
     smartTooltipsEnabled: state.smartTooltipsEnabled,
     launchPromptClipboardEnabled: state.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: state.launchPromptClipboardNoticeEnabled,
-    promptStashButtonEnabled: state.promptStashButtonEnabled,
+    draftsButtonEnabled: state.draftsButtonEnabled,
     voiceInputEnabled: state.voiceInputEnabled,
+    codexVoice: state.codexVoice,
     codeBlockCopyButtonPosition: state.codeBlockCopyButtonPosition,
     agentTurnCompletionSound: state.agentTurnCompletionSound,
     agentTurnCompletionSoundVolume: state.agentTurnCompletionSoundVolume,
@@ -1182,6 +1290,31 @@ function readInitialUserPreferences(): PersistedUserPreferences {
 
 const initialPersistedWorkViews = readPersistedWorkViewState();
 const initialUserPreferences = readInitialUserPreferences();
+const initialSystemColorScheme = readSystemColorScheme();
+const initialEffectiveThemeId = effectiveThemeId(
+  initialUserPreferences.themeId,
+  initialUserPreferences.themeFollowsSystem,
+  initialSystemColorScheme,
+);
+
+/**
+ * Paint the stored theme before React's first frame.
+ *
+ * Reading the preference at module scope is already how this store loads
+ * (`readInitialUserPreferences` above), so applying it here — guarded, since
+ * tests run without a DOM — costs nothing and removes the flash of the default
+ * dark chrome on a light or custom theme. `App.tsx` re-applies the same theme
+ * from an effect; `applyAdeTheme` clears and rewrites its own variables, so the
+ * second call is a no-op in effect.
+ */
+if (typeof document !== "undefined" && document.documentElement) {
+  try {
+    applyAdeTheme(resolveTheme(resolveThemeById(initialEffectiveThemeId, initialUserPreferences.customThemes)));
+    applyInterfacePreferences(initialUserPreferences.interfacePreferences);
+  } catch {
+    // A failed early paint must never block the app; the App effect retries.
+  }
+}
 
 function clampTerminalFontSize(value: unknown): number {
   const next = typeof value === "number" ? value : Number(value);
@@ -1236,6 +1369,16 @@ export type ProjectTransitionError = {
 };
 
 /**
+ * Whether a failed transition belongs to the full-screen recovery flow (a
+ * typed code with the project it is about) rather than the app banner — the
+ * same test `App` uses to raise the screen. The project banner and the update
+ * notice read it so exactly one surface speaks for a failure.
+ */
+export function isRecoveryScreenError(error: ProjectTransitionError | null | undefined): boolean {
+  return Boolean(error?.code && error.rootPath);
+}
+
+/**
  * One machine's slice of the cross-machine Work union.
  *
  * A lane owns its machine (`lanes.worktree_path` is an absolute path on exactly
@@ -1285,6 +1428,11 @@ export type CrossMachineMachineLanes = {
   error: string | null;
 };
 
+export type BrowserDockState = {
+  open: boolean;
+  chat: { targetKey: string; sessionId: string } | null;
+};
+
 export type AppState = {
   project: ProjectInfo | null;
   projectBinding: OpenProjectBinding | null;
@@ -1308,16 +1456,54 @@ export type AppState = {
    * until the user picks lane-vs-standalone. Null when no prompt is pending.
    */
   worktreeOpenPrompt: { inspection: ProjectPathInspection } | null;
+  /**
+   * Set when git refused a folder the user chose to open because it belongs to
+   * another account (safe.directory). Drives GitFolderTrustPrompt; `message`
+   * is main's "Git does not trust … because it belongs to …" sentence.
+   */
+  gitFolderTrustPrompt: GitFolderTrustPrompt | null;
   isNewTabOpen: boolean;
+  /**
+   * Settings is open with no project, from the new-project screen's Settings
+   * button. Set only by that request: a project that closes while `/settings`
+   * is on screen falls back to the welcome page, not to this.
+   */
+  standaloneSettingsOpen: boolean;
   personalChatsTabOpen: boolean;
+  /** The machine-level Browser top tab is in the tab strip. Survives project transitions, like Chats. */
+  browserTabOpen: boolean;
+  /** The machine-level Music top tab is in the tab strip. Survives project transitions, like Browser. */
+  musicTabOpen: boolean;
+  /**
+   * The Browser tab's docked chat. `chat` is the personal chat the dock shows,
+   * kept until the user starts a new one; `targetKey` is the machine it lives
+   * on, so a window that moves to another machine does not show a stale id.
+   */
+  browserDock: BrowserDockState;
   laneSnapshots: LaneListSnapshot[];
   lanes: LaneSummary[];
   lanesLoading: boolean;
+  /**
+   * True when the git status in `lanes` (ahead/behind, dirty) was not
+   * measured on this machine within the freshness window: a read for it is
+   * pending, or the last one failed. Surfaces show those numbers quietly,
+   * never as current, and never place anything by them.
+   */
+  laneStatusStale: boolean;
   laneDeleteProgressByLaneId: Record<string, LaneDeleteProgress>;
   selectedLaneId: string | null;
   focusedSessionId: string | null;
   projectRevision: number;
   theme: ThemeId;
+  /** Chosen theme id: a shipped id ("dark", "ocean-light", …) or a custom theme id. */
+  themeId: string;
+  /** User-authored and imported themes available to select. */
+  customThemes: AdeTheme[];
+  /** Paint the chosen family's variant for the OS colour scheme. */
+  themeFollowsSystem: boolean;
+  /** The OS colour scheme. Machine-local: never persisted or synced. */
+  systemColorScheme: ThemeId;
+  interfacePreferences: InterfacePreferences;
   terminalPreferences: TerminalPreferences;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
@@ -1345,8 +1531,9 @@ export type AppState = {
   smartTooltipsEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
-  promptStashButtonEnabled: boolean;
+  draftsButtonEnabled: boolean;
   voiceInputEnabled: boolean;
+  codexVoice: CodexVoicePreferences;
   // ── Ephemeral voice-dictation session state (root store only; not persisted) ──
   dictationPhase: DictationPhase;
   dictationElapsed: number;
@@ -1424,6 +1611,8 @@ export type AppState = {
   setProjectHydrated: (hydrated: boolean) => void;
   setShowWelcome: (show: boolean) => void;
   clearProjectTransitionError: () => void;
+  /** Shows the full-screen recovery flow for a project whose ADE data went missing or was replaced. No-op while another transition error is up. */
+  reportProjectDataProblem: (rootPath: string, status: ProjectDataProblem) => void;
   setLanes: (lanes: LaneSummary[]) => void;
   setLaneDeleteProgressByLaneId: (
     next:
@@ -1471,7 +1660,14 @@ export type AppState = {
   setLaneInspectorTab: (laneId: string, tab: LaneInspectorTab) => void;
   clearLaneInspectorTab: (laneId: string) => void;
   focusSession: (sessionId: string | null) => void;
-  setTheme: (theme: ThemeId) => void;
+  /** Select a theme by id; `theme` (base mode) is recomputed from it. */
+  setTheme: (themeId: string) => void;
+  /** Replace the whole custom-theme list (import / delete / rename / save). */
+  setCustomThemes: (themes: AdeTheme[]) => void;
+  setThemeFollowsSystem: (followsSystem: boolean) => void;
+  setInterfacePreferences: (next: Partial<InterfacePreferences>) => void;
+  /** Record the OS colour scheme; repaints only when the theme follows it. */
+  setSystemColorScheme: (scheme: ThemeId) => void;
   setCodeBlockCopyButtonPosition: (position: CodeBlockCopyButtonPosition) => void;
   setAgentTurnCompletionSound: (sound: AgentTurnCompletionSound) => void;
   setAgentTurnCompletionSoundVolume: (volume: number) => void;
@@ -1504,9 +1700,10 @@ export type AppState = {
   setSmartTooltipsEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
-  setPromptStashButtonEnabled: (enabled: boolean) => void;
+  setDraftsButtonEnabled: (enabled: boolean) => void;
   setVoiceInputEnabled: (enabled: boolean) => void;
   updateStarPill: (next: (prev: StarPillPrefs) => StarPillPrefs) => void;
+  setCodexVoicePreferences: (patch: Partial<CodexVoicePreferences>) => void;
   // ── Voice-dictation session setters (ephemeral; never persisted) ──
   setDictationPhase: (phase: DictationPhase) => void;
   setDictationElapsed: (seconds: number) => void;
@@ -1549,8 +1746,12 @@ export type AppState = {
 
   openNewTab: () => void;
   cancelNewTab: () => void;
+  setStandaloneSettingsOpen: (open: boolean) => void;
   setPersonalChatsTabOpen: (open: boolean) => void;
   closePersonalChatsTab: () => void;
+  setBrowserTabOpen: (open: boolean) => void;
+  setMusicTabOpen: (open: boolean) => void;
+  setBrowserDock: (patch: Partial<BrowserDockState>) => void;
   refreshProject: () => Promise<void>;
   refreshLanes: (options?: {
     includeStatus?: boolean;
@@ -1559,12 +1760,25 @@ export type AppState = {
     includeRebaseSuggestions?: boolean;
     includeAutoRebaseStatus?: boolean;
   }) => Promise<void>;
+  /**
+   * Schedules one coalesced lane read WITH git status when this store's lane
+   * status is older than `maxAgeMs` (default {@link LANE_STATUS_MAX_AGE_MS}).
+   * A status-less refresh carries the last status forward, so a surface that
+   * only ever did those would show a status no one measured: the `0/0`
+   * placeholder, or a number cached days ago. Surfaces call this when they
+   * show lane status and the branch may have moved.
+   */
+  requestLaneStatusRead: (options?: { maxAgeMs?: number }) => void;
   openRepo: () => Promise<ProjectInfo | null>;
   switchProjectToPath: (
     rootPath: string,
     opts?: { skipWorktreeGate?: boolean },
   ) => Promise<void>;
   dismissWorktreeOpenPrompt: () => void;
+  /** The user said Trust: add this folder to git's safe.directory and open it. */
+  trustGitFolderAndOpen: () => Promise<ProjectInfo | null>;
+  /** The user said Cancel: nothing is trusted, the folder stays closed. */
+  dismissGitFolderTrustPrompt: () => void;
   switchRemoteProject: (targetId: string, projectId: string) => Promise<OpenProjectBinding>;
   /// `preserveRemoteViewState` keeps open remote tabs' `workViewByProject` /
   /// `laneWorkViewByScope` while still dropping their stale data caches. Pass it
@@ -1578,6 +1792,11 @@ export function selectActiveProjectRoot(state: Pick<AppState, "project" | "proje
     ? state.projectBinding.rootPath
     : state.project?.rootPath;
   return root?.trim() || null;
+}
+
+/** The project this tab works in: the remote root on a remote tab. */
+export function useActiveProjectRoot(): string | null {
+  return useAppStore(selectActiveProjectRoot);
 }
 
 export type LaneInspectorTab = "terminals" | "context" | "stack" | "merge";
@@ -1648,16 +1867,19 @@ function withPreservedLaneStatus(
  * No code at all falls through to the brain's message as well.
  */
 const RECOVERY_MESSAGE_BY_CODE: Partial<Record<AdeRecoveryErrorCode, string>> = {
-  disk_full:
-    "Your computer ran out of storage while ADE was saving project data. Free up space, then try again.",
-  brain_crash_looping: "ADE's background service needs a repair before this project can open.",
-  migration_incomplete: "ADE's background service needs a repair before this project can open.",
-  migration_unknown_state: "ADE's background service needs a repair before this project can open.",
-  insufficient_headroom: "ADE's background service could not open this project.",
-  db_integrity: "ADE's background service could not open this project.",
-  brain_not_installed: "ADE's background service could not open this project.",
-  socket_stale_no_owner: "ADE's background service could not open this project.",
-  socket_owned_by_other: "ADE's background service could not open this project.",
+  disk_full: "Your computer is out of space. Free up some space, then try again.",
+  insufficient_headroom: "Your computer is almost out of space. Free up a few GB, then try again.",
+  brain_crash_looping: "ADE's background service keeps stopping. Open the project to fix it.",
+  migration_incomplete: "This project needs a quick fix before it can open.",
+  migration_unknown_state: "This project needs a quick fix before it can open.",
+  db_integrity: "This project needs a quick fix before it can open.",
+  brain_not_installed: "ADE's background service is missing. Open the project to fix it.",
+  background_item_blocked: "macOS isn't letting ADE's background service run.",
+  brain_not_running: "ADE's background service didn't start. Open the project to fix it.",
+  socket_stale_no_owner: "ADE didn't close properly last time. Open the project to fix it.",
+  socket_owned_by_other: "Another copy of ADE is open. Quit it, then try again.",
+  project_data_missing: "ADE's data for this project is missing. Open the project to restore it or start fresh.",
+  db_path_changed: "ADE's data for this project was swapped out. Open the project to choose what to use.",
 };
 
 const GENERIC_RECOVERY_MESSAGE = "ADE ran into a problem with this project.";
@@ -1705,24 +1927,36 @@ function formatProjectTransitionError(
   };
 }
 
-function reuseStructurallyEqualArray<T>(
-  incoming: T[] | undefined,
-  current: T[] | undefined,
-): T[] | undefined {
-  if (!incoming || !current || incoming.length !== current.length) return incoming;
-  for (let index = 0; index < incoming.length; index += 1) {
-    const nextValue = incoming[index];
-    const currentValue = current[index];
-    if (nextValue === currentValue) continue;
-    if (JSON.stringify(nextValue) !== JSON.stringify(currentValue)) return incoming;
-  }
-  return current;
-}
-
 function reuseStructurallyEqualValue<T>(incoming: T, current: T): T {
   if (incoming === current) return current;
   return JSON.stringify(incoming) === JSON.stringify(current) ? current : incoming;
 }
+
+export type GitFolderTrustPrompt = { rootPath: string; message: string };
+
+/**
+ * What a failed open or switch leaves behind: the banner, or — when git refused
+ * the folder for belonging to another account — the "Trust this folder?"
+ * prompt instead of a banner. Only a user-initiated open reaches here, which is
+ * what makes asking appropriate.
+ */
+function transitionFailureState(
+  kind: "opening" | "switching",
+  error: unknown,
+  rootPath: string | null,
+): { projectTransitionError: ProjectTransitionError | null; gitFolderTrustPrompt?: GitFolderTrustPrompt } {
+  const parsed = parseCodedErrorMessage(error);
+  if (parsed.code === GIT_UNTRUSTED_FOLDER_CODE && rootPath) {
+    return {
+      projectTransitionError: null,
+      gitFolderTrustPrompt: { rootPath, message: parsed.message },
+    };
+  }
+  return { projectTransitionError: formatProjectTransitionError(kind, error) };
+}
+
+/** How stale a cross-machine slice's sync stamps may get before a read with no other news republishes it. */
+const CROSS_MACHINE_SYNC_STAMP_PUBLISH_MS = 10_000;
 
 const createAppState: StateCreator<AppState> = (set, get) => {
   let warmupTimer: number | null = null;
@@ -1734,6 +1968,48 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   let activeLaneRefreshProjectKey: string | null = null;
   let activeLaneRefreshRequest: LaneRefreshRequest | null = null;
   let pendingLaneRefreshRequest: LaneRefreshRequest | null = null;
+  /**
+   * When this store's lanes last carried a measured git status, and for which
+   * project. Status-less reads carry the old status forward; this is what
+   * tells "measured just now" from "inherited from a cache of any age".
+   */
+  let laneStatusReadAt: { projectKey: string | null; atMs: number } | null = null;
+  let laneStatusReadTimer: number | null = null;
+  /**
+   * The strictest freshness the pending timer was asked for. A later, stricter
+   * request (`maxAgeMs: 0` from a commit-list reload) lowers it, so a forced
+   * re-read is never swallowed by a timer armed for the default window.
+   */
+  let laneStatusReadThresholdMs = LANE_STATUS_MAX_AGE_MS;
+
+  const laneStatusAgeMs = (projectKey: string | null): number =>
+    laneStatusReadAt && laneStatusReadAt.projectKey === projectKey
+      ? Date.now() - laneStatusReadAt.atMs
+      : Number.POSITIVE_INFINITY;
+
+  const scheduleLaneStatusRead = (maxAgeMs: number) => {
+    const projectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
+    if (!projectKey || laneStatusAgeMs(projectKey) < maxAgeMs) return;
+    // Numbers older than the window are not current while this read is out.
+    // A read asked for sooner (History reload) leaves fresh numbers fresh.
+    if (laneStatusAgeMs(projectKey) >= LANE_STATUS_MAX_AGE_MS && !get().laneStatusStale) {
+      set({ laneStatusStale: true });
+    }
+    if (laneStatusReadTimer != null) {
+      laneStatusReadThresholdMs = Math.min(laneStatusReadThresholdMs, maxAgeMs);
+      return;
+    }
+    laneStatusReadThresholdMs = maxAgeMs;
+    laneStatusReadTimer = window.setTimeout(() => {
+      laneStatusReadTimer = null;
+      const threshold = laneStatusReadThresholdMs;
+      const currentKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
+      if (!currentKey || laneStatusAgeMs(currentKey) < threshold) return;
+      void get().refreshLanes({ includeStatus: true, includeSnapshots: false }).catch((err) => {
+        console.debug("Lane status read failed:", err);
+      });
+    }, LANE_STATUS_READ_DELAY_MS);
+  };
 
   const scheduleProjectHydration = () => {
     if (warmupTimer != null) {
@@ -1754,6 +2030,80 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     }, delay);
   };
 
+  /**
+   * The open itself, once a folder is known: bind it in main and apply the
+   * result. Shared by the picker flow and by "Trust" on the git-ownership
+   * prompt, which re-opens the same folder with `trustGitOwnership`.
+   */
+  const openPickedRepo = async (
+    picked: string,
+    extras: { trustGitOwnership?: boolean },
+  ): Promise<ProjectInfo | null> => {
+    const project = await window.ade.project.openRepo({ rootPath: picked, ...extras });
+    if (!project) {
+      set({ projectTransition: null, lanesLoading: false });
+      return null;
+    }
+    get().setProject(project);
+    set((prev) => {
+      const restoredSelection =
+        prev.laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
+      const cachedLanes = prev.laneCacheByProject[project.rootPath];
+      // personalChatsTabOpen and browserTabOpen are deliberately omitted so the machine-level Chats and Browser tabs survive project transitions.
+      return {
+        projectHydrated: true,
+        showWelcome: false,
+        projectTransition: null,
+        projectTransitionError: null,
+        isNewTabOpen: false,
+        standaloneSettingsOpen: false,
+        laneSnapshots: cachedLanes?.laneSnapshots ?? [],
+        lanes: cachedLanes?.lanes ?? [],
+        laneStatusStale: true,
+        lanesLoading: !cachedLanes,
+        laneDeleteProgressByLaneId: {},
+        selectedLaneId: restoredSelection.laneId,
+        focusedSessionId: restoredSelection.sessionId,
+        laneInspectorTabs: {},
+        keybindings: null,
+        terminalAttention: EMPTY_TERMINAL_ATTENTION,
+        ctoAttention: EMPTY_CTO_ATTENTION,
+        dismissedMissingAiBannerRoots: pickDismissMapForRoots(prev.dismissedMissingAiBannerRoots, [project.rootPath]),
+        dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, [project.rootPath]),
+      };
+    });
+    invalidateAiDiscoveryCache(project.rootPath, { force: false });
+    invalidateProjectConfigCache(project.rootPath);
+    void Promise.allSettled([
+      get().refreshLanes({ includeStatus: false }),
+      get().refreshKeybindings()
+    ]);
+    scheduleProjectHydration();
+    return project;
+  };
+
+  const openRepoAtPath = async (
+    rootPath: string,
+    extras: { trustGitOwnership?: boolean },
+  ): Promise<ProjectInfo | null> => {
+    ++laneRefreshVersion;
+    set({
+      projectTransition: { kind: "opening", rootPath, startedAtMs: Date.now() },
+      projectTransitionError: null,
+      projectBinding: null,
+    });
+    try {
+      return await openPickedRepo(rootPath, extras);
+    } catch (error) {
+      set({
+        projectTransition: null,
+        lanesLoading: false,
+        ...transitionFailureState("opening", error, rootPath),
+      });
+      throw error;
+    }
+  };
+
   return ({
   project: null,
   projectBinding: null,
@@ -1764,16 +2114,29 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   projectTransition: null,
   projectTransitionError: null,
   worktreeOpenPrompt: null,
+  gitFolderTrustPrompt: null,
   isNewTabOpen: false,
+  standaloneSettingsOpen: false,
   personalChatsTabOpen: false,
+  browserTabOpen: false,
+  musicTabOpen: false,
+  browserDock: { open: false, chat: null },
   laneSnapshots: [],
   lanes: [],
   lanesLoading: false,
+  // Nothing has been measured yet: whatever lanes arrive first (a cache, an
+  // identity read) carry a status of unknown age.
+  laneStatusStale: true,
   laneDeleteProgressByLaneId: {},
   selectedLaneId: null,
   focusedSessionId: null,
   projectRevision: 0,
-  theme: initialUserPreferences.theme,
+  theme: baseModeForThemeId(initialEffectiveThemeId, initialUserPreferences.customThemes),
+  themeId: initialUserPreferences.themeId,
+  customThemes: initialUserPreferences.customThemes,
+  themeFollowsSystem: initialUserPreferences.themeFollowsSystem,
+  interfacePreferences: initialUserPreferences.interfacePreferences,
+  systemColorScheme: initialSystemColorScheme,
   terminalPreferences: initialUserPreferences.terminalPreferences,
   codeBlockCopyButtonPosition: initialUserPreferences.codeBlockCopyButtonPosition,
   agentTurnCompletionSound: initialUserPreferences.agentTurnCompletionSound,
@@ -1797,8 +2160,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   smartTooltipsEnabled: initialUserPreferences.smartTooltipsEnabled,
   launchPromptClipboardEnabled: initialUserPreferences.launchPromptClipboardEnabled,
   launchPromptClipboardNoticeEnabled: initialUserPreferences.launchPromptClipboardNoticeEnabled,
-  promptStashButtonEnabled: initialUserPreferences.promptStashButtonEnabled,
+  draftsButtonEnabled: initialUserPreferences.draftsButtonEnabled,
   voiceInputEnabled: initialUserPreferences.voiceInputEnabled,
+  codexVoice: initialUserPreferences.codexVoice,
   dictationPhase: "idle",
   dictationElapsed: 0,
   dictationLevels: new Array(DICTATION_WAVEFORM_BARS).fill(0.05),
@@ -1817,8 +2181,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   crossMachineLaneIntendedMachineIds: null,
   crossMachineLanesByMachineId: {},
 
-  setProject: (project) =>
+  setProject: (incomingProject) =>
     set((prev) => {
+      // A warm switch sets the cached project and then the one the host
+      // reports, which is a new object that reads the same. The stored object
+      // stays, so what reads `project` renders once for the switch, not twice.
+      const knownProject = incomingProject ? prev.projectInfoByRoot[incomingProject.rootPath] : undefined;
+      const project = incomingProject && knownProject && shallow(knownProject, incomingProject)
+        ? knownProject
+        : incomingProject;
       const previousProjectRoot = selectActiveProjectRoot(prev);
       const nextProjectRoot = project?.rootPath ?? null;
       const matchingRemoteBinding =
@@ -1855,15 +2226,24 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             [nextStateKey]: warmLaneCache,
           }
         : prev.laneCacheByProject;
-      const restoredSelection = shouldHydrateLanes
+      const cachedSelection = shouldHydrateLanes
         ? prev.laneSelectionByProject[nextStateKey] ?? {
             laneId: warmLaneCache?.lanes[0]?.id ?? null,
             sessionId: null,
           }
         : null;
+      const restoreLanes = warmLaneCache?.lanes ?? [];
+      // One survival check serves both the lane and its session: the session
+      // is kept only when the saved lane is still there.
+      const savedLaneSurvived = cachedSelection !== null
+        && restoreLanes.some((lane) => lane.id === cachedSelection.laneId);
+      const restoredSelection = cachedSelection && {
+        laneId: savedLaneSurvived ? cachedSelection.laneId : defaultLaneId(restoreLanes),
+        sessionId: savedLaneSurvived ? cachedSelection.sessionId : null,
+      };
       return {
         project,
-        projectInfoByRoot: project && !matchingRemoteBinding
+        projectInfoByRoot: project && !matchingRemoteBinding && project !== knownProject
           ? {
               ...prev.projectInfoByRoot,
               [project.rootPath]: project,
@@ -1873,7 +2253,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           ? [...prev.openProjectTabRoots, project.rootPath]
           : prev.openProjectTabRoots,
         projectBinding: project
-          ? matchingRemoteBinding ?? createLocalProjectBinding(project)
+          ? matchingRemoteBinding ?? reuseSameLocalBinding(prev.projectBinding, createLocalProjectBinding(project))
           : null,
         projectRevision:
           projectChanged ? prev.projectRevision + 1 : prev.projectRevision,
@@ -1896,6 +2276,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           ? {
               laneSnapshots: warmLaneCache?.laneSnapshots ?? [],
               lanes: warmLaneCache?.lanes ?? [],
+              laneStatusStale: true,
               lanesLoading: project ? !warmLaneCache : false,
               selectedLaneId: restoredSelection?.laneId ?? null,
               focusedSessionId: restoredSelection?.sessionId ?? null,
@@ -1969,12 +2350,19 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         typeof next === "function" ? next(prev.openProjectTabRoots) : next,
     })),
   rememberProjectInfo: (project) =>
-    set((prev) => ({
-      projectInfoByRoot: {
-        ...prev.projectInfoByRoot,
-        [project.rootPath]: project,
-      },
-    })),
+    set((prev) => {
+      // Every project switch reports the project again as a new object. One
+      // that reads the same keeps the stored object, or each mounted surface
+      // of that project takes a new `project` and renders for nothing.
+      const known = prev.projectInfoByRoot[project.rootPath];
+      if (known && shallow(known, project)) return prev;
+      return {
+        projectInfoByRoot: {
+          ...prev.projectInfoByRoot,
+          [project.rootPath]: project,
+        },
+      };
+    }),
   setProjectBinding: (projectBinding) =>
     set((prev) => {
       const shouldDropStaleRemoteRoot =
@@ -1988,8 +2376,25 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               )
             : [...prev.openRemoteProjectTabs, projectBinding]
           : prev.openRemoteProjectTabs;
+      const nextKey = projectBinding ? projectStateKeyForBinding(projectBinding) : "";
+      const bindingChanged = Boolean(projectBinding)
+        && nextKey !== selectActiveProjectStateKey(prev);
+      const laneCache = bindingChanged
+        ? prev.laneCacheByProject[nextKey] ?? readPersistedLaneCache(nextKey)
+        : null;
+      const savedLaneId = prev.laneSelectionByProject[nextKey]?.laneId;
+      const restoredLaneId = pickRestoredLaneId(laneCache?.lanes ?? [], savedLaneId);
       return {
         projectBinding,
+        ...(bindingChanged ? {
+          lanes: laneCache?.lanes ?? [],
+          laneSnapshots: laneCache?.laneSnapshots ?? [],
+          lanesLoading: !laneCache,
+          laneStatusStale: true,
+          ...(laneCache ? { laneCacheByProject: { ...prev.laneCacheByProject, [nextKey]: laneCache } } : {}),
+          selectedLaneId: restoredLaneId ?? null,
+          focusedSessionId: null,
+        } : {}),
         openRemoteProjectTabs,
         openProjectTabRoots: shouldDropStaleRemoteRoot
           ? prev.openProjectTabRoots.filter(
@@ -2001,7 +2406,36 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
   clearProjectTransitionError: () => set({ projectTransitionError: null }),
+  reportProjectDataProblem: (rootPath, status) => {
+    // A recovery screen already up wins. A plain error with no recovery code
+    // (a slow switch, say) gives way, so missing data always gets its screen.
+    if (get().projectTransitionError?.code) return;
+    set({
+      projectTransitionError: {
+        message: RECOVERY_COPY[status === "replaced" ? "data_replaced" : "data_missing"].headline,
+        code: status === "replaced" ? "db_path_changed" : "project_data_missing",
+        rootPath,
+      },
+    });
+  },
   dismissWorktreeOpenPrompt: () => set({ worktreeOpenPrompt: null }),
+  dismissGitFolderTrustPrompt: () => {
+    const prompt = get().gitFolderTrustPrompt;
+    if (!prompt) return;
+    set({
+      gitFolderTrustPrompt: null,
+      projectTransitionError: {
+        message: `ADE did not open this folder. ${prompt.message} Nothing was changed; open it again to trust it.`,
+        retryRootPath: prompt.rootPath,
+      },
+    });
+  },
+  trustGitFolderAndOpen: async () => {
+    const prompt = get().gitFolderTrustPrompt;
+    if (!prompt) return null;
+    set({ gitFolderTrustPrompt: null });
+    return await openRepoAtPath(prompt.rootPath, { trustGitOwnership: true });
+  },
   setLanes: (lanes) => set({ lanes, lanesLoading: false }),
   setLaneDeleteProgressByLaneId: (next) =>
     set((prev) => ({
@@ -2092,6 +2526,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         lanesSyncedAtMs: entry.lanes ? Date.now() : previous?.lanesSyncedAtMs ?? null,
         error: entry.error !== undefined ? entry.error : previous?.error ?? null,
       };
+      // A read that found nothing new still re-stamps the sync clocks. Their
+      // readers judge staleness on a minute scale, so a stamp-only change waits
+      // until it is worth a re-render of every surface that lists machines.
+      const stampCurrent = (prevMs: number | null, nextMs: number | null): boolean =>
+        prevMs === nextMs
+        || (prevMs != null && nextMs != null && nextMs - prevMs < CROSS_MACHINE_SYNC_STAMP_PUBLISH_MS);
       const sliceUnchanged = (
         previous
         && previous.machineName === next.machineName
@@ -2102,8 +2542,8 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && previous.lanes === next.lanes
         && previous.sessions === next.sessions
         && previous.prs === next.prs
-        && previous.lastSyncedAtMs === next.lastSyncedAtMs
-        && previous.lanesSyncedAtMs === next.lanesSyncedAtMs
+        && stampCurrent(previous.lastSyncedAtMs, next.lastSyncedAtMs)
+        && stampCurrent(previous.lanesSyncedAtMs, next.lanesSyncedAtMs)
         && previous.error === next.error
       );
       if (sliceUnchanged && !intendedChanged) return {};
@@ -2194,11 +2634,52 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         },
       };
     }),
-  setTheme: (theme) =>
+  setTheme: (themeId) =>
     set((prev) => {
-      const next = { ...prev, theme };
+      const nextThemeId = coerceThemeId(themeId);
+      const theme = baseModeForThemeId(
+        effectiveThemeId(nextThemeId, prev.themeFollowsSystem, prev.systemColorScheme),
+        prev.customThemes,
+      );
+      const next = { ...prev, theme, themeId: nextThemeId };
       persistUserPreferencesFrom(next);
-      return { theme };
+      return { theme, themeId: nextThemeId };
+    }),
+  setCustomThemes: (themes) =>
+    set((prev) => {
+      const customThemes = normalizeAdeThemeList(themes);
+      const theme = baseModeForThemeId(
+        effectiveThemeId(prev.themeId, prev.themeFollowsSystem, prev.systemColorScheme),
+        customThemes,
+      );
+      const next = { ...prev, theme, customThemes };
+      persistUserPreferencesFrom(next);
+      return { theme, customThemes };
+    }),
+  setThemeFollowsSystem: (followsSystem) =>
+    set((prev) => {
+      const themeFollowsSystem = followsSystem === true;
+      const theme = baseModeForThemeId(
+        effectiveThemeId(prev.themeId, themeFollowsSystem, prev.systemColorScheme),
+        prev.customThemes,
+      );
+      persistUserPreferencesFrom({ ...prev, theme, themeFollowsSystem });
+      return { theme, themeFollowsSystem };
+    }),
+  setInterfacePreferences: (next) =>
+    set((prev) => {
+      const interfacePreferences = normalizeInterfacePreferences({ ...prev.interfacePreferences, ...next });
+      persistUserPreferencesFrom({ ...prev, interfacePreferences });
+      return { interfacePreferences };
+    }),
+  setSystemColorScheme: (scheme) =>
+    set((prev) => {
+      const change = systemColorSchemeChange(prev, scheme);
+      if (!change) return {};
+      // Persist the painted base mode so the next launch paints it before the
+      // OS is asked; the choice itself (`themeId`) does not change.
+      if (change.theme !== prev.theme) persistUserPreferencesFrom({ ...prev, theme: change.theme });
+      return change;
     }),
   setCodeBlockCopyButtonPosition: (position) =>
     set((prev) => {
@@ -2286,10 +2767,18 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({
         ...prev,
         theme: nextTheme,
+        themeId: DEFAULT_THEME_ID,
+        themeFollowsSystem: false,
         chatFontSizePx: nextFont,
         userOverrodeChatFontSize: false,
       });
-      return { theme: nextTheme, chatFontSizePx: nextFont, userOverrodeChatFontSize: false };
+      return {
+        theme: nextTheme,
+        themeId: DEFAULT_THEME_ID,
+        themeFollowsSystem: false,
+        chatFontSizePx: nextFont,
+        userOverrodeChatFontSize: false,
+      };
     }),
   setTerminalPreferences: (next) =>
     set((prev) => {
@@ -2318,10 +2807,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({ ...prev, launchPromptClipboardNoticeEnabled: enabled });
       return { launchPromptClipboardNoticeEnabled: enabled };
     }),
-  setPromptStashButtonEnabled: (enabled) =>
+  setDraftsButtonEnabled: (enabled) =>
     set((prev) => {
-      persistUserPreferencesFrom({ ...prev, promptStashButtonEnabled: enabled });
-      return { promptStashButtonEnabled: enabled };
+      persistUserPreferencesFrom({ ...prev, draftsButtonEnabled: enabled });
+      return { draftsButtonEnabled: enabled };
     }),
   setVoiceInputEnabled: (enabled) =>
     set((prev) => {
@@ -2333,6 +2822,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const starPill = normalizeStarPillPrefs(next(prev.starPill));
       persistStarPillPrefs(starPill);
       return { starPill };
+    }),
+  setCodexVoicePreferences: (patch) =>
+    set((prev) => {
+      const codexVoice = normalizeCodexVoicePreferences({ ...prev.codexVoice, ...patch });
+      persistUserPreferencesFrom({ ...prev, codexVoice });
+      return { codexVoice };
     }),
   // Ephemeral dictation setters: NO persistUserPreferencesFrom — these describe
   // a live capture session, not a saved preference.
@@ -2352,14 +2847,25 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         ? { activeDictationTarget: null }
         : prev,
     ),
-  openNewTab: () => set({ isNewTabOpen: true, showWelcome: true }),
+  // A new tab is the new-project screen, so it also ends Settings-without-a-project.
+  openNewTab: () => set({ isNewTabOpen: true, showWelcome: true, standaloneSettingsOpen: false }),
   cancelNewTab: () => {
     const hasProject = get().project != null;
     set({ isNewTabOpen: false, showWelcome: !hasProject });
   },
+  setStandaloneSettingsOpen: (standaloneSettingsOpen) => set({ standaloneSettingsOpen }),
   setPersonalChatsTabOpen: (personalChatsTabOpen) =>
     set({ personalChatsTabOpen }),
   closePersonalChatsTab: () => set({ personalChatsTabOpen: false }),
+  setBrowserTabOpen: (browserTabOpen) => {
+    if (browserTabOpen && !get().browserTabOpen) captureHomeTabOpened("browser");
+    set({ browserTabOpen });
+  },
+  setMusicTabOpen: (musicTabOpen) => {
+    if (musicTabOpen && !get().musicTabOpen) captureHomeTabOpened("music");
+    set({ musicTabOpen });
+  },
+  setBrowserDock: (patch) => set((prev) => ({ browserDock: { ...prev.browserDock, ...patch } })),
   getWorkViewState: (projectRoot) => {
     const key = resolveProjectStateKey(get(), projectRoot);
     if (!key) return createDefaultWorkProjectViewState();
@@ -2377,6 +2883,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               ...current,
               ...next,
             };
+      // Callers write on every sessions refresh whether or not anything moved;
+      // a new object for the same values re-rendered every subscriber (the
+      // whole chat pane) about once a second at idle.
+      if (prev.workViewByProject[key] && shallow(current, updated)) return prev;
       const nextWorkViews = {
         ...prev.workViewByProject,
         [key]: updated,
@@ -2406,6 +2916,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               ...current,
               ...next,
             };
+      if (prev.laneWorkViewByScope[key] && shallow(current, updated)) return prev;
       const nextLaneWorkViews = {
         ...prev.laneWorkViewByScope,
         [key]: updated,
@@ -2487,6 +2998,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const lanes = laneSnapshots != null || currentRequest.includeStatus
         ? rawLanes
         : rawLanes.map((lane) => withPreservedLaneStatus(lane, previousLanesById, previousSnapshotsById));
+      // A status-less read of a lane this store has no status for returns the
+      // brain's 0/0 placeholder, which is no measurement at all.
+      const statusUnknownForSomeLane = !currentRequest.includeStatus
+        && rawLanes.some((lane) => !previousLanesById.has(lane.id) && !previousSnapshotsById.has(lane.id));
       // Discard stale response: a newer refresh was issued while this one was in-flight
       if (token !== laneRefreshVersion) {
         return;
@@ -2555,12 +3070,26 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           laneSnapshots: nextSnapshots,
           lanes,
           lanesLoading: false,
+          // A measured read replaces the numbers and their flag together. A
+          // status-less one only carries numbers forward: they stay as fresh
+          // as they were, unless they have aged out or a lane arrived with
+          // only the brain's 0/0 placeholder.
+          laneStatusStale: currentRequest.includeStatus
+            ? false
+            : prev.laneStatusStale || statusUnknownForSomeLane || laneStatusAgeMs(requestedProjectKey) >= LANE_STATUS_MAX_AGE_MS,
           selectedLaneId: nextSelected,
           laneInspectorTabs: nextTabs,
           laneWorkViewByScope: nextLaneWorkViews,
           laneCacheByProject: nextLaneCache,
         };
       });
+      if (currentRequest.includeStatus) {
+        laneStatusReadAt = { projectKey: requestedProjectKey, atMs: Date.now() };
+      } else {
+        // This read carried the previous status forward (or the brain's 0/0
+        // placeholder when there was none). Measure it unless that was recent.
+        scheduleLaneStatusRead(statusUnknownForSomeLane ? 0 : LANE_STATUS_MAX_AGE_MS);
+      }
     };
 
     // Only show a loading spinner when there's nothing to display. If we
@@ -2611,6 +3140,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     await laneRefreshInFlight;
   },
 
+  requestLaneStatusRead: (options) => {
+    scheduleLaneStatusRead(Math.max(0, options?.maxAgeMs ?? LANE_STATUS_MAX_AGE_MS));
+  },
+
   refreshProviderMode: async () => {
     const projectRoot = selectActiveProjectRoot(get());
     const [snapshot, aiStatus] = await Promise.all([
@@ -2659,13 +3192,14 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       projectTransitionError: null,
       projectBinding: null,
     });
+    let picked: string | null = null;
     try {
       // Pick the target folder first (native picker, no bind yet) so the
       // worktree gate can run before we bind — the OS "Open repository" dialog
       // must behave like the in-app open flows. chooseDirectory uses the same
       // showOpenDialog(["openDirectory"]) as the fused openRepo picker; passing
       // the matching title keeps it visually identical.
-      const picked = await window.ade.project.chooseDirectory({ title: "Open repository" });
+      picked = await window.ade.project.chooseDirectory({ title: "Open repository" });
       if (!picked) {
         set({ projectTransition: null, lanesLoading: false });
         return null;
@@ -2693,50 +3227,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         }
       }
 
-      const project = await window.ade.project.openRepo({ rootPath: picked });
-      if (!project) {
-        set({ projectTransition: null, lanesLoading: false });
-        return null;
-      }
-      get().setProject(project);
-      set((prev) => {
-        const restoredSelection =
-          prev.laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
-        const cachedLanes = prev.laneCacheByProject[project.rootPath];
-        // personalChatsTabOpen is deliberately omitted so the machine-level Chats tab survives project transitions.
-        return {
-          projectHydrated: true,
-          showWelcome: false,
-          projectTransition: null,
-          projectTransitionError: null,
-          isNewTabOpen: false,
-          laneSnapshots: cachedLanes?.laneSnapshots ?? [],
-          lanes: cachedLanes?.lanes ?? [],
-          lanesLoading: !cachedLanes,
-          laneDeleteProgressByLaneId: {},
-          selectedLaneId: restoredSelection.laneId,
-          focusedSessionId: restoredSelection.sessionId,
-          laneInspectorTabs: {},
-          keybindings: null,
-          terminalAttention: EMPTY_TERMINAL_ATTENTION,
-          ctoAttention: EMPTY_CTO_ATTENTION,
-          dismissedMissingAiBannerRoots: pickDismissMapForRoots(prev.dismissedMissingAiBannerRoots, [project.rootPath]),
-          dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, [project.rootPath]),
-        };
-      });
-      invalidateAiDiscoveryCache(project.rootPath);
-      invalidateProjectConfigCache(project.rootPath);
-      void Promise.allSettled([
-        get().refreshLanes({ includeStatus: false }),
-        get().refreshKeybindings()
-      ]);
-      scheduleProjectHydration();
-      return project;
+      return await openPickedRepo(picked, {});
     } catch (error) {
       set({
         projectTransition: null,
         lanesLoading: false,
-        projectTransitionError: formatProjectTransitionError("opening", error),
+        ...transitionFailureState("opening", error, picked),
       });
       throw error;
     }
@@ -2804,8 +3300,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             projectHydrated: true,
             showWelcome: false,
             isNewTabOpen: false,
+            standaloneSettingsOpen: false,
             laneSnapshots: cachedWarmLanes?.laneSnapshots ?? [],
             lanes: cachedWarmLanes?.lanes ?? [],
+            laneStatusStale: true,
             lanesLoading: !cachedWarmLanes,
             laneDeleteProgressByLaneId: {},
             selectedLaneId: restoredWarmSelection.laneId,
@@ -2845,6 +3343,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             projectHydrated: true,
             showWelcome: false,
             isNewTabOpen: false,
+            standaloneSettingsOpen: false,
           }
         : {
             projectHydrated: true,
@@ -2852,8 +3351,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             projectTransition: null,
             projectTransitionError: null,
             isNewTabOpen: false,
+            standaloneSettingsOpen: false,
             laneSnapshots: cachedLanes?.laneSnapshots ?? [],
             lanes: cachedLanes?.lanes ?? [],
+            laneStatusStale: true,
             lanesLoading: !cachedLanes,
             laneDeleteProgressByLaneId: {},
             selectedLaneId: restoredSelection.laneId,
@@ -2863,7 +3364,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             terminalAttention: EMPTY_TERMINAL_ATTENTION,
             ctoAttention: EMPTY_CTO_ATTENTION,
           });
-      invalidateAiDiscoveryCache(rootPath);
+      invalidateAiDiscoveryCache(rootPath, { force: false });
       invalidateProjectConfigCache(rootPath);
       void Promise.allSettled([
         get().refreshLanes({ includeStatus: false }),
@@ -2950,13 +3451,17 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         }).catch(() => {});
       }, 750);
     } catch (error) {
-      const projectTransitionError = formatProjectTransitionError("switching", error);
+      const failure = transitionFailureState("switching", error, rootPath);
+      const projectTransitionError = failure.projectTransitionError;
       set({
         projectTransition: null,
         lanesLoading: false,
-        projectTransitionError: projectTransitionError.code
-          ? { ...projectTransitionError, rootPath }
-          : { ...projectTransitionError, retryRootPath: rootPath },
+        ...failure,
+        projectTransitionError: !projectTransitionError
+          ? null
+          : projectTransitionError.code
+            ? { ...projectTransitionError, rootPath }
+            : { ...projectTransitionError, retryRootPath: rootPath },
       });
       throw error;
     }
@@ -3037,9 +3542,11 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           projectTransition: null,
           projectTransitionError: null,
           isNewTabOpen: false,
+          standaloneSettingsOpen: false,
           openRemoteProjectTabs,
           laneSnapshots: cachedLanes?.laneSnapshots ?? [],
           lanes: cachedLanes?.lanes ?? [],
+          laneStatusStale: true,
           lanesLoading: !cachedLanes,
           laneDeleteProgressByLaneId: {},
           selectedLaneId: restoredSelection.laneId,
@@ -3051,7 +3558,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           laneCacheByProject,
         };
       });
-      invalidateAiDiscoveryCache(binding.rootPath);
+      invalidateAiDiscoveryCache(binding.rootPath, { force: false });
       invalidateProjectConfigCache(binding.rootPath);
       void Promise.allSettled([
         get().refreshLanes({ includeStatus: false }),
@@ -3102,6 +3609,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         projectTransition: null,
         projectTransitionError: null,
         isNewTabOpen: false,
+        standaloneSettingsOpen: false,
         laneSnapshots: [],
         lanes: [],
         lanesLoading: false,
@@ -3136,7 +3644,16 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 export type AppStoreApi = StoreApi<AppState>;
 
 const rootAppStore = createStore<AppState>()(createAppState);
-const AppStoreContext = createContext<AppStoreApi | null>(null);
+// One context object for `useAppStore` and `useAppearanceStore`. A context is
+// both written and read, so its two types cannot meet without a cast; every
+// value put in it is a full app store.
+const AppStoreContext = AppearanceStoreContext as unknown as React.Context<AppStoreApi | null>;
+registerRootAppearanceStore(rootAppStore);
+
+/** `previous` when it is the same local binding as `next`, field for field. */
+function reuseSameLocalBinding(previous: OpenProjectBinding | null, next: OpenProjectBinding): OpenProjectBinding {
+  return previous?.kind === "local" && next.kind === "local" && shallow(previous, next) ? previous : next;
+}
 
 function createLocalProjectBinding(project: ProjectInfo): OpenProjectBinding {
   const binding: Extract<OpenProjectBinding, { kind: "local" }> = {
@@ -3184,8 +3701,16 @@ export function createProjectAppStore(
     projectHydrated: true,
     showWelcome: false,
     isNewTabOpen: false,
+    standaloneSettingsOpen: false,
     personalChatsTabOpen: false,
+    browserTabOpen: false,
+    musicTabOpen: false,
     theme: rootState.theme,
+    themeId: rootState.themeId,
+    customThemes: rootState.customThemes,
+    themeFollowsSystem: rootState.themeFollowsSystem,
+    interfacePreferences: rootState.interfacePreferences,
+    systemColorScheme: rootState.systemColorScheme,
     terminalPreferences: rootState.terminalPreferences,
     codeBlockCopyButtonPosition: rootState.codeBlockCopyButtonPosition,
     agentTurnCompletionSound: rootState.agentTurnCompletionSound,
@@ -3201,9 +3726,14 @@ export function createProjectAppStore(
     smartTooltipsEnabled: rootState.smartTooltipsEnabled,
     launchPromptClipboardEnabled: rootState.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: rootState.launchPromptClipboardNoticeEnabled,
-    promptStashButtonEnabled: rootState.promptStashButtonEnabled,
+    draftsButtonEnabled: rootState.draftsButtonEnabled,
     voiceInputEnabled: rootState.voiceInputEnabled,
+    codexVoice: rootState.codexVoice,
     setTheme: rootState.setTheme,
+    setCustomThemes: rootState.setCustomThemes,
+    setThemeFollowsSystem: rootState.setThemeFollowsSystem,
+    setInterfacePreferences: rootState.setInterfacePreferences,
+    setSystemColorScheme: rootState.setSystemColorScheme,
     setTerminalPreferences: rootState.setTerminalPreferences,
     setCodeBlockCopyButtonPosition: rootState.setCodeBlockCopyButtonPosition,
     setAgentTurnCompletionSound: rootState.setAgentTurnCompletionSound,
@@ -3220,8 +3750,9 @@ export function createProjectAppStore(
     setSmartTooltipsEnabled: rootState.setSmartTooltipsEnabled,
     setLaunchPromptClipboardEnabled: rootState.setLaunchPromptClipboardEnabled,
     setLaunchPromptClipboardNoticeEnabled: rootState.setLaunchPromptClipboardNoticeEnabled,
-    setPromptStashButtonEnabled: rootState.setPromptStashButtonEnabled,
+    setDraftsButtonEnabled: rootState.setDraftsButtonEnabled,
     setVoiceInputEnabled: rootState.setVoiceInputEnabled,
+    setCodexVoicePreferences: rootState.setCodexVoicePreferences,
     workViewByProject: hydratedWorkViewByProject,
     laneWorkViewByScope: hydratedLaneWorkViewByScope,
     laneSelectionByProject: rootState.laneSelectionByProject,
@@ -3234,6 +3765,7 @@ export function createProjectAppStore(
     sessionsCacheByProject: rootState.sessionsCacheByProject,
     laneSnapshots: cachedLanes?.laneSnapshots ?? [],
     lanes: cachedLanes?.lanes ?? [],
+    laneStatusStale: true,
     // The scoped surface owns its refresh lifecycle. Keep cached lanes visible,
     // but let ProjectSurface start a refresh when this surface becomes active.
     lanesLoading: false,

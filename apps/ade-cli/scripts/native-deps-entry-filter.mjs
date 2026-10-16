@@ -20,7 +20,7 @@ function targetParts(target) {
 //
 // Only the NATIVE PLATFORM SIBLINGS are listed here. The JS entry points --
 // @anthropic-ai/claude-agent-sdk (ADE calls query() on it in-process),
-// @openai/codex, opencode-ai and @opencode-ai/sdk -- must keep shipping, so
+// @openai/codex and @opencode/cli -- must keep shipping, so
 // this is an exact-name set rather than a prefix match: a prefix test on
 // "@anthropic-ai/claude-agent-sdk" would swallow the SDK itself.
 //
@@ -44,18 +44,18 @@ export const RUNTIME_FETCHED_TOOL_PACKAGES = new Set([
   "@anthropic-ai/claude-agent-sdk-linux-x64-musl",
   "@anthropic-ai/claude-agent-sdk-win32-arm64",
   "@anthropic-ai/claude-agent-sdk-win32-x64",
-  "opencode-darwin-arm64",
-  "opencode-darwin-x64",
-  "opencode-darwin-x64-baseline",
-  "opencode-linux-arm64",
-  "opencode-linux-arm64-musl",
-  "opencode-linux-x64",
-  "opencode-linux-x64-baseline",
-  "opencode-linux-x64-baseline-musl",
-  "opencode-linux-x64-musl",
-  "opencode-windows-arm64",
-  "opencode-windows-x64",
-  "opencode-windows-x64-baseline",
+  "@opencode/cli-darwin-arm64",
+  "@opencode/cli-darwin-x64",
+  "@opencode/cli-darwin-x64-baseline",
+  "@opencode/cli-linux-arm64",
+  "@opencode/cli-linux-arm64-musl",
+  "@opencode/cli-linux-x64",
+  "@opencode/cli-linux-x64-baseline",
+  "@opencode/cli-linux-x64-baseline-musl",
+  "@opencode/cli-linux-x64-musl",
+  "@opencode/cli-windows-arm64",
+  "@opencode/cli-windows-x64",
+  "@opencode/cli-windows-x64-baseline",
 ]);
 
 export function nodePtyPrebuildTarget(target) {
@@ -98,7 +98,7 @@ export function shouldCopyPackageEntry(packageName, sourceRoot, entry, target) {
     }
   }
 
-  if (packageName === "opencode-ai" && relative === "bin/opencode.exe" && !target.startsWith("win32-")) {
+  if (packageName === "@opencode/cli" && relative === "bin/opencode.exe" && !target.startsWith("win32-")) {
     return false;
   }
 

@@ -91,6 +91,7 @@ vi.mock("./appleRecording", async (importOriginal) => ({
 const { AppleDevicePane } = await import("./AppleDevicePane");
 const { APPLE_LOADING_RECHECK_MS, APPLE_START_GIVE_UP_MS } = await import("./useAppleDeviceStartTracker");
 const { expectNoHorizontalOverflow } = await import("./testLayout");
+const { useAppStore } = await import("../../state/appStore");
 
 /* ── Fixtures ─────────────────────────────────────────────────────────────── */
 
@@ -114,7 +115,6 @@ const LANE_DEVICE: AppleLaneDevice = {
   family: "iphone",
   runtime: "iOS 26.2",
   createdAt: new Date(0).toISOString(),
-  templateUdid: null,
 };
 
 function status(overrides: Partial<IosSimulatorStatus> = {}): IosSimulatorStatus {
@@ -433,6 +433,96 @@ describe("AppleDevicePane states", () => {
     renderPane();
     expect(await screen.findByText("Something went wrong with the simulator.")).toBeTruthy();
     expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
+  });
+
+  it("never shows a list that failed to load as an empty one, and reads it again on Retry and after a project switch", async () => {
+    const { iosSimulator } = setup({ lane: null, installed: [] });
+    const failing = () => {
+      iosSimulator.deviceList = vi.fn(async () => {
+        throw new Error(
+          "Error invoking remote method 'ade.localRuntime.callAction': Error: Project is switching. Wait for the current project to finish loading before reading project state.",
+        );
+      });
+    };
+    const listing = () => {
+      iosSimulator.deviceList = vi.fn(async () => ({ installed: [PRO, MAX], lane: null }));
+    };
+    const failedNotice = () => document.querySelector("[data-apple-list-failed]");
+    const emptyCard = () => document.querySelector("[data-apple-picker-empty]");
+
+    failing();
+    renderPane();
+    await waitFor(() => expect(failedNotice()).not.toBeNull());
+    // The empty card is a claim about the machine; a failed read makes none,
+    // and the failure is said once.
+    expect(emptyCard()).toBeNull();
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
+
+    listing();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(failedNotice()).toBeNull());
+    expect(screen.getByText(MAX.name)).toBeTruthy();
+
+    // A read that fails during a project switch is read again when it ends.
+    cleanup();
+    failing();
+    act(() => {
+      useAppStore.setState({ projectTransition: { kind: "switching", rootPath: "/next", startedAtMs: 0 } });
+    });
+    renderPane();
+    await waitFor(() => expect(failedNotice()).not.toBeNull());
+    listing();
+    act(() => {
+      useAppStore.setState({ projectTransition: null });
+    });
+    await waitFor(() => expect(screen.getByText(MAX.name)).toBeTruthy());
+    expect(emptyCard()).toBeNull();
+  });
+
+  it("reads the list again when a read that met a project switch fails after the switch ended", async () => {
+    const { iosSimulator } = setup({ lane: null, installed: [] });
+    act(() => {
+      useAppStore.setState({ projectTransition: { kind: "switching", rootPath: "/next", startedAtMs: 0 } });
+    });
+    let rejectRead: (error: Error) => void = () => {};
+    iosSimulator.deviceList = vi.fn(() => new Promise<never>((_, reject) => {
+      rejectRead = reject;
+    }));
+    renderPane();
+    await waitFor(() => expect(iosSimulator.deviceList).toHaveBeenCalledTimes(1));
+
+    // The switch ends while the read is still out; only then does it fail.
+    act(() => {
+      useAppStore.setState({ projectTransition: null });
+    });
+    const firstRead = iosSimulator.deviceList;
+    iosSimulator.deviceList = vi.fn(async () => ({ installed: [PRO, MAX], lane: null }));
+    await act(async () => {
+      rejectRead(new Error("Remote ADE service connection closed."));
+    });
+
+    await waitFor(() => expect(screen.getByText(MAX.name)).toBeTruthy());
+    expect(firstRead).toHaveBeenCalledTimes(1);
+    expect(document.querySelector("[data-apple-list-failed]")).toBeNull();
+  });
+
+  it("never lets another lane's device stand in while a new lane's list loads", async () => {
+    const { iosSimulator } = setup({ lane: LANE_DEVICE, stream: "live" });
+    const view = renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+
+    iosSimulator.deviceList = vi.fn(() => new Promise<never>(() => {}));
+    view.rerender(
+      <AppleDevicePane sessionId="chat-1" laneId="lane-2" projectRoot="/repo" runtimePin={null} ignoreChatOwnership />,
+    );
+
+    expect(paneState()).toBe("no-device");
+    expect(screen.queryByTestId("apple-stage")).toBeNull();
+    expect(iosSimulator.deviceList).toHaveBeenCalledWith(
+      expect.objectContaining({ laneId: "lane-2" }),
+      null,
+    );
   });
 
   it("switching device asks inline, never in a modal", async () => {
@@ -836,5 +926,42 @@ describe("AppleDevicePane after a restart (owner's 2026-09-23 reports)", () => {
     iosSimulator.deviceList = vi.fn(async () => ({ installed: [{ ...PRO, state: "Shutdown" }, MAX], lane: LANE_DEVICE }));
     emit({ type: "apple.device.state", laneId: "lane-1", udid: "pro", phase: "stopped" });
     await waitFor(() => expect(paneState()).toBe("stopped"));
+  });
+});
+
+/* ── Duo capability gate ──────────────────────────────────────────────────── */
+
+describe("AppleDevicePane Duo capability gate", () => {
+  const NON_FOLDABLE = {
+    ...PRO,
+    deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+  };
+  const FOLDABLE = {
+    ...PRO,
+    deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo",
+  };
+
+  it("keeps the rigid body for a non-foldable device whose clone name says duo", async () => {
+    // A clone is named "ADE · <lane>", so a lane called "duo-hinge" must not be
+    // mistaken for a foldable simulator: the type identifier is the only truth.
+    setup({
+      lane: { ...LANE_DEVICE, name: "ADE · duo-hinge" },
+      installed: [NON_FOLDABLE, MAX],
+      stream: "live",
+    });
+    renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+    expect(stage.props?.duo).toBeUndefined();
+  });
+
+  it("enables the articulated body when the type identifier reports Duo", async () => {
+    setup({
+      lane: { ...LANE_DEVICE, name: "ADE · main" },
+      installed: [FOLDABLE, MAX],
+      stream: "live",
+    });
+    renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+    expect(stage.props?.duo).toMatchObject({ enabled: true });
   });
 });

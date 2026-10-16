@@ -5,7 +5,6 @@ import type {
 } from "../../../../desktop/src/shared/types/attention";
 import type { AdeCodeConnection } from "../types";
 import {
-  ACTIVITY_PANE_GROUP_BY_STATE_GROUP,
   accountSessionLabel,
   accountSessionStateFromResult,
   acknowledgeActivityItem,
@@ -13,14 +12,14 @@ import {
   activityItemDeepLink,
   activityItemElapsed,
   activityItemMark,
+  activityPaneChipForKey,
+  activityPaneChips,
   activityPaneEntries,
   buildActivityPaneModel,
-  groupForItem,
   loadActivitySnapshot,
   reconnectOutcomeNotice,
 } from "../activityPane";
 import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "../../services/account/accountMachinePublisherService";
-import stateGroupCases from "../../../../desktop/src/shared/attention/activityStateGroup.cases.json";
 
 function item(overrides: Partial<AttentionItem> = {}): AttentionItem {
   return {
@@ -108,59 +107,57 @@ function asRequest(
     await implementation(method, params) as T;
 }
 
-/**
- * The state-group rule is implemented on five surfaces that cannot share code
- * (renderer, native notch, iOS, the hermetic push-relay Worker, and this pane).
- * `activityStateGroup.cases.json` is the pin that turns a documented mirror
- * into an enforced one — every implementation runs the same cases through its
- * own mapper. The pane keeps its own headings, so it conforms via the declared
- * `ACTIVITY_PANE_GROUP_BY_STATE_GROUP` table rather than by producing the
- * canonical names; drift in WHICH band a phase belongs to still fails here.
- */
-describe("Activity pane state-group conformance", () => {
-
-  for (const testCase of stateGroupCases.cases) {
-    it(`files "${testCase.name}" with the canonical ${testCase.expected} band`, () => {
-      const subject = item({
-        phase: testCase.phase as AttentionItem["phase"],
-        activityTier: testCase.tier as AttentionItem["activityTier"],
-        ...(testCase.chatActivityMode
-          ? { chatActivityMode: testCase.chatActivityMode as "planning" }
-          : {}),
-        // Unseen, so a `done`-band row lands in DONE, UNREVIEWED rather than
-        // the tail — the split this pane adds on top of the canonical band.
-        seenAt: null,
-      });
-      const expected = ACTIVITY_PANE_GROUP_BY_STATE_GROUP[
-        testCase.expected as keyof typeof ACTIVITY_PANE_GROUP_BY_STATE_GROUP
-      ];
-      const actual = groupForItem(subject);
-      // The canonical `done` band splits: idle-tier history is the ambient tail.
-      const resolved = expected === "done" && testCase.tier === "idle" ? "recent" : expected;
-      expect(actual).toBe(resolved);
-    });
-  }
-});
-
 describe("account-wide Activity pane", () => {
-  it("groups waiting, failure, unreviewed, and live work without counting live as waiting", () => {
+  it("groups agents by the four board columns and folds Done under All", () => {
     const model = buildActivityPaneModel(snapshot([
       item({ id: "needs", phase: "needs_you", eventKind: "agent_needs_you" }),
       item({ id: "failed", phase: "failed", eventKind: "agent_failed" }),
       item({ id: "done", phase: "completed", eventKind: "agent_completed" }),
       item({ id: "live", phase: "running" }),
+      item({ id: "ci", phase: "running", boardColumn: "waiting", waitingReason: "ci" }),
       item({ id: "dismissed", phase: "needs_you", dismissedAt: "2026-07-29T01:00:00.000Z" }),
     ]));
 
-    expect(model.groups.map((group) => group.label)).toEqual([
-      "NEEDS YOU",
-      "FAILING OR BLOCKED",
-      "DONE, UNREVIEWED",
-      "LIVE NOW",
-    ]);
-    expect(model.waitingCount).toBe(3);
-    expect(model.liveCount).toBe(1);
+    expect(model.groups.map((group) => group.label)).toEqual(["NEEDS YOU", "WORKING", "WAITING"]);
+    expect(model.counts).toEqual({ needs_you: 2, working: 1, waiting: 1, done: 1 });
+    expect(model.foldedDoneCount).toBe(1);
     expect(model.items.map((entry) => entry.id)).not.toContain("dismissed");
+    expect(model.items.map((entry) => entry.id)).not.toContain("done");
+    // Done is one line in the list, not rows, until its chip is chosen.
+    expect(activityPaneEntries(model, 0).entries.some((entry) => entry.kind === "fold")).toBe(true);
+
+    const doneOnly = buildActivityPaneModel(model.snapshot, { column: "done" });
+    expect(doneOnly.groups.map((group) => group.label)).toEqual(["DONE"]);
+    expect(doneOnly.items.map((entry) => entry.id)).toEqual(["done"]);
+    expect(doneOnly.foldedDoneCount).toBe(0);
+    // The chip keeps every column's count, so the way back stays visible.
+    expect(doneOnly.counts).toEqual(model.counts);
+  });
+
+  it.each([
+    ["0", null],
+    ["1", "needs_you"],
+    ["2", "working"],
+    ["3", "waiting"],
+    ["4", "done"],
+    ["5", undefined],
+    ["x", undefined],
+  ] as const)("maps chip key %s to %s", (key, column) => {
+    expect(activityPaneChipForKey(key)).toBe(column);
+  });
+
+  it("labels the chips with counts and lights the one in force", () => {
+    const model = buildActivityPaneModel(snapshot([
+      item({ id: "needs", phase: "needs_you", eventKind: "agent_needs_you" }),
+      item({ id: "live", phase: "running" }),
+    ]), { column: "working" });
+    expect(activityPaneChips(model).map(({ label, count, selected }) => [label, count, selected])).toEqual([
+      ["All", 2, false],
+      ["Needs you", 1, false],
+      ["Working", 1, true],
+      ["Waiting", 0, false],
+      ["Done", 0, false],
+    ]);
   });
 
   // Activity is an AGENT feed on every surface. A lane with an open PR used to
@@ -186,14 +183,14 @@ describe("account-wide Activity pane", () => {
     ]));
 
     expect(model.groups.map((group) => group.label))
-      .toEqual(["FAILING OR BLOCKED", "NOTIFICATIONS"]);
-    expect(model.groups.find((group) => group.id === "failing")?.items
+      .toEqual(["NEEDS YOU", "NOTIFICATIONS"]);
+    expect(model.groups.find((group) => group.id === "needs_you")?.items
       .map((entry) => entry.id)).toEqual(["agent-failed"]);
     // An open PR nobody is waiting on is not a notification either.
     expect(model.groups.find((group) => group.id === "notifications")?.items
       .map((entry) => entry.id)).toEqual(["pr-checks"]);
-    // Agent bands are what the pane counts as waiting; notifications are not.
-    expect(model.waitingCount).toBe(1);
+    // Columns count agents only; a pull request is never in one.
+    expect(model.counts).toEqual({ needs_you: 1, working: 0, waiting: 0, done: 0 });
   });
 
   it("drops expired rows the way every other Activity surface does", () => {
@@ -208,74 +205,28 @@ describe("account-wide Activity pane", () => {
           expiresAt: "2026-07-29T01:00:00.000Z",
         }),
       ]),
-      now,
+      { now },
     );
 
     expect(model.items.map((entry) => entry.id)).toEqual(["live"]);
   });
 
-  it("files a failed overlay as failing, never as live working", () => {
-    const failed = item({ id: "failed", phase: "failed", eventKind: "agent_failed" });
-    const working = item({ id: "working", phase: "running" });
-    expect(groupForItem(failed)).toBe("failing");
-    expect(groupForItem(working)).toBe("live");
-    expect(activityItemMark(failed)).toMatchObject({ group: "failed", glyph: "×", tone: "error" });
-    expect(activityItemMark(working)).toMatchObject({ group: "working", glyph: "●", tone: "running" });
+  it.each([
+    ["a raised hand", { phase: "needs_you", eventKind: "agent_needs_you" }, "needs_you", "!", "attention"],
+    ["a failure, with its own red cross", { phase: "failed", eventKind: "agent_failed" }, "needs_you", "×", "error"],
+    ["a running turn", { phase: "running" }, "working", "●", "running"],
+    ["a planning turn, folded into Working", { phase: "running", chatActivityMode: "planning" }, "working", "●", "running"],
+    ["a published wait", { phase: "stale", boardColumn: "waiting", waitingReason: "snoozed" }, "waiting", "‖", "neutral"],
+    ["a session gone quiet, folded into Done", { phase: "stale", activityTier: "idle" }, "done", "✓", "done"],
+    ["a finished turn", { phase: "completed", eventKind: "agent_completed" }, "done", "✓", "done"],
+  ] as const)("marks %s", (_name, patch, column, glyph, tone) => {
+    expect(activityItemMark(item(patch as Partial<AttentionItem>))).toEqual({ column, glyph, tone });
   });
 
-  it("files a snoozed overlay as idle recent, never as live working or failed", () => {
-    // Publisher demotes snoozed (non-failed, non-needs-you) rows to stale +
-    // idle tier. The pane must consume that overlay, not revive it as LIVE NOW
-    // or paint it with the failed diamond the old phase switch used for stale.
-    const snoozed = item({
-      id: "snoozed",
-      phase: "stale",
-      activityTier: "idle",
-    });
-    const staleAmbient = item({ id: "stale", phase: "stale" });
-    expect(groupForItem(snoozed)).toBe("recent");
-    expect(groupForItem(staleAmbient)).toBe("recent");
-    expect(activityItemMark(snoozed)).toMatchObject({ group: "idle", glyph: "○", tone: "neutral" });
-    expect(activityItemMark(staleAmbient)).toMatchObject({ group: "idle", glyph: "○", tone: "neutral" });
-    const model = buildActivityPaneModel(snapshot([
-      snoozed,
-      staleAmbient,
-      item({ id: "working", phase: "running" }),
-    ]));
-    expect(model.liveCount).toBe(1);
-    expect(model.groups.find((group) => group.id === "live")?.items.map((entry) => entry.id))
-      .toEqual(["working"]);
-    expect(model.groups.find((group) => group.id === "recent")?.items.map((entry) => entry.id))
-      .toEqual(["snoozed", "stale"]);
-  });
-
-  it("marks planning apart from working and keeps needs-you off the live hues", () => {
-    expect(activityItemMark(item({
-      phase: "running",
-      chatActivityMode: "planning",
-    }))).toMatchObject({ group: "planning", glyph: "◐", tone: "violet" });
-    expect(activityItemMark(item({ phase: "needs_you", eventKind: "agent_needs_you" })))
-      .toMatchObject({ group: "needs-you", glyph: "!", tone: "attention" });
-    expect(activityItemMark(item({ phase: "completed", eventKind: "agent_completed" })))
-      .toMatchObject({ group: "done", glyph: "✓", tone: "done" });
-  });
-
-  it("files idle-tier roster history as recent instead of counting it as waiting", () => {
-    const model = buildActivityPaneModel(snapshot([
-      item({ id: "needs", phase: "needs_you", eventKind: "agent_needs_you" }),
-      item({
-        id: "ended",
-        phase: "completed",
-        eventKind: "agent_completed",
-        activityTier: "idle",
-      }),
-      item({ id: "idle", phase: "stale", activityTier: "idle" }),
-    ]));
-
-    expect(model.groups.map((group) => group.label)).toEqual(["NEEDS YOU", "RECENT"]);
-    expect(model.groups.find((group) => group.label === "RECENT")?.items
-      .map((entry) => entry.id)).toEqual(["idle", "ended"]);
-    expect(model.waitingCount).toBe(1);
+  it("leads a waiting row's context with what it waits on", () => {
+    expect(activityItemContext(item({ boardColumn: "waiting", waitingReason: "ci" })))
+      .toBe("CI running · ADE · attention · Studio");
+    expect(activityItemContext(item())).toBe("ADE · attention · Studio");
   });
 
   it("reports how long a row has held its phase, preferring the publisher's anchor", () => {

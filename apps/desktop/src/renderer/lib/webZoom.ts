@@ -91,6 +91,17 @@ export function applyHostedWebZoom(factor: number): void {
   paintHostedWebZoom();
 }
 
+/**
+ * A length taken from a rect (screen pixels) as layout pixels, the unit of
+ * `scrollTop`, `offsetHeight`, `clientHeight` and the stored row heights. Under
+ * hosted-web body zoom a rect is `appliedFactor` times its layout size; at
+ * factor 1, and in Electron, this is the identity. Reads the stored factor, so
+ * it costs no layout and is cheap to call per row.
+ */
+export function toLayoutPx(rectPx: number): number {
+  return rectPx / appliedFactor;
+}
+
 /** Test seam. */
 export function __resetHostedWebZoomForTests(): void {
   if (
@@ -127,4 +138,16 @@ export function __resetHostedWebZoomForTests(): void {
     root.style.width = "";
     root.style.overflow = "";
   }
+}
+
+/**
+ * The CSS zoom between an element's layout pixels and the rects it reports:
+ * 1 in Electron, the hosted-web factor under `body { zoom }`. Rects come back
+ * zoomed, but a `left`/`top` written into a style is zoomed again, so divide a
+ * measured rect by this before it becomes a style value.
+ */
+export function cssZoomOf(el: HTMLElement | null = typeof document === "undefined" ? null : document.body): number {
+  if (!el || !el.offsetWidth) return 1;
+  const zoom = el.getBoundingClientRect().width / el.offsetWidth;
+  return Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
 }

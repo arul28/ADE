@@ -8,6 +8,9 @@ import type { LaneSummary, OpenProjectBinding, TerminalSessionSummary } from "..
 import { useAppStore } from "../../state/appStore";
 import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
 import { ChipText } from "./ChipText";
+import { MarkdownBlock } from "./chatMarkdownBlock";
+import { ThreadEntityProvider } from "./threadEntities";
+import { ADE_NAVIGATE_TARGET_EVENT } from "../../lib/openExternal";
 import { resetChipPreviewCacheForTesting } from "./chipPreviewStore";
 import { chipFromMention, chipFromPath, chipFromSmartLink } from "../../../shared/chips";
 import { deriveSmartLinkPreview } from "../../../shared/smartLinks";
@@ -41,6 +44,7 @@ function laneChipText(): string {
 function renderInChatScope(
   text: string,
   machine: Partial<Pick<CrossMachineMachineLanes, "lanes" | "sessions">> = {},
+  laneId: string | null = null,
 ) {
   useAppStore.setState({
     crossMachineLanesByMachineId: {
@@ -61,7 +65,7 @@ function renderInChatScope(
     },
   });
   return render(
-    <ChatRuntimeScopeProvider pin={CHAT_BINDING} binding={CHAT_BINDING} laneId={null} sessionId={null}>
+    <ChatRuntimeScopeProvider pin={CHAT_BINDING} binding={CHAT_BINDING} laneId={laneId} sessionId={null}>
       <ChipText text={text} />
     </ChatRuntimeScopeProvider>,
   );
@@ -193,6 +197,65 @@ describe("ChipText", () => {
     await waitFor(() => expect(screen.getByRole("tooltip")).toBeTruthy());
     expect(screen.getByRole("tooltip").textContent).toContain("Composer chips defaults");
     expect(screen.getByRole("tooltip").textContent).toContain("Last activity 2m ago");
+  });
+
+  it("draws the lanes, chats and PRs a reply or a sent message names as live chips", () => {
+    const sessionId = "8b1f0c2e-33aa-4b7d-9f10-6d2a51c7e004";
+    useAppStore.setState({
+      crossMachineLanesByMachineId: {
+        macbook: {
+          machineId: "macbook", machineName: "MacBook Pro (97)", targetId: "macbook", projectId: "p1",
+          binding: CHAT_BINDING, online: true,
+          lanes: [{ id: LANE_ID, name: "thread-chips", branchRef: "ade/thread-chips", color: "#f472b6" } as LaneSummary],
+          sessions: [{ id: sessionId, title: "Audit findings" } as TerminalSessionSummary],
+          prs: [], lastSyncedAtMs: null, lanesSyncedAtMs: null, error: null,
+        },
+      },
+    });
+    const navigations: unknown[] = [];
+    const onNavigate = (event: Event) => navigations.push((event as CustomEvent<{ target: unknown }>).detail.target);
+    window.addEventListener(ADE_NAVIGATE_TARGET_EVENT, onNavigate);
+    try {
+      const { container } = render(
+        <ChatRuntimeScopeProvider pin={CHAT_BINDING} binding={CHAT_BINDING} laneId={null} sessionId={null}>
+          <ThreadEntityProvider>
+            <MarkdownBlock markdown={`Lane: \`thread-chips\` (\`${LANE_ID}\`), chat \`${sessionId}\`, merged in PR #1407.`} />
+            <ChipText text={`delete @lane:${LANE_ID}?`} />
+          </ThreadEntityProvider>
+        </ChatRuntimeScopeProvider>,
+      );
+
+      // Ids become names; the "(<id>)" echo of the same lane is gone.
+      expect(container.textContent).not.toContain(LANE_ID);
+      expect(container.textContent).not.toContain(sessionId);
+      // One lane chip in the reply, one in the sent message, both named.
+      expect(screen.getAllByRole("button", { name: /thread-chips/ })).toHaveLength(2);
+      expect(screen.getByRole("button", { name: /Audit findings/ })).toBeTruthy();
+
+      // A PR named by number alone opens through the in-app PR route.
+      fireEvent.click(screen.getByRole("button", { name: /#1407/ }));
+      expect(navigations).toEqual([{ kind: "pr", prNumber: 1407 }]);
+    } finally {
+      window.removeEventListener(ADE_NAVIGATE_TARGET_EVENT, onNavigate);
+    }
+  });
+
+  it("opens a bare commit chip in the chat's lane and machine", () => {
+    // A SHA in an agent reply names a commit of the lane this chat works in, on
+    // the machine this chat runs on. The chip carries neither on its own, so
+    // without the chat scope the click cannot resolve and shows the "lives on
+    // another machine" modal.
+    const sha = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+    const navigations: unknown[] = [];
+    const onNavigate = (event: Event) => navigations.push((event as CustomEvent<{ target: unknown }>).detail.target);
+    window.addEventListener(ADE_NAVIGATE_TARGET_EVENT, onNavigate);
+    try {
+      renderInChatScope(`fixed in ade://commit/${sha}`, {}, LANE_ID);
+      fireEvent.click(screen.getByRole("button"));
+      expect(navigations).toEqual([{ kind: "commit", sha, laneId: LANE_ID, machineId: "macbook" }]);
+    } finally {
+      window.removeEventListener(ADE_NAVIGATE_TARGET_EVENT, onNavigate);
+    }
   });
 
   it("shows no card at all when the lane is unknown", async () => {

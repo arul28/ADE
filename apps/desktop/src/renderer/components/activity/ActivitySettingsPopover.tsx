@@ -137,11 +137,7 @@ export function ActivitySettingsPopover() {
                 </span>
                 <span>
                   <strong>Activity settings</strong>
-                  <small>
-                    {model.notchSupported
-                      ? "Account delivery and this computer’s notch"
-                      : "Account delivery preferences"}
-                  </small>
+                  <small>Account delivery preferences</small>
                 </span>
               </div>
               <span className="activity-settings-account-badge">Account</span>
@@ -166,15 +162,15 @@ export function ActivitySettingsPopover() {
             <section>
               {/*
                 Routed through the app navigation bus rather than `useNavigate`:
-                Activity mounts outside the router in tests and in the notch,
-                and must not take a Router dependency.
+                Activity mounts outside the router in tests, and must not take
+                a Router dependency.
               */}
               <button
                 type="button"
                 className="activity-settings-open-full"
                 onClick={() => {
                   closePopover(true);
-                  navigateToAppTarget({ kind: "settings", tab: "activity" });
+                  navigateToAppTarget({ kind: "settings", tab: "notifications" });
                 }}
               >
                 All Activity settings

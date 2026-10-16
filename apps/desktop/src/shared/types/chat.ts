@@ -2,14 +2,32 @@
 // Agent chat types
 // ---------------------------------------------------------------------------
 
+/** ACP's `ToolKind` (agentclientprotocol.com, tool calls). */
+export type AcpToolKind =
+  | "read"
+  | "edit"
+  | "delete"
+  | "move"
+  | "search"
+  | "execute"
+  | "think"
+  | "fetch"
+  | "switch_mode"
+  | "other";
+
+import type { CodexVoicePreferences } from "../codexVoice";
 import type { ModelManifest } from "../modelManifest";
 import type { OpenCodeFastRoutes } from "../modelRegistry";
 import type { AdeCardPayload } from "../adeCard";
 import type { ChatErrorPresentation } from "../chatErrorPresentation";
+import type { ChatThreadComment } from "../threadComments";
+import type { ClaudePromptCache } from "../claudePromptCache";
+import type { ClaudePluginUiSnapshot } from "../claudePluginUi";
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
 import type { LaneGitHubIssue, LaneLinearIssue, SessionLinearIssueLink } from "./lanes";
+import type { LaneJiraIssue } from "./jira";
 import type { AdeRecoveryErrorCode } from "./recovery";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
 import type { RuntimeProcessSummary, SessionActivityReport } from "./sessions";
@@ -28,6 +46,9 @@ export const CHAT_STOP_REASON_PROVIDER_ENDED_TURN = "the provider ended the turn
 /** A workflow reached its end with agent rows still open — nothing crashed. */
 export const CHAT_STOP_REASON_WORKFLOW_ENDED = "the workflow ended";
 export const CHAT_STOP_REASON_CHAT_HANDED_OFF = "this chat was handed off to another model";
+
+/** The model Claude Code stamps on the messages it fabricates client-side (errors, refused images). Not a real model. */
+export const CLAUDE_SYNTHETIC_MODEL = "<synthetic>";
 
 /**
  * Who ended an agent's work, for the one card that has to say it out loud.
@@ -57,6 +78,7 @@ export type AgentChatProvider =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   | "qwen"
   | "kimi"
   | "grok"
@@ -68,7 +90,7 @@ export type AgentChatProvider =
  * one session-config shape, so surfaces branch on this list instead of naming
  * the four providers again.
  */
-export const ACP_CHAT_PROVIDERS = ["qwen", "kimi", "grok", "copilot"] as const;
+export const ACP_CHAT_PROVIDERS = ["qwen", "kimi", "grok", "copilot", "devin"] as const;
 export type AcpChatProvider = (typeof ACP_CHAT_PROVIDERS)[number];
 
 /**
@@ -96,6 +118,8 @@ export type AgentChatUsageAccount = {
   email?: string | null;
   /** Provider-side account or org id (ChatGPT account id, Factory org id). */
   accountId?: string | null;
+  /** The name the user gave this login (an OpenCode account's label). */
+  label?: string | null;
   /** Base URL for a local model server (LM Studio, Ollama). */
   endpoint?: string | null;
   plan?: string | null;
@@ -158,7 +182,7 @@ export type AgentChatPlanUsageUnit = "premium_request" | "nano_aiu" | "cursor_re
 export type AgentChatPlanUsage = { unit: AgentChatPlanUsageUnit; amount: number };
 
 /** Providers whose compactions ADE records. */
-export type AgentChatCompactProvider = "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi" | AcpChatProvider;
+export type AgentChatCompactProvider = "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi" | "muse" | AcpChatProvider;
 
 /**
  * `provider` means the runtime reported the compaction itself. `inferred`
@@ -320,6 +344,8 @@ export type AgentChatClaudePlugin = {
   source: "local";
   description?: string;
   version?: string;
+  /** True when the plugin has a hooks module: a mod, which may draw in the chat. */
+  isMod?: boolean;
 };
 export type AgentChatClaudePluginsArgs = {
   sessionId?: string;
@@ -353,6 +379,38 @@ export type AgentChatCodexConfigSource = "flags" | "config-toml";
 export type AgentChatCodexCollaborationMode = "default" | "plan";
 export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto" | "config-toml";
 export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high" | "agi";
+/**
+ * Muse Code's own approval modes (MSP `ApprovalMode`), most cautious first. The
+ * value is sent verbatim as `approvalMode` on `session/start` and
+ * `session/setApprovalMode`; Muse defines each mode, ADE only selects one.
+ */
+export type AgentChatMusePermissionMode = "denyUnmatched" | "promptUnmatched" | "onRequest" | "allowAll";
+export const AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES = [
+  "denyUnmatched",
+  "promptUnmatched",
+  "onRequest",
+  "allowAll",
+] as const satisfies readonly AgentChatMusePermissionMode[];
+export const DEFAULT_MUSE_PERMISSION_MODE: AgentChatMusePermissionMode = "onRequest";
+
+/** Shared copy for every Muse permission picker (chat, handoff, and CLI launch). */
+export const AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS: Record<
+  AgentChatMusePermissionMode,
+  { label: string; detail: string }
+> = {
+  denyUnmatched: { label: "Read-only", detail: "Muse refuses any tool call its rules do not already allow." },
+  promptUnmatched: { label: "Ask", detail: "Muse asks before any tool call its rules do not already allow." },
+  onRequest: { label: "Auto", detail: "Muse's default: sandboxed work runs, and Muse asks when it needs more." },
+  allowAll: { label: "Full access", detail: "Muse runs every tool call without asking." },
+};
+
+/** Muse's CLI only knows three approval words; the two cautious wire modes share `untrusted`. */
+export function museCliApprovalFlag(mode: AgentChatMusePermissionMode): "untrusted" | "on-request" | "never" {
+  if (mode === "allowAll") return "never";
+  if (mode === "onRequest") return "on-request";
+  return "untrusted";
+}
+
 /** Public Droid-native permission values accepted by chat creation surfaces. */
 export const AGENT_CHAT_DROID_PERMISSION_MODE_VALUES = [
   "read-only",
@@ -407,6 +465,11 @@ export type AgentChatSpawnCompletion = {
    * follows up. Omitted when the count is zero.
    */
   humanMessageCount?: number;
+  /**
+   * The machine the child ran on, when it is not the parent's. Shown on the
+   * parent's completion row ("· on Mac mini") with a read hint.
+   */
+  childMachineName?: string;
 };
 
 /**
@@ -417,6 +480,49 @@ export type AgentChatSpawnCompletion = {
  */
 export function spawnCompletedNoticeMessage(childTitle: string): string {
   return `Chat "${childTitle}" finished its turn`;
+}
+
+/** What a `spawn_completed` notice reports: the child chat, and where it ran. */
+export type SpawnCompletedNotice = {
+  /** Null when the notice's detail lost its completion (an old or truncated transcript). */
+  childSessionId: string | null;
+  childTitle: string;
+  childMachineName: string | null;
+};
+
+/**
+ * Inverts `spawnCompletedNoticeMessage` for a notice whose detail lost its
+ * completion, in EITHER wording: the current sentence, and the pre-rename
+ * `Peer "<title>" turn finished` that persisted transcripts still hold and are
+ * never re-emitted. One anchored match with a capture group, so a message that
+ * is not a completion notice fails to match instead of coming back mangled.
+ */
+const SPAWN_COMPLETED_TITLE_PATTERN = /^(?:Peer|Chat)\s+"?(.*?)"?\s+(?:turn finished|finished its turn)$/;
+
+/**
+ * The one reader of a `spawn_completed` notice, for every surface that draws
+ * or groups it. Null for any other event.
+ */
+export function readSpawnCompletedNotice(event: AgentChatEvent): SpawnCompletedNotice | null {
+  if (event.type !== "system_notice" || event.noticeKind !== "info" || event.status !== "spawn_completed") return null;
+  const completion = event.detail && typeof event.detail === "object" ? event.detail.spawnCompletion : undefined;
+  return {
+    childSessionId: completion?.childSessionId?.trim() || null,
+    childTitle: completion?.childTitle?.trim()
+      || SPAWN_COMPLETED_TITLE_PATTERN.exec(event.message)?.[1]?.trim()
+      || "Chat",
+    childMachineName: completion?.childMachineName?.trim() || null,
+  };
+}
+
+/**
+ * The voice conversation a notice reports, or null. One reader so the chat row,
+ * and anything else that wants the numbers, key on the same discriminator the
+ * producer sets instead of probing the shape of `detail`.
+ */
+export function readVoiceSessionNotice(event: AgentChatEvent): AgentChatVoiceSession | null {
+  if (event.type !== "system_notice" || event.status !== "voice_session") return null;
+  return event.voiceSession ?? null;
 }
 
 /** One-line notice when a child can no longer report to a deleted parent chat. */
@@ -437,7 +543,7 @@ export function spawnCompletionDeliveryFailedNoticeMessage(): string {
  * question text to show instead.
  *
  * One definition because this copy is not local to the chat pane: it becomes
- * the notch card's subtitle, the phone's push body and the lock screen preview.
+ * the Activity row's subtitle, the phone's push body and the lock screen preview.
  * Every provider used to spell its own variant of "<Provider> needs input
  * before it can continue" — a sentence about the agent where the user wanted a
  * sentence about them, and six places to fix when the wording changed.
@@ -466,7 +572,11 @@ export type AgentChatHostContinuationMetadata = {
     | "plan_followup"
     | "interrupted_turn_recovery"
     | "continuity_recovery"
-    | "cto_intro";
+    | "cto_intro"
+    /** A chat wait the agent armed fired (`chat.armWait`). */
+    | "chat_wait"
+    /** A background job the agent was waiting on ended. */
+    | "background_work_ended";
 };
 
 export type AgentChatContinuityRecovery = {
@@ -491,8 +601,41 @@ export type AgentChatNoticeDetailSection = {
   items: Array<string | AgentChatNoticeDetailMetric>;
 };
 
+/**
+ * A voice conversation that has ended, as the chat's own card reads it.
+ *
+ * Carried on the notice itself rather than inside `detail`. `detail` is what
+ * every other surface prints, and iOS renders an object `detail` as
+ * pretty-printed JSON — so `detail` keeps the readable transcript and the
+ * structured numbers ride beside it, where a decoder that does not know the
+ * field simply ignores it.
+ */
+export type AgentChatVoiceSession = {
+  durationMs: number;
+  /** Spoken turns the user took. */
+  requests: number;
+  /** Requests that actually reached the agent; a refused route is not one. */
+  handoffs: number;
+  /** True when the user asked for the call to end instead of pressing End. */
+  endedByVoice: boolean;
+  /** Why the call ended, when it was not the user ending it. */
+  error?: string | null;
+  transcript: Array<{ role: "user" | "assistant"; text: string }>;
+};
+
 export type AgentChatNoticeDetail = {
   kind?: "continuity_recovery" | "disk_pressure";
+  /**
+   * An ACP provider CLI older than the range ADE has tested. The notice row
+   * offers an Update button when `canUpdate` is true and the host can run it.
+   */
+  providerUpdate?: {
+    provider: AcpChatProvider;
+    installedVersion: string;
+    targetVersion: string;
+    canUpdate: boolean;
+    note: string | null;
+  };
   /**
    * The usage-snapshot account id a notice is about (`<provider>:<instanceId>`).
    *
@@ -556,6 +699,25 @@ export type AgentChatNoticeDetail = {
     targetSessionId: string;
   };
   /**
+   * The source chat's move record. Carried live-only (status
+   * `cross_machine_handoff_state`) so the banner follows it, and durably on the
+   * `cross_machine_handoff_ended` notice for a move that failed or was cancelled.
+   */
+  crossMachineHandoffState?: AgentChatCrossMachineHandoffRecord | null;
+  /**
+   * Written once on a DESTINATION chat when another machine's chat moved here
+   * (status `cross_machine_handoff_arrived`). The arrival banner reads it; it
+   * is not rendered as a transcript row.
+   */
+  crossMachineHandoffArrival?: {
+    handoffId: string;
+    sourceMachineName: string;
+    sourceSessionId: string;
+    mode: "brief" | "fork";
+    unpushedCommits: number;
+    changedFiles: number;
+  };
+  /**
    * Identity of one host sleep, carried by both halves of the pause/resume
    * chip (`status: "host_asleep"` then `"host_awake"`). The renderer folds the
    * two into a SINGLE transcript row by this id, so a machine that sleeps
@@ -571,7 +733,25 @@ export type AgentChatNoticeDetail = {
 
 export type AgentChatLocalFileRef = {
   path: string;
+  /**
+   * `"image"` sends the bytes as an image the model can see; `"file"` sends a
+   * path hint the agent opens with its own tools (Codex gets a staged copy).
+   * An inbound ref with no usable type is typed from its extension or
+   * `mimeType` by `normalizeInboundFileRef`.
+   */
   type: "file" | "image";
+  /**
+   * `false` makes the attachment reference-only: ADE never reads, copies, or
+   * stages its bytes, on any provider, and the model receives the path as a
+   * hint instead — an image included. For files that must not be downloaded
+   * as a side effect of sending, such as a macOS File Provider placeholder.
+   * Absent or `true` is the normal behavior.
+   */
+  hydrate?: boolean;
+  /** Optional MIME type from the sender; only consulted to infer `type`. */
+  mimeType?: string;
+  /** The file is a large plain-text paste whose contents are the user's task. */
+  intent?: "user_prompt";
 };
 
 export type AgentChatImageUrlRef = {
@@ -581,6 +761,13 @@ export type AgentChatImageUrlRef = {
 };
 
 export type AgentChatFileRef = AgentChatLocalFileRef | AgentChatImageUrlRef;
+
+export const DEFAULT_ATTACHMENT_ONLY_PROMPT = "Please review the attached files.";
+
+/** True when the attachment carries prompt text that must be restored before dispatch. */
+export function hasPastedTextPromptAttachment(attachments: readonly AgentChatFileRef[]): boolean {
+  return attachments.some((attachment) => attachment.type === "file" && attachment.intent === "user_prompt");
+}
 
 /**
  * Stage an attachment that already exists on the same machine as the main
@@ -669,20 +856,85 @@ export type AgentChatGitHubIssueContextAttachment = {
   attachedAt?: string;
 };
 
+export type AgentChatJiraIssueContextAttachment = {
+  type: "jira_issue";
+  issue: LaneJiraIssue;
+  source?: "manual" | "lane_link";
+  attachedAt?: string;
+};
+
 export type AgentChatContextAttachment =
   | AgentChatLinearIssueContextAttachment
-  | AgentChatGitHubIssueContextAttachment;
+  | AgentChatGitHubIssueContextAttachment
+  | AgentChatJiraIssueContextAttachment;
 
 /** Max attachments per parallel multi-lane launch (same refs sent to each child session). */
 export const PARALLEL_CHAT_MAX_ATTACHMENTS = 12;
 
-/** Infer whether a file path points to an image or a generic file. */
+/**
+ * Infer whether a file path points to an image or a generic file.
+ *
+ * The canonical image rule: a `mimeType` of `image/*` wins, then the path's
+ * extension. Twins that must apply the same rule word for word:
+ * `packages/sdk/src/attachments.ts` and the attachment inference in
+ * `packages/chat-ui/src/adapters/sdkClient.ts`. Change all three together.
+ */
 export function inferAttachmentType(
   filePath: string,
   mimeType?: string | null,
 ): AgentChatLocalFileRef["type"] {
   if (mimeType?.toLowerCase().startsWith("image/")) return "image";
   return isImageAttachmentPath(filePath) ? "image" : "file";
+}
+
+/** True when ADE must not read this attachment's bytes (see `AgentChatLocalFileRef.hydrate`). */
+export function attachmentIsReferenceOnly(attachment: { type: string; hydrate?: boolean }): boolean {
+  return attachment.type !== "image-url" && attachment.hydrate === false;
+}
+
+/**
+ * An attachment as a caller sent it, made safe to route: path trimmed, a
+ * missing or unknown `type` inferred from the extension or `mimeType` (so an
+ * image sent without one still reaches the model as an image), and `hydrate`
+ * kept only when it is the explicit `false` that changes behavior.
+ */
+export function normalizeInboundFileRef(attachment: AgentChatFileRef): AgentChatFileRef {
+  const pathValue = typeof attachment.path === "string" ? attachment.path.trim() : "";
+  if (attachment.type === "image-url") return { ...attachment, path: pathValue };
+  const record = attachment as AgentChatLocalFileRef & { type?: unknown; hydrate?: unknown; mimeType?: unknown };
+  const mimeType = typeof record.mimeType === "string" && record.mimeType.trim().length
+    ? record.mimeType.trim()
+    : null;
+  const type: AgentChatLocalFileRef["type"] = record.type === "file" || record.type === "image"
+    ? record.type
+    : inferAttachmentType(pathValue, mimeType);
+  const { hydrate: _hydrate, mimeType: _mimeType, intent: _intent, ...rest } = record;
+  return {
+    ...rest,
+    path: pathValue,
+    type,
+    ...(mimeType ? { mimeType } : {}),
+    ...(record.hydrate === false ? { hydrate: false } : {}),
+    ...(record.intent === "user_prompt" ? { intent: "user_prompt" as const } : {}),
+  };
+}
+
+/**
+ * The path an agent is told for an attachment: the absolute path ADE resolved
+ * and validated. A path relative to the caller's cwd means nothing to the
+ * agent's process. Falls back to the raw path only for a ref that was never
+ * resolved.
+ */
+export function attachmentAgentPath(attachment: { path: string; _resolvedPath?: string | null }): string {
+  return attachment._resolvedPath || attachment.path;
+}
+
+/**
+ * The path hint a provider gets for an attachment whose bytes ADE did not send
+ * (a `hydrate: false` reference, or a file a provider reads itself).
+ */
+export function attachmentPathHint(attachment: { path: string; _resolvedPath?: string | null }): string {
+  return `[File attached: ${attachmentAgentPath(attachment)}]`;
 }
 
 /** Merge two attachment lists, deduplicating by path (last-write wins). */
@@ -798,6 +1050,8 @@ export type CodexTokenUsageBreakdown = {
 };
 
 export type CodexThreadTokenUsage = {
+  compactAtTokens?: number;
+  compactAtSource?: "setting" | "provider";
   threadId?: string | null;
   turnId?: string | null;
   total?: CodexTokenUsageBreakdown;
@@ -818,7 +1072,8 @@ export type CodexThreadGoalStatus =
 export type CodexThreadGoal = {
   objective?: string | null;
   tokenBudget?: number | null;
-  status?: CodexThreadGoalStatus;
+  /** Muse sends status strings ADE does not name yet; the card shows those as active. */
+  status?: CodexThreadGoalStatus | (string & {});
   tokensUsed?: number | null;
   timeUsedSeconds?: number | null;
   createdAt?: string | null;
@@ -854,7 +1109,43 @@ export type AgentChatCompletionReport = {
 
 export type AgentChatRuntime = "local" | "cloud";
 
-export type AgentChatTextPhase = "commentary" | "final_answer";
+/**
+ * A Devin Cloud chat driven live over `devin acp --cloud` (the ACP relay).
+ * Present means the chat's turns run on a Devin VM through the ACP host.
+ */
+export type AgentChatDevinCloudConfig = {
+  transport: "acp";
+  /** `devin_version` config value: the cloud model (`devin-2-5`, `devin_lite`, `devin-swe-2-low`, …). */
+  version: string | null;
+  /** VM OS: `linux` | `macos` | `windows`. Null = Devin's default. */
+  platform: string | null;
+  /** `owner/repo` the session clones. */
+  repo: string | null;
+  /** The lane branch every turn is pinned to. */
+  branch: string | null;
+  /**
+   * True once the VM stands on `branch`: after the first turn carried the full
+   * branch instructions, or when the session was opened from a pull request
+   * whose head is the branch. Until then the next turn carries them.
+   */
+  pinned?: boolean;
+};
+
+/**
+ * The provider's own label for a piece of assistant text, when it sends one.
+ *
+ * - `commentary` — mid-turn narration (preamble, progress). Never the answer.
+ * - `partial_answer` — stable answer text that more output may follow. This is
+ *   *content*, not narration: codex emits it for a result it has finished
+ *   stating while it goes on to produce another, so the turn's terminal answer
+ *   does not repeat it.
+ * - `final_answer` — the turn's declared terminal answer.
+ *
+ * Only Codex labels these, and not for every model; absent means unknown and
+ * the reader falls back to position. See `chatTurnFold.ts` for how each one is
+ * treated at turn end.
+ */
+export type AgentChatTextPhase = "commentary" | "partial_answer" | "final_answer";
 
 /** Any provider the session importer lists can be opened as an ADE chat. */
 export type AgentChatImportProvider = ExternalSessionProvider;
@@ -921,6 +1212,30 @@ export type WorkBoardMoveTarget = "needs_you" | "working" | "done";
 /** Every column a card can currently BE in, including the derived one. */
 export type WorkBoardColumn = WorkBoardMoveTarget | "waiting";
 
+/** Every column in board order. */
+export const WORK_BOARD_COLUMNS = ["needs_you", "working", "waiting", "done"] as const;
+
+export function isWorkBoardColumn(value: unknown): value is WorkBoardColumn {
+  return typeof value === "string"
+    && (WORK_BOARD_COLUMNS as readonly string[]).includes(value);
+}
+
+/**
+ * Why a row sits in Waiting. Rendered as the card's reason chip. `scheduled`
+ * is a finished chat parked on a wake that has not come due yet
+ * (`scheduledWakeState`), so it is out of Done until it runs again. `subagent`
+ * is a finished chat whose subagent is still busy (`subagentKeepsParentBusy`):
+ * the subagent wakes it when its turn ends, so its Done is still to come.
+ */
+export type WorkBoardWaitingReason = "snoozed" | "ci" | "review" | "scheduled" | "subagent";
+
+export const WORK_BOARD_WAITING_REASONS = ["snoozed", "ci", "review", "scheduled", "subagent"] as const;
+
+export function isWorkBoardWaitingReason(value: unknown): value is WorkBoardWaitingReason {
+  return typeof value === "string"
+    && (WORK_BOARD_WAITING_REASONS as readonly string[]).includes(value);
+}
+
 /** The three columns a card can be dropped on, in board order. */
 export const WORK_BOARD_MOVE_TARGETS = ["needs_you", "working", "done"] as const;
 
@@ -935,6 +1250,15 @@ export const WORK_BOARD_COLUMN_LABEL: Record<WorkBoardColumn, string> = {
   working: "Working",
   waiting: "Waiting",
   done: "Done",
+};
+
+/** How each Waiting reason is written on screen — board card chip, Activity row tag. */
+export const WORK_BOARD_WAITING_REASON_LABEL: Record<WorkBoardWaitingReason, string> = {
+  snoozed: "Snoozed",
+  ci: "CI running",
+  review: "Review requested",
+  scheduled: "Wake scheduled",
+  subagent: "Subagent working",
 };
 
 /**
@@ -965,6 +1289,8 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
    * rather than assigning new work, so it never reassigns ownership of a
    * spawned child's current mission. */
   hostContinuation?: AgentChatHostContinuationMetadata;
+  /** Marks a request the user spoke in a Codex voice conversation. */
+  voiceInput?: { realtimeSessionId: string };
   /** Provenance on the replacement message created by Run next. */
   replayedFromUnprocessedSteer?: AgentChatUnprocessedReplayMetadata;
   /** Renderer-folded terminal state for the original unprocessed bubble. */
@@ -979,6 +1305,16 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
   usageLimitResume?: "manual";
   /** Marks the host-authored nudge that accompanies a Work-board drag. */
   boardMove?: AgentChatBoardMoveMetadata;
+  /** Marks a PR Watch / Ship wake. Renders as its card, never as a user bubble. */
+  prWatchWake?: AgentChatPrWatchWakeMetadata;
+};
+
+export type AgentChatPrWatchWakeMetadata = {
+  watchId: string;
+  prId: string;
+  githubPrNumber: number;
+  mode: "watch" | "ship";
+  card: AdeCardPayload;
 };
 
 export type AgentChatScheduledWorkKind =
@@ -1008,11 +1344,19 @@ export type AgentChatScheduledWorkOrigin =
   | "background_task"
   | "sdk";
 
-/** Files a backgrounded MCP task returned on `task_notification`. */
+/**
+ * A file or resource a tool pointed at: what a backgrounded MCP task returned
+ * on `task_notification`, or an MCP `resource_link` content item in a tool
+ * result (`tool_result.resourceLinks`, which always carries `uri`).
+ */
 export type AgentChatResourceLink = {
   uri?: string;
   name?: string;
   path?: string;
+  /** MCP `resource_link.title`, when the server sent one. */
+  title?: string;
+  /** MCP `resource_link.mimeType`, when the server sent one. */
+  mimeType?: string;
 };
 
 /**
@@ -1080,6 +1424,9 @@ export type AgentChatUserMessageDeliveryState =
   | "inline"
   | "failed";
 
+/** Why a `context_compact` event ended in `state: "failed"`. */
+export type ContextCompactFailReason = "interrupted" | "timed_out" | "teardown" | "provider_error" | "quota";
+
 export type AgentChatEvent =
   | {
       type: "user_message";
@@ -1129,6 +1476,12 @@ export type AgentChatEvent =
       type: "tool_call";
       tool: string;
       args: unknown;
+      /**
+       * The provider's own category for this tool, when its protocol has one
+       * (ACP `ToolKind`). Lets activity detection read tools whose names are
+       * free text.
+       */
+      toolKind?: AcpToolKind;
       mcp?: AgentChatMcpToolSource;
       itemId: string;
       logicalItemId?: string;
@@ -1162,6 +1515,14 @@ export type AgentChatEvent =
       sources?: ChatSourceRef[];
       /** Additional refs omitted from the mobile-only source preview. Never stored. */
       sourceRefsOmittedForMobile?: number;
+      /**
+       * MCP `resource_link` content items in this tool's result, as structured
+       * data (`uri` always present), so a host can act on them without
+       * scraping `result`. Present only when the provider hands ADE the MCP
+       * result content: Codex does, and so does Claude for its `mcp__` tools;
+       * see `parseMcpResultResourceLinks`.
+       */
+      resourceLinks?: AgentChatResourceLink[];
       timedOutAfterMs?: number;
       backgroundCwdHint?: string;
       grepTotals?: {
@@ -1233,7 +1594,7 @@ export type AgentChatEvent =
        * `kind` above describes the *shape* of the thing being confirmed and has
        * no word for "the agent asked you a question" — so Claude's
        * AskUserQuestion rode this event as a `tool_call` approval, and every
-       * downstream surface (push, the notch, the lock screen) offered
+       * downstream surface (push, Activity, the lock screen) offered
        * "Approve/Deny" for something that wants prose. The answer branches were
        * unreachable code.
        *
@@ -1332,6 +1693,8 @@ export type AgentChatEvent =
         cacheWrite1hTokens?: number | null;
         /** Model requests made during the turn, when the runtime counts them. */
         requestCount?: number | null;
+        /** When the turn's last model request started (Claude times its prompt cache from here). */
+        lastRequestStartedAt?: string | null;
       };
       costUsd?: number | null;
       /**
@@ -1505,6 +1868,12 @@ export type AgentChatEvent =
       workflowProgress?: AgentChatWorkflowProgress;
       spawnDepth?: number;
       resourceLinks?: AgentChatResourceLink[];
+      /**
+       * Why this subagent is parked, when it is waiting on something the user
+       * must resolve (an OpenCode permission card). A progress event without it
+       * clears a previously reported blocked state.
+       */
+      blockedReason?: string | null;
       turnId?: string;
     }
   | {
@@ -1628,6 +1997,7 @@ export type AgentChatEvent =
       origin?: AgentChatScheduledWorkOrigin;
       title?: string;
       summary?: string;
+      accountLabel?: string;
       prompt?: string;
       reason?: string;
       cron?: string;
@@ -1680,7 +2050,10 @@ export type AgentChatEvent =
       // legacy/completion-only sources (treated as "completed"). "failed" covers
       // interrupt, teardown, and a wall-clock stall so the divider cannot spin forever.
       state?: "started" | "completed" | "failed";
-      failReason?: "interrupted" | "timed_out" | "teardown";
+      failReason?: ContextCompactFailReason;
+      failDetail?: string;
+      summary?: string;
+      accountLabel?: string;
       turnId?: string;
     }
   | {
@@ -1689,7 +2062,10 @@ export type AgentChatEvent =
       state: "started" | "completed" | "failed";
       trigger: "manual" | "auto";
       compactionId?: string;
-      failReason?: "interrupted" | "timed_out" | "teardown";
+      failReason?: ContextCompactFailReason;
+      failDetail?: string;
+      summary?: string;
+      accountLabel?: string;
     }
   | {
       type: "codex_safety_buffering";
@@ -1757,6 +2133,16 @@ export type AgentChatEvent =
       turnId?: string;
     }
   | {
+      /**
+       * The staged queue's full order after a reorder. Surfaces that list
+       * queued messages sort by it; ids it does not name keep their place after
+       * the named ones.
+       */
+      type: "queue_reordered";
+      steerIds: string[];
+      turnId?: string;
+    }
+  | {
       type: "command_lifecycle";
       commandUuid: string;
       status: "queued" | "started" | "completed" | "cancelled" | "discarded";
@@ -1788,6 +2174,8 @@ export type AgentChatEvent =
       status?: string;
       message: string;
       detail?: string | AgentChatNoticeDetail;
+      /** Present only on `status: "voice_session"`; see `AgentChatVoiceSession`. */
+      voiceSession?: AgentChatVoiceSession;
       steerId?: string;
       turnId?: string;
     }
@@ -1952,6 +2340,13 @@ export type AgentChatEvent =
       files: TurnDiffFile[];
       totalAdditions: number;
       totalDeletions: number;
+      /**
+       * Paths in `files` that already had uncommitted changes when the turn
+       * started. A file rewind must not restore these from `beforeSha`: that
+       * would erase work the turn did not make. Absent on summaries written
+       * before ADE recorded it, and when the pre-turn snapshot failed.
+       */
+      dirtyAtStart?: string[];
     }
   | {
       /**
@@ -1964,8 +2359,16 @@ export type AgentChatEvent =
       title?: string;
       manuallyNamed?: boolean;
       claudeTag?: string | null;
+      /** What Claude mods draw for this chat right now, whole. Never stored. */
+      claudePluginUi?: ClaudePluginUiSnapshot;
       /** Signals that persisted envelope history changed and open views must refetch. */
       historyInvalidated?: boolean;
+      /**
+       * The chat's new `historyGeneration`, sent alongside `historyInvalidated`
+       * when an in-place rewrite bumped it. A client holding a cache for an
+       * older generation must drop it.
+       */
+      historyGeneration?: number;
       // Permission/interaction mode fields — emitted when a client (e.g. iOS)
       // changes the mode via updateSession so other renderers patch their
       // composer state without waiting for a turn-lifecycle event. All optional
@@ -1980,6 +2383,7 @@ export type AgentChatEvent =
       codexConfigSource?: AgentChatCodexConfigSource;
       opencodePermissionMode?: AgentChatOpenCodePermissionMode;
       droidPermissionMode?: AgentChatDroidPermissionMode;
+      musePermissionMode?: AgentChatMusePermissionMode;
       cursorModeId?: string | null;
       cursorModeSnapshot?: AgentChatCursorModeSnapshot;
       cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
@@ -1992,8 +2396,15 @@ export type AgentChatEvent =
        * See `AgentChatUsageLimitResume`.
        */
       usageLimitResume?: AgentChatUsageLimitResume | null;
+      /** The chat moved to this provider account (a user switch or a usage-limit move). */
+      instanceId?: string;
       spawnKind?: AgentChatSpawnKind;
       subagentTakeoverPromptShownAt?: string | null;
+      /**
+       * The chat's full list of pending thread comments, sent after every
+       * change. Absent means this patch is about something else.
+       */
+      threadComments?: ChatThreadComment[];
       // Accept turnId for uniformity with other variants — ignored by handlers.
       turnId?: string;
     };
@@ -2120,6 +2531,13 @@ export type AgentChatEventEnvelope = {
   timestamp: string;
   event: AgentChatEvent;
   sequence?: number;
+  /**
+   * Set only on a folded replay row (a run of adjacent streaming deltas
+   * collapsed into one envelope by the snapshot fold): the `sequence` of the
+   * first delta in the run. `sequence` carries the last one, so the row covers
+   * `[sequenceStart, sequence]`. Absent means the row covers `sequence` alone.
+   */
+  sequenceStart?: number;
   provenance?: {
     messageId?: string;
     providerMessageId?: string;
@@ -2143,16 +2561,12 @@ export type AgentChatEventEnvelope = {
     laneId?: string | null;
     runId?: string | null;
     /**
-     * The CTO voice call this event was produced by.
-     *
-     * A call runs its thinking on the CTO's own thread, so its turns are real
-     * turns and its tool calls are real tool calls — hiding them would be a
-     * lie. Instead every event a voice turn emits carries the call it belongs
-     * to, and the transcript folds a consecutive run of them into one call
-     * card. Stamped by `agentChatService` while a voice turn is running; no
-     * client may set it.
+     * True when `timestamp` is a deterministic ordering placeholder rather than
+     * a provider or local wall-clock time. Set by the subagent transcript
+     * builder when the provider handed back no real time for the row. Clients
+     * still ORDER by `timestamp`; they must not display it.
      */
-    voiceCallId?: string | null;
+    timestampSynthetic?: boolean;
   };
 };
 
@@ -2194,6 +2608,12 @@ export type AgentChatEventHistorySnapshot = {
    * transcript was not truncated at the file level (nothing older on disk).
    */
   tailStartOffset?: number | null;
+  /**
+   * Unresolved `approval_request` envelopes older than the window, reported
+   * separately instead of re-admitted into `events`. Only set when the caller
+   * asked for `separatePinnedEvents`.
+   */
+  pinnedEvents?: AgentChatEventEnvelope[];
 };
 
 export type AgentChatEventHistoryPage = {
@@ -2222,6 +2642,24 @@ export type AgentChatEventHistoryPage = {
    * clients must not clear or tombstone the chat on it.
    */
   unavailable?: boolean;
+  /**
+   * The chat's `historyGeneration` when this page was read. A page whose
+   * generation differs from the client's cached one belongs to a rewritten
+   * history. Omitted by hosts that predate it and for scopes that do not track
+   * one (personal and cross-project quick looks).
+   */
+  historyGeneration?: number;
+};
+
+/**
+ * Freshness of a chat's persisted event log. `historyGeneration` starts at 1
+ * and increases whenever the persisted history is rewritten in place, so
+ * sequences from an older generation cannot be trusted. `maxSequence` is the
+ * chat's durable envelope `sequence` high-water.
+ */
+export type AgentChatLogState = {
+  historyGeneration: number;
+  maxSequence: number;
 };
 
 export type AgentChatPermissionMode = "default" | "auto" | "plan" | "edit" | "full-auto" | "config-toml";
@@ -2281,6 +2719,13 @@ export type AgentChatInteractionMode =
  */
 export type SpawnLineageSessionFields = {
   orchestrationParentSessionId?: string;
+  /**
+   * The agent chat that launched this session, recorded only when the launch
+   * has no `orchestrationParentSessionId` (a parented spawn already carries its
+   * parent). A passive fact: it does not nest the session under the launcher,
+   * wake the launcher, or change permissions. Absent when unknown or parented.
+   */
+  launchedBySessionId?: string;
   spawnKind?: AgentChatSpawnKind;
   /**
    * When the takeover banner was dismissed or Take over was chosen. Brain-side
@@ -2295,6 +2740,25 @@ export type SpawnLineageSessionFields = {
 };
 export type AgentChatIdentityKey = "cto";
 export type AgentChatSurface = "work" | "automation" | "personal";
+/**
+ * What a personal (project-less) chat is for.
+ *
+ * - `assistant`: a chat started from ADE's own UI or CLI. A normal ADE chat
+ *   that is just not tied to a git project: ADE agent skills (minus the
+ *   lane-only ones), the user's own Claude settings and MCP servers, approval
+ *   cards, and a prompt that says it may use the shell, files, the ADE browser,
+ *   computer use and app control.
+ * - `embedded`: the SDK-host surface (`ade runtime run --profile embedded`,
+ *   packages/sdk). Neutral general-assistant prompt, no ADE skills, no user
+ *   settings unless the host asks. Exactly what personal chats did before
+ *   profiles existed.
+ *
+ * Absent means `embedded`, everywhere, legacy rows included. Only an explicit
+ * `assistant` turns the richer surface on, so an SDK host (which never sends
+ * the field) cannot gain skills or user MCP servers by omission. Meaningless
+ * on work and automation chats.
+ */
+export type AgentChatPersonalProfile = "assistant" | "embedded";
 export type AgentChatCursorConfigValue = string | boolean | number;
 export type AgentChatCursorConfigSelectOption = {
   value: string;
@@ -2369,7 +2833,7 @@ export type AgentChatAcpPermissionMode = "plan" | "default" | "auto-edit" | "aut
  * is `session/request_permission` in every dialect, so a card cannot tell them
  * apart and does not need to.
  */
-export type PendingInputSource = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "acp" | "ade";
+export type PendingInputSource = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "muse" | "acp" | "ade";
 export type PendingInputKind = "approval" | "question" | "structured_question" | "permissions" | "plan_approval" | "model_selection";
 
 export type PendingInputOption = {
@@ -2452,7 +2916,22 @@ export type HostSessionConfigFields = {
   permissionCapability?: AgentChatPermissionCapability;
 };
 
-export type AgentChatSession = {
+/**
+ * The attachment roots of a personal (SDK) chat, shared by the session, its
+ * summary and the create arguments.
+ */
+export type PersonalAttachmentRootsField = {
+  /**
+   * Personal (SDK) chats only: extra directories an absolute attachment path
+   * may point into, besides the runtime's attachment store and the chat's
+   * working directory. The chat service validates and canonicalizes them when
+   * they are set (`validatePersonalAttachmentRoots`) and refuses them on any
+   * other chat.
+   */
+  attachmentRoots?: string[];
+};
+
+export type AgentChatSession = PersonalAttachmentRootsField & {
   id: string;
   laneId: string;
   provider: AgentChatProvider;
@@ -2465,6 +2944,12 @@ export type AgentChatSession = {
   goal?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   /** Cursor Cloud service tier; absent/null means let Cursor choose. */
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
@@ -2520,7 +3005,10 @@ export type AgentChatSession = {
   /** Native Pi JSONL session pointer used for SDK resume and CLI handoff. */
   piSessionId?: string | null;
   piSessionFile?: string | null;
+  /** Muse Code MSP session id (UUIDv7) used for `session/resume` and CLI handoff. */
+  museSessionId?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
@@ -2555,8 +3043,15 @@ export type AgentChatSession = {
   cursorRuntime?: AgentChatRuntime;
   /** Turn id at which the session was first promoted to cloud (renders the system bubble). */
   cursorPromotedTurnId?: string;
+  /** Durable Devin cloud session id once this session has been promoted to cloud. */
+  devinSessionId?: string;
+  /** Default runtime for new turns in this session (set on promotion). */
+  devinRuntime?: AgentChatRuntime;
+  /** Set on Devin Cloud chats driven over the ACP relay. */
+  devinCloud?: AgentChatDevinCloudConfig | null;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
+  personalProfile?: AgentChatPersonalProfile;
   automationId?: string | null;
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
@@ -2570,6 +3065,8 @@ export type AgentChatSession = {
   /** Start of the currently active provider turn; live-only and cleared when idle. */
   currentTurnStartedAt?: string | null;
   idleSinceAt?: string | null;
+  /** Claude only. The chat's prompt cache after its last turn; absent until a turn writes one. */
+  promptCache?: ClaudePromptCache | null;
   archivedAt?: string | null;
   threadId?: string;
   continuityRecovery?: AgentChatContinuityRecovery;
@@ -2632,7 +3129,25 @@ export type AgentChatUsageLimitResume = {
   alternateAccount?: AgentChatUsageLimitAlternateAccount | null;
 };
 
-export type AgentChatSessionSummary = {
+/** The brain that holds a chat's provider process, as a client can reach it. */
+export type AgentChatRuntimeOwnerRef = {
+  pid: number;
+  /** Its control socket (a named pipe on Windows), when it has one. */
+  socketPath?: string;
+};
+
+export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
+  /** The chat's Compact first mode. Sent for Claude, Codex, Pi and OpenCode. */
+  compactionIdleMode?: "ask" | "always" | "never";
+  /** The Compact first floor for this chat; lowered by a brain started with `ADE_COMPACT_FIRST_MIN_TOKENS`. */
+  compactFirstMinTokens?: number;
+  /**
+   * How long this chat's prompt cache lives, in ms (Claude's measured 5m/1h,
+   * OpenAI's 30m, an hour when the model's vendor is unknown). A client with no
+   * cache table of its own — iOS — reads this.
+   */
+  compactFirstIdleMs?: number;
+  manualCompactAvailable?: boolean;
   sessionId: string;
   laneId: string;
   provider: AgentChatProvider;
@@ -2640,11 +3155,33 @@ export type AgentChatSessionSummary = {
   modelId?: ModelId;
   /** Completed model/provider transitions, oldest first. */
   modelHandoffHistory?: AgentChatModelHandoff[];
+  /** This chat's latest move to another machine, if any. */
+  crossMachineHandoff?: AgentChatCrossMachineHandoffRecord | null;
   sessionProfile?: AgentChatSessionProfile;
   title?: string | null;
+  /**
+   * Pinned to the top of the personal Chats rail. Set only on rows returned by
+   * `personalChats.list` / `setPinned`; Work pins live on the terminal session.
+   */
+  pinned?: boolean;
+  /**
+   * The agent's Chats-row reports, read from the session row. Set only on rows
+   * returned by `personalChats.list`; a Work row reads them from its terminal
+   * session summary instead.
+   */
+  activityStatus?: SessionActivityReport | null;
+  statusNote?: string | null;
+  attentionRequestedAt?: string | null;
+  attentionMessage?: string | null;
   goal?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
   codexServiceTier?: string | null;
@@ -2671,7 +3208,10 @@ export type AgentChatSessionSummary = {
   piModelId?: string | null;
   piSessionId?: string | null;
   piSessionFile?: string | null;
+  /** Muse Code MSP session id (UUIDv7) used for `session/resume` and CLI handoff. */
+  museSessionId?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   /** True when the host explicitly cleared Cursor's mode with `null`. */
@@ -2700,6 +3240,9 @@ export type AgentChatSessionSummary = {
   cursorCloudAgentId?: string;
   cursorRuntime?: AgentChatRuntime;
   cursorPromotedTurnId?: string;
+  devinSessionId?: string;
+  devinRuntime?: AgentChatRuntime;
+  devinCloud?: AgentChatDevinCloudConfig | null;
   identityKey?: AgentChatIdentityKey;
   /**
    * The spawning chat's identity, when it had one — `"cto"` for work the CTO
@@ -2708,6 +3251,7 @@ export type AgentChatSessionSummary = {
    */
   parentIdentityKey?: string | null;
   surface?: AgentChatSurface;
+  personalProfile?: AgentChatPersonalProfile;
   automationId?: string | null;
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
@@ -2720,6 +3264,8 @@ export type AgentChatSessionSummary = {
   /** Start of the currently active provider turn; null when no turn is running. */
   currentTurnStartedAt?: string | null;
   idleSinceAt?: string | null;
+  /** Claude only. The chat's prompt cache after its last turn; absent until a turn writes one. */
+  promptCache?: ClaudePromptCache | null;
   startedAt: string;
   endedAt: string | null;
   archivedAt?: string | null;
@@ -2759,6 +3305,14 @@ export type AgentChatSessionSummary = {
    * both.
    */
   claudeBackgroundJobShort?: string | null;
+  /**
+   * Work the live turn still has open (running commands, tool calls,
+   * foreground subagents, pending approvals), from the host's per-turn fold.
+   * Present (zero included) while a turn is live, omitted otherwise. An older
+   * host never sends it, so a missing count means unknown, not zero. A silent
+   * turn with open work is waiting on it; a silent turn with none may be stuck.
+   */
+  turnOpenWorkCount?: number;
   /** Authoritative provider-reported background tasks still running after the foreground turn. */
   activeBackgroundTaskCount?: number;
   /** The same live work split into working vs monitoring (`classifyBackgroundWorkKind`). */
@@ -2792,6 +3346,12 @@ export type AgentChatSessionSummary = {
    * unknown rather than as dead.
    */
   runtimeAlive?: boolean;
+  /**
+   * Set when another live ADE brain on the same ADE home holds this chat's
+   * provider process. This host cannot see that brain's turn, so its own
+   * `status` for the chat is not the truth: ask the owner (`socketPath`).
+   */
+  runtimeOwnedElsewhere?: AgentChatRuntimeOwnerRef;
   /** True when this chat's durable schedules are paused. */
   scheduledWorkPaused?: boolean;
   /** KV-backed durable schedules. This is the management source of truth. */
@@ -2849,6 +3409,14 @@ export type AgentChatSubagentSnapshot = {
   parentToolUseId?: string | null;
   description: string;
   status: "running" | "completed" | "failed" | "stopped";
+  /**
+   * Set while the child is parked on a pending user answer (an OpenCode
+   * permission or question card). The status stays "running" — the child is
+   * still an active member of the tree — but clients can present it as
+   * "blocked" from this field; the session-level `awaitingInput` state is the
+   * authority for `ade chat status`.
+   */
+  blockedReason?: string | null;
   turnId?: string;
   startTimestamp?: string;
   endTimestamp?: string;
@@ -2941,8 +3509,15 @@ export type AgentChatContextUsageCategory = {
 export type AgentChatContextUsage = {
   categories: AgentChatContextUsageCategory[];
   totalTokens: number;
+  /** The model's maximum context window. The meter fills against this. */
   maxTokens: number;
+  /**
+   * Claude SDK `raw_max_tokens`: the resolved auto-compact window (a setting,
+   * or the provider's policy window), not the model maximum.
+   */
   rawMaxTokens?: number;
+  compactAtTokens?: number;
+  compactAtSource?: "setting" | "provider";
   percentage: number;
   model?: string;
   // Typed per-turn breakdown for the composer meter's hover. The `categories`
@@ -2982,6 +3557,54 @@ export type AgentChatRewindFilesResult = {
   conversationRollback?: boolean;
   /** Links the SDK could not restore while otherwise completing the rewind. */
   skippedLinks?: number;
+  /**
+   * Files the turn changed that the rewind leaves as they are, because
+   * restoring them could erase work the turn did not make.
+   */
+  skippedFiles?: AgentChatRewindSkippedFile[];
+};
+
+export type AgentChatRewindSkippedFile = {
+  path: string;
+  /**
+   * `dirty_before_turn`: the file had uncommitted changes before the turn.
+   * `other_chat`: another chat in the same worktree changed it since.
+   * `unknown_start_state`: the turn was recorded before ADE kept its
+   * pre-turn state, so a restore cannot be shown to be safe.
+   */
+  reason: "dirty_before_turn" | "other_chat" | "unknown_start_state";
+};
+
+/**
+ * Run the chat's last user turn again: roll the provider conversation back to
+ * just before that turn, cut the turn out of the durable transcript, and send
+ * the message again. With `text`, the message is replaced first (edit last).
+ * Files the turn changed are not restored.
+ */
+export type AgentChatRerunLastTurnArgs = {
+  sessionId: string;
+  /** Replacement text. Omit to send the original message again. */
+  text?: string;
+  /** What the transcript shows for `text`, when it differs. Ignored without `text`. */
+  displayText?: string;
+  /** Replacement attachments. Omit to keep the original message's attachments. */
+  attachments?: AgentChatFileRef[];
+};
+
+export type AgentChatRerunLastTurnResult = {
+  /** The first `sequence` removed from the history. Every event at or after it is gone. */
+  retractedFromSequence: number;
+  /** The history generation after the cut. A cached history of an older generation is stale. */
+  historyGeneration: number;
+  /**
+   * How the provider conversation went back. `not_delivered`: the turn never
+   * reached the provider, so only the transcript changed.
+   */
+  conversationRollback:
+    | "claude_fork"
+    | "claude_new_session"
+    | "codex_thread"
+    | "not_delivered";
 };
 
 export type AgentChatClaudeSessionListArgs = {
@@ -3029,6 +3652,13 @@ export type AgentChatClaudeSessionMessage = {
   parentAgentId?: string | null;
   message: unknown;
   text?: string | null;
+  /**
+   * The provider's real time for this message, ISO-8601, when the runtime
+   * exposes one (OpenCode `info.time.created`, Codex turn/item time). Absent
+   * when the provider does not publish a per-message time — the subagent
+   * transcript then suppresses the clock instead of rendering a placeholder.
+   */
+  timestamp?: string | null;
   subagentMetadata?: AgentChatSubagentMetadata | null;
 };
 
@@ -3153,6 +3783,7 @@ export type AgentChatModelCatalog = {
 export type AgentChatModelCatalogRefreshProvider =
   | "opencode"
   | "pi"
+  | "muse"
   | "cursor"
   | "droid"
   | "lmstudio"
@@ -3160,7 +3791,8 @@ export type AgentChatModelCatalogRefreshProvider =
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 
 export type AgentChatModelCatalogMode = "cached" | "refresh-stale" | "force";
 
@@ -3194,6 +3826,18 @@ export type AgentChatMcpServerConfig =
     type: "http" | "sse";
     url: string;
     headers?: Record<string, string>;
+    /**
+     * The names of headers the host supplied, without their values.
+     *
+     * Header values are credentials (a Bearer token, typically), so ADE never
+     * writes them to durable chat state: the persisted record keeps the names
+     * here and drops `headers`. A chat reloaded after a runtime restart
+     * therefore comes back with `headerNames` and no `headers` until the host
+     * sends the servers again through `updateSession({ mcpServers })`, and the
+     * provider starts without those headers in the meantime (ADE says so in a
+     * `system_notice`). Ignored on input when `headers` is present.
+     */
+    headerNames?: string[];
   }
   | {
     type: "stdio";
@@ -3377,7 +4021,9 @@ export type AgentChatPermissionPolicy = {
   fallback: "ask" | "deny";
 };
 
-export type AgentChatCreateArgs = {
+export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
   laneId: string;
   provider: AgentChatProvider;
   model: string;
@@ -3386,7 +4032,18 @@ export type AgentChatCreateArgs = {
   sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
+  /**
+   * Start a Devin Cloud chat driven over the ACP relay. The chat's turns run on
+   * a Devin VM; `provider` must be `devin`.
+   */
+  devinCloud?: AgentChatDevinCloudConfig | null;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;
   permissionMode?: AgentChatPermissionMode;
@@ -3414,13 +4071,17 @@ export type AgentChatCreateArgs = {
   piModelId?: string | null;
   piSessionId?: string | null;
   piSessionFile?: string | null;
+  /** Muse Code MSP session id (UUIDv7) used for `session/resume` and CLI handoff. */
+  museSessionId?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
   acpPermissionMode?: AgentChatAcpPermissionMode;
   acpConfigSnapshot?: AgentChatAcpConfigSnapshot | null;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
+  personalProfile?: AgentChatPersonalProfile;
   automationId?: string | null;
   automationRunId?: string | null;
   openInUi?: boolean;
@@ -3568,10 +4229,12 @@ export type AgentChatCliLaunchProvider =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 
 /**
  * Launch a tracked CLI/terminal agent (not the in-process chat SDK) with one or
@@ -3581,6 +4244,8 @@ export type AgentChatCliLaunchProvider =
  * launch. Provider/model/permission build the startup command server-side.
  */
 export type AgentChatLaunchCliArgs = {
+  /** Codex only: "ultrafast" asks for Ultrafast when Fast is on. */
+  fastTier?: "ultrafast" | null;
   laneId: string;
   provider: AgentChatCliLaunchProvider;
   /** Runtime model ref for the provider's fresh-launch CLI flags. */
@@ -3613,6 +4278,8 @@ export type AgentChatLaunchCliArgs = {
   credentialId?: string | null;
   /** Foreground opens/focuses the session; background leaves focus alone. */
   disposition?: "foreground" | "background";
+  /** Who made the call; see `AgentChatRuntimeActor`. Stamped by the RPC server only. */
+  runtimeActor?: AgentChatRuntimeActor;
 };
 
 export type AgentChatLaunchCliResult = {
@@ -3643,7 +4310,7 @@ export type AgentChatRuntimeMode = "interactive" | "print";
  * from one of them is brief-only. Adding one here would promise a copied thread
  * that no dialect can produce.
  */
-export const HANDOFF_FORK_PROVIDERS = ["claude", "codex", "opencode", "droid", "cursor"] as const;
+export const HANDOFF_FORK_PROVIDERS = ["claude", "codex", "opencode", "droid", "cursor", "muse"] as const;
 
 export function providerSupportsHandoffFork(provider: AgentChatProvider | null | undefined): boolean {
   return provider != null && (HANDOFF_FORK_PROVIDERS as readonly string[]).includes(provider);
@@ -3661,15 +4328,18 @@ export function providerForkReplaysTranscript(provider: AgentChatProvider | null
 }
 
 /**
- * Droid can fork locally, but its session index is machine-local, so the
+ * Droid and Muse fork locally (Muse with MSP `session/fork`), but their
+ * session stores are machine-local (Muse's under `<museHome>/sessions`), so the
  * relocated-file resume path is not portable across ADE machines yet. Cursor's
  * fork is an ADE-side transcript replay with no transportable provider artifact
  * at all, so there is nothing to package for another machine. Derived from the
  * local set rather than restated, so adding a provider to one list cannot
  * silently leave the other behind.
  */
-export const CROSS_MACHINE_HANDOFF_FORK_PROVIDERS = HANDOFF_FORK_PROVIDERS
-  .filter((provider) => provider !== "droid" && !providerForkReplaysTranscript(provider));
+// Cross-machine fork now covers every handoff-capable provider: providers
+// without a native (portable) session use the ADE-side full-transcript replay
+// onto a fresh destination thread, which is machine-independent.
+export const CROSS_MACHINE_HANDOFF_FORK_PROVIDERS = HANDOFF_FORK_PROVIDERS;
 
 export function providerSupportsCrossMachineHandoffFork(provider: string | null | undefined): boolean {
   return provider != null
@@ -3690,12 +4360,22 @@ export type AgentChatHandoffArgs = {
   /** Optional user-authored note appended to the handoff prompt. Blank notes are ignored. */
   handoffNote?: string | null;
   /**
+   * Fork only: keep the conversation through this finished turn and drop the
+   * later ones ("Fork from here"). Omitted, or the latest turn, forks the
+   * whole chat.
+   */
+  throughTurnId?: string | null;
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
+  /**
    * When set (including `null` for "no extra reasoning"), combined with the target
    * model to pick a valid reasoning tier. When omitted, inherits from the source
    * session the same way as a legacy handoff.
    */
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /** "ultrafast" asks for Codex Ultrafast when Fast is on; absent/null is plain Fast. */
+  fastTier?: "ultrafast" | null;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;
   claudePermissionMode?: AgentChatClaudePermissionMode;
@@ -3704,6 +4384,7 @@ export type AgentChatHandoffArgs = {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   permissionMode?: AgentChatPermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
@@ -3733,12 +4414,15 @@ export type AgentChatCrossMachineTargetConfig = {
   targetModelId: ModelId;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /** "ultrafast" asks for Codex Ultrafast when Fast is on; absent/null is plain Fast. */
+  fastTier?: "ultrafast" | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   permissionMode?: AgentChatPermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
@@ -3790,6 +4474,27 @@ export type AgentChatCrossMachineHandoffCapsule = {
     /** True when older events were dropped to fit the transport cap. */
     truncated: boolean;
   };
+  /**
+   * Work no remote has: unpushed commits plus a snapshot commit of the
+   * working tree (tracked edits, deletes and untracked files; ignored files
+   * stay behind). Present only when the user opted in (`includeChanges`).
+   * The destination applies it into a new worktree with the edits uncommitted.
+   * See `handoffGitBundle.ts`.
+   */
+  gitBundle?: AgentChatCrossMachineGitBundle;
+};
+
+export type AgentChatCrossMachineGitBundle = {
+  /** `git bundle` bytes, base64. */
+  contentBase64: string;
+  bytes: number;
+  /** Branch tip the commits end at (equals `source.headSha`). */
+  branchHeadSha: string;
+  /** Snapshot commit on top of the tip holding the working tree. Null when clean. */
+  snapshotSha: string | null;
+  /** Commits that no remote has, from oldest to newest, excluding the snapshot. */
+  unpushedCommitCount: number;
+  changedFileCount: number;
 };
 
 /** Provider-native session files shipped inside a fork-mode capsule. */
@@ -3817,6 +4522,11 @@ export type AgentChatPrepareCrossMachineHandoffArgs = AgentChatCrossMachineTarge
   continuationPrompt?: string | null;
   /** Absent = brief. */
   mode?: "brief" | "fork";
+  /**
+   * Carry uncommitted and unpushed work as `capsule.gitBundle`. Relaxes the
+   * clean/published source requirement; a diverged branch still blocks.
+   */
+  includeChanges?: boolean;
 };
 
 export type AgentChatPrepareCrossMachineHandoffResult = {
@@ -3830,6 +4540,12 @@ export type AgentChatValidateCrossMachineSourceArgs = {
   sourceSessionId: string;
   capsule: AgentChatCrossMachineHandoffCapsule;
   capsuleFingerprint: string;
+  /**
+   * The move's own choice, which may differ from `Boolean(capsule.gitBundle)`:
+   * a move that asked for changes but had none to carry has no bundle, yet
+   * its source was checked under the relaxed rules. Absent = has a bundle.
+   */
+  includeChanges?: boolean;
 };
 
 export type AgentChatCrossMachineDestinationPreflightArgs = {
@@ -3840,6 +4556,11 @@ export type AgentChatCrossMachineDestinationPreflightArgs = {
   mode?: "brief" | "fork";
   /** Source chat provider, required for fork-support evaluation. */
   sourceProvider?: AgentChatProvider;
+  /**
+   * The capsule carries `gitBundle`: the source commit need not be on origin,
+   * and an existing lane/branch only has to be clean and at or behind it.
+   */
+  hasGitBundle?: boolean;
 };
 
 export type AgentChatCrossMachineDestinationPreflightResult = {
@@ -3867,6 +4588,12 @@ export type AgentChatCrossMachineDestinationPreflightResult = {
     laneName: string;
     behindBy: number;
   };
+  /**
+   * This destination can apply `capsule.gitBundle`. Absent on older
+   * destinations, which would silently drop the changes, so the source must
+   * refuse a bundle handoff unless this is true.
+   */
+  gitBundleSupport?: boolean;
 };
 
 export type AgentChatAcceptCrossMachineHandoffArgs = {
@@ -3888,6 +4615,188 @@ export type AgentChatMarkCrossMachineHandoffArgs = {
   targetMachineName: string;
   targetLaneId: string;
   targetSessionId: string;
+};
+
+/**
+ * A move of this chat to another machine, owned by the SOURCE brain
+ * (`crossMachineHandoffOrchestrator`). Persisted with the chat and projected
+ * onto its session summary, so every client (desktop banner, iOS, CLI) reads
+ * the same state whoever started the move.
+ *
+ * - `awaiting_approval`: an agent asked to move a chat that is not full-auto;
+ *   an Approve/Deny card is in the transcript.
+ * - `pending`: waits for the current turn to end. Any newer USER message
+ *   cancels it ("new instructions win").
+ * - `sending`: in flight; `checkpoint` names the last durable step passed.
+ * - `continued`: the destination chat started. The source stays usable; the
+ *   desktop routes new messages to the destination chat until the person
+ *   picks "Work here instead" (`resumedHere`). iOS asks "Continue on
+ *   <machine> / Work here instead" before a send.
+ * - `unknown`: the destination may have accepted but confirmation was lost.
+ *   Never auto-replayed; a retry reconciles through the destination record.
+ */
+export type AgentChatCrossMachineHandoffState =
+  | "awaiting_approval"
+  | "pending"
+  | "sending"
+  | "continued"
+  | "failed"
+  | "cancelled"
+  | "unknown";
+
+export type AgentChatCrossMachineHandoffCheckpoint =
+  | "prepared"
+  | "destination_ready"
+  | "accepted"
+  | "marked";
+
+export type AgentChatCrossMachineHandoffRecord = {
+  handoffId: string;
+  state: AgentChatCrossMachineHandoffState;
+  checkpoint: AgentChatCrossMachineHandoffCheckpoint | null;
+  targetMachineKey: string;
+  targetMachineName: string;
+  mode: "brief" | "fork";
+  targetModelId: ModelId;
+  /** Uncommitted and unpushed work travels as a git bundle. */
+  includeChanges: boolean;
+  requestedBy: "user" | "agent";
+  /**
+   * The permission level the destination chat would run with, in words
+   * ("ask before changes"). An agent's move runs there at the source chat's
+   * own level, mapped to the target model's provider (never broader), so the
+   * approval card can say exactly what it grants.
+   */
+  targetPermissionLabel?: string | null;
+  requestedAt: string;
+  updatedAt: string;
+  /** Plain-sentence reason for `failed`, `cancelled` and `unknown`. */
+  reason: string | null;
+  targetLaneId: string | null;
+  targetSessionId: string | null;
+  /**
+   * Where this chat last landed, kept across later move attempts: a second
+   * move that is cancelled or fails must not erase that the work already
+   * continues on another machine. Set when a move reaches `continued`.
+   */
+  continuedOn?: AgentChatCrossMachineContinuation | null;
+  /**
+   * The person chose to keep working here after the chat continued elsewhere.
+   * Until then, the source composer sends to the destination chat.
+   */
+  resumedHere: boolean;
+};
+
+export type AgentChatCrossMachineContinuation = {
+  handoffId: string;
+  targetMachineKey: string;
+  targetMachineName: string;
+  targetLaneId: string;
+  targetSessionId: string;
+  continuedAt: string;
+};
+
+/** Where the chat may go, and why not when it can't. */
+export type AgentChatCrossMachineHandoffMachineOption = {
+  machineKey: string;
+  name: string;
+  online: boolean;
+  /** Null when this machine can take the chat now. */
+  unavailableReason: string | null;
+  /** The repository is already registered there; false offers a clone. */
+  hasRepository: boolean | null;
+};
+
+/** Something on the source that blocks the move, with how to clear it. */
+export type AgentChatCrossMachineHandoffBlocker = {
+  id:
+    | "dirty"
+    | "unpushed"
+    | "no_upstream"
+    | "diverged"
+    | "behind"
+    | "rebasing"
+    | "merging"
+    | "no_origin"
+    | "awaiting_input"
+    | "move_in_progress"
+    /** The last move's answer was lost; retry it, check the other machine, or dismiss it. */
+    | "move_unknown"
+    | "not_work_chat";
+  title: string;
+  detail: string;
+  /** Moving uncommitted/unpushed work along clears this blocker. */
+  clearedByIncludeChanges: boolean;
+  /** Text an agent can act on ("run `ade git push --lane …`"). */
+  fixHint: string | null;
+};
+
+/** Every move action that needs only the source chat. */
+export type AgentChatCrossMachineHandoffSessionArgs = {
+  sourceSessionId: string;
+};
+
+export type AgentChatRetryCrossMachineHandoffArgs = AgentChatCrossMachineHandoffSessionArgs & {
+  /**
+   * Retry a fork that failed before it was packed as a brief: the same saved
+   * choices (machine, model, permissions, prompt, clone), only the mode changes.
+   */
+  asBrief?: boolean;
+};
+
+export type AgentChatCrossMachineHandoffOptionsResult = {
+  machines: AgentChatCrossMachineHandoffMachineOption[];
+  blockers: AgentChatCrossMachineHandoffBlocker[];
+  /** What `includeChanges` would carry, when the branch has any. */
+  changes: { unpushedCommits: number; changedFiles: number } | null;
+  current: AgentChatCrossMachineHandoffRecord | null;
+};
+
+export type AgentChatStartCrossMachineHandoffArgs = AgentChatCrossMachineTargetConfig & {
+  sourceSessionId: string;
+  /** Machine name or key, as listed by the options call. */
+  machine: string;
+  mode?: "brief" | "fork";
+  continuationPrompt?: string | null;
+  includeChanges?: boolean;
+  /** Clone the repository there when it is missing (GitHub only). */
+  clone?: boolean;
+  /** Queue until the current turn ends instead of refusing a busy chat. */
+  whenTurnEnds?: boolean;
+};
+
+/**
+ * What the destination would say about a move, asked through the source
+ * brain's own transport before anything is prepared or sent. The setup UI
+ * shows this instead of reaching the destination itself, so the review step
+ * describes the path the move actually takes.
+ */
+export type AgentChatPreviewCrossMachineHandoffArgs = {
+  sourceSessionId: string;
+  machine: string;
+  targetModelId: ModelId;
+  mode?: "brief" | "fork";
+  includeChanges?: boolean;
+};
+
+export type AgentChatPreviewCrossMachineHandoffResult = {
+  machineKey: string;
+  machineName: string;
+  /** False: the repository is not there yet; a move needs `clone`. */
+  hasRepository: boolean;
+  /** Null when the repository is missing (nothing to preflight yet). */
+  preflight: AgentChatCrossMachineDestinationPreflightResult | null;
+};
+
+export type AgentChatResolveCrossMachineHandoffApprovalArgs = {
+  sourceSessionId: string;
+  handoffId: string;
+  approve: boolean;
+};
+
+export type AgentChatAcknowledgeCrossMachineHandoffArgs = {
+  sourceSessionId: string;
+  handoffId: string;
 };
 
 /** Host-side emit of an `ade_card` transcript row. See `agentChatService.emitAdeCard`. */
@@ -3983,6 +4892,8 @@ export type AgentChatCloudOverrides = {
 };
 
 export type AgentChatSendArgs = {
+  /** Compact as a separate turn before this message; false overrides Always for this send. */
+  compactFirst?: boolean;
   sessionId: string;
   text: string;
   displayText?: string;
@@ -3996,6 +4907,14 @@ export type AgentChatSendArgs = {
   runtime?: AgentChatRuntime;
   /** Cloud-only launch overrides; ignored when runtime !== "cloud". */
   cloudOverrides?: AgentChatCloudOverrides;
+  /**
+   * True only for a send the user made from a composer that shows pending
+   * thread comments. The host then adds every comment marked for the next
+   * send to the message, as one review block, and removes them. Automated
+   * sends (agents, schedules, the CLI) leave it unset, so they never take a
+   * review the user has not sent.
+   */
+  includeThreadComments?: boolean;
 };
 
 export type AgentChatDispatchSteerMode = "inline" | "interrupt";
@@ -4020,9 +4939,11 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
  * three since `@cursor/sdk` 1.0.31 added `Run.steer()`, which injects a message
  * into the live local run; its interrupt still means something different from
  * Claude's — it cancels the run and resends on the same agent thread — which is
- * why `activeTurnInterruptContinues` keeps saying so. OpenCode takes the v2
- * session prompt's `delivery: "steer"` input into the live agent loop, so it
- * has "inline" and no interrupt mode. Everything else is queue-only.
+ * why `activeTurnInterruptContinues` keeps saying so. OpenCode 2.0 admits a
+ * mid-turn message to its session inbox: "inline" is `delivery: "steer"`,
+ * delivered at the next step boundary, and "queue" is delivered after the
+ * current reply, both inside the running execution. It has no
+ * interrupt-and-resend. Everything else is queue-only.
  *
  * Cursor's inline mode is effectively local-only. A cloud run implements
  * `Run.steer` but refuses every call, so a cloud turn degrades to a follow-up
@@ -4037,6 +4958,9 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
 export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, readonly ActiveTurnSendMode[]>> = {
   claude: ["inline", "queue", "interrupt"],
   codex: ["inline", "queue"],
+  // Muse: `turn/steer` joins the live turn, `turn/start` with `ifBusy: queue`
+  // stages it, and interrupt is `turn/interrupt` then a fresh turn.
+  muse: ["inline", "queue", "interrupt"],
   cursor: ["inline", "queue", "interrupt"],
   opencode: ["inline", "queue"],
   qwen: ["queue"],
@@ -4075,6 +4999,17 @@ export function activeTurnDispatchModes(
   return ACTIVE_TURN_DISPATCH_MODES[provider ?? ""] ?? QUEUE_ONLY_ACTIVE_TURN_MODES;
 }
 
+/**
+ * True when ADE itself holds `provider`'s staged queue and can change its
+ * order. Codex keeps follow-ups in its app-server queue keyed by message id,
+ * OpenCode in its own inbox, and Muse in its host queue (`turn/unqueue`);
+ * none has a move operation. iOS mirrors
+ * this by hand beside `ACTIVE_TURN_DISPATCH_MODES`.
+ */
+export function queuedSteersCanReorder(provider: AgentChatProvider | null | undefined): boolean {
+  return provider !== "codex" && provider !== "opencode" && provider !== "muse";
+}
+
 /** Pre-selected mode for a fresh session on `provider`. */
 export function defaultActiveTurnDispatchMode(
   provider: AgentChatProvider | null | undefined,
@@ -4091,6 +5026,38 @@ export function supportsActiveTurnDispatchMode(
 }
 
 /**
+ * True when `provider`'s "inline" channel can carry attachments (files, images,
+ * and context items such as browser or simulator captures).
+ *
+ * Cursor's `Run.steer(text)` takes text only, so a Cursor message with any
+ * attachment can never join the running turn: it is staged for after the turn,
+ * or sent through interrupt-and-continue, which starts a real turn that carries
+ * the attachments. Surfaces offering "inline" read this so they never offer a
+ * steer that is certain to be refused. iOS mirrors it by hand beside the table.
+ */
+export function activeTurnInlineCarriesAttachments(provider: AgentChatProvider | null | undefined): boolean {
+  return provider !== "cursor";
+}
+
+/**
+ * Why a message cannot be sent during the turn because of what it carries, or
+ * null when it can. Cursor's live-run steer takes text only
+ * (`activeTurnInlineCarriesAttachments`), so a message with images or other
+ * attachments waits for the turn or interrupts it; offering "Send during turn"
+ * would only queue it with a notice every time it was pressed.
+ */
+export function activeTurnInlineAttachmentBlock(
+  provider: AgentChatProvider | null | undefined,
+  message: { attachments: readonly AgentChatFileRef[]; contextAttachmentCount: number },
+): string | null {
+  if (activeTurnInlineCarriesAttachments(provider)) return null;
+  if (!message.attachments.length && message.contextAttachmentCount === 0) return null;
+  const imagesOnly = message.contextAttachmentCount === 0
+    && message.attachments.every((attachment) => attachment.type !== "file");
+  return `${imagesOnly ? "Images" : "Attachments"} can't join a running ${providerDisplayLabel(provider, "agent")} turn.`;
+}
+
+/**
  * True when the provider's "interrupt" cancels the live run and resends on the
  * same thread (so the turn continues from the new message) rather than folding
  * the message into the running query. Lives beside the table because it is the
@@ -4098,7 +5065,7 @@ export function supportsActiveTurnDispatchMode(
  * needs it. iOS mirrors it by hand alongside the table.
  */
 export function activeTurnInterruptContinues(provider: AgentChatProvider | null | undefined): boolean {
-  return provider === "cursor";
+  return provider === "cursor" || provider === "muse";
 }
 
 /**
@@ -4163,6 +5130,16 @@ export type AgentChatSteerArgs = {
    * thread), so read `activeTurnInterruptContinues` for the labelling fact.
    */
   dispatchMode?: AgentChatDispatchSteerMode;
+  /**
+   * A person typed this message in a composer (desktop, or a paired phone over
+   * sync). Claude only: a person's interrupt keeps a slow WebFetch or
+   * WebSearch running and moves a running Bash command to the background,
+   * instead of cancelling the fetch or waiting for the command. Agent and CLI
+   * senders leave it unset.
+   */
+  sentByUser?: boolean;
+  /** See `AgentChatSendArgs.includeThreadComments`. */
+  includeThreadComments?: boolean;
 };
 
 export type AgentChatSteerResult = {
@@ -4240,8 +5217,12 @@ export type AgentChatScheduledWorkItem = {
   /**
    * Provenance for rows ADE armed itself rather than the user or the agent.
    * Additive and optional: older clients simply ignore it.
+   *
+   * `auto_resume_limit` — armed when a turn died at a provider usage limit.
+   * `update_restart` — armed when the user accepted an ADE update while the
+   * chat had a live turn. See `shared/chatAutoResume.ts`.
    */
-  source?: "auto_resume_limit";
+  source?: "auto_resume_limit" | "update_restart";
 };
 
 export type AgentChatListScheduledWorkArgs = {
@@ -4283,6 +5264,24 @@ export type AgentChatCreateScheduledWorkResult = {
   item: AgentChatScheduledWorkItem;
   /** IANA timezone of the ADE brain that resolved the schedule. */
   timeZone: string;
+};
+
+/** One chat whose live turn an ADE restart would stop mid-flight. */
+export type AgentChatInterruptedChatRef = {
+  sessionId: string;
+  title: string;
+};
+
+export type AgentChatListInterruptedChatsResult = {
+  chats: AgentChatInterruptedChatRef[];
+};
+
+export type AgentChatArmUpdateResumeResult = {
+  /**
+   * The chats actually armed, re-read at arm time. A chat that finished its
+   * turn while the confirmation dialog was open is absent here.
+   */
+  chats: AgentChatInterruptedChatRef[];
 };
 
 export type AgentChatCancelScheduledWorkArgs = {
@@ -4342,6 +5341,21 @@ export type AgentChatContinueUsageLimitOnAlternateResult =
       message: string;
     };
 
+/** Move a chat to another account of its provider, keeping its thread. */
+export type AgentChatSwitchAccountArgs = {
+  sessionId: string;
+  instanceId: string;
+};
+
+export type AgentChatSwitchAccountResult =
+  | { ok: true; instanceId: string }
+  | {
+      ok: false;
+      reason: "busy" | "signed_out" | "failed";
+      /** Ready-to-render sentence; clients show it as-is. */
+      message: string;
+    };
+
 export type AgentChatCancelScheduledWorkResult = {
   schedule: AgentChatScheduledWorkItem;
   providerCancellationRequested: boolean;
@@ -4373,6 +5387,40 @@ export type AgentChatEditSteerArgs = {
   sessionId: string;
   steerId: string;
   text: string;
+};
+
+/**
+ * The model and settings this machine last launched or switched a chat to.
+ * Kept by the brain, one per machine, so every client (desktop, web, phone,
+ * TUI) opens a new chat on the same defaults instead of its own local memory.
+ */
+export type AgentChatLaunchDefaults = {
+  version: 1;
+  provider: AgentChatProvider;
+  modelId: string;
+  reasoningEffort: string | null;
+  fastMode: boolean;
+  executionMode?: AgentChatExecutionMode | null;
+  interactionMode?: AgentChatInteractionMode | null;
+  permissionMode?: AgentChatPermissionMode | null;
+  claudePermissionMode?: AgentChatClaudePermissionMode | null;
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy | null;
+  codexSandbox?: AgentChatCodexSandbox | null;
+  codexConfigSource?: AgentChatCodexConfigSource | null;
+  opencodePermissionMode?: AgentChatOpenCodePermissionMode | null;
+  droidPermissionMode?: AgentChatDroidPermissionMode | null;
+  musePermissionMode?: AgentChatMusePermissionMode | null;
+  acpPermissionMode?: AgentChatAcpPermissionMode | null;
+  cursorModeId?: string | null;
+  cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
+  updatedAt: string;
+};
+
+export type AgentChatMoveSteerArgs = {
+  sessionId: string;
+  steerId: string;
+  /** Destination position in the queue, 0 = delivered next. Clamped to the queue. */
+  toIndex: number;
 };
 
 export type AgentChatDispatchSteerArgs = {
@@ -4410,8 +5458,24 @@ export type AgentChatInterruptArgs = {
 export type AgentChatInterruptResult = {
   mode: AgentChatStopMode;
   cancelledQueuedCount: number;
+  /** Spawned chats (and their own children) a "+ child chats" stop interrupted mid-work. */
+  stoppedChildChatCount?: number;
   recoveryId?: string;
   recoveryExpiresAt?: string;
+};
+
+export type AgentChatRestartSessionArgs = {
+  sessionId: string;
+  /** Stop a running turn first instead of refusing. */
+  stopFirst?: boolean;
+};
+
+export type AgentChatRestartSessionResult = {
+  sessionId: string;
+  /** False when no provider process was running; the next message starts one either way. */
+  restarted: boolean;
+  stoppedTurn: boolean;
+  backgroundJobsStopped: number;
 };
 
 export type AgentChatStopTaskArgs = {
@@ -4423,6 +5487,57 @@ export type AgentChatStopTaskResult = {
   sessionId: string;
   taskId: string;
   stopped: boolean;
+  reason?: string;
+};
+
+/**
+ * Send a note to one subagent (`taskId` as the subagent row names it). A
+ * running subagent folds it in; one that already finished takes it as a
+ * follow-up task. Runtimes without per-subagent messaging refuse it.
+ */
+export type AgentChatMessageSubagentArgs = {
+  sessionId: string;
+  taskId: string;
+  text: string;
+};
+
+export type AgentChatMessageSubagentResult = {
+  sessionId: string;
+  taskId: string;
+  delivered: boolean;
+  /** `message` for a running subagent, `followup` for one that had finished. */
+  mode?: "message" | "followup";
+  reason?: string;
+};
+
+/**
+ * Per-subagent and per-workflow controls beyond Stop (`chat.stopTask`):
+ * interrupt the current step, resume, reopen or close a subagent; pause or
+ * resume a workflow run; skip or retry one workflow child (`childId` +
+ * `attempt`, as the workflow item reports them).
+ */
+export type AgentChatSubagentControlAction =
+  | "interrupt"
+  | "resume"
+  | "reopen"
+  | "close"
+  | "pause"
+  | "skip_child"
+  | "retry_child";
+
+export type AgentChatControlSubagentArgs = {
+  sessionId: string;
+  taskId: string;
+  action: AgentChatSubagentControlAction;
+  childId?: string;
+  attempt?: number;
+  reason?: string;
+};
+
+export type AgentChatControlSubagentResult = {
+  sessionId: string;
+  taskId: string;
+  applied: boolean;
   reason?: string;
 };
 
@@ -4513,15 +5628,70 @@ export type AgentChatCodexGetGoalArgs = {
 export type AgentChatCodexSetGoalArgs = {
   sessionId: string;
   objective: string;
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
+};
+
+/**
+ * Experimental Codex voice: the renderer's WebRTC offer for a realtime
+ * session on this chat's Codex thread. Audio flows between the renderer and
+ * OpenAI; ADE only relays the SDP and tracks the session's transcript.
+ */
+export type AgentChatCodexRealtimeStartArgs = {
+  sessionId: string;
+  sdp: string;
+  /** The user's voice settings; the brain normalizes whatever arrives. */
+  preferences?: CodexVoicePreferences | null;
+};
+
+export type AgentChatCodexRealtimeStartResult = {
+  threadId: string;
+  /** The remote SDP answer to apply with `setRemoteDescription`. */
+  sdp: string;
+  /** Names this voice session; later reads and stops carry it. */
+  token: string;
+};
+
+export type AgentChatCodexRealtimeStopArgs = {
+  sessionId: string;
+  /** When set, stop only if this session is still the chat's current one. */
+  token?: string;
+};
+
+export type AgentChatCodexRealtimeStateArgs = {
+  sessionId: string;
+  token: string;
+};
+
+export type AgentChatCodexRealtimeCaption = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  final: boolean;
+};
+
+export type AgentChatCodexRealtimeState = {
+  /** `ended` once the session is gone: stopped, closed by OpenAI, or replaced. */
+  status: "live" | "ended";
+  /** True while Codex runs a turn on this chat, e.g. work handed off by voice. */
+  working: boolean;
+  /** The latest few spoken lines, oldest first. */
+  captions: AgentChatCodexRealtimeCaption[];
+  handoffs: number;
+  error: string | null;
 };
 
 export type AgentChatCodexSetGoalStatusArgs = {
   sessionId: string;
   status: Extract<CodexThreadGoalStatus, "active" | "paused" | "blocked" | "complete">;
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
 };
 
 export type AgentChatCodexClearGoalArgs = {
   sessionId: string;
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
 };
 
 export type AgentChatCodexResetMemoryArgs = {
@@ -4587,8 +5757,25 @@ export type AgentChatDismissSubagentTakeoverPromptArgs = {
   sessionId: string;
 };
 
+/**
+ * Who asked for a chat create, update or fork, stamped by the runtime's RPC
+ * layer for every caller that is not one of the user's own clients. Whatever a
+ * caller sends in this field is discarded first, so it can only come from the
+ * runtime. Absent means a person (desktop, web, phone).
+ *
+ * An `agent` actor can never give any chat more permission than its own chat
+ * has, and a spawned chat is also capped at its parent; an agent's chats and
+ * settings never move the machine's launch defaults. The CTO is trusted with
+ * permissions but, like an agent, does not move the launch defaults.
+ */
+export type AgentChatRuntimeActor =
+  | { kind: "agent"; chatSessionId: string | null }
+  | { kind: "cto" };
+
 export type AgentChatUpdateSessionArgs = {
   sessionId: string;
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
   title?: string | null;
   tag?: string | null;
   manuallyNamed?: boolean;
@@ -4596,8 +5783,20 @@ export type AgentChatUpdateSessionArgs = {
   /** Persist that the takeover banner was shown and answered or dismissed. */
   subagentTakeoverPromptShown?: boolean;
   modelId?: ModelId;
+  /**
+   * Move the chat onto a saved preset (its harness and its model; `modelId` is
+   * then ignored), or `null` to leave the one it runs on. A `modelId` alone
+   * leaves a preset only when it names another model.
+   */
+  presetId?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;
@@ -4609,11 +5808,29 @@ export type AgentChatUpdateSessionArgs = {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
   acpPermissionMode?: AgentChatAcpPermissionMode;
   acpConfigSnapshot?: AgentChatAcpConfigSnapshot | null;
   autoContinueAtUsageLimit?: boolean;
+  /**
+   * Replace the caller-injected MCP servers of a PERSONAL chat, wholesale.
+   *
+   * Validated exactly like create (`parseCallerMcpServers`: names, reserved
+   * names, the 32-server cap, transport per provider). `{}` or `null` removes
+   * every caller server. Refused on any other surface and while a turn is in
+   * flight. The provider process is restarted so the next turn dials the new
+   * url and headers; the conversation resumes where it was. This is also how a
+   * host re-supplies header values after a runtime restart, since ADE never
+   * stores them (see `AgentChatMcpServerConfig.headerNames`).
+   */
+  mcpServers?: Record<string, AgentChatMcpServerConfig> | null;
+  /**
+   * Personal (SDK) chats only: replaces the chat's `attachmentRoots`. `null` or
+   * an empty list clears them. Refused on any other chat.
+   */
+  attachmentRoots?: string[] | null;
 };
 
 export const AGENT_CHAT_SESSION_METADATA_FIELDS = ["title", "laneName", "statusLine"] as const;
@@ -4643,15 +5860,13 @@ export type AgentChatRegenerateSessionMetadataResult = {
   skipped: AgentChatSessionMetadataField[];
   modelId: string | null;
   /**
-   * The last model failure of the naming chain, when every attempt failed.
+   * Why nothing was generated, when no model produced usable names.
    *
-   * Generation falls back to a deterministic name rather than throwing, so a
-   * caller that only sees `applied: []` cannot tell an auth failure from a
-   * concurrent rename. Null when a model answered.
+   * Generation then keeps the current values and reports this rather than
+   * throwing, so a caller that only sees `applied: []` can tell an auth or
+   * usage-limit failure from a concurrent rename. Null when a model answered.
    */
   generationError?: string | null;
-  /** True when no model answered and the deterministic name was used instead. */
-  usedDeterministicFallback?: boolean;
 };
 
 export type AgentChatSlashCommand = {
@@ -4659,6 +5874,11 @@ export type AgentChatSlashCommand = {
   description: string;
   argumentHint?: string;
   source: "sdk" | "local";
+  /** Menu classification. Providers that know it set it; else the menu infers. */
+  kind?: "command" | "skill" | "mcp";
+  origin?: "project" | "user" | "plugin" | "provider";
+  /** MCP server a prompt belongs to. */
+  server?: string;
 };
 
 export type AgentChatSlashCommandsArgs = {
@@ -4688,32 +5908,151 @@ export type AgentChatFileSearchResult = {
   score?: number;
 };
 
-export type PromptStashEntry = {
+/**
+ * Drafts replaced the old "prompt stash". A draft is unsent composer state that
+ * survives across machines; a *scheduled* draft additionally carries a fire
+ * time and is delivered as a real user turn by whichever machine owns the
+ * target chat. `prompt_stashes` remains the physical table name on purpose:
+ * cr-sqlite forbids renaming a CRR wholesale (kvDb's `crsql_begin_alter`
+ * path only supports added columns), and the table replicates to every paired
+ * machine, so a rename would strand peers on the old schema.
+ */
+export type DraftKind = "draft" | "scheduled";
+
+export type DraftStatus =
+  /** A plain draft; nothing is armed. */
+  | "draft"
+  /** Armed and waiting for its fire time. */
+  | "scheduled"
+  /** Claimed by the owning machine; the send is in flight. */
+  | "sending"
+  /** Delivered. */
+  | "sent"
+  /** The fire time passed and the policy refused to deliver late. */
+  | "missed"
+  /** Delivery cannot proceed until the user acts (target chat gone, images not yet on the target). */
+  | "blocked"
+  /** Cancelled by the user or an agent. */
+  | "cancelled";
+
+/** What happens when the fire time arrives and the send cannot go out. */
+export type DraftDeliveryPolicy = "wait" | "strict" | "grace";
+
+export type DraftTargetKind = "existing" | "new";
+
+/** Who armed the send. Agents are first-class here (see actionPolicy). */
+export type DraftScheduledBy = "user" | "agent";
+
+export type DraftEntry = {
   id: string;
   text: string;
   /** Absent when talking to a pre-attachment ADE runtime. */
   attachments?: AgentChatFileRef[];
   /** Includes images that exist only on the originating ADE runtime. */
   attachmentCount?: number;
-  /** False when this synced runtime does not own the stash's image files. */
+  /** False when this synced runtime does not own the draft's image files. */
   attachmentsAvailable?: boolean;
   provider: string | null;
   modelId: string | null;
+  /** The runtime-facing model string the composer would launch with. */
+  model?: string | null;
   createdAt: string;
+  updatedAt?: string;
+  /** Absent on a pre-scheduling ADE runtime — treat as "draft". */
+  kind?: DraftKind;
+  status?: DraftStatus;
+  /** ISO fire time, meaning the *target machine's* local time. */
+  scheduledAt?: string | null;
+  deliveryPolicy?: DraftDeliveryPolicy;
+  /** Only meaningful with `deliveryPolicy: "grace"`. */
+  graceSeconds?: number;
+  targetKind?: DraftTargetKind;
+  /** Existing-chat target. */
+  targetSessionId?: string | null;
+  /** New-chat target. */
+  targetLaneId?: string | null;
+  /** The machine/runtime whose local time and chat the send belongs to. */
+  targetMachineKey?: string | null;
+  /** The chat this draft was written in, used as a default target hint. */
+  originSessionId?: string | null;
+  permissionMode?: string | null;
+  thinking?: string | null;
+  scheduledBy?: DraftScheduledBy;
+  /** Set only when `scheduledBy` is "agent". */
+  scheduledBySessionId?: string | null;
+  firedAt?: string | null;
+  /** Why a scheduled draft is blocked or missed, for the Needs-you row. */
+  lastError?: string | null;
 };
 
-export const MAX_PROMPT_STASHES = 20;
-export const MAX_PROMPT_STASH_ATTACHMENTS = 10;
+/** Plain drafts keep the original 20-row ceiling. */
+export const MAX_DRAFTS = 20;
+/** Scheduled drafts are exempt from the draft prune and capped separately. */
+export const MAX_SCHEDULED_DRAFTS = 50;
+export const MAX_DRAFT_ATTACHMENTS = 10;
+/** A schedule may be armed at most a year ahead. */
+export const MAX_DRAFT_SCHEDULE_LEAD_MS = 365 * 24 * 60 * 60 * 1000;
+/** A "grace" policy may not hold a send longer than a day. */
+export const MAX_DRAFT_GRACE_SECONDS = 24 * 60 * 60;
 
-export type PromptStashCreateArgs = {
+export type DraftCreateArgs = {
   text: string;
   attachments?: AgentChatFileRef[];
   provider?: string | null;
   modelId?: string | null;
+  /** Runtime-facing model string; carried through to a new-chat schedule. */
+  model?: string | null;
+  originSessionId?: string | null;
+  /** Supply to arm a schedule in the same call. */
+  schedule?: DraftScheduleInput;
 };
 
-export type PromptStashDeleteArgs = {
+/** Read one draft by id, without the list's retention window. */
+export type DraftGetArgs = DraftIdArgs;
+
+export type DraftScheduleInput = {
+  /** ISO-8601 with an explicit offset or Z. Must be in the future. */
+  scheduledAt: string;
+  targetKind: DraftTargetKind;
+  targetSessionId?: string | null;
+  targetLaneId?: string | null;
+  targetMachineKey?: string | null;
+  deliveryPolicy?: DraftDeliveryPolicy;
+  graceSeconds?: number;
+  provider?: string | null;
+  modelId?: string | null;
+  /** Runtime-facing model string; required when `targetKind` is "new". */
+  model?: string | null;
+  permissionMode?: string | null;
+  thinking?: string | null;
+  scheduledBy?: DraftScheduledBy;
+  scheduledBySessionId?: string | null;
+};
+
+/**
+ * Every draft operation that names exactly one row — get, claim, delete, send
+ * now — takes this shape, so a send is not typed as a delete.
+ */
+export type DraftIdArgs = {
   id: string;
+};
+
+export type DraftDeleteArgs = DraftIdArgs;
+
+/**
+ * Claim a draft before putting it in a composer. The runtime deletes the row
+ * and only the caller that wins the claim is allowed to fill its composer, so
+ * two machines can never both hold the same text.
+ */
+export type DraftClaimArgs = DraftIdArgs;
+
+/** Update a draft in place: edit its text, or retime/reconfigure a schedule. */
+export type DraftUpdateArgs = {
+  id: string;
+  text?: string;
+  schedule?: DraftScheduleInput | null;
+  /** Drop an armed schedule, returning the row to a plain draft. */
+  unschedule?: boolean;
 };
 
 export type TurnDiffFile = {

@@ -32,6 +32,17 @@ struct WorkModelPickerSheet: View {
   /// a narrower contract than "every configured model" pass one — the CTO only
   /// accepts providers that can redirect a live turn.
   let modelFilter: ((WorkModelOption) -> Bool)?
+  /// The connected machine's saved Custom harnesses, from
+  /// `account.getMachineInventory`. Empty against a host that does not
+  /// advertise the action, which also hides the Custom rail entry.
+  let harnessPresets: [SyncMachineInventoryPreset]
+  /// Launching with a preset is only meaningful where the caller can carry the
+  /// id through its create/launch call. Surfaces that cannot pass one leave
+  /// this nil and never see the Custom section.
+  let onSelectPreset: ((SyncMachineInventoryPreset) -> Void)?
+  /// The preset the surface currently runs on, so the Custom list marks the
+  /// chosen setup by its id rather than by "some row shares its model".
+  let selectedPresetId: String?
   let onSelect: (WorkModelOption, String?, String, Bool) -> Void
 
   init(
@@ -43,8 +54,11 @@ struct WorkModelPickerSheet: View {
     cursorAvailabilityMode: WorkCursorAvailabilityMode = .chat,
     lanes: [LaneSummary] = [],
     commandScope: WorkModelPickerScope = .project,
+    harnessPresets: [SyncMachineInventoryPreset] = [],
     isBusy: Bool,
     modelFilter: ((WorkModelOption) -> Bool)? = nil,
+    onSelectPreset: ((SyncMachineInventoryPreset) -> Void)? = nil,
+    selectedPresetId: String? = nil,
     onSelect: @escaping (WorkModelOption, String?, String, Bool) -> Void
   ) {
     self.currentModelId = currentModelId
@@ -57,6 +71,9 @@ struct WorkModelPickerSheet: View {
     self.commandScope = commandScope
     self.isBusy = isBusy
     self.modelFilter = modelFilter
+    self.harnessPresets = harnessPresets
+    self.onSelectPreset = onSelectPreset
+    self.selectedPresetId = selectedPresetId
     self.onSelect = onSelect
     _selectedModelId = State(initialValue: currentModelId)
     _selectedRuntimeProvider = State(initialValue: currentProvider)
@@ -128,14 +145,34 @@ struct WorkModelPickerSheet: View {
     Dictionary(flattenedModels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
   }
 
-  /// Rail entries: Favorites + Recents first, then one row per provider that
-  /// has at least one model in the active catalog.
+  /// Rail entries, in the desktop rail's order: Custom first, then Favorites
+  /// and Recents, then one row per provider with models in the active catalog.
+  /// A saved setup is a whole launch configuration, so it is the first thing to
+  /// reach for when you have one.
   private var railEntries: [ModelPickerRailEntry] {
-    var entries: [ModelPickerRailEntry] = [.favorites, .recents]
+    var entries: [ModelPickerRailEntry] = []
+    if !harnessPresets.isEmpty, onSelectPreset != nil {
+      entries.append(.custom)
+    }
+    entries.append(contentsOf: [.favorites, .recents])
     for group in catalog {
       entries.append(.providerGroup(key: group.key, label: groupLabel(group)))
     }
     return entries
+  }
+
+  private var customHarnessesAvailable: Bool {
+    !harnessPresets.isEmpty && onSelectPreset != nil
+  }
+
+  private var visibleHarnessPresets: [SyncMachineInventoryPreset] {
+    let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !needle.isEmpty else { return harnessPresets }
+    return harnessPresets.filter { preset in
+      preset.name.lowercased().contains(needle)
+        || preset.model.lowercased().contains(needle)
+        || preset.harness.lowercased().contains(needle)
+    }
   }
 
   private var isSearching: Bool {
@@ -174,12 +211,12 @@ struct WorkModelPickerSheet: View {
     NavigationStack {
       VStack(spacing: 0) {
         topControlBar
-        if isLoadingCatalog && catalog.isEmpty {
+        if isLoadingCatalog && catalog.isEmpty && !customHarnessesAvailable {
           loadingState
-        } else if catalog.isEmpty {
+        } else if catalog.isEmpty && !customHarnessesAvailable {
           catalogEmptyState
         } else {
-          Divider().overlay(ADEColor.glassBorder)
+          Divider().overlay(ADEKit.rule)
           HStack(spacing: 0) {
             ModelPickerRail(
               entries: railEntries,
@@ -194,37 +231,41 @@ struct WorkModelPickerSheet: View {
                 }
               }
             )
-            Divider().overlay(ADEColor.glassBorder)
-            ModelPickerContentPane(
-              selection: effectiveSelection,
-              isSearching: isSearching,
-              searchText: searchText,
-              models: visibleModels,
-              groupedRows: groupedRows,
-              providerTabs: providerTabs,
-              selectedProviderTabKey: selectedProviderTabKey,
-              selectedModelId: selectedModelId,
-              selectedReasoningEffort: selectedReasoningEffort,
-              selectedCodexFastMode: selectedCodexFastMode,
-              favorites: picker.favorites,
-              isBusy: isBusy,
-              onSelect: { model in select(model: model) },
-              onSelectReasoning: { model, effort in select(reasoningEffort: effort, for: model) },
-              onToggleFastMode: { model, enabled in select(fastMode: enabled, for: model) },
-              onSelectProviderTab: { selectedProviderTabKey = $0 },
-              onToggleFavorite: { modelId in
-                guard commandScope == .project else { return }
-                picker.toggleFavorite(modelId, syncService: syncService)
-              },
-              onClaudeLogin: commandScope == .project ? { Task { await openClaudeLoginTerminal() } } : nil,
-              isClaudeLoginBusy: claudeLoginBusy,
-              claudeLoginError: claudeLoginError,
-              onPiLogin: commandScope == .project ? { Task { await openPiLoginTerminal() } } : nil,
-              isPiLoginBusy: piLoginBusy,
-              piLoginError: piLoginError
-            )
+            Divider().overlay(ADEKit.rule)
+            if effectiveSelection == .custom {
+              customHarnessPane
+            } else {
+              ModelPickerContentPane(
+                selection: effectiveSelection,
+                isSearching: isSearching,
+                searchText: searchText,
+                models: visibleModels,
+                groupedRows: groupedRows,
+                providerTabs: providerTabs,
+                selectedProviderTabKey: selectedProviderTabKey,
+                selectedModelId: selectedModelId,
+                selectedReasoningEffort: selectedReasoningEffort,
+                selectedCodexFastMode: selectedCodexFastMode,
+                favorites: picker.favorites,
+                isBusy: isBusy,
+                onSelect: { model in select(model: model) },
+                onSelectReasoning: { model, effort in select(reasoningEffort: effort, for: model) },
+                onToggleFastMode: { model, enabled in select(fastMode: enabled, for: model) },
+                onSelectProviderTab: { selectedProviderTabKey = $0 },
+                onToggleFavorite: { modelId in
+                  guard commandScope == .project else { return }
+                  picker.toggleFavorite(modelId, syncService: syncService)
+                },
+                onClaudeLogin: commandScope == .project ? { Task { await openClaudeLoginTerminal() } } : nil,
+                isClaudeLoginBusy: claudeLoginBusy,
+                claudeLoginError: claudeLoginError,
+                onPiLogin: commandScope == .project ? { Task { await openPiLoginTerminal() } } : nil,
+                isPiLoginBusy: piLoginBusy,
+                piLoginError: piLoginError
+              )
+            }
           }
-          Divider().overlay(ADEColor.glassBorder)
+          Divider().overlay(ADEKit.rule)
           currentModelBar
         }
       }
@@ -262,6 +303,8 @@ struct WorkModelPickerSheet: View {
     switch selection {
     case .favorites, .recents:
       return selection
+    case .custom:
+      return customHarnessesAvailable ? selection : (firstProviderSelection() ?? .favorites)
     case .providerGroup(let key, _):
       if catalog.contains(where: { $0.key == key }) {
         return selection
@@ -345,6 +388,8 @@ struct WorkModelPickerSheet: View {
         let group = catalog.first(where: { $0.key == key })
         let providers = filteredProviders(for: group)
         pool = providers.flatMap { $0.models }
+      case .custom:
+        pool = []
       }
     }
 
@@ -369,6 +414,9 @@ struct WorkModelPickerSheet: View {
       return [ModelPickerRowGroup(id: "_root", title: nil, models: visibleModels)]
     case .providerGroup:
       return [ModelPickerRowGroup(id: "_root", title: nil, models: visibleModels)]
+    case .custom:
+      // The Custom pane renders presets, not model rows.
+      return []
     }
   }
 
@@ -448,22 +496,13 @@ struct WorkModelPickerSheet: View {
         }
       }
       .padding(.horizontal, 12)
-      .padding(.vertical, 8)
-      .background(ADEColor.recessedBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-      )
+      .frame(height: 36)
+      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
       Button {
         dismiss()
       } label: {
-        Image(systemName: "xmark")
-          .font(.subheadline.weight(.bold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .frame(width: 38, height: 38)
-          .background(ADEColor.surfaceBackground.opacity(0.62), in: Circle())
-          .overlay(Circle().stroke(ADEColor.glassBorder, lineWidth: 0.75))
+        ADEKitCircleIcon(systemImage: "xmark")
       }
       .buttonStyle(.plain)
       .accessibilityLabel("Close")
@@ -482,8 +521,7 @@ struct WorkModelPickerSheet: View {
       fastModeEnabled: selectedCodexFastMode
     )
     .padding(.horizontal, 14)
-    .padding(.vertical, 9)
-    .background(ADEColor.recessedBackground.opacity(0.32))
+    .padding(.vertical, 10)
   }
 
   @ViewBuilder
@@ -523,6 +561,97 @@ struct WorkModelPickerSheet: View {
     .frame(maxWidth: .infinity)
   }
 
+  /// The machine's saved Custom harnesses, drawn like model rows. Selecting one
+  /// hands the preset id to the caller's launch, which the host resolves
+  /// against its own key and config stores — the secret never leaves the
+  /// machine.
+  @ViewBuilder
+  private var customHarnessPane: some View {
+    let presets = visibleHarnessPresets
+    ScrollView {
+      LazyVStack(alignment: .leading, spacing: 6) {
+        if presets.isEmpty {
+          VStack(spacing: 8) {
+            WorkCustomToolMark(size: 22)
+              .opacity(0.85)
+            Text(isSearching ? "No custom harnesses match." : "No custom harnesses on this machine.")
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+            Text("Create one on the paired machine in Settings → Custom providers.")
+              .font(.footnote)
+              .foregroundStyle(ADEColor.textSecondary)
+              .multilineTextAlignment(.center)
+          }
+          .frame(maxWidth: .infinity)
+          .padding(.top, 28)
+          .padding(.horizontal, 24)
+        } else {
+          ADESettingsRows {
+            ForEach(presets) { preset in
+              customHarnessRow(preset)
+            }
+          }
+        }
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 10)
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  @ViewBuilder
+  private func customHarnessRow(_ preset: SyncMachineInventoryPreset) -> some View {
+    let harnessLabel = workHarnessPresetBodyLabel(preset.harness)
+    let modelLabel = workPrettyModelNameFromId(preset.model) ?? preset.model
+    let isSelected = preset.id == selectedPresetId
+    Button {
+      guard preset.bound else { return }
+      onSelectPreset?(preset)
+      dismiss()
+    } label: {
+      HStack(spacing: 10) {
+        WorkHarnessPresetMark(logo: preset.logo, accentColor: preset.accentColor, size: 22)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(preset.name)
+            .font(.subheadline.weight(isSelected ? .semibold : .medium))
+            .foregroundStyle(preset.bound ? ADEColor.textPrimary : ADEColor.textMuted)
+            .lineLimit(1)
+          Text("\(harnessLabel) · \(modelLabel)")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+        }
+        Spacer(minLength: 6)
+        if !preset.bound {
+          Text("Set up on the machine")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.warning)
+            .lineLimit(1)
+        } else if isSelected {
+          Image(systemName: "checkmark")
+            .font(.caption.weight(.bold))
+            .foregroundStyle(ADEColor.accent)
+        } else {
+          Image(systemName: "chevron.right")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 10)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(isSelected ? ADEColor.accent.opacity(0.08) : Color.clear)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(ADEKitRowButtonStyle(dimsWhenDisabled: false))
+    .disabled(!preset.bound)
+    .accessibilityLabel(
+      "\(preset.name), \(harnessLabel), \(modelLabel)"
+        + (preset.bound ? "" : ", unavailable on this machine")
+    )
+    .accessibilityHint(preset.bound ? "Starts the chat with this custom harness." : "")
+  }
+
   private var selectedModel: WorkModelOption? {
     modelById.first(where: { workModelIdsEquivalent($0.key, selectedModelId) })?.value
   }
@@ -551,7 +680,7 @@ struct WorkModelPickerSheet: View {
   private func refreshCatalog(for groupKey: String) async {
     let refreshProvider: String?
     switch groupKey {
-    case "opencode", "cursor", "droid", "pi", "lmstudio", "ollama",
+    case "opencode", "cursor", "droid", "pi", "muse", "lmstudio", "ollama",
          "qwen", "kimi", "grok", "copilot":
       refreshProvider = groupKey
     default:
@@ -703,11 +832,15 @@ enum ModelPickerRailSelection: Equatable {
   case favorites
   case recents
   case providerGroup(key: String, label: String)
+  /// The machine's saved Custom harnesses (`account.getMachineInventory`).
+  /// Only offered when the surface can launch one.
+  case custom
 
   static func == (lhs: ModelPickerRailSelection, rhs: ModelPickerRailSelection) -> Bool {
     switch (lhs, rhs) {
     case (.favorites, .favorites): return true
     case (.recents, .recents): return true
+    case (.custom, .custom): return true
     case (.providerGroup(let lk, _), .providerGroup(let rk, _)): return lk == rk
     default: return false
     }
@@ -718,12 +851,14 @@ enum ModelPickerRailEntry: Identifiable, Equatable {
   case favorites
   case recents
   case providerGroup(key: String, label: String)
+  case custom
 
   var id: String {
     switch self {
     case .favorites: return "_favorites"
     case .recents: return "_recents"
     case .providerGroup(let key, _): return "provider:\(key)"
+    case .custom: return "_custom"
     }
   }
 
@@ -732,6 +867,7 @@ enum ModelPickerRailEntry: Identifiable, Equatable {
     case .favorites: return .favorites
     case .recents: return .recents
     case .providerGroup(let key, let label): return .providerGroup(key: key, label: label)
+    case .custom: return .custom
     }
   }
 }
@@ -760,7 +896,6 @@ struct ModelPickerRail: View {
       .padding(.horizontal, 5)
     }
     .frame(width: 60)
-    .background(ADEColor.recessedBackground.opacity(0.35))
   }
 
   @ViewBuilder
@@ -772,29 +907,19 @@ struct ModelPickerRail: View {
       ZStack(alignment: .topTrailing) {
         railIcon(for: entry, isActive: isActive)
           .frame(maxWidth: .infinity, minHeight: 44)
-          .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-              .fill(isActive ? Color.white.opacity(0.07) : Color.clear)
-          )
-          .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-              .stroke(isActive ? Color.white.opacity(0.06) : Color.clear, lineWidth: 0.8)
-          )
+          .background {
+            if isActive {
+              RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(ADEKit.surface)
+                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+            }
+          }
         if let badge = badgeCount(for: entry), badge > 0 {
           Text("\(badge)")
-            .font(.system(size: 8, weight: .bold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .padding(.horizontal, 3)
-            .padding(.vertical, 1)
-            .background(
-              Capsule(style: .continuous)
-                .fill(ADEColor.surfaceBackground)
-            )
-            .overlay(
-              Capsule(style: .continuous)
-                .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-            )
-            .offset(x: 4, y: -3)
+            .font(.adeMono(9, weight: .medium))
+            .foregroundStyle(ADEColor.textMuted)
+            .padding(.top, 3)
+            .padding(.trailing, 4)
         }
       }
     }
@@ -807,7 +932,7 @@ struct ModelPickerRail: View {
     switch entry {
     case .favorites: return favoritesCount
     case .recents: return recentsCount
-    case .providerGroup: return nil
+    case .providerGroup, .custom: return nil
     }
   }
 
@@ -816,11 +941,11 @@ struct ModelPickerRail: View {
     switch entry {
     case .favorites:
       Image(systemName: isActive ? "star.fill" : "star")
-        .font(.system(size: 16, weight: .semibold))
-        .foregroundStyle(ADEColor.warning)
+        .font(.system(size: 16, weight: .medium))
+        .foregroundStyle(isActive ? ADEColor.warning : ADEColor.textSecondary)
     case .recents:
       Image(systemName: isActive ? "clock.fill" : "clock")
-        .font(.system(size: 16, weight: .semibold))
+        .font(.system(size: 16, weight: .medium))
         .foregroundStyle(isActive ? ADEColor.textPrimary : ADEColor.textSecondary)
     case .providerGroup(let key, _):
       WorkProviderBareLogo(
@@ -829,6 +954,10 @@ struct ModelPickerRail: View {
         tint: providerTint(key),
         size: 18
       )
+    case .custom:
+      WorkCustomToolMark(size: 18)
+        .frame(width: 18, height: 18)
+        .opacity(isActive ? 1 : 0.85)
     }
   }
 
@@ -837,6 +966,7 @@ struct ModelPickerRail: View {
     case .favorites: return "Favorites (\(favoritesCount))"
     case .recents: return "Recents (\(recentsCount))"
     case .providerGroup(_, let label): return label
+    case .custom: return "Custom"
     }
   }
 }
@@ -888,13 +1018,20 @@ struct ModelPickerContentPane: View {
       return .compact
     case .providerGroup:
       return .detailed
+    case .custom:
+      return .compact
     }
   }
 
   private var showsClaudeLoginAction: Bool {
     guard onClaudeLogin != nil else { return false }
     let rows = groupedRows.flatMap(\.models)
-    if case .providerGroup(let key, _) = selection, providerFamilyKey(key) == "claude" {
+    if case .providerGroup(let key, _) = selection {
+      // The row's runtime group decides which sign-in fixes it. A Claude login
+      // cannot make an OpenCode-routed row available, even when the model's
+      // maker is Anthropic — and the brand rewrite made those rows report
+      // "claude" as their provider.
+      guard providerFamilyKey(key) == "claude" else { return false }
       return rows.contains { !$0.isAvailable }
     }
     return rows.contains { !$0.isAvailable && providerFamilyKey($0.provider) == "claude" }
@@ -921,22 +1058,20 @@ struct ModelPickerContentPane: View {
       if showsPiLoginAction {
         piLoginBanner
       }
-      Divider().overlay(ADEColor.glassBorder)
+      Divider().overlay(ADEKit.rule)
       if groupedRows.allSatisfy({ $0.models.isEmpty }) {
         emptyState
       } else {
         ScrollView {
-          LazyVStack(alignment: .leading, spacing: rowStyle == .compact ? 4 : 5) {
+          LazyVStack(alignment: .leading, spacing: 14) {
             ForEach(groupedRows) { group in
-              VStack(alignment: .leading, spacing: rowStyle == .compact ? 4 : 5) {
+              VStack(alignment: .leading, spacing: 7) {
                 if let title = group.title {
-                  Text(title.uppercased())
-                    .font(.caption2.weight(.bold))
-                    .tracking(0.4)
-                    .foregroundStyle(ADEColor.textMuted)
+                  ADEEyebrow(title)
                     .padding(.horizontal, 4)
-                    .padding(.top, 2)
                 }
+                // One kit panel per group: rows with hairlines, not a card each.
+                ADESettingsRows {
                 ForEach(group.models) { model in
                   ModelPickerListRow(
                     model: model,
@@ -957,11 +1092,12 @@ struct ModelPickerContentPane: View {
                     isPiLoginBusy: isPiLoginBusy
                   )
                 }
+                }
               }
             }
           }
           .padding(.horizontal, 10)
-          .padding(.vertical, 8)
+          .padding(.vertical, 10)
         }
       }
     }
@@ -972,25 +1108,31 @@ struct ModelPickerContentPane: View {
   private var providerTabStrip: some View {
     if providerTabs.count > 1 {
       ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 6) {
+        HStack(spacing: 2) {
           ForEach(providerTabs) { provider in
             let selected = provider.key == activeProviderTabKey
             Button {
               onSelectProviderTab(provider.key)
             } label: {
               Text(provider.displayName)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(selected ? Color.white : ADEColor.textSecondary)
+                .font(.system(size: 12.5, weight: selected ? .semibold : .medium))
+                .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
                 .lineLimit(1)
                 .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(selected ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.55), in: Capsule())
+                .frame(minHeight: 28)
+                .background {
+                  if selected {
+                    ADEKitSegmentThumb()
+                  }
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityAddTraits(selected ? .isSelected : [])
           }
         }
-        .padding(.horizontal, 14)
+        .adeKitSegmentTrack()
+        .padding(.horizontal, 12)
         .padding(.bottom, 8)
       }
     }
@@ -1011,16 +1153,17 @@ struct ModelPickerContentPane: View {
   private var claudeLoginBanner: some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(alignment: .center, spacing: 10) {
-        Image(systemName: "terminal.fill")
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(providerTint("claude"))
-          .frame(width: 24, height: 24)
-          .background(providerTint("claude").opacity(0.14), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        WorkProviderBareLogo(
+          provider: "claude",
+          fallbackSymbol: providerIcon("claude"),
+          tint: providerTint("claude"),
+          size: 18
+        )
         VStack(alignment: .leading, spacing: 2) {
           Text("Claude is signed out")
             .font(.footnote.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
-          Text("Open a primary-lane terminal to finish Claude Code login.")
+          Text("Finish sign-in in a terminal.")
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -1042,16 +1185,8 @@ struct ModelPickerContentPane: View {
               .font(.caption.weight(.bold))
               .lineLimit(1)
           }
-          .foregroundStyle(ADEColor.textPrimary)
-          .padding(.horizontal, 10)
-          .padding(.vertical, 7)
-          .background(ADEColor.accent.opacity(0.22), in: Capsule())
-          .overlay(
-            Capsule(style: .continuous)
-              .stroke(ADEColor.accent.opacity(0.28), lineWidth: 0.6)
-          )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ADEKitButtonStyle(prominent: true))
         .disabled(isClaudeLoginBusy)
         .accessibilityLabel("Login to Claude")
       }
@@ -1062,12 +1197,7 @@ struct ModelPickerContentPane: View {
           .fixedSize(horizontal: false, vertical: true)
       }
     }
-    .padding(10)
-    .background(ADEColor.surfaceBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(ADEColor.glassBorder.opacity(0.75), lineWidth: 0.6)
-    )
+    .adeKitCard(padding: 12)
     .padding(.horizontal, 12)
     .padding(.bottom, 8)
   }
@@ -1076,16 +1206,17 @@ struct ModelPickerContentPane: View {
   private var piLoginBanner: some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(alignment: .center, spacing: 10) {
-        Image(systemName: "terminal.fill")
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(providerTint("pi"))
-          .frame(width: 24, height: 24)
-          .background(providerTint("pi").opacity(0.14), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        WorkProviderBareLogo(
+          provider: "pi",
+          fallbackSymbol: providerIcon("pi"),
+          tint: providerTint("pi"),
+          size: 18
+        )
         VStack(alignment: .leading, spacing: 2) {
           Text("Pi is signed out")
             .font(.footnote.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
-          Text("Open Pi’s native login flow on the paired machine. ADE never stores Pi credentials.")
+          Text("Finish sign-in on the machine.")
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -1107,16 +1238,8 @@ struct ModelPickerContentPane: View {
               .font(.caption.weight(.bold))
               .lineLimit(1)
           }
-          .foregroundStyle(ADEColor.textPrimary)
-          .padding(.horizontal, 10)
-          .padding(.vertical, 7)
-          .background(providerTint("pi").opacity(0.22), in: Capsule())
-          .overlay(
-            Capsule(style: .continuous)
-              .stroke(providerTint("pi").opacity(0.28), lineWidth: 0.6)
-          )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ADEKitButtonStyle(prominent: true))
         .disabled(isPiLoginBusy)
         .accessibilityLabel("Open Pi native login")
       }
@@ -1127,12 +1250,7 @@ struct ModelPickerContentPane: View {
           .fixedSize(horizontal: false, vertical: true)
       }
     }
-    .padding(10)
-    .background(ADEColor.surfaceBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(providerTint("pi").opacity(0.32), lineWidth: 0.7)
-    )
+    .adeKitCard(padding: 12)
     .padding(.horizontal, 12)
     .padding(.bottom, 8)
   }
@@ -1152,14 +1270,8 @@ struct ModelPickerContentPane: View {
         HStack {
           Spacer()
           Text("\(models.count)")
-            .font(.caption.weight(.bold))
+            .font(.adeMono(11))
             .foregroundStyle(ADEColor.textMuted)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(
-              Capsule(style: .continuous)
-                .fill(ADEColor.recessedBackground.opacity(0.5))
-            )
         }
       }
     }
@@ -1183,7 +1295,7 @@ struct ModelPickerContentPane: View {
       case .recents:
         Image(systemName: "clock.fill")
           .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.accent)
+          .foregroundStyle(ADEColor.textSecondary)
       case .providerGroup(let key, _):
         WorkProviderBareLogo(
           provider: workRailLogoProvider(for: key),
@@ -1191,6 +1303,10 @@ struct ModelPickerContentPane: View {
           tint: providerTint(key),
           size: 16
         )
+      case .custom:
+        Image(systemName: "slider.horizontal.3")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
       }
     }
   }
@@ -1204,6 +1320,7 @@ struct ModelPickerContentPane: View {
     case .favorites: return "Favorites"
     case .recents: return "Recents"
     case .providerGroup(_, let label): return label
+    case .custom: return "Custom"
     }
   }
 
@@ -1233,6 +1350,7 @@ struct ModelPickerContentPane: View {
     case .favorites: return "star"
     case .recents: return "clock"
     case .providerGroup(let key, _): return providerFamilyKey(key) == "pi" ? "terminal.fill" : "cpu"
+    case .custom: return "slider.horizontal.3"
     }
   }
 
@@ -1243,6 +1361,7 @@ struct ModelPickerContentPane: View {
     case .recents: return "No recent models."
     case .providerGroup(let key, _):
       return providerFamilyKey(key) == "pi" ? "No Pi models are available." : "No models in this provider."
+    case .custom: return "No custom harnesses."
     }
   }
 
@@ -1260,6 +1379,8 @@ struct ModelPickerContentPane: View {
         return "Use Pi’s native /login or configure a local Pi provider on the paired machine, then refresh."
       }
       return "Sign in to this provider on the paired machine to load its models."
+    case .custom:
+      return "Create a custom harness on the paired machine in Settings → Custom providers."
     }
   }
 }
@@ -1370,16 +1491,11 @@ struct ModelPickerListRow: View {
           .padding(.top, style == .detailed ? 7 : 5)
       }
     }
-    .padding(.horizontal, style == .compact ? 10 : 11)
-    .padding(.vertical, style == .compact ? 7 : 8)
-    .background(
-      RoundedRectangle(cornerRadius: style == .compact ? 10 : 11, style: .continuous)
-        .fill(isHighlighted ? ADEColor.accent.opacity(0.10) : ADEColor.surfaceBackground.opacity(model.isAvailable ? 0.45 : 0.28))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: style == .compact ? 10 : 11, style: .continuous)
-        .stroke(isHighlighted ? ADEColor.accent.opacity(0.42) : ADEColor.glassBorder.opacity(0.7), lineWidth: isHighlighted ? 1 : 0.5)
-    )
+    .padding(.leading, style == .compact ? 6 : 12)
+    .padding(.trailing, style == .compact ? 12 : 6)
+    .padding(.vertical, 8)
+    // A row in the group's panel; the accent tints only the selected one.
+    .background(isHighlighted ? ADEColor.accent.opacity(0.08) : Color.clear)
     .contentShape(Rectangle())
   }
 
@@ -1399,7 +1515,7 @@ struct ModelPickerListRow: View {
       )
       VStack(alignment: .leading, spacing: 1) {
         Text(model.displayName)
-          .font(.subheadline.weight(.semibold))
+          .font(.system(size: 14.5, weight: isSelected ? .semibold : .medium))
           .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
           .lineLimit(1)
         if let piContextLabel {
@@ -1425,7 +1541,7 @@ struct ModelPickerListRow: View {
       )
       VStack(alignment: .leading, spacing: 1) {
         Text(model.displayName)
-          .font(.subheadline.weight(.semibold))
+          .font(.system(size: 14.5, weight: isSelected ? .semibold : .medium))
           .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
           .lineLimit(1)
         if let piContextLabel {
@@ -1470,16 +1586,8 @@ struct ModelPickerListRow: View {
           .font(.caption.weight(.bold))
           .lineLimit(1)
       }
-      .foregroundStyle(ADEColor.textPrimary)
-      .padding(.horizontal, 9)
-      .padding(.vertical, 6)
-      .background(ADEColor.accent.opacity(0.18), in: Capsule())
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(ADEColor.accent.opacity(0.24), lineWidth: 0.6)
-      )
     }
-    .buttonStyle(.plain)
+    .buttonStyle(ADEKitButtonStyle())
     .disabled(isClaudeLoginBusy)
     .accessibilityLabel("Login to Claude")
   }
@@ -1502,16 +1610,8 @@ struct ModelPickerListRow: View {
           .font(.caption.weight(.bold))
           .lineLimit(1)
       }
-      .foregroundStyle(ADEColor.textPrimary)
-      .padding(.horizontal, 9)
-      .padding(.vertical, 6)
-      .background(providerTint("pi").opacity(0.18), in: Capsule())
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(providerTint("pi").opacity(0.28), lineWidth: 0.6)
-      )
     }
-    .buttonStyle(.plain)
+    .buttonStyle(ADEKitButtonStyle())
     .disabled(isPiLoginBusy)
     .accessibilityLabel("Open Pi native login")
   }
@@ -1522,8 +1622,8 @@ struct ModelPickerListRow: View {
       onToggleFavorite()
     } label: {
       Image(systemName: isFavorite ? "star.fill" : "star")
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(isFavorite ? ADEColor.warning : ADEColor.textMuted)
+        .font(.system(size: 13, weight: .medium))
+        .foregroundStyle(isFavorite ? ADEColor.warning : ADEColor.textMuted.opacity(0.7))
         .frame(width: 30, height: 30)
         .contentShape(Rectangle())
     }
@@ -1537,7 +1637,7 @@ struct ModelPickerListRow: View {
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased()
     ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 6) {
+      HStack(spacing: 2) {
         ForEach(tiers, id: \.self) { tier in
           let normalized = tier.lowercased()
           let isActiveTier = normalized == normalizedCurrent
@@ -1545,19 +1645,17 @@ struct ModelPickerListRow: View {
             onSelectReasoning(normalized)
           } label: {
             Text(reasoningLabel(for: tier))
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(isActiveTier ? Color.white : ADEColor.textSecondary)
+              .font(.system(size: 12.5, weight: isActiveTier ? .semibold : .medium))
+              .foregroundStyle(isActiveTier ? ADEColor.textPrimary : ADEColor.textSecondary)
               .lineLimit(1)
-              .padding(.horizontal, 12)
-              .padding(.vertical, 7)
-              .background(
-                Capsule(style: .continuous)
-                  .fill(isActiveTier ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.55))
-              )
-              .overlay(
-                Capsule(style: .continuous)
-                  .stroke(isActiveTier ? ADEColor.accent : ADEColor.glassBorder, lineWidth: 0.6)
-              )
+              .padding(.horizontal, 11)
+              .frame(minHeight: 28)
+              .background {
+                if isActiveTier {
+                  ADEKitSegmentThumb()
+                }
+              }
+              .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
           .disabled(isBusy || !model.isAvailable)
@@ -1565,6 +1663,7 @@ struct ModelPickerListRow: View {
           .accessibilityAddTraits(isActiveTier ? .isSelected : [])
         }
       }
+      .adeKitSegmentTrack()
     }
   }
 
@@ -1579,15 +1678,13 @@ struct ModelPickerListRow: View {
           .font(.caption.weight(.bold))
           .foregroundStyle(selectedCodexFastMode ? ADEColor.warning : ADEColor.textMuted)
         Text("Fast mode")
-          .font(.caption.weight(.semibold))
+          .font(.system(size: 13, weight: .medium))
           .foregroundStyle(ADEColor.textPrimary)
-        Text(selectedCodexFastMode ? "On" : "Off")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
       }
     }
     .toggleStyle(.switch)
-    .tint(ADEColor.warning)
+    .controlSize(.mini)
+    .tint(ADEColor.accent)
     .disabled(isBusy || !model.isAvailable)
     .accessibilityLabel("Fast mode \(selectedCodexFastMode ? "on" : "off")")
   }
@@ -1621,7 +1718,8 @@ struct ModelPickerCurrentModelBar: View {
   }
 
   private var reasoningLabel: String {
-    workReasoningChipLabel(reasoningEffort) ?? "Default"
+    let effort = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+    return effort.isEmpty ? "Default" : workReasoningEffortDisplayName(effort)
   }
 
   var body: some View {
@@ -1634,12 +1732,9 @@ struct ModelPickerCurrentModelBar: View {
       )
 
       VStack(alignment: .leading, spacing: 2) {
-        Text("Current model")
-          .font(.caption2.weight(.bold))
-          .tracking(0.4)
-          .foregroundStyle(ADEColor.textMuted)
+        ADEEyebrow("Current model")
         Text(model?.displayName ?? "Pick a model")
-          .font(.caption.weight(.semibold))
+          .font(.system(size: 14, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
         if let model, let piContextLabel = workPiModelContextLabel(for: model) {
@@ -1667,13 +1762,6 @@ struct ModelPickerCurrentModelBar: View {
             .foregroundStyle(fastModeEnabled ? ADEColor.warning : ADEColor.textMuted)
         }
       }
-      .padding(.horizontal, 8)
-      .padding(.vertical, 5)
-      .background(ADEColor.surfaceBackground.opacity(0.46), in: Capsule(style: .continuous))
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
-      )
     }
     .accessibilityElement(children: .combine)
     .accessibilityLabel(
@@ -1725,12 +1813,18 @@ final class ModelPickerStore: ObservableObject {
   }
 
   func refresh(syncService: SyncService) async {
+    let directoryRevision = WorkModelMentionDirectory.shared.recentsRevisionSnapshot
     async let favTask = try? await syncService.getModelFavorites()
     async let recTask = try? await syncService.getModelRecents()
     let fav = await favTask
     let rec = await recTask
     if let fav { favorites = fav }
-    if let rec { recents = rec }
+    if let rec {
+      recents = rec
+      // The `@` menu ranks by the same recents; only the host's answer is
+      // mirrored, so a stale local list never overwrites a newer `@` pick.
+      WorkModelMentionDirectory.shared.record(recents: rec, ifRevision: directoryRevision)
+    }
     isLoading = false
   }
 
@@ -1766,6 +1860,7 @@ final class ModelPickerStore: ObservableObject {
       do {
         let updated = try await syncService.pushModelRecent(trimmed)
         self?.recents = updated
+        WorkModelMentionDirectory.shared.record(recents: updated)
       } catch {
         self?.recents = previous
       }

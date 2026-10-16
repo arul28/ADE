@@ -9,14 +9,10 @@ import * as HeadlessXterm from "@xterm/headless";
 import type { IBufferCell } from "@xterm/headless";
 import * as XtermSerialize from "@xterm/addon-serialize";
 import type { Logger } from "../logging/logger";
-import {
-  localBrowserActorCapabilityIssuer,
-  type BrowserActorCapabilityIssuer,
-  type BuiltInBrowserActorCapability,
-} from "../builtInBrowser/builtInBrowserActorCapabilities";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
+import { writeCarriesTypedInput, type AgentShellRetireReason } from "../sessions/agentShellCleanup";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
@@ -27,8 +23,10 @@ import {
   type CodexComputerUseMcpConfig,
 } from "../../utils/codexComputerUse";
 import { runGit } from "../git/git";
+import { signalProcessGroup } from "../shared/utils";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
-import { ensureOpenCodeAdeInstructionsFile } from "../opencode/openCodeAdeInstructions";
+import { attachOpenCodeTerminal, listAdeOpenCodeSessions } from "../opencode/openCodeTerminal";
+import type { OpenCodeServerLease } from "../opencode/openCodeServer";
 import { SESSION_ACTIVITY_SESSION_ID_ENV } from "../../../shared/sessionActivity";
 import {
   acquirePiSessionLease,
@@ -55,7 +53,9 @@ import {
   windowsTaskkillInvocation,
 } from "../shared/processExecution";
 import { pathKey, pathsEqual } from "../shared/pathCompare";
+import { stripHostRuntimeEnv } from "../shared/hostRuntimeEnv";
 import { detectDevServersInChunk, devServerRegistry } from "../devServers/devServerRegistry";
+import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
@@ -108,12 +108,12 @@ import {
 } from "../../../shared/backgroundUtilityModel";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import {
+  claudeAccountPromptCacheEnv,
   providerInstanceEnvPatch,
   resolveProviderInstanceForLaunch,
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { CURSOR_CLI_EXECUTABLES } from "../../../shared/providerCliExecutables";
 import {
-  buildOpenCodeReplayResumeLaunchCommand,
   buildTrackedCliSessionActivityGuidance,
   buildTrackedCliLaunchCommand,
   buildTrackedCliResumeLaunchCommand,
@@ -135,7 +135,6 @@ import {
   trackedCliResumeInstanceId,
   trackedCliResumePresetId,
   trackedCliTitleFromPromptSeed,
-  withOpenCodeAdeInstructions,
   type ProviderInstanceLaunchTarget,
   type TrackedCliLaunchCommand,
   type TrackedCliPresetLaunch,
@@ -143,11 +142,14 @@ import {
   withClaudePluginInCommandLine,
   withClaudeSessionIdInCommandLine,
   withCodexNoAltScreen,
+  MUSE_CLI_COMMAND,
+  shellWordSpans,
   resolveWindowsShellLaunchFields,
   resolveWindowsShellKind,
 } from "../../../shared/cliLaunch";
 import { buildAdeRuntimeSocketEnv } from "../../../shared/adeCliGuidance";
 import { resolveTrackedCliPreset } from "../chat/harnessPresetLaunch";
+import { prepareHarnessLaunch } from "../chat/harnessLaunchPrepare";
 import {
   commandArrayToLine,
   commandArrayToWindowsShellLine,
@@ -167,8 +169,10 @@ import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk, type PreviewCursorState } from "../../utils/terminalPreview";
 import { claudeConfigHome, codexConfigHome, factoryConfigHome, kimiCodeConfigHome } from "../shared/providerConfigHomes";
 import { checkKimiWindowsPrerequisites } from "../ai/acpExecutables";
+import { resolveMuseExecutable, startMuseBinaryFetch } from "../ai/museExecutable";
+import { museCredentialEnv } from "../ai/museAuth";
+import { findMuseSessionForCwd } from "../externalSessions/discoverMuse";
 import {
-  buildOpenCodeReplayResumeCommand,
   buildTrackedCliResumeCommand,
   defaultResumeCommandForTool,
   extractResumeCommandFromOutput,
@@ -248,7 +252,7 @@ export type NodePtySpawnHelperExecutableResult =
   | { status: "failed"; path?: string; error: string };
 
 /** Interactive agent TUIs often hide useful text in an alt-screen, so titles come from the first submitted user prompt instead of startup output. */
-const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex", "cursor-cli", "droid", "opencode", "pi"]);
+const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex", "cursor-cli", "droid", "opencode", "pi", "muse"]);
 
 function shouldScheduleOutputSnippetTitle(tool: TerminalToolType | null): boolean {
   if (!tool || tool === "shell") return false;
@@ -301,12 +305,16 @@ const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
 const PTY_LIVE_SESSION_RESYNC_INTERVAL_MS = 1_000;
 const DEFAULT_TERMINAL_READ_MAX_BYTES = 220_000;
 const LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS = 2_000_000;
-const TERMINAL_SNAPSHOT_DEBOUNCE_MS = 500;
+// How often a running terminal's on-disk snapshot catches up with its output.
+// Every live reader (terminal preview, screen hydrate) serializes the live
+// mirror or flushes first, and exit and dispose flush, so this cadence only
+// bounds how stale the file is if the brain dies. Each write serializes the
+// whole scrollback, so keep it slow.
+const TERMINAL_SNAPSHOT_DEBOUNCE_MS = 5_000;
 const TERMINAL_SNAPSHOT_SCROLLBACK = 2_000;
 const TERMINAL_SNAPSHOT_TRANSCRIPT_FALLBACK_BYTES = 220_000;
 const PTY_SEND_DEFAULT_COLS = 100;
 const PTY_SEND_DEFAULT_ROWS = 30;
-const OPENCODE_REPLAY_RESUME_ENV = "ADE_OPENCODE_REPLAY_RESUME";
 const AGENT_CLI_INPUT_CLEAR_TO_END_KEY = "\x05";
 const AGENT_CLI_INPUT_CLEAR_TO_START_KEY = "\x15";
 const AGENT_CLI_BRACKETED_PASTE_START = "\x1b[200~";
@@ -332,8 +340,6 @@ const PTY_PROCESS_SCAN_SIGNAL_DELAY_MS = 100;
 const PTY_PROCESS_SCAN_TIMEOUT_MS = 250;
 const PTY_PROCESS_SCAN_MAX_BYTES = 512 * 1024;
 
-let cachedOpenCodeReplayResumeSupport: boolean | null = null;
-
 function killPidBestEffort(pid: number, signal: NodeJS.Signals): void {
   if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return;
   try {
@@ -350,7 +356,7 @@ function killPtyProcessGroupBestEffort(rootPid: number, signal: NodeJS.Signals):
     // a new session, making the child both session and process-group leader.
     // Targeting `-pid` therefore signals the PTY group in one syscall, instead
     // of recursively running synchronous `pgrep` calls on the main thread.
-    process.kill(-Math.trunc(rootPid), signal);
+    signalProcessGroup(Math.trunc(rootPid), signal);
     return true;
   } catch {
     return false;
@@ -462,7 +468,7 @@ function signalPtyTreeProcesses(
     .filter((processGroupId) => processGroupId > 1 && processGroupId !== process.pid));
   for (const processGroupId of processGroups) {
     try {
-      process.kill(-processGroupId, signal);
+      signalProcessGroup(processGroupId, signal);
     } catch {
       // A group may have exited between the process scan and signal.
     }
@@ -495,38 +501,6 @@ type ClaudeStorageSessionLookupArgs = {
 
 function hasEnvValue(env: NodeJS.ProcessEnv, key: string): boolean {
   return typeof env[key] === "string" && env[key]!.trim().length > 0;
-}
-
-function openCodeSupportsReplayResume(): boolean {
-  const override = process.env[OPENCODE_REPLAY_RESUME_ENV]?.trim().toLowerCase();
-  if (override === "1" || override === "true" || override === "yes") return true;
-  if (override === "0" || override === "false" || override === "no") return false;
-  if (cachedOpenCodeReplayResumeSupport != null) return cachedOpenCodeReplayResumeSupport;
-  try {
-    const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
-    delete env.FORCE_COLOR;
-    const executable = resolveOpenCodeBinaryPath() ?? "opencode";
-    // Replay resume is a root `--mini` feature: `--replay-limit` requires
-    // --mini, and an explicit `--replay` flag is rejected outright on current
-    // OpenCode. Probe the root help, not `run --help`.
-    const result = spawnSync(executable, ["--help"], {
-      encoding: "utf8",
-      timeout: 3000,
-      maxBuffer: 512 * 1024,
-      env,
-      windowsHide: true,
-    });
-    const output = `${String(result.stdout ?? "")}\n${String(result.stderr ?? "")}`;
-    // Flag tokens start with "-", a non-word character, so \b can never match
-    // before them; anchor on whitespace/string edges instead.
-    cachedOpenCodeReplayResumeSupport = result.status === 0
-      && /(^|\s)--mini(\s|$)/.test(output)
-      && /(^|\s)--replay-limit(\s|$)/.test(output);
-    return cachedOpenCodeReplayResumeSupport;
-  } catch {
-    cachedOpenCodeReplayResumeSupport = false;
-    return false;
-  }
 }
 
 function delay(ms: number): Promise<void> {
@@ -621,42 +595,23 @@ function withInteractiveTerminalColorEnv(
   return next;
 }
 
-async function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
+function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
   projectRoot: string;
   laneId: string;
   chatSessionId: string | null;
   ownerSessionId?: string | null;
   spawnLineage?: PtyCreateArgs["spawnLineage"];
-  issueBrowserActorToken: (
-    capability: BuiltInBrowserActorCapability,
-  ) => Promise<string | null>;
-}): Promise<NodeJS.ProcessEnv> {
+}): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = {
     ...env,
     ADE_PROJECT_ROOT: args.projectRoot,
     ADE_LANE_ID: args.laneId,
   };
   const terminalOwnerSessionId = args.chatSessionId ?? args.ownerSessionId ?? null;
-  const browserActorToken = terminalOwnerSessionId
-    ? await args.issueBrowserActorToken({
-      chatSessionId: terminalOwnerSessionId,
-      laneId: args.laneId,
-      projectRoot: args.projectRoot,
-      tabCollection: null,
-    })
-    : null;
   if (terminalOwnerSessionId) {
     next.ADE_CHAT_SESSION_ID = terminalOwnerSessionId;
   } else {
     delete next.ADE_CHAT_SESSION_ID;
-  }
-  // No owner, or no reachable issuer (headless machine / desktop closed): the
-  // terminal launches without a browser capability rather than inheriting the
-  // host process's, and `ade browser` reports the bridge is not running.
-  if (browserActorToken) {
-    next.ADE_BROWSER_ACTOR_TOKEN = browserActorToken;
-  } else {
-    delete next.ADE_BROWSER_ACTOR_TOKEN;
   }
   if (args.spawnLineage) {
     next.ADE_PARENT_CHAT_SESSION_ID = args.spawnLineage.parentChatSessionId;
@@ -806,6 +761,11 @@ type PtyEntry = {
   lastUserInputAt: number;
   /** Monotonic generation used to detect user takeover of deferred input. */
   userInputGeneration: number;
+  /**
+   * An agent started this shell under a chat and nobody has typed into it yet,
+   * so it is still a candidate for `agentShellCleanup`. Cleared on first typing.
+   */
+  agentShellCleanupCandidate: boolean;
   terminalSnapshot: TerminalSnapshotMirror | null;
   recentOutputTail: string;
   runtimeWindowTitleScanBuffer: string;
@@ -832,6 +792,8 @@ type PtyEntry = {
     endedAt: string | null;
   } | null;
   piSessionLease: PiSessionLease | null;
+  /** Lease on ADE's OpenCode server that the tracked OpenCode TUI is attached to. */
+  openCodeLease: OpenCodeServerLease | null;
   piSessionDir: string | null;
   piLaunchEnv: NodeJS.ProcessEnv | null;
   piSessionLeaseIsCreation: boolean;
@@ -981,8 +943,22 @@ function terminatePtyProcessTree(
           invocation.command,
           invocation.args,
           { timeout: 5_000, maxBuffer: 64 * 1024, windowsHide: true },
-          (error) => {
-            if (error || !force) return;
+          (error, _stdout, stderr) => {
+            if (error) {
+              // Kill behavior is unchanged (node-pty's own kill still runs);
+              // this only makes a failed tree kill visible.
+              logger.warn("pty.taskkill_failed", {
+                sessionId: entry.sessionId,
+                toolType: entry.toolTypeHint,
+                rootPid,
+                force,
+                code: (error as NodeJS.ErrnoException).code ?? null,
+                error: error.message.slice(0, 300),
+                stderr: String(stderr ?? "").trim().slice(0, 300),
+              });
+              return;
+            }
+            if (!force) return;
             logger.warn("pty.process_tree_force_killed", {
               sessionId: entry.sessionId,
               toolType: entry.toolTypeHint,
@@ -991,8 +967,14 @@ function terminatePtyProcessTree(
             });
           },
         );
-      } catch {
+      } catch (error) {
         // taskkill may be unavailable; node-pty's own kill path still runs.
+        logger.warn("pty.taskkill_failed", {
+          sessionId: entry.sessionId,
+          rootPid,
+          force,
+          error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+        });
       }
     };
 
@@ -1105,6 +1087,8 @@ type TerminalSnapshotMirror = {
   flushTimer: ReturnType<typeof setTimeout> | null;
   lastErrorAt: number;
   writeDisabled: boolean;
+  /** Writes the headless terminal has not parsed yet; it parses on a later tick. */
+  pendingWrites: number;
 };
 
 function cleanShellSpec(file: string): ShellSpec {
@@ -1269,7 +1253,49 @@ const WINDOWS_DIRECT_PROVIDER_EXECUTABLES: ReadonlyArray<{
   { toolTypes: ["pi", "pi-chat"], launchCandidates: ["pi"] },
 ];
 
+/**
+ * ADE's pinned Muse binary, or a clear error. ADE never runs a user's own
+ * `muse`: its version drifts from the protocol ADE was built against and it can
+ * self-update under a running session. A missing build starts its fetch in the
+ * background so the next launch finds it.
+ */
+function pinnedMuseBinaryPathOrThrow(): string {
+  const resolution = resolveMuseExecutable();
+  if (resolution.path) return resolution.path;
+  if (resolution.source === "unsupported") {
+    throw new Error("Muse Code has no build for this computer, so ADE cannot start it here.");
+  }
+  // Settings > Providers reports fetch failures; the launch error below is enough here.
+  startMuseBinaryFetch();
+  throw new Error(resolution.fetchPending
+    ? "Muse Code is still downloading. Try again when it finishes (Settings > Providers > Muse Code)."
+    : "Muse Code is not installed yet. ADE started downloading it; try again when it finishes (Settings > Providers > Muse Code).");
+}
+
+/**
+ * Swap the `muse` word of a Muse terminal for the pinned binary. Any word that
+ * names Muse is replaced, a path included: a persisted line can carry an older
+ * pinned build's path, or a user's own install, and both must run the current
+ * pin. The result stays in ADE's canonical POSIX form, like OpenCode's.
+ */
+function withPinnedMuseCommandLine(commandLine: string, toolType: TerminalToolType | null): string {
+  if (toolType !== "muse") return commandLine;
+  const invocation = providerInvocationInCommandLine(commandLine, MUSE_CLI_COMMAND);
+  if (!invocation) return commandLine;
+  const span = shellWordSpans(commandLine)[invocation.binaryIndex];
+  if (!span) return commandLine;
+  const pinned = pinnedMuseBinaryPathOrThrow();
+  return `${commandLine.slice(0, span.start)}${quoteCanonicalShellArg(pinned)}${commandLine.slice(span.end)}`;
+}
+
+function withBundledProviderCommandLine(commandLine: string, toolType: TerminalToolType | null): string {
+  return withPinnedMuseCommandLine(withBundledOpenCodeCommandLine(commandLine, toolType), toolType);
+}
+
 function resolveDirectProviderCommand(command: string, toolType: TerminalToolType | null): string {
+  if (toolType === "muse" && isProviderBinaryCommand(command, MUSE_CLI_COMMAND)) {
+    return pinnedMuseBinaryPathOrThrow();
+  }
   const openCodeCommand = resolveDirectOpenCodeCommand(command, toolType);
   if (process.platform !== "win32" || openCodeCommand !== command) return openCodeCommand;
   const trimmedCommand = command.trim();
@@ -1397,8 +1423,8 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
   // Every member of `TerminalToolType`. The `satisfies` binding is the point:
   // a tool type added to the union but missed here silently normalises to
   // "other", which strips the session of every tracked-CLI behaviour — turn
-  // markers, resume capture, the disk-pressure gate, and the browser-actor
-  // capability revoke — with nothing to show for it.
+  // markers, resume capture and the disk-pressure gate — with nothing to show
+  // for it.
   const allowed = [
     "shell",
     "claude",
@@ -1414,16 +1440,20 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
     "claude-chat",
     "opencode-chat",
     "pi-chat",
+    "muse",
+    "muse-chat",
     "cursor",
     "droid-chat",
     "qwen",
     "kimi",
     "grok",
     "copilot",
+    "devin",
     "qwen-chat",
     "kimi-chat",
     "grok-chat",
     "copilot-chat",
+    "devin-chat",
     "aider",
     "continue",
     "other",
@@ -1713,10 +1743,12 @@ function isPersistedChatToolType(toolType: TerminalToolType | null): boolean {
     || toolType === "opencode-chat"
     || toolType === "cursor"
     || toolType === "droid-chat"
+    || toolType === "muse-chat"
     || toolType === "qwen-chat"
     || toolType === "kimi-chat"
     || toolType === "grok-chat"
-    || toolType === "copilot-chat";
+    || toolType === "copilot-chat"
+    || toolType === "devin-chat";
 }
 
 function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undefined): string | null {
@@ -1823,6 +1855,11 @@ function hasProviderStorageBackfillEvidence(provider: TerminalResumeProvider, te
     return /\bpi\b.*(?:what do you want|message|thinking|model)/i.test(visible)
       || /\bpi\s*[›❯]/i.test(visible);
   }
+  if (provider === "muse") {
+    // Muse draws `Muse Code <version>` above its composer on every start and
+    // resume (1.4.7). A terminal that never got past that has no session.
+    return /\bMuse Code \d+\.\d+/u.test(visible);
+  }
   if (provider === "opencode") {
     if (
       normalized.includes("login required")
@@ -1855,6 +1892,7 @@ function resumeProviderDisplayName(provider: TerminalResumeProvider): string {
   if (provider === "droid") return "Droid";
   if (provider === "opencode") return "OpenCode";
   if (provider === "pi") return "Pi";
+  if (provider === "muse") return "Muse";
   return "Agent";
 }
 
@@ -1863,6 +1901,9 @@ const TRANSCRIPT_ROLLOVER_TARGET_BYTES = MAX_TRANSCRIPT_BYTES / 2;
 const TRANSCRIPT_ROLLOVER_STATE_VERSION = 1;
 const RESUME_TARGET_MISSING_COOLDOWN_MS = 10 * 60_000;
 const RESUME_SCAN_WINDOW_MS = 60_000;
+/** Muse writes its session folder at TUI start; the tail covers a slow first launch. */
+const MUSE_CAPTURE_POLL_DELAYS_MS = [1_500, 4_000, 10_000, 25_000, 60_000] as const;
+const MUSE_CAPTURE_MAX_START_DELTA_MS = 120_000;
 
 type TranscriptRolloverState = {
   version: typeof TRANSCRIPT_ROLLOVER_STATE_VERSION;
@@ -2426,7 +2467,7 @@ export function createPtyService({
   onSessionRuntimeSignal,
   onSessionUserInput,
   diskPressureMonitor,
-  browserActorCapabilityIssuer,
+  releaseChatBrowser,
   loadPty,
   disposePtyBackend
 }: {
@@ -2464,37 +2505,13 @@ export function createPtyService({
   onSessionUserInput?: (args: { laneId: string; sessionId: string }) => void;
   diskPressureMonitor?: DiskPressureMonitor | null;
   /**
-   * Who mints a terminal's `ADE_BROWSER_ACTOR_TOKEN`. Electron main owns the
-   * capability registry and is the only process that can validate against it,
-   * so the runtime daemon passes an issuer backed by the desktop bridge.
+   * A tracked agent CLI with no owning chat ended: let go of anything it held
+   * outside ADE (the brain detaches its `ade browser attach`).
    */
-  browserActorCapabilityIssuer?: BrowserActorCapabilityIssuer | null;
+  releaseChatBrowser?: ((chatSessionId: string) => void) | null;
   loadPty: () => typeof ptyNs;
   disposePtyBackend?: () => void;
 }) {
-  const browserActorCapabilities =
-    browserActorCapabilityIssuer ?? localBrowserActorCapabilityIssuer;
-  const issueBrowserActorToken = async (
-    capability: BuiltInBrowserActorCapability,
-  ): Promise<string | null> => {
-    try {
-      return (await browserActorCapabilities.issue(capability))?.trim() || null;
-    } catch (error) {
-      logger.warn("pty.browser_actor_capability_issue_failed", {
-        sessionId: capability.chatSessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return null;
-    }
-  };
-  const revokeBrowserActorToken = (chatSessionId: string): void => {
-    void browserActorCapabilities.revoke(chatSessionId).catch((error: unknown) => {
-      logger.warn("pty.browser_actor_capability_revoke_failed", {
-        sessionId: chatSessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-  };
   const ptys = new Map<string, PtyEntry>();
   const runtimeStates = new Map<string, RuntimeStateEntry>();
   const dataListeners = new Set<PtyDataListener>();
@@ -2633,7 +2650,7 @@ export function createPtyService({
       });
       const serializeAddon = new SerializeAddon();
       terminal.loadAddon(serializeAddon as Parameters<HeadlessTerminalInstance["loadAddon"]>[0]);
-      return { terminal, serializeAddon, flushTimer: null, lastErrorAt: 0, writeDisabled: false };
+      return { terminal, serializeAddon, flushTimer: null, lastErrorAt: 0, writeDisabled: false, pendingWrites: 0 };
     } catch (err) {
       logger.warn("pty.terminal_snapshot_init_failed", { err: String(err) });
       return null;
@@ -2714,10 +2731,13 @@ export function createPtyService({
     const mirror = entry.terminalSnapshot;
     if (!mirror || !entry.tracked || entry.disposed || !data) return;
     try {
+      mirror.pendingWrites += 1;
       mirror.terminal.write(data, () => {
+        mirror.pendingWrites -= 1;
         scheduleTerminalSnapshotWrite(entry);
       });
     } catch (err) {
+      mirror.pendingWrites = Math.max(0, mirror.pendingWrites - 1);
       const now = Date.now();
       if (now - mirror.lastErrorAt > 10_000) {
         mirror.lastErrorAt = now;
@@ -2734,6 +2754,23 @@ export function createPtyService({
       mirror.flushTimer = null;
     }
     writeTerminalSnapshot(entry);
+  };
+
+  /**
+   * The last snapshot of an ending session. It writes what the mirror has
+   * parsed now, since the timers are unref'd and a brain shutting down exits
+   * first, and writes again once the mirror parses output still queued, since
+   * the write callback schedules nothing for an ended entry.
+   */
+  const flushFinalTerminalSnapshot = (entry: PtyEntry): void => {
+    flushTerminalSnapshot(entry);
+    const mirror = entry.terminalSnapshot;
+    if (!mirror || mirror.pendingWrites === 0) return;
+    try {
+      mirror.terminal.write("", () => writeTerminalSnapshot(entry));
+    } catch {
+      // The snapshot written above stands.
+    }
   };
 
   const resizeTerminalSnapshot = (entry: PtyEntry, cols: number, rows: number): void => {
@@ -3781,29 +3818,15 @@ export function createPtyService({
     }
   };
 
-  const resolveOpenCodeSessionIdFromCli = (args: {
+  const resolveOpenCodeSessionIdFromStore = (args: {
     cwd: string;
     startedAt?: string | null;
     maxStartDeltaMs?: number;
   }): string | null => {
     try {
-      const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
-      delete env.FORCE_COLOR;
-      const executable = resolveOpenCodeBinaryPath() ?? "opencode";
-      const result = spawnSync(executable, ["session", "list", "--format", "json", "--max-count", "80"], {
-        cwd: args.cwd,
-        encoding: "utf8",
-        timeout: 4000,
-        maxBuffer: 1024 * 1024,
-        env,
-        windowsHide: true,
-      });
-      if (result.error || result.status !== 0) return null;
-      const stdout = String(result.stdout ?? "");
-      const jsonStart = stdout.indexOf("[");
-      if (jsonStart < 0) return null;
-      const rows = JSON.parse(stdout.slice(jsonStart)) as unknown;
-      if (!Array.isArray(rows)) return null;
+      // ADE's own store, read-only. `opencode session list` would reach
+      // OpenCode's background service and the user's personal store instead.
+      const rows = listAdeOpenCodeSessions(80);
       // macOS hands back /var/... while the session row records the resolved
       // /private/var/... spelling (and Windows adds case drift). Compare
       // realpath-resolved, platform-folded keys or every lane under a symlinked
@@ -3822,12 +3845,11 @@ export function createPtyService({
       const hasStartedAt = Number.isFinite(requestedStartedAtMs);
       let bestMatch: { id: string; score: number; updatedMs: number } | null = null;
       for (const row of rows) {
-        const record = row && typeof row === "object" ? row as Record<string, unknown> : null;
-        const id = typeof record?.id === "string" ? record.id.trim() : "";
-        const directory = typeof record?.directory === "string" ? record.directory.trim() : "";
+        const id = row.id.trim();
+        const directory = row.directory.trim();
         if (!id || !directory || canonicalKey(directory) !== requestedKey) continue;
-        const createdMs = Number(record?.created);
-        const updatedMs = Number(record?.updated);
+        const createdMs = Number(row.createdAt);
+        const updatedMs = Number(row.updatedAt);
         let referenceMs: number;
         if (Number.isFinite(createdMs)) {
           referenceMs = createdMs;
@@ -4084,7 +4106,7 @@ export function createPtyService({
     }
 
     if ((effectiveToolType === "opencode" || effectiveToolType === "opencode-orchestrated") && cwd && reason !== "resume-launch" && hasStorageBackfillEvidence) {
-      const opencodeSessionId = resolveOpenCodeSessionIdFromCli({
+      const opencodeSessionId = resolveOpenCodeSessionIdFromStore({
         cwd,
         startedAt: session.startedAt,
         maxStartDeltaMs: 10 * 60_000,
@@ -4093,7 +4115,7 @@ export function createPtyService({
         const resumeCmd = `opencode --session ${opencodeSessionId}`;
         missingResumeTargetBackfillFailures.delete(sessionId);
         sessionService.setResumeCommand(sessionId, resumeCmd);
-        logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "opencode-session-list", opencodeSessionId });
+        logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "opencode-store", opencodeSessionId });
         return true;
       }
     }
@@ -4119,6 +4141,27 @@ export function createPtyService({
           source: "pi-session-jsonl",
           piSessionId: piSession.id,
           piSessionFile: piSession.filePath,
+        });
+        return true;
+      }
+    }
+
+    if (effectiveToolType === "muse" && cwd && reason !== "resume-launch" && hasStorageBackfillEvidence) {
+      const museSession = findOwnedMuseSession(sessionId, cwd, session.startedAt);
+      if (museSession) {
+        missingResumeTargetBackfillFailures.delete(sessionId);
+        sessionService.setResumeCommand(sessionId, buildTrackedCliResumeCommand({
+          provider: "muse",
+          targetKind: "session",
+          targetId: museSession.id,
+          launch: {},
+        }));
+        logger.info("pty.resume_target_backfilled", {
+          sessionId,
+          toolType: effectiveToolType,
+          reason,
+          source: "muse-session-log",
+          museSessionId: museSession.id,
         });
         return true;
       }
@@ -4406,6 +4449,75 @@ export function createPtyService({
     }, CODEX_LIVE_CAPTURE_HARD_TIMEOUT_MS));
   };
 
+  /**
+   * The Muse session a tracked terminal started, proven by folder, TUI origin,
+   * launch window, and no other terminal owning it (see `findMuseSessionForCwd`).
+   */
+  const findOwnedMuseSession = (
+    sessionId: string,
+    cwd: string,
+    startedAt: string,
+  ): { id: string } | null => {
+    const excludedIds = new Set<string>();
+    for (const candidate of sessionService.list({ limit: null })) {
+      if (candidate.id === sessionId) continue;
+      const targetId = resumeTargetIdForProvider(candidate, "muse");
+      if (targetId) excludedIds.add(targetId.toLowerCase());
+    }
+    return findMuseSessionForCwd({
+      cwd,
+      startedAt,
+      maxStartDeltaMs: MUSE_CAPTURE_MAX_START_DELTA_MS,
+      excludedIds,
+    });
+  };
+
+  /**
+   * Muse takes no session id at launch, but its TUI creates the session folder
+   * the moment it starts, before any prompt. Poll for it so a terminal knows
+   * its resume target while it runs, on every platform: handle capture covers
+   * macOS and Linux, but Windows may have no handle tool, and the exit line
+   * ("To continue this session, run muse resume <id>") only arrives at exit.
+   */
+  const scheduleMuseSessionIdCaptureBestEffort = (sessionId: string, cwd: string, startedAt: string): void => {
+    let done = false;
+    const timers = new Set<NodeJS.Timeout>();
+    const finish = (): void => {
+      done = true;
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
+    };
+    const attempt = (index: number): void => {
+      if (done) return;
+      const session = sessionService.get(sessionId);
+      if (!session || sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null)) {
+        finish();
+        return;
+      }
+      let found: { id: string } | null = null;
+      try {
+        found = findOwnedMuseSession(sessionId, cwd, startedAt);
+      } catch (err) {
+        logger.warn("pty.muse_session_id_capture_failed", { sessionId, attempt: index, err: String(err) });
+        return;
+      }
+      if (!found) return;
+      sessionService.setResumeCommand(sessionId, buildTrackedCliResumeCommand({
+        provider: "muse",
+        targetKind: "session",
+        targetId: found.id,
+        launch: {},
+      }));
+      logger.info("pty.muse_session_id_captured_live", { sessionId, museSessionId: found.id, attempt: index });
+      finish();
+    };
+    MUSE_CAPTURE_POLL_DELAYS_MS.forEach((delayMs, index) => {
+      const timer = setTimeout(() => attempt(index + 1), delayMs);
+      timer.unref?.();
+      timers.add(timer);
+    });
+  };
+
   const listOtherAdoptedKimiTargetIds = (sessionId: string): Set<string> => {
     const adoptedIds = new Set<string>();
     for (const candidate of sessionService.list({ limit: null })) {
@@ -4533,6 +4645,8 @@ export function createPtyService({
     }
     entry.piSessionLease?.release();
     entry.piSessionLease = null;
+    entry.openCodeLease?.release();
+    entry.openCodeLease = null;
     entry.disposed = true;
     entry.attentionRequested = false;
     // The process that was serving those ports is gone, so the launchpad chips
@@ -4540,7 +4654,7 @@ export function createPtyService({
     devServerRegistry.forgetSession(entry.sessionId);
     sessionService.clearAttentionRequest(entry.sessionId);
     if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
-      revokeBrowserActorToken(entry.sessionId);
+      releaseChatBrowser?.(entry.sessionId);
     }
     if (entry.aiTitleTimer) {
       clearTimeout(entry.aiTitleTimer);
@@ -4594,7 +4708,9 @@ export function createPtyService({
       endEndedAt = priorEndState.endedAt ?? endedAt;
     }
     sessionService.end({ sessionId: entry.sessionId, endedAt: endEndedAt, exitCode: endExitCode, status });
-    flushTerminalSnapshot(entry);
+    // A shell App Control just replaced goes now, not on the next tick.
+    if (entry.agentShellCleanupCandidate) sessionService.agentShells.sweepQuietly();
+    flushFinalTerminalSnapshot(entry);
     scheduleTranscriptDependentWork(entry, "close");
     clearIdleTimer(entry.sessionId);
     const finalRuntimeState = runtimeFromStatus(status);
@@ -5274,6 +5390,28 @@ export function createPtyService({
       ]);
       return lastReadyIndex >= 0 && lastReadyIndex > lastBlockerIndex;
     }
+    if (provider === "muse") {
+      // Muse 1.4.7's composer is a `❯` line with a `────` rule under it (the
+      // transcript echoes user turns as `❯ …` too, but only the composer has
+      // the rule below it). Before it, a first run asks "Do you trust this
+      // workspace?" (its choices use `⟩`, not `❯`), and a resume shows
+      // progress lines; typing into either would answer the wrong thing.
+      const lastBlockerIndex = lastIndexOfAny(normalized, [
+        "do you trust this workspace",
+        "preparing resume",
+        "restoring conversation",
+        "initializing runtime",
+        "not logged in",
+        "log in to",
+        "please log in",
+        "sign in",
+        "authentication required",
+      ]);
+      const promptIndex = text.lastIndexOf("❯");
+      return promptIndex >= 0
+        && promptIndex > lastBlockerIndex
+        && text.indexOf("───", promptIndex) > promptIndex;
+    }
     if (provider === "droid") {
       const lastBlockerIndex = lastIndexOfAny(normalized, [
         "login required",
@@ -5373,7 +5511,9 @@ export function createPtyService({
     await delay(AGENT_CLI_INPUT_CLEAR_DELAY_MS);
     if (!write(AGENT_CLI_INPUT_CLEAR_TO_START_KEY)) return false;
     await delay(AGENT_CLI_INPUT_CLEAR_DELAY_MS);
-    if (provider === "codex") {
+    // Muse 1.4.7 takes a bracketed paste as one multi-line message; typed
+    // newlines would submit it line by line.
+    if (provider === "codex" || provider === "muse") {
       return write(`${AGENT_CLI_BRACKETED_PASTE_START}${inputText}${AGENT_CLI_BRACKETED_PASTE_END}`);
     }
     for (let index = 0; index < inputText.length; index += AGENT_CLI_INPUT_CHUNK_SIZE) {
@@ -5827,6 +5967,21 @@ export function createPtyService({
     }
   };
 
+  /**
+   * The user typed into a shell an agent started: it is theirs now, so the
+   * dead-shell cleanup must never archive it. Only the user write paths call
+   * this — an agent's own `writeTerminal` input does not claim the shell.
+   */
+  const claimAgentShellForUser = (entry: PtyEntry, data: string): void => {
+    if (!entry.agentShellCleanupCandidate || !writeCarriesTypedInput(data)) return;
+    entry.agentShellCleanupCandidate = false;
+    try {
+      sessionService.agentShells.markUserInput(entry.sessionId);
+    } catch (error) {
+      logger.warn("pty.agent_shell_claim_failed", { sessionId: entry.sessionId, error: String(error) });
+    }
+  };
+
   const clearCommittedCliActivity = (entry: PtyEntry, data: string): void => {
     if (
       entry.tracked
@@ -5836,6 +5991,11 @@ export function createPtyService({
       sessionService.clearSessionActivity(entry.sessionId);
     }
   };
+
+  // The process that owns the PTYs archives their dead agent shells.
+  sessionService.agentShells.start((error) => {
+    logger.warn("pty.agent_shell_sweep_failed", { error: String(error) });
+  });
 
   const service = {
     async waitForResumeTargetBackfill(sessionId: string): Promise<void> {
@@ -5891,6 +6051,15 @@ export function createPtyService({
       const { laneWorktreePath: worktreePath, cwd } = launchContext;
       const { cols, rows } = clampDims(args.cols, args.rows);
       const runtimeCliLaunch = args.runtimeCliLaunch;
+      if (runtimeCliLaunch) {
+        // A routed CLI (Claude Code on an OpenAI-only model) needs ADE's proxy
+        // running before the synchronous materializer resolves its endpoint.
+        await prepareHarnessLaunch({
+          provider: String(runtimeCliLaunch.provider),
+          presetId: runtimeCliLaunch.presetId ?? null,
+          credentialId: runtimeCliLaunch.credentialId ?? null,
+        });
+      }
       const materializedRuntimeLaunch = runtimeCliLaunch
         ? materializeRuntimeCliLaunch(runtimeCliLaunch, worktreePath, {
             sessionActivityReportingEnabled:
@@ -6056,6 +6225,13 @@ export function createPtyService({
           toolType: toolTypeHint,
           startupCommand: requestedStartupCommand,
         });
+      // Passive lineage rides on whichever record the launch resolved, so the
+      // command-parsed launch fields (Codex sandbox, Claude permission mode)
+      // are kept rather than replaced by a launcher-only record.
+      const launchedBySessionId = args.launchedBySessionId?.trim();
+      if (launchedBySessionId && initialResumeMetadata && !existingSession && !initialResumeMetadata.launchedBySessionId) {
+        initialResumeMetadata = { ...initialResumeMetadata, launchedBySessionId };
+      }
       const runtimeLaunchModel = typeof runtimeCliLaunch?.model === "string" && runtimeCliLaunch.model.trim().length
         ? runtimeCliLaunch.model.trim()
         : "";
@@ -6116,9 +6292,10 @@ export function createPtyService({
       const transcriptPath = tracked
         ? (existingSession?.transcriptPath?.trim() || safeTranscriptPathFor(sessionId))
         : "";
-      let startupCommand = withBundledOpenCodeCommandLine(requestedStartupCommand.trim(), toolTypeHint);
+      let startupCommand = withBundledProviderCommandLine(requestedStartupCommand.trim(), toolTypeHint);
       const cleanupPaths: string[] = [];
       let piSessionLease: PiSessionLease | null = null;
+      let openCodeLease: OpenCodeServerLease | null = null;
       let piSessionDirForEntry: string | null = null;
       let piLaunchEnvForEntry: NodeJS.ProcessEnv | null = null;
       let piSessionLeaseIsCreation = false;
@@ -6213,6 +6390,13 @@ export function createPtyService({
           ownerProcessStartedAt,
         });
         setRuntimeState(sessionId, "running");
+        if (args.launchedBy === "agent" && chatSessionId) {
+          try {
+            sessionService.agentShells.markAgentLaunched(sessionId);
+          } catch (error) {
+            logger.warn("pty.agent_shell_mark_failed", { sessionId, error: String(error) });
+          }
+        }
 
         // Attach any requested Linear issues to the freshly-created session row
         // BEFORE env is built below, so getSessionLinearEnv resolves them and the
@@ -6245,6 +6429,15 @@ export function createPtyService({
             if (sha) sessionService.setHeadShaStart(sessionId, sha);
           })
           .catch(() => {});
+      } else if (args.launchedBy !== "agent") {
+        // Someone resumed this shell by hand: it is theirs now, so the
+        // dead-shell cleanup must not archive it later. A no-op for any shell
+        // the cleanup never tracked.
+        try {
+          sessionService.agentShells.markUserInput(sessionId);
+        } catch (error) {
+          logger.warn("pty.agent_shell_claim_failed", { sessionId, error: String(error) });
+        }
       }
 
       const requestedDirectCommand = typeof effectiveArgs.command === "string" ? effectiveArgs.command.trim() : "";
@@ -6257,17 +6450,16 @@ export function createPtyService({
       const sessionLinearEnv = getSessionLinearEnv?.({ sessionId, chatSessionId }) ?? {};
       const explicitNoColor = hasEnvKey(effectiveArgs.env ?? {}, "NO_COLOR") || hasEnvKey(laneRuntimeEnv, "NO_COLOR");
       const explicitForceColor = hasEnvKey(effectiveArgs.env ?? {}, "FORCE_COLOR") || hasEnvKey(laneRuntimeEnv, "FORCE_COLOR");
-      const inheritedProcessEnv = { ...process.env };
-      // The desktop/runtime itself may be launched from an agent shell. Do not
-      // leak that host role into an ordinary terminal; tracked agent CLIs set
-      // their role explicitly below.
-      delete inheritedProcessEnv.ADE_DEFAULT_ROLE;
-      const baseLaunchEnv = {
-        ...inheritedProcessEnv,
+      // Host-only keys (the brain's ELECTRON_RUN_AS_NODE, its role, its
+      // lifecycle keys) never reach a terminal, even when a caller such as App
+      // Control passes a copy of process.env. Tracked agent CLIs set their
+      // role explicitly below.
+      const baseLaunchEnv = stripHostRuntimeEnv({
+        ...process.env,
         ...laneRuntimeEnv,
         ...sessionLinearEnv,
         ...(effectiveArgs.env ?? {})
-      };
+      });
       if (explicitNoColor && !explicitForceColor) {
         delete baseLaunchEnv.FORCE_COLOR;
       }
@@ -6284,13 +6476,12 @@ export function createPtyService({
               spawnKind: existingSession?.resumeMetadata?.spawnKind ?? null,
             }
           : null);
-      const contextLaunchEnv = await withAdeTerminalContextEnv(baseLaunchEnv, {
+      const contextLaunchEnv = withAdeTerminalContextEnv(baseLaunchEnv, {
         projectRoot,
         laneId,
         chatSessionId,
         ownerSessionId: isTrackedAgentCliToolType(toolTypeHint) ? sessionId : null,
         spawnLineage: effectiveSpawnLineage,
-        issueBrowserActorToken,
       });
       let launchEnv = withInteractiveTerminalColorEnv(
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
@@ -6309,6 +6500,30 @@ export function createPtyService({
       } else {
         delete launchEnv[SESSION_ACTIVITY_SESSION_ID_ENV];
       }
+      // A Muse API key saved in ADE reaches the terminal through env only
+      // (never argv). The user's own `META_API_KEY` wins, and a browser
+      // sign-in needs nothing here: Muse reads its own auth.json.
+      if (toolTypeHint === "muse") {
+        const museCredentialId = runtimeLaunchCredentialId
+          ?? trackedCliResumeCredentialId(initialResumeMetadata)
+          ?? undefined;
+        Object.assign(launchEnv, museCredentialEnv(launchEnv, museCredentialId));
+      }
+      // The account's own prompt cache choice, on the one path every fresh
+      // launch and resume takes. A preset or stored credential bills another
+      // endpoint, so it gets none.
+      if (
+        isClaudeTrackedCliToolType(toolTypeHint)
+        && !runtimeLaunchPresetId
+        && !runtimeLaunchCredentialId
+        && !trackedCliResumePresetId(initialResumeMetadata)
+        && !trackedCliResumeCredentialId(initialResumeMetadata)
+      ) {
+        Object.assign(launchEnv, claudeAccountPromptCacheEnv(
+          runtimeLaunchInstance?.id ?? trackedCliResumeInstanceId(initialResumeMetadata),
+          launchEnv,
+        ));
+      }
       launchEnv = withResolvedCliLaunchPath(launchEnv, {
         includeInteractiveShell: Boolean(directCommand || startupCommand),
       });
@@ -6322,7 +6537,7 @@ export function createPtyService({
         if (updatedSession?.resumeCommand?.trim()) {
           initialResumeCommand = updatedSession.resumeCommand.trim();
           initialResumeMetadata = updatedSession.resumeMetadata ?? initialResumeMetadata;
-          startupCommand = withBundledOpenCodeCommandLine(initialResumeCommand, toolTypeHint);
+          startupCommand = withBundledProviderCommandLine(initialResumeCommand, toolTypeHint);
         }
       }
       const claudePluginLaunch = withBundledClaudePlugin(
@@ -6433,7 +6648,7 @@ export function createPtyService({
             // shell, so hardcoding the binary dropped the model, thinking and
             // tool flags that the argv path keeps — the two renderings are
             // meant to be the same launch.
-            startupCommand = withBundledOpenCodeCommandLine(
+            startupCommand = withBundledProviderCommandLine(
               buildTrackedCliResumeLaunchCommand(
                 {
                   provider: "pi",
@@ -6493,7 +6708,7 @@ export function createPtyService({
               recordPiSessionOwner({ sessionFile: piSessionFile, owner: "cli", ownerSessionId: sessionId });
               const piResumeCommand = `pi --session ${latest.id}`;
               initialResumeCommand = piResumeCommand;
-              startupCommand = withBundledOpenCodeCommandLine(piResumeCommand, toolTypeHint);
+              startupCommand = withBundledProviderCommandLine(piResumeCommand, toolTypeHint);
               sessionService.setResumeCommand(sessionId, piResumeCommand);
               if (directCommand && isPiExecutableCommand(directCommand)) {
                 directArgs = directArgs.filter((arg) => !/^(?:--continue|-c|-r)$/iu.test(arg));
@@ -6526,12 +6741,8 @@ export function createPtyService({
         }
         // Applied here, not earlier, because `startupCommand` is still being
         // rewritten above this point — resume-target backfill in particular
-        // replaces it wholesale with the session's persisted `resumeCommand`,
-        // which carries its own inline OPENCODE_CONFIG_CONTENT assignment and
-        // no instructions. Since a command-line assignment overrides the
-        // process environment, merging any earlier meant the restored
-        // assignment silently dropped the ADE contract on exactly the resume
-        // path this exists to cover.
+        // replaces it wholesale with the session's persisted `resumeCommand`.
+        // Attaching rewrites the final command to point at ADE's server.
         if (isOpenCodeToolType(toolTypeHint)) {
           const openCodePermissionMode = args.runtimeCliLaunch?.permissionMode
             ?? initialResumeMetadata?.launch?.permissionMode
@@ -6546,19 +6757,36 @@ export function createPtyService({
                 permissionMode: openCodePermissionMode,
               })
             : null;
-          const instructionsPath = ensureOpenCodeAdeInstructionsFile({
-            projectRoot,
+          const attached = await attachOpenCodeTerminal({
+            directCommand: directCommand || null,
+            directArgs,
+            startupCommand,
+            env: launchEnv,
+            cwd,
             laneWorktreePath: worktreePath,
             permissionMode: openCodePermissionMode,
+            model: args.runtimeCliLaunch?.model?.trim() || initialResumeMetadata?.launch?.model?.trim() || null,
+            reasoningEffort: args.runtimeCliLaunch?.reasoningEffort?.trim()
+              || initialResumeMetadata?.launch?.reasoningEffort?.trim()
+              || null,
             sessionActivityGuidance,
+            projectConfig: projectConfigService?.get().effective ?? {},
+            ownerId: ptyId,
+            logger,
           });
-          const withInstructions = withOpenCodeAdeInstructions(
-            { env: launchEnv as Record<string, string>, startupCommand },
-            instructionsPath,
-          );
-          if (withInstructions?.env) launchEnv = withInstructions.env;
-          if (typeof withInstructions?.startupCommand === "string") {
-            startupCommand = withInstructions.startupCommand;
+          if (attached) {
+            openCodeLease = attached.lease;
+            directArgs = attached.directArgs;
+            startupCommand = attached.startupCommand;
+            launchEnv = attached.env;
+            // ADE created or chose the session, so the resume target is known
+            // now rather than inferred from storage after the fact.
+            if (tracked && sanitizeResumeTargetId(initialResumeMetadata?.targetId ?? null) !== attached.sessionId) {
+              sessionService.setResumeCommand(sessionId, `opencode --session ${attached.sessionId}`);
+              const updated = sessionService.get(sessionId);
+              initialResumeCommand = updated?.resumeCommand ?? initialResumeCommand;
+              initialResumeMetadata = updated?.resumeMetadata ?? initialResumeMetadata;
+            }
           }
         }
         const spawnHelperRepair = ensureNodePtySpawnHelperExecutable();
@@ -6647,6 +6875,8 @@ export function createPtyService({
         });
         piSessionLease?.release();
         piSessionLease = null;
+        openCodeLease?.release();
+        openCodeLease = null;
         piSessionDirForEntry = null;
         piLaunchEnvForEntry = null;
         piSessionLeaseIsCreation = false;
@@ -6743,6 +6973,7 @@ export function createPtyService({
         processOutputData: null,
         lastUserInputAt: 0,
         userInputGeneration: 0,
+        agentShellCleanupCandidate: !existingSession && args.launchedBy === "agent" && Boolean(chatSessionId),
         terminalSnapshot: tracked ? createTerminalSnapshotMirror(cols, rows) : null,
         recentOutputTail: "",
         runtimeWindowTitleScanBuffer: "",
@@ -6755,6 +6986,7 @@ export function createPtyService({
         cliUserTitleCommitted: false,
         priorEndState,
         piSessionLease,
+        openCodeLease,
         piSessionDir: piSessionDirForEntry,
         piLaunchEnv: piLaunchEnvForEntry,
         piSessionLeaseIsCreation,
@@ -7255,6 +7487,9 @@ export function createPtyService({
           codexLaunchOriginator,
         );
       }
+      if (!existingSession && tracked && toolTypeHint === "muse" && cwd) {
+        scheduleMuseSessionIdCaptureBestEffort(sessionId, cwd, startedAt);
+      }
       if (!existingSession && toolTypeHint === "kimi" && cwd) {
         // Kimi takes no session id at launch, so the id has to be adopted from
         // the file it writes. Fresh launches only: a resume already knows its id.
@@ -7458,31 +7693,6 @@ export function createPtyService({
           },
         }) ?? resumableSession;
       }
-      const launchMetadata = resumableSession.resumeMetadata?.launch;
-      const openCodeReplayLaunch = provider === "opencode"
-        && resumableSession.resumeMetadata?.provider === "opencode"
-        && openCodeSupportsReplayResume()
-        ? (() => {
-            const targetId = sanitizeResumeTargetId(resumableSession.resumeMetadata?.targetId ?? null);
-            const replayArgs = {
-              permissionMode: overrides.permissionMode
-                ?? resumableSession.resumeMetadata?.launch.permissionMode
-                ?? null,
-              model: overrides.model ?? launchMetadata?.model ?? null,
-              prompt: text,
-            };
-            return process.platform === "win32"
-              ? buildOpenCodeReplayResumeLaunchCommand({
-                  ...replayArgs,
-                  resumeTarget: targetId,
-                  continueLast: !targetId,
-                })
-              : legacyResumeLaunch(buildOpenCodeReplayResumeCommand({
-                  ...replayArgs,
-                  targetId,
-                }));
-          })()
-        : null;
       const codexComputerUse = provider === "codex"
         ? await resolveCodexComputerUseMcpConfig()
         : null;
@@ -7496,14 +7706,13 @@ export function createPtyService({
         provider,
         {
           ...overrides,
-          ...(!openCodeReplayLaunch && !resumeFlightAlreadyInProgress ? { prompt: text } : {}),
+          ...(!resumeFlightAlreadyInProgress ? { prompt: text } : {}),
         },
         codexComputerUse,
       );
-      const promptAtLaunch = !openCodeReplayLaunch
-        && !resumeFlightAlreadyInProgress
+      const promptAtLaunch = !resumeFlightAlreadyInProgress
         && builtResume.promptAtLaunch;
-      const resumeLaunch = openCodeReplayLaunch ?? builtResume.launch;
+      const resumeLaunch = builtResume.launch;
       if (!resumeLaunch) {
         throw ptySendPreDeliveryError(`Terminal session '${sessionId}' does not have a resume command.`);
       }
@@ -7518,7 +7727,7 @@ export function createPtyService({
       // so there is not always a later PTY write that can mark the new turn.
       // Wait until launch succeeds before clearing the previous turn's state.
       clearTrackedCliTurnStartMarkers(sessionId);
-      if ((resumeFlightCreated && Boolean(openCodeReplayLaunch)) || promptAtLaunch) {
+      if (promptAtLaunch) {
         // This prompt was accepted as part of the launched command, so there
         // will be no Enter write to clear its prior activity report.
         sessionService.clearSessionActivity(sessionId);
@@ -7578,11 +7787,24 @@ export function createPtyService({
       return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
     },
 
-    write({ ptyId, data }: { ptyId: string; data: string }): void {
+    /** See `agentShellCleanup.markRetiredByAde`; App Control's handle on it. */
+    retireAgentShell({ sessionId, reason }: { sessionId: string; reason: AgentShellRetireReason }): void {
+      try {
+        sessionService.agentShells.markRetiredByAde(sessionId, reason);
+      } catch (error) {
+        logger.warn("pty.agent_shell_retire_failed", { sessionId, error: String(error) });
+      }
+    },
+
+    write({ ptyId, data, inputOrigin }: { ptyId: string; data: string; inputOrigin?: unknown }): void {
       const entry = ptys.get(ptyId);
       if (!entry) return;
+      // Enter in a CLI chat is a message sent: remember which desktop sent it
+      // (or that nobody can tell, when it came without a stamp).
+      if (/[\r\n]/.test(data)) noteSessionInputOrigin(entry.sessionId, inputOrigin);
       try {
         markPtyUserInput(entry, data);
+        claimAgentShellForUser(entry, data);
         entry.pty.write(data);
         clearCommittedCliActivity(entry, data);
         tryCliUserTitleFromWrite(entry, data);
@@ -7622,8 +7844,10 @@ export function createPtyService({
         ...(laneId ? { laneId } : {}),
         limit,
       }));
+      const includeArchived = args.includeArchived === true;
       return summaries
         .filter((summary) => !isPersistedChatToolType(summary.toolType))
+        .filter((summary) => includeArchived || !summary.archivedAt)
         .filter((summary) => {
           if (!chatSessionId) return true;
           const linkedChatSessionId = terminalChatSessions.get(summary.id)
@@ -7915,6 +8139,7 @@ export function createPtyService({
       }
       try {
         markPtyUserInput(entry, args.data);
+        if (args.fromUser === true) claimAgentShellForUser(entry, args.data);
         entry.pty.write(args.data);
         clearCommittedCliActivity(entry, args.data);
         tryCliUserTitleFromWrite(entry, args.data);
@@ -8007,6 +8232,7 @@ export function createPtyService({
       const [, entry] = live;
       try {
         markPtyUserInput(entry, data);
+        claimAgentShellForUser(entry, data);
         entry.pty.write(data);
         clearCommittedCliActivity(entry, data);
         tryCliUserTitleFromWrite(entry, data);
@@ -8451,7 +8677,7 @@ export function createPtyService({
         sessionService.clearAttentionRequest(sessionId);
         sessionService.end({ sessionId, endedAt, exitCode: null, status: "disposed" });
         if (!session.chatSessionId && isTrackedAgentCliToolType(session.toolType)) {
-          revokeBrowserActorToken(sessionId);
+          releaseChatBrowser?.(sessionId);
         }
         backfillResumeTargetFromTranscriptBestEffort(sessionId, session.toolType ?? null, "orphan-dispose");
         clearIdleTimer(sessionId);
@@ -8492,13 +8718,15 @@ export function createPtyService({
       }
       entry.piSessionLease?.release();
       entry.piSessionLease = null;
+      entry.openCodeLease?.release();
+      entry.openCodeLease = null;
       entry.disposed = true;
       entry.attentionRequested = false;
       // Same rule as closeEntry: the process serving those ports is going away.
       devServerRegistry.forgetSession(entry.sessionId);
       sessionService.clearAttentionRequest(entry.sessionId);
       if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
-        revokeBrowserActorToken(entry.sessionId);
+        releaseChatBrowser?.(entry.sessionId);
       }
       if (entry.aiTitleTimer) {
         clearTimeout(entry.aiTitleTimer);
@@ -8521,6 +8749,7 @@ export function createPtyService({
       terminatePtyProcessTree(entry, "SIGTERM", logger);
       const endedAt = new Date().toISOString();
       sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode: null, status: "disposed" });
+      flushFinalTerminalSnapshot(entry);
       scheduleTranscriptDependentWork(entry, "dispose");
       clearIdleTimer(entry.sessionId);
       setRuntimeState(entry.sessionId, "killed", { touch: false });
@@ -8552,6 +8781,7 @@ export function createPtyService({
     },
 
     disposeAll(): void {
+      sessionService.agentShells.stop();
       for (const ptyId of [...ptys.keys()]) {
         try {
           service.dispose({ ptyId });

@@ -217,6 +217,24 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(toolGroups[1]!.entries.map((e) => e.itemId)).toEqual(["t2"]);
   });
 
+  // Which messages stay in a turn is `userMessageStartsTurn`'s table (shared
+  // chatTranscript tests); these rows prove the TUI's tool runs follow it.
+  it.each([
+    { label: "an inline steer keeps the turn's tool activity in one run", message: { steerId: "steer-1", deliveryState: "inline", turnId: "turn-1" }, tools: ["read", "grep"] },
+    // A delivered steer ran as its own turn, so it starts one.
+    { label: "a delivered steer that ran as its own turn starts a new tool run", message: { steerId: "steer-1", deliveryState: "delivered", turnId: "turn-2" }, tools: ["grep"] },
+  ] as const)("$label", ({ message, tools }) => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "tool_call", tool: "read", args: {}, itemId: "t1", turnId: "turn-1" }),
+      env("2026-01-01T12:00:01.000Z", { type: "user_message", text: "mid-turn", ...message }),
+      env("2026-01-01T12:00:02.000Z", { type: "tool_call", tool: "grep", args: {}, itemId: "t2", turnId: message.turnId }),
+      env("2026-01-01T12:00:03.000Z", { type: "done", turnId: message.turnId, status: "completed" }),
+    ];
+    const turnEnd = aggregate(events).find((b) => b.kind === "turn-end") as Extract<AggregatedBlock, { kind: "turn-end" }>;
+
+    expect(turnEnd.entries.map((entry) => entry.tool)).toEqual(tools);
+  });
+
   it("filters out subagent-child work events", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", {

@@ -56,7 +56,7 @@ struct CtoIdentityEditor: View {
   private var editorHeader: some View {
     HStack {
       Button("Cancel") { dismiss() }
-        .buttonStyle(.glass)
+        .buttonStyle(ADEKitButtonStyle())
         .disabled(isSaving)
         .accessibilityLabel("Cancel edit identity")
 
@@ -77,7 +77,7 @@ struct CtoIdentityEditor: View {
           Text("Save").fontWeight(.semibold)
         }
       }
-      .buttonStyle(.glass)
+      .buttonStyle(ADEKitButtonStyle(prominent: true))
       .disabled(isSaving)
       .accessibilityLabel("Save edit identity")
     }

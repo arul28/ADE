@@ -167,6 +167,11 @@ export function describeCredentialSource(
   if (localSource.source === "factory-env") return "Detected via FACTORY_API_KEY environment variable.";
   if (localSource.source === "pi-auth-file") return "Detected via ~/.pi/agent/auth.json.";
   if (localSource.source === "pi-models-file") return "Detected via ~/.pi/agent/models.json.";
+  if (localSource.source === "muse-env") return "Detected via META_API_KEY environment variable.";
+  if (localSource.source === "muse-api-key-store") return "Meta API key is stored in ADE encrypted storage.";
+  if (localSource.source === "muse-auth-file") {
+    return localSource.path ? `Signed in to Muse (${localSource.path}).` : "Signed in to Muse.";
+  }
   return null;
 }
 
@@ -197,7 +202,11 @@ export function shortCredentialSource(
     case "cursor-env":
     case "cursor-api-key-store":
     case "factory-env":
+    case "muse-env":
+    case "muse-api-key-store":
       return "API key";
+    case "muse-auth-file":
+      return "Signed in";
     case "pi-auth-file":
     case "pi-models-file":
       return "Signed in";
@@ -207,24 +216,20 @@ export function shortCredentialSource(
 }
 
 /**
- * OpenCode's own documented install methods, per platform. Windows has neither
- * Homebrew nor a POSIX shell to pipe the install script into, so it gets the
- * package managers OpenCode actually documents for Windows (npm, Scoop,
- * Chocolatey) instead of commands that cannot run there.
+ * OpenCode 2's documented install methods, per platform. Windows has neither
+ * Homebrew nor a POSIX shell to pipe the install script into, and OpenCode 2
+ * documents only its npm package there. The 1.x formula and script install 1.x,
+ * which ADE no longer drives.
  */
 export function openCodeInstallCommands(
   platform: ReturnType<typeof rendererPlatformAttribute> = rendererPlatformAttribute(),
 ): string[] {
   if (platform === "win32") {
-    return [
-      "npm i -g opencode-ai",
-      "scoop install opencode",
-      "choco install opencode",
-    ];
+    return ["npm i -g @opencode/cli"];
   }
   return [
-    "brew install anomalyco/tap/opencode",
-    "npm i -g opencode-ai",
-    "curl -fsSL https://opencode.ai/install | bash",
+    "brew install anomalyco/tap/opencode-v2",
+    "npm i -g @opencode/cli",
+    "curl -fsSL https://opencode.ai/v2/install | bash",
   ];
 }

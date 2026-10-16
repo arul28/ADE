@@ -1,5 +1,6 @@
 import type { OpenProjectBinding } from "../../../../shared/types/core";
 import type {
+  FileChangeEvent,
   FileContent,
   FileTreeNode,
   FilesGitStatusEvent,
@@ -62,6 +63,7 @@ export type PinnedFilesApi = {
   delete: (args: { workspaceId: string; path: string }) => Promise<void>;
   watchChanges: (args: { workspaceId: string; includeIgnored?: boolean }) => Promise<void>;
   stopWatching: (args: { workspaceId: string; includeIgnored?: boolean }) => Promise<void>;
+  onChange: (cb: (ev: FileChangeEvent) => void) => () => void;
 };
 
 /**
@@ -103,6 +105,7 @@ export function createPinnedFilesApi(pin: OpenProjectBinding | null): PinnedFile
     delete: (args) => window.ade.files.delete(args, pin),
     watchChanges: (args) => window.ade.files.watchChanges(args, pin),
     stopWatching: (args) => window.ade.files.stopWatching(args, pin),
+    onChange: (cb) => window.ade.files.onChange(cb, pin),
   };
   apiByPinKey.set(cacheKey, api);
   return api;

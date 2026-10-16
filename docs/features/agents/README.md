@@ -20,13 +20,12 @@ The former worker/hiring agents were removed. There is one persistent identity �
 | `apps/ade-cli/src/services/account/accountAuthService.ts` | Required ADE account auth for humans, remote agents, and CI: loopback OAuth, account-directory device authorization, shared `account.session.v1` refresh storage, JWT-`exp`-authoritative access-token refresh, one cross-process refresh-rotation recovery attempt after `invalid_grant`, and ephemeral `ADE_ACCOUNT_TOKEN` credentials. Desktop, CLI, and ADE Code ask the brain-owned refresh broker for access tokens. |
 | `apps/desktop/src/main/services/ai/apiKeyStore.ts`, `apps/desktop/src/main/services/cto/linearCredentialService.ts` | Encrypted provider/Linear credential storage with account/device provenance. Account-origin values hydrate from the brain-backed vault and are purged at sign-out or account switch; device-only values remain local. |
 | `apps/ade-cli/src/adeRpcServer.ts`, `apps/ade-cli/src/multiProjectRpcServer.ts`, `apps/ade-cli/src/runtimeRoles.ts` | Private ADE action RPC, caller-role boundary, and multi-project routing. `start_cli_session` requires `subagent` or `peer` whenever it records parent lineage. The RPC edge derives trusted parent→child turn provenance for `chat.messageSession`, strips spoofed provenance, keeps writes/history/lifecycle scoped, and permits bounded transcript reads from project-backed chats. The machine router locates the owning registered project for a chat id and aggregates foreign-project chat search while excluding personal chats. |
-| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities.ts`, `desktopBridgeServer.ts`; `apps/ade-cli/src/services/builtInBrowser/desktopBridgeClient.ts`, `desktopBridgeMethods.ts` | Browser-automation security boundary. ADE issues an opaque in-memory capability for each chat-owned agent/terminal; the runtime strips caller routing and carries the token over a separately authenticated bridge, then Electron validates it in the issuing process and restores only its bound browser scope. `desktopBridgeMethods.ts` names the wire constants and the two exceptions to the shape: `issueActorCapability` / `revokeActorCapability` are served by the bridge itself rather than by `BuiltInBrowserService`, because the capability registry lives in Electron main while the daemon that injects `ADE_BROWSER_ACTOR_TOKEN` is a separate process; they need bridge auth and, unlike every browser action, no actor capability of their own. |
-| `apps/ade-cli/src/services/builtInBrowser/remoteBrowserForwarder.ts` | `ade browser open` on a machine with no desktop attached. A box running only `ade serve` has no `WebContentsView`, but a desktop elsewhere may hold a remote pin on this machine's lane and can already reach its loopback ports over a port-forward, so the daemon publishes a `built_in_browser_remote_request` on the runtime event stream those desktops already receive and waits briefly for an acknowledgement. Only `navigate` / `createTab` / `showPanel` forward — they mean "put this URL on a screen", which any attached desktop can satisfy. `observe` / `click` and the rest act on a specific live tab and still fail, now with an error that says where the browser actually runs. |
+| `apps/desktop/src/main/services/builtInBrowser/desktopBridgeServer.ts`, `builtInBrowserAgentDispatch.ts`; `apps/ade-cli/src/services/builtInBrowser/desktopBridgeClient.ts`, `desktopBridgeMethods.ts`, `remoteBrowserForwarder.ts` | Browser-automation bridge. The owner-only socket is the boundary — no bridge secret and no per-chat token. The runtime (`scopeBuiltInBrowserAdeActionArgs`) tags each call with the caller's chat and lane, the desktop trusts that scope for tab ownership and presence, and `force` is always false for agents. |
+| `apps/ade-cli/src/services/builtInBrowser/remoteBrowserForwarder.ts` | `ade browser open` on a machine with no desktop attached. A box running only `ade serve` has no `WebContentsView`, but a desktop elsewhere may hold a remote pin on this machine's lane and can already reach its loopback ports over a port-forward, so the daemon publishes a `built_in_browser_remote_request` on the runtime event stream those desktops already receive and waits briefly for an acknowledgement. Only `navigate` / `createTab` / `showPanel` forward — they mean "put this URL on a screen", which any attached desktop can satisfy. `observe` / `click` and the rest act on a specific live tab and still fail, now with an error that says where the browser actually runs. With a desktop attached, the local bridge still takes every call, and a call with `openPanel: true` is also forwarded, addressed to the desktop that sent the chat its last message, so the page opens on the screen the user is at. |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | Security boundary for direct Codex Computer Use: explicit config opt-in, stable/cache candidate resolution, executable check, and strict OpenAI code-signature identity verification. |
 | `apps/desktop/resources/agent-skills/ade-cli-control-plane/SKILL.md` | Agent-facing ADE CLI control-plane guidance. |
 | `apps/desktop/resources/agent-skills/ade-harnesses/SKILL.md` | Agent-facing guidance for discovering, selecting, and launching saved harness presets. |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Provider-runtime prompt assembly, including one shared timezone-safe scheduled-work contract for Claude, Codex, Cursor, Droid, OpenCode, and Pi, plus runtime-specific native-subagent versus ADE-child routing guidance. |
-| `apps/desktop/resources/agent-skills/ade-mosaic/SKILL.md` | Agent-facing schema for Mosaic v1 interactive cards: an agent emits a fenced ` ```mosaic ` JSON block to ask the user for structured input (select / multiselect / number / input / approval / table) and the submitted answers return as the next user message. Parsing/rendering live in `apps/desktop/src/shared/chatMosaic.ts` (see [chat composer-and-ui.md](../chat/composer-and-ui.md)). |
 | `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side install / status / uninstall surface for the `ade` launcher. |
 | `apps/desktop/src/shared/adeCliGuidance.ts` | Canonical agent-prompt guidance builder for finding and using `ade`, reading Agent Skills on demand, using socket-backed live surfaces, reporting session activity when a provider has trusted session-scoped CLI access, registering proof, and cleaning up processes. Injected into Work chats, CLI launches, ADE Code/TUI sessions, the CTO, and mobile-started runtime work. |
 | `apps/desktop/src/shared/agentSkillRoots.ts` | Resolves and formats Agent Skill roots injected into prompts and CLI environments. |
@@ -52,14 +51,12 @@ real nested hierarchy; `null` or absent means a depth-one child of the main
 session. Live frames remain defensive because not every SDK start event carries
 the parent id.
 
-The `ade --socket browser ...` driver is available only to an ADE-launched,
-chat-bound agent or owned terminal. Its opaque browser actor capability binds
-the call to that chat's lane/project or personal tab collection. The runtime
-rejects missing capabilities and strips forged routing; Electron mints and
-validates the opaque token against its own in-memory registry — the daemon
-requests one over the desktop bridge when it launches a chat — before restoring
-the bound scope. Neither
-path exposes renderer-only profile diagnostics or permission administration.
+The `ade --socket browser ...` driver works for any process on this machine,
+like Mac Desktop; there is no per-chat token. The runtime tags a chat's calls
+with that chat's own id and lane (or the personal tab collection) and strips
+forged routing, so a chat owns the tabs it opens. Calls from another machine's
+brain are refused, and neither path exposes renderer-only profile diagnostics
+or permission administration.
 
 Every regular chat runtime can schedule its own durable future work through
 `ade chat scheduled-work create` or
@@ -77,11 +74,19 @@ into the Work list:
 - `ade chat note "testing desktop auth fallback"` updates the row's quiet
   status line, trimmed to at most 72 characters (agents aim for 6 words or fewer);
   an empty note clears it.
-- `ade chat activity planning|implementing|testing|reviewing|debugging|monitoring`
-  sets one fixed activity detail on the session card; `clear` removes it. It
-  never changes the parent board phase, **Needs you** takes priority, and a new
-  user turn clears the old report. Provider guidance exposes this only when ADE
-  can make a session-scoped CLI call reliably.
+- `ade chat activity planning|exploring|implementing|testing|debugging|reviewing|shipping|monitoring`
+  names the session card's activity detail; `clear` removes it. ADE detects the
+  activity of a chat turn from its tool calls on its own, so agents use this to
+  correct or refine it (for example **Debugging**, which detection cannot tell
+  from testing). The report stands until the detected activity moves somewhere
+  it does not cover. It never changes the parent board phase, **Needs you**
+  takes priority, and a new user turn clears it. Provider guidance exposes this
+  only when ADE can make a session-scoped CLI call reliably.
+- `ade notify --title "Deploy finished" [--body "…"] [--open ade://…]` pushes
+  a notification the agent wrote to the user's phones, for when the user asked
+  to be told. It is open to agents (not CTO-only), capped at 60 an hour per
+  account, and exits non-zero past the cap or when the machine is signed out.
+  See [Custom notifications](../sync-and-multi-device/push-notifications.md#custom-notifications).
 - `ade chat ask "Which account should I use?"` creates a loud, persisted
   `Needs you` state, clears settle, and sends a time-sensitive push. The next
   user turn clears the ask.
@@ -126,9 +131,9 @@ Each ADE-launched session receives the canonical root through
   `.claude-plugin/plugin.json`; tracked Claude CLI launches and background
   `claude --bg` launches receive the same validated root through
   `--plugin-dir`.
-- OpenCode receives the roots through its own `skills.paths` config key, which
-  ADE sets inside `OPENCODE_CONFIG_CONTENT`. No file is written into the
-  user's OpenCode config home.
+- OpenCode receives the roots through its own top-level `skills` config key,
+  which ADE sets inside the generated `OPENCODE_CONFIG` file. No file is
+  written into the user's OpenCode config home.
 - Pi has its native discovery replaced outright: ADE passes `noSkills: true`
   plus `additionalSkillPaths`, so a Pi session sees exactly ADE's catalog.
 - Qwen Code receives the roots through its own `skills.directories` settings
@@ -212,7 +217,10 @@ child is a normal agent with the same runtime, permissions, and tools, but the
 type is a coordination contract: `subagent` is required whenever the parent
 will need, join, read, or review the result (including parallel work); `peer`
 is fire-and-forget and leaves quiet turn-completion notes. Missing types and
-the legacy `none` value are rejected for new parented sessions.
+the legacy `none` value are rejected for new parented sessions. A `--no-parent`
+session an agent starts records the agent as `launchedBySessionId`: no
+nesting, wake or permission ceiling, only the Focus rule that keeps a finished
+helper from holding its busy launcher's lane open.
 
 Subagent chat turns return their child turn id and latest bounded assistant
 summary, steering an active parent or waking an idle parent. A subagent always

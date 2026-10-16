@@ -3,6 +3,12 @@ import {
   peerToRuntimeDeviceState,
   type AgentChatSession,
   type AiConfig,
+  type CloudAgentArchiveArgs,
+  type CloudAgentLaunchArgs,
+  type CloudAgentList,
+  type CloudAgentListArgs,
+  type CloudAgentOpenResult,
+  type CloudAgentRef,
   type CtoAttentionState,
   type CtoSnapshot,
   type CursorAgentUsage,
@@ -26,13 +32,17 @@ import {
   type SyncRoleSnapshot,
 } from "../../../shared/types";
 import type { BuiltInBrowserStatus } from "../../../shared/types/builtInBrowser";
+import type { MuseBinaryStatus } from "../../../shared/museBinary";
 import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
 import { applyHostedWebZoom } from "../../lib/webZoom";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
+import { createBackoffPoller } from "./infra/backoffPoller";
+import { isPageHidden, observePageVisibility } from "./infra/pageVisibility";
 import { appleEndpointReader, createAppleDeviceNamespace } from "./appleDevice";
 import { createGithubNamespace, githubDisconnectedStatus } from "./githubStub";
-import type { AdapterInfra, AdeNamespace } from "./types";
+import { createProviderAccountsNamespace } from "./providerAccounts";
+import type { AdapterInfra, AdeNamespace, MiscCall } from "./types";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 
 export type MiscNamespaces = {
@@ -53,6 +63,7 @@ export type MiscNamespaces = {
   projectSecrets: AdeNamespace<"projectSecrets">;
   transcription: AdeNamespace<"transcription">;
   agentTools: AdeNamespace<"agentTools">;
+  cloudAgents: AdeNamespace<"cloudAgents">;
   adeCli: AdeNamespace<"adeCli">;
   devTools: AdeNamespace<"devTools">;
   localhost: AdeNamespace<"localhost">;
@@ -60,9 +71,9 @@ export type MiscNamespaces = {
   feedback: AdeNamespace<"feedback">;
   computerUse: AdeNamespace<"computerUse">;
   iosSimulator: AdeNamespace<"iosSimulator">;
-  appControl: AdeNamespace<"appControl">;
   builtInBrowser: AdeNamespace<"builtInBrowser">;
   usage: Partial<Window["ade"]["usage"]>;
+  providerInstances: AdeNamespace<"providerInstances">;
   automations: AdeNamespace<"automations">;
 };
 
@@ -70,12 +81,27 @@ import type {
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
+  OpenCodeAccountActionResult,
+  OpenCodeAccountsResult,
+  OpenCodeCloudConnectResult,
   PiAuthStatusEvent,
   PiLoginProvider,
   CursorSdkAuthEvent,
   CursorSdkAuthStatus,
   CursorSdkLoginResult,
+  AdeUsagePriceOverrides,
 } from "../../../shared/types";
+
+/** The web client's answer for the Muse binary actions: nothing known, nothing fetched. */
+const MUSE_BINARY_STATUS_UNAVAILABLE: MuseBinaryStatus = {
+  state: "missing",
+  path: null,
+  pinnedVersion: null,
+  receivedBytes: null,
+  totalBytes: null,
+  errorKind: null,
+  error: null,
+};
 
 export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   const { client, commands, events, localState, state } = infra;
@@ -346,6 +372,10 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   // onOpencodeOAuthStatus/onPiAuthStatus subscriptions become live instead of
   // inert. Scoped to active flows to avoid a perpetual background poll.
   const OAUTH_STATUS_POLL_MS = 1_000;
+  // A flow with no status for a minute is most likely waiting on the user, so
+  // it drains at a slower pace until the next status arrives.
+  const OAUTH_STATUS_QUIET_AFTER_MS = 60_000;
+  const OAUTH_STATUS_QUIET_POLL_MS = 5_000;
   // Must outlive the longest flow it drains. A Pi device-code sign-in is
   // budgeted at ten minutes host-side, so expiring at five stranded the UI on
   // "Waiting for Pi…" while prompts and the completion event were still coming.
@@ -355,11 +385,18 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     piAuthStatus: new Set(["success", "error"]),
     cursorAuthStatus: new Set(["success", "error", "cancelled", "logged-out"]),
   };
-  /** Entries are `${kind}:${providerId}` so both flows can drain at once. */
+  /** One key per flow, so start, terminal status, and cancel name the same entry. */
+  const oauthFlowKey = (kind: string, providerId: string): string => `${kind}:${providerId}`;
+  /** Entries come from `oauthFlowKey`, so both flows can drain at once. */
   const oauthActiveProviders = new Set<string>();
   let oauthDrainCursor: number | null = null;
   let oauthDrainTimer: ReturnType<typeof setTimeout> | null = null;
+  let oauthDrainInFlight = false;
+  /** A cancel landed while a read was in flight: that read's tail reads once more before it stops. */
+  let oauthDrainAgain = false;
   let oauthDrainDeadline = 0;
+  let oauthLastStatusAt = 0;
+  let stopOAuthVisibility: (() => void) | null = null;
 
   const streamRuntimeEvents = (cursor: number, limit: number): Promise<PersonalChatStreamEventsResult> =>
     commands.call<PersonalChatStreamEventsResult>(
@@ -368,33 +405,56 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       { fallback: { events: [], nextCursor: cursor, hasMore: false }, idempotent: true, requireProject: false },
     );
 
+  const clearOAuthTimer = (): void => {
+    if (oauthDrainTimer != null) clearTimeout(oauthDrainTimer);
+    oauthDrainTimer = null;
+  };
+
   const stopOAuthDrain = (): void => {
-    if (oauthDrainTimer != null) {
-      clearTimeout(oauthDrainTimer);
-      oauthDrainTimer = null;
-    }
+    clearOAuthTimer();
+    stopOAuthVisibility?.();
+    stopOAuthVisibility = null;
     oauthDrainCursor = null;
+    oauthDrainAgain = false;
     oauthActiveProviders.clear();
   };
 
   const scheduleOAuthPoll = (): void => {
-    if (oauthDrainTimer != null) return;
+    // A hidden tab reads nothing. Becoming visible resumes from the same cursor,
+    // so statuses that arrived meanwhile still drain in order.
+    if (oauthDrainTimer != null || isPageHidden()) return;
+    const quiet = Date.now() - oauthLastStatusAt > OAUTH_STATUS_QUIET_AFTER_MS;
     oauthDrainTimer = setTimeout(() => {
       void pollOAuthStatus();
-    }, OAUTH_STATUS_POLL_MS);
+    }, quiet ? OAUTH_STATUS_QUIET_POLL_MS : OAUTH_STATUS_POLL_MS);
+  };
+
+  /** Drains now, unless a read is already in flight (it schedules the next one). */
+  const resumeOAuthDrain = (): void => {
+    if (oauthDrainCursor == null || oauthDrainInFlight) return;
+    clearOAuthTimer();
+    void pollOAuthStatus();
+  };
+
+  const observeOAuthVisibility = (): void => {
+    if (stopOAuthVisibility) return;
+    stopOAuthVisibility = observePageVisibility({ onHidden: clearOAuthTimer, onVisible: resumeOAuthDrain });
   };
 
   async function pollOAuthStatus(): Promise<void> {
     oauthDrainTimer = null;
-    if (oauthDrainCursor == null) return;
+    if (oauthDrainCursor == null || oauthDrainInFlight) return;
     let page: PersonalChatStreamEventsResult;
+    oauthDrainInFlight = true;
     try {
       page = await streamRuntimeEvents(oauthDrainCursor, 200);
     } catch {
+      oauthDrainInFlight = false;
       if (oauthActiveProviders.size > 0 && Date.now() <= oauthDrainDeadline) scheduleOAuthPoll();
       else stopOAuthDrain();
       return;
     }
+    oauthDrainInFlight = false;
     if (oauthDrainCursor == null) return; // torn down mid-poll
     oauthDrainCursor = page.nextCursor;
     for (const event of page.events) {
@@ -404,18 +464,45 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       const terminalStates = AUTH_TERMINAL_STATES[kind];
       if (!terminalStates || !payload.event || typeof payload.event !== "object") continue;
       const statusEvent = payload.event as OpenCodeOAuthStatusEvent | PiAuthStatusEvent | CursorSdkAuthEvent;
+      oauthLastStatusAt = Date.now();
       events.emit(kind as never, statusEvent as never);
       if (typeof statusEvent.providerId === "string" && terminalStates.has(statusEvent.state)) {
-        oauthActiveProviders.delete(`${kind}:${statusEvent.providerId}`);
+        oauthActiveProviders.delete(oauthFlowKey(kind, statusEvent.providerId));
       }
+    }
+    // The cancelled status lands after this page was read, so one more read runs before the drain stops.
+    const drainAgain = oauthDrainAgain;
+    oauthDrainAgain = false;
+    if (drainAgain && Date.now() <= oauthDrainDeadline) {
+      void pollOAuthStatus();
+      return;
     }
     if (oauthActiveProviders.size === 0 || Date.now() > oauthDrainDeadline) stopOAuthDrain();
     else scheduleOAuthPoll();
   }
 
+  /**
+   * A cancelled flow drains once more, so its terminal status still reaches
+   * listeners, then stops. Flows without a cancelled terminal state (Pi) would
+   * otherwise drain until the deadline. A failed cancel keeps the flow watched,
+   * because the host may still be running it.
+   */
+  const endOAuthFlowAfterCancel = <T>(kind: string, providerId: string, cancel: Promise<T>): Promise<T> =>
+    cancel.then((result) => {
+      oauthActiveProviders.delete(oauthFlowKey(kind, providerId));
+      if (oauthActiveProviders.size === 0) {
+        // A read in flight owns the drain: its tail reads once more instead of stopping on an empty set.
+        if (oauthDrainInFlight) oauthDrainAgain = true;
+        else resumeOAuthDrain();
+      }
+      return result;
+    });
+
   const startOAuthDrain = async (kind: string, providerId: string): Promise<void> => {
-    if (providerId) oauthActiveProviders.add(`${kind}:${providerId}`);
+    if (providerId) oauthActiveProviders.add(oauthFlowKey(kind, providerId));
     oauthDrainDeadline = Date.now() + OAUTH_STATUS_MAX_MS;
+    oauthLastStatusAt = Date.now();
+    observeOAuthVisibility();
     if (oauthDrainCursor == null && oauthDrainTimer == null) {
       // Advance to the buffer tail before the flow emits, so we skip stale
       // statuses left by a prior flow instead of replaying them.
@@ -437,14 +524,14 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   // same event contract with a small, subscriber-scoped poll. It is dormant
   // until a fleet pane is mounted and emits only when the fleet changes.
   const cursorCloudFleetListeners = new Set<(event: CursorCloudFleetEvent) => void>();
-  let cursorCloudFleetPollTimer: ReturnType<typeof setTimeout> | null = null;
-  let cursorCloudFleetPollInFlight = false;
   let cursorCloudFleetSnapshot = new Map<string, string>();
-  const CURSOR_CLOUD_FLEET_POLL_MS = 2_000;
-  const pollCursorCloudFleet = async (): Promise<void> => {
-    if (cursorCloudFleetPollInFlight || cursorCloudFleetListeners.size === 0) return;
-    cursorCloudFleetPollInFlight = true;
-    try {
+  // Identical snapshots back off: the first three polls stay at 2 s, then the
+  // interval doubles up to this ceiling. A change or a fleet action resets it.
+  const cursorCloudFleetPoller = createBackoffPoller({
+    baseMs: 2_000,
+    maxMs: 15_000,
+    isActive: () => cursorCloudFleetListeners.size > 0,
+    read: async () => {
       const result = await call<CursorCloudFleetResult>(
         "ai.cursorCloudFleet",
         { includeArchived: true, limit: 100 },
@@ -460,6 +547,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
           archived: entry.agent.archived === true,
         }),
       ]));
+      const previousSize = cursorCloudFleetSnapshot.size;
       const changed = [...next.entries()].find(([agentId, value]) => cursorCloudFleetSnapshot.get(agentId) !== value);
       if (cursorCloudFleetSnapshot.size > 0 && changed) {
         const entry = result.items.find((candidate) => candidate.agent.agentId === changed[0]);
@@ -483,22 +571,11 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
         }
       }
       cursorCloudFleetSnapshot = next;
-    } catch {
-      // The fleet pane owns the visible error state; event polling is only a
-      // freshness hint and must never create an unhandled rejection.
-    } finally {
-      cursorCloudFleetPollInFlight = false;
-      if (cursorCloudFleetListeners.size > 0) {
-        cursorCloudFleetPollTimer = setTimeout(() => {
-          cursorCloudFleetPollTimer = null;
-          void pollCursorCloudFleet();
-        }, CURSOR_CLOUD_FLEET_POLL_MS);
-      }
-    }
-  };
+      return changed !== undefined || next.size !== previousSize;
+    },
+  });
   const stopCursorCloudFleetPolling = (): void => {
-    if (cursorCloudFleetPollTimer != null) clearTimeout(cursorCloudFleetPollTimer);
-    cursorCloudFleetPollTimer = null;
+    cursorCloudFleetPoller.stop();
     cursorCloudFleetListeners.clear();
     cursorCloudFleetSnapshot = new Map();
   };
@@ -506,13 +583,16 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   const onCursorCloudFleetEvent = (listener: (event: CursorCloudFleetEvent) => void): (() => void) => {
     cursorCloudFleetListeners.add(listener);
     const unsubscribe = events.on("cursorCloudFleetEvent", listener);
-    if (cursorCloudFleetListeners.size === 1) void pollCursorCloudFleet();
+    if (cursorCloudFleetListeners.size === 1) cursorCloudFleetPoller.start({ immediate: true });
     return () => {
       unsubscribe();
       cursorCloudFleetListeners.delete(listener);
       if (cursorCloudFleetListeners.size === 0) stopCursorCloudFleetPolling();
     };
   };
+  /** Runs after a fleet action settles, so the list shows its effect at once. */
+  const afterCursorCloudFleetAction = <T>(action: Promise<T>): Promise<T> =>
+    action.finally(() => cursorCloudFleetPoller.kick());
 
   const ai: Record<string, unknown> = {
     // Pinned in the Electron contract: the AI status describes the machine that
@@ -526,6 +606,27 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     isOpenCodeInstalled: async (pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("ai.isOpenCodeInstalled", pin, infra);
       return { installed: false, source: "missing" };
+    },
+    // Like the tools cache below: the pinned Muse binary belongs to a desktop
+    // install, and the provider settings page that downloads it is hidden on
+    // web. Report "not downloaded" and never start a 350 MB fetch from here.
+    museBinaryStatus: async (pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.museBinaryStatus", pin, infra);
+      return MUSE_BINARY_STATUS_UNAVAILABLE;
+    },
+    ensureMuseBinary: async (pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.ensureMuseBinary", pin, infra);
+      return MUSE_BINARY_STATUS_UNAVAILABLE;
+    },
+    // The Muse provider page (and its Settings host) is desktop-only, like the
+    // binary download above.
+    museSettings: async (_args: unknown, pin?: RuntimePinArg): Promise<never> => {
+      assertWebRuntimePinRoutable("ai.museSettings", pin, infra);
+      throw new Error("Muse Code settings are available in the ADE desktop app.");
+    },
+    museSettingsClose: async (_args: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.museSettingsClose", pin, infra);
+      return { ok: true as const };
     },
     // The pinned-tools cache is a property of the machine running the desktop
     // app, so a web client has no cache of its own to report and no business
@@ -563,12 +664,17 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
           false,
         );
       } catch (error) {
-        if (providerId) oauthActiveProviders.delete(`opencodeOAuthStatus:${providerId}`);
+        if (providerId) oauthActiveProviders.delete(oauthFlowKey("opencodeOAuthStatus", providerId));
         if (oauthActiveProviders.size === 0) stopOAuthDrain();
         throw error;
       }
     },
-    opencodeOAuthCancel: (args: unknown) => call<void>("ai.opencodeOAuthCancel", args, undefined, false),
+    opencodeOAuthCancel: (args: unknown) =>
+      endOAuthFlowAfterCancel(
+        "opencodeOAuthStatus",
+        oauthProviderId(args),
+        call<void>("ai.opencodeOAuthCancel", args, undefined, false),
+      ),
     setOpencodeProviderKey: (args: unknown) =>
       call<{ ok: boolean; error?: string }>(
         "ai.setOpencodeProviderKey",
@@ -581,6 +687,36 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
         "ai.clearOpencodeProviderKey",
         args,
         { ok: false, error: "OpenCode provider keys are unavailable in the web client while offline" },
+        false,
+      ),
+    opencodeAccounts: (args: unknown) =>
+      call<OpenCodeAccountsResult>("ai.opencodeAccounts", args, { accounts: [] }),
+    opencodeAccountActivate: (args: unknown) =>
+      call<OpenCodeAccountActionResult>(
+        "ai.opencodeAccountActivate",
+        args,
+        { ok: false, error: "OpenCode accounts are unavailable in the web client while offline" },
+        false,
+      ),
+    opencodeAccountRename: (args: unknown) =>
+      call<OpenCodeAccountActionResult>(
+        "ai.opencodeAccountRename",
+        args,
+        { ok: false, error: "OpenCode accounts are unavailable in the web client while offline" },
+        false,
+      ),
+    opencodeAccountRemove: (args: unknown) =>
+      call<OpenCodeAccountActionResult>(
+        "ai.opencodeAccountRemove",
+        args,
+        { ok: false, error: "OpenCode accounts are unavailable in the web client while offline" },
+        false,
+      ),
+    opencodeCloudConnect: (args: unknown) =>
+      call<OpenCodeCloudConnectResult>(
+        "ai.opencodeCloudConnect",
+        args,
+        { ok: false, error: "OpenCode cloud logins are unavailable in the web client while offline" },
         false,
       ),
     refreshModelsDev: () =>
@@ -601,7 +737,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
           false,
         );
       } catch (error) {
-        if (providerId) oauthActiveProviders.delete(`piAuthStatus:${providerId}`);
+        if (providerId) oauthActiveProviders.delete(oauthFlowKey("piAuthStatus", providerId));
         if (oauthActiveProviders.size === 0) stopOAuthDrain();
         throw error;
       }
@@ -613,7 +749,12 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
         { ok: false, error: "Pi sign-in is unavailable in the web client while offline" },
         false,
       ),
-    piLoginCancel: (args: unknown) => call<void>("ai.piLoginCancel", args, undefined, false),
+    piLoginCancel: (args: unknown) =>
+      endOAuthFlowAfterCancel(
+        "piAuthStatus",
+        oauthProviderId(args),
+        call<void>("ai.piLoginCancel", args, undefined, false),
+      ),
     onPiAuthStatus: (cb: (status: PiAuthStatusEvent) => void) =>
       events.on("piAuthStatus" as never, cb as never),
     cursorAuthStatus: () =>
@@ -632,7 +773,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
           false,
         );
       } catch (error) {
-        oauthActiveProviders.delete("cursorAuthStatus:cursor");
+        oauthActiveProviders.delete(oauthFlowKey("cursorAuthStatus", "cursor"));
         if (oauthActiveProviders.size === 0) stopOAuthDrain();
         throw error;
       }
@@ -644,11 +785,12 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
         { ok: false, error: "Cursor sign-out is unavailable in the web client while offline" },
         false,
       ),
-    cursorAuthCancel: () => call<void>("ai.cursorAuthCancel", undefined, undefined, false),
+    cursorAuthCancel: () =>
+      endOAuthFlowAfterCancel("cursorAuthStatus", "cursor", call<void>("ai.cursorAuthCancel", undefined, undefined, false)),
     onCursorAuthStatus: (cb: (status: CursorSdkAuthEvent) => void) =>
       events.on("cursorAuthStatus" as never, cb as never),
-    cursorCloudListRepositories: () =>
-      call<CursorCloudRepository[]>("ai.listCursorCloudRepositories", {}, [], true),
+    cursorCloudListRepositories: (args?: { refresh?: boolean }) =>
+      call<CursorCloudRepository[]>("ai.listCursorCloudRepositories", args ?? {}, [], true),
     cursorCloudListAgents: (args?: { includeArchived?: boolean; limit?: number; cursor?: string | null }) =>
       call<CursorCloudListAgentsResult>(
         "ai.listCursorCloudAgents",
@@ -658,20 +800,20 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     cursorCloudListRuns: (args: { agentId: string; limit?: number; cursor?: string | null }) =>
       call<CursorCloudListRunsResult>("ai.listCursorCloudRuns", args, { items: [] }),
     cursorCloudCreateRun: (args: CursorCloudCreateRunRequest) =>
-      call<CursorCloudCreateRunResult>(
+      afterCursorCloudFleetAction(call<CursorCloudCreateRunResult>(
         "ai.createCursorCloudRun",
         args,
         unavailableOnHost("Cursor Cloud launches are unavailable while the host is offline."),
         false,
-      ),
+      )),
     cursorCloudGetLaneSecretNames: (laneId: string) =>
       call<string[]>("ai.getCursorCloudLaneSecretNames", { laneId }, []),
     cursorCloudArchiveAgent: (agentId: string) =>
-      call<void>("ai.archiveCursorCloudAgent", { agentId }, unavailableOnHost("Cursor Cloud archive is unavailable while the host is offline."), false),
+      afterCursorCloudFleetAction(call<void>("ai.archiveCursorCloudAgent", { agentId }, unavailableOnHost("Cursor Cloud archive is unavailable while the host is offline."), false)),
     cursorCloudUnarchiveAgent: (agentId: string) =>
-      call<void>("ai.unarchiveCursorCloudAgent", { agentId }, unavailableOnHost("Cursor Cloud unarchive is unavailable while the host is offline."), false),
+      afterCursorCloudFleetAction(call<void>("ai.unarchiveCursorCloudAgent", { agentId }, unavailableOnHost("Cursor Cloud unarchive is unavailable while the host is offline."), false)),
     cursorCloudDeleteAgent: (agentId: string) =>
-      call<void>("ai.deleteCursorCloudAgent", { agentId }, unavailableOnHost("Cursor Cloud delete is unavailable while the host is offline."), false),
+      afterCursorCloudFleetAction(call<void>("ai.deleteCursorCloudAgent", { agentId }, unavailableOnHost("Cursor Cloud delete is unavailable while the host is offline."), false)),
     cursorCloudGetAgent: (agentId: string) =>
       call<CursorCloudAgentSummary | null>("ai.getCursorCloudAgent", { agentId }, null),
     cursorCloudGetUsage: (args: { agentId: string; runId?: string | null }) =>
@@ -679,9 +821,9 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     cursorCloudStreamRun: (args: CursorCloudStreamRunRequest) =>
       call<CursorCloudStreamRunResult>("ai.cursorCloudStreamRun", args, unavailableOnHost("Cursor Cloud streaming is unavailable while the host is offline."), false),
     cursorCloudCancelRun: (args: { agentId: string; runId: string }) =>
-      call<void>("ai.cancelCursorCloudRun", args, unavailableOnHost("Cursor Cloud cancellation is unavailable while the host is offline."), false),
+      afterCursorCloudFleetAction(call<void>("ai.cancelCursorCloudRun", args, unavailableOnHost("Cursor Cloud cancellation is unavailable while the host is offline."), false)),
     cursorCloudFollowUp: (args: CursorCloudFollowUpRequest) =>
-      call<CursorCloudFollowUpResult>("ai.cursorCloudFollowUp", args, unavailableOnHost("Cursor Cloud follow-up is unavailable while the host is offline."), false),
+      afterCursorCloudFleetAction(call<CursorCloudFollowUpResult>("ai.cursorCloudFollowUp", args, unavailableOnHost("Cursor Cloud follow-up is unavailable while the host is offline."), false)),
     cursorCloudListArtifacts: (agentId: string) =>
       call<CursorCloudArtifactSummary[]>("ai.listCursorCloudArtifacts", { agentId }, []),
     cursorCloudDownloadArtifact: (args: { agentId: string; path: string }) =>
@@ -697,7 +839,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     cursorCloudResolveLane: (agentId: string) =>
       call<{ laneId: string; laneName: string; created: boolean }>("ai.cursorCloudResolveLane", { agentId }, unavailableOnHost("Resolving a Cursor Cloud lane requires the host desktop."), false),
     cursorCloudStopRun: (agentId: string) =>
-      call<{ stopped: boolean }>("ai.cursorCloudStopRun", { agentId }, unavailableOnHost("Stopping a Cursor Cloud run is unavailable while the host is offline."), false),
+      afterCursorCloudFleetAction(call<{ stopped: boolean }>("ai.cursorCloudStopRun", { agentId }, unavailableOnHost("Stopping a Cursor Cloud run is unavailable while the host is offline."), false)),
     onCursorCloudFleetEvent,
   };
 
@@ -762,6 +904,25 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     projectSecrets: createProjectSecretsNamespace(),
     transcription: createTranscriptionNamespace(),
     agentTools: { detect: async () => [] } as AdeNamespace<"agentTools">,
+    cloudAgents: {
+      list: (args: CloudAgentListArgs) =>
+        call<CloudAgentList>("ai.listCloudAgents", args, {
+          provider: args.provider,
+          items: [],
+          fetchedAt: new Date(0).toISOString(),
+          capabilities: { stop: false, archive: false, vmShell: false, web: false },
+          unavailableReason: "Cloud agents are unavailable: the host is offline or runs an older ADE.",
+          models: [],
+        }),
+      open: (args: CloudAgentRef) =>
+        call<CloudAgentOpenResult>("ai.openCloudAgent", args, unavailableOnHost("Opening a cloud agent requires the host desktop."), false),
+      stop: (args: CloudAgentRef) =>
+        call<{ stopped: true }>("ai.stopCloudAgent", args, unavailableOnHost("Stopping a cloud agent requires the host desktop."), false),
+      archive: (args: CloudAgentArchiveArgs) =>
+        call<{ archived: boolean }>("ai.archiveCloudAgent", args, unavailableOnHost("Archiving a cloud agent requires the host desktop."), false),
+      launch: (args: CloudAgentLaunchArgs) =>
+        call<CloudAgentOpenResult>("ai.launchCloudAgent", args, unavailableOnHost("Launching a cloud agent requires the host desktop."), false),
+    },
     adeCli: ({
       getStatus: async () => ({ installed: false, path: null, version: null }),
       installForUser: async () => ({ installed: false, path: null, error: "unsupported" }),
@@ -772,7 +933,6 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     feedback: createFeedbackStubs() as AdeNamespace<"feedback">,
     computerUse: createNativeUnavailableNamespace() as AdeNamespace<"computerUse">,
     iosSimulator: createAppleDeviceNamespace(call, appleEndpointReader(client)),
-    appControl: createNativeUnavailableNamespace() as AdeNamespace<"appControl">,
     builtInBrowser: {
       ...createNativeUnavailableNamespace(),
       // `getStatus` is the one member of this namespace whose *shape* is load
@@ -792,7 +952,8 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       // caller that needs it feature-detects instead of getting a fake.
     } as unknown as AdeNamespace<"builtInBrowser">,
     usage: createUsageStubs(call),
-    automations: createAutomationStubs() as AdeNamespace<"automations">,
+    providerInstances: createProviderAccountsNamespace(call),
+    automations: createAutomationStubs(call, infra) as AdeNamespace<"automations">,
   };
 }
 
@@ -816,6 +977,9 @@ function createWorkToolsNamespace(call: MiscCall): AdeNamespace<"workTools"> {
     // show`; a desktop that has the chat open does.
     onShowRequest: () => () => {},
     acknowledgeShow: async () => ({ ok: false }),
+    // The web client has no browser to light up.
+    listDevServers: async () => ({ servers: [] }),
+    onDevServer: () => () => {},
   } as AdeNamespace<"workTools">;
 }
 
@@ -852,20 +1016,13 @@ function createLocalPersistenceNamespaces(localState: AdapterInfra["localState"]
   };
 }
 
-// Mirrors createMiscNamespaces' local `call`: the fallback is either an eager
-// value or a lazy resolver that may throw for calls with no offline shape.
-type MiscCall = <T>(
-  action: string,
-  args: unknown,
-  fallback: T | (() => T | Promise<T>),
-  idempotent?: boolean,
-) => Promise<T>;
 
 // Wired method-by-method on purpose. The host registers every `cto.*` action as
 // viewerAllowed, including `setLinearToken`/`clearLinearToken`, so completing
 // this namespace mechanically would hand any connected browser write access to
-// the host's Linear credential store. Only reads and the session ensure are
-// wired; identity/token writes stay with the fallback proxy.
+// the host's Linear credential store. Credential writes stay with the fallback
+// proxy; the agent and issue-tracker actions below use their scoped action
+// domains, whose policy explicitly controls their reads and writes.
 function createCtoNamespace(
   call: MiscCall,
 ): NonNullable<Window["ade"]["cto"]> {
@@ -907,6 +1064,80 @@ function createCtoNamespace(
     getLinearQuickView: () => call("cto.getLinearQuickView", {}, null),
     getLinearIssuePickerData: () => call("cto.getLinearIssuePickerData", {}, null),
     searchLinearIssues: (args?: unknown) => call("cto.searchLinearIssues", args, { issues: [] }),
+    getLinearIssueComments: (args?: unknown) => call("cto.getLinearIssueComments", args, []),
+    getLinearIssue: (args?: unknown) => call("cto.getLinearIssue", args, null),
+    createLinearIssueComment: (args?: unknown) => call("cto.createLinearIssueComment", args, null, false),
+    createLinearIssue: (args?: unknown) => call("cto.createLinearIssue", args, null, false),
+    getLinearIssueCreateOptions: (args?: unknown) => call("cto.getLinearIssueCreateOptions", args, null),
+    listLinearProjectMilestones: (args?: unknown) => call("cto.listLinearProjectMilestones", args, []),
+    uploadLinearFile: (args?: unknown) => call("cto.uploadLinearFile", args, null, false),
+    updateLinearIssue: (args?: unknown) => call("cto.updateLinearIssue", args, null),
+    cancelLinearIssue: (issueId: string) => call(
+      "linear_issue_tracker.cancelIssue",
+      { argsList: [issueId] },
+      unavailableOnHost("Linear issue cancellation is unavailable on the connected ADE host."),
+      false,
+    ),
+    countLinearIssues: (args?: unknown) => call("cto.countLinearIssues", args, { counts: {} }),
+    getLinearCustomViews: () => call("cto.getLinearCustomViews", {}, []),
+    getLinearAgentOverview: () => call("linear_agent.getOverview", {}, {
+      available: false,
+      message: "The ADE Linear agent is unavailable on the connected ADE host.",
+      status: null,
+      rules: [],
+      activeSessions: [],
+    }),
+    startLinearAgentInstall: () => call(
+      "linear_agent.startInstall",
+      {},
+      unavailableOnHost("Linear agent installation is unavailable on the connected ADE host."),
+      false,
+    ),
+    getLinearAgentInstallSession: (sessionId: string) => call(
+      "linear_agent.getInstallSession",
+      { args: { sessionId } },
+      unavailableOnHost("Linear agent installation is unavailable on the connected ADE host."),
+    ),
+    registerLinearAgentMember: (args?: { replace?: boolean }) => call(
+      "linear_agent.registerMember",
+      { args: { replace: args?.replace === true } },
+      unavailableOnHost("Linear agent routing is unavailable on the connected ADE host."),
+      false,
+    ),
+    unregisterLinearAgentMember: () => call(
+      "linear_agent.unregisterMember",
+      {},
+      unavailableOnHost("Linear agent routing is unavailable on the connected ADE host."),
+      false,
+    ),
+    updateLinearAgentSettings: (args: { fallbackMode: "reply" | "runner"; runner: "self" | null }) => call(
+      "linear_agent.updateSettings",
+      { args },
+      unavailableOnHost("Linear agent settings are unavailable on the connected ADE host."),
+      false,
+    ),
+    uninstallLinearAgent: () => call(
+      "linear_agent.uninstall",
+      {},
+      unavailableOnHost("Linear agent installation is unavailable on the connected ADE host."),
+      false,
+    ),
+    getLinearInbox: (args?: { first?: number; includeRead?: boolean }) => call(
+      "linear_issue_tracker.listNotifications",
+      { args: args ?? {} },
+      unavailableOnHost("Linear inbox reads are unavailable on the connected ADE host."),
+    ),
+    markLinearNotification: (args: { notificationId: string; action: "read" | "archive" }) => call(
+      "linear_issue_tracker.markNotification",
+      { args },
+      unavailableOnHost("Linear inbox updates are unavailable on the connected ADE host."),
+      false,
+    ),
+    getLinearIssueRelationsIssue: (issueId: string) => call(
+      "linear_issue_tracker.fetchIssueById",
+      { argsList: [issueId] },
+      unavailableOnHost("Linear issue relations are unavailable on the connected ADE host."),
+    ),
   } as unknown as NonNullable<Window["ade"]["cto"]>;
 }
 
@@ -916,6 +1147,7 @@ function createProjectSecretsNamespace(): AdeNamespace<"projectSecrets"> {
     get: async () => ({ value: null }),
     set: async (args: { name?: string }) => ({ name: args.name ?? "", hasValue: false, updatedAt: new Date().toISOString() }),
     delete: async (args: { name?: string }) => ({ deleted: false, name: args.name ?? "" }),
+    pullFromAccount: async () => ({ state: "unavailable" as const }),
   } as unknown as AdeNamespace<"projectSecrets">;
 }
 
@@ -1041,6 +1273,13 @@ function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
     // reaches the host instead of replaying a cached read, and so a failure
     // surfaces rather than resolving to a fake null snapshot.
     refresh: () => call("usage.refreshQuota", {}, null, false),
+    getCostBreakdown: (args) => call("usage.getCostBreakdown", args, null),
+    getModelDetail: (args) => call("usage.getModelDetail", args, null),
+    getModelPriceOverrides: () => call("usage.getModelPriceOverrides", {}, null),
+    // A save writes the host's price list: never replayed from a cached read.
+    setModelPriceOverride: (args) => call<AdeUsagePriceOverrides>("usage.setModelPriceOverride", args, () => {
+      throw new Error("This host cannot save model prices yet.");
+    }, false),
     // refreshHistory is deliberately NOT mapped onto usage.refreshQuota: the
     // host keeps the cost-log rescan decoupled from quota polling, so aliasing
     // them would do unrelated work and still leave the stats stale. It needs
@@ -1049,10 +1288,41 @@ function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
   } as Partial<Window["ade"]["usage"]>;
 }
 
-function createAutomationStubs(): Record<string, unknown> {
+/**
+ * Automations run on the user's computer; the web client cannot build or run
+ * them. It can read webhook automations (the `automations.webhook*` remote
+ * commands), so it shows what each URL is doing. Anything that changes a URL
+ * stays on the computer.
+ */
+function createAutomationStubs(
+  call: <T>(action: string, args: unknown, fallback: T | (() => T | Promise<T>), idempotent?: boolean) => Promise<T>,
+  infra: Parameters<typeof assertWebRuntimePinRoutable>[2],
+): Record<string, unknown> {
+  const onComputer = async () => {
+    throw new Error("Make or change webhooks in ADE on your computer.");
+  };
   return {
     list: async () => [],
     onEvent: () => () => {},
+    webhooks: {
+      list: async (pin?: RuntimePinArg) => {
+        assertWebRuntimePinRoutable("automations.webhookList", pin, infra);
+        return await call("automations.webhookList", {}, []);
+      },
+      listDeliveries: async (args: { hookId: string; limit?: number }, pin?: RuntimePinArg) => {
+        assertWebRuntimePinRoutable("automations.webhookListDeliveries", pin, infra);
+        return await call("automations.webhookListDeliveries", args, []);
+      },
+      getDelivery: async (args: { id: string }, pin?: RuntimePinArg) => {
+        assertWebRuntimePinRoutable("automations.webhookGetDelivery", pin, infra);
+        return await call("automations.webhookGetDelivery", args, null);
+      },
+      createEndpoint: onComputer,
+      getEndpoint: onComputer,
+      rotateEndpoint: onComputer,
+      replayDelivery: onComputer,
+      sendTest: onComputer,
+    },
   };
 }
 

@@ -9,7 +9,9 @@ import {
   CHAT_EVENT_HISTORY_PAGE_MAX_BYTES,
   CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
   clampHistoryPageBytes,
+  findTranscriptOffsetForSequence,
   readTranscriptHistoryPage,
+  readTranscriptHistoryPageBeforeSequence,
 } from "./chatTranscriptHistoryPager";
 
 const SESSION_ID = "session-pager";
@@ -334,5 +336,79 @@ describe("readTranscriptHistoryPage", () => {
     expect(second.hasMore).toBe(first.hasMore);
     expect(second.envelopes.map(eventText)).toEqual(first.envelopes.map(eventText));
     expect(second.envelopes.map(eventText)).not.toContain("appended-later");
+  });
+});
+
+describe("readTranscriptHistoryPageBeforeSequence", () => {
+  const sequenceOf = (envelope: AgentChatEventEnvelope) => envelope.sequence;
+
+  it("pages the persisted events older than a sequence, oldest first, within the byte cap", async () => {
+    // 400 rows of 1 KB, with an unsequenced legacy row and a foreign session
+    // row mixed in; probes must skip both.
+    const lines: string[] = [];
+    for (let sequence = 1; sequence <= 400; sequence += 1) {
+      lines.push(envelopeLine({ text: `row-${sequence}`, sequence, exactLineBytes: 1_024 }));
+      if (sequence === 150) lines.push(envelopeLine({ text: "legacy-unsequenced", exactLineBytes: 1_024 }));
+      if (sequence === 151) lines.push(envelopeLine({ text: "other", sessionId: "other", sequence: 9_999, exactLineBytes: 1_024 }));
+    }
+    const { lineOffsets } = writeTranscript(lines);
+
+    const page = await readTranscriptHistoryPageBeforeSequence({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      beforeSequence: 300,
+      maxBytes: 64 * 1024,
+    });
+    const sequences = page.envelopes.map(sequenceOf);
+    expect(sequences[sequences.length - 1]).toBe(299);
+    expect(sequences).toEqual(Array.from({ length: 64 }, (_, index) => 236 + index));
+    expect(page.hasMore).toBe(true);
+    // Row offsets stay exact, so a later chat_tool_result hint still works.
+    expect(page.envelopeStartOffsets[0]).toBe(lineOffsets[lines.findIndex((line) => line.includes("row-236x"))]);
+
+    // Paging continues by the oldest sequence the client kept.
+    const older = await readTranscriptHistoryPageBeforeSequence({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      beforeSequence: 152,
+      maxBytes: 64 * 1024,
+    });
+    const olderSequences = older.envelopes.map(sequenceOf);
+    expect(olderSequences[olderSequences.length - 1]).toBe(151);
+    expect(olderSequences.every((sequence) => sequence == null || sequence < 152)).toBe(true);
+    // The unsequenced legacy row is in the byte range and comes back in order.
+    expect(older.envelopes.some((envelope) => (envelope.event as { text: string }).text.startsWith("legacy-unsequenced"))).toBe(true);
+  });
+
+  it("reaches the head and reports no more history", async () => {
+    writeTranscript(Array.from({ length: 5 }, (_, index) => envelopeLine({ text: `r${index + 1}`, sequence: index + 1 })));
+    const page = await readTranscriptHistoryPageBeforeSequence({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      beforeSequence: 4,
+    });
+    expect(page.envelopes.map(sequenceOf)).toEqual([1, 2, 3]);
+    expect(page.hasMore).toBe(false);
+    expect(page.startOffset).toBe(0);
+    const empty = await readTranscriptHistoryPageBeforeSequence({ transcriptPath, sessionId: SESSION_ID, beforeSequence: 1 });
+    expect(empty.envelopes).toEqual([]);
+    expect(empty.hasMore).toBe(false);
+  });
+
+  it("answers a sequence past the end with the newest page, and finds offsets for sparse sequences", async () => {
+    const { size, lineOffsets } = writeTranscript([2, 4, 6, 8].map((sequence) => envelopeLine({ text: `s${sequence}`, sequence })));
+    expect(await findTranscriptOffsetForSequence({ transcriptPath, sessionId: SESSION_ID, sequence: 5 })).toBe(lineOffsets[2]);
+    expect(await findTranscriptOffsetForSequence({ transcriptPath, sessionId: SESSION_ID, sequence: 1 })).toBe(0);
+    expect(await findTranscriptOffsetForSequence({ transcriptPath, sessionId: SESSION_ID, sequence: 99 })).toBe(size);
+    const page = await readTranscriptHistoryPageBeforeSequence({ transcriptPath, sessionId: SESSION_ID, beforeSequence: 99 });
+    expect(page.envelopes.map(sequenceOf)).toEqual([2, 4, 6, 8]);
+  });
+
+  it("never returns a row at or above the cursor from a file whose numbering restarted", async () => {
+    // Legacy: numbering restarted at 1 after a host restart.
+    writeTranscript([1, 2, 3, 1, 2, 3].map((sequence, index) => envelopeLine({ text: `r${index}`, sequence })));
+    const page = await readTranscriptHistoryPageBeforeSequence({ transcriptPath, sessionId: SESSION_ID, beforeSequence: 3 });
+    expect(page.envelopes.every((envelope) => (envelope.sequence ?? 0) < 3)).toBe(true);
+    expect(page.envelopeStartOffsets).toHaveLength(page.envelopes.length);
   });
 });

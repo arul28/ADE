@@ -101,6 +101,16 @@ function patchLinearMethods(ade: any) {
     bridgePost("/action", { domain: "linear_issue_tracker", action: "searchIssues", args });
   ade.cto.getLinearIssueComments = async (args: Record<string, unknown> = {}) =>
     bridgePost("/action", { domain: "linear_issue_tracker", action: "fetchIssueComments", args });
+  ade.cto.getLinearIssue = async (args: { issueId: string }) =>
+    bridgePost("/action", { domain: "linear_issue_tracker", action: "fetchIssueById", arg: args.issueId });
+  ade.cto.updateLinearIssue = async ({ issueId, ...patch }: { issueId: string } & Record<string, unknown>) =>
+    bridgePost("/action", { domain: "linear_issue_tracker", action: "updateIssue", argsList: [issueId, patch] });
+  ade.cto.cancelLinearIssue = async (issueId: string) =>
+    bridgePost("/action", { domain: "linear_issue_tracker", action: "cancelIssue", argsList: [issueId] });
+  ade.cto.countLinearIssues = async (args: Record<string, unknown> = {}) =>
+    bridgePost("/action", { domain: "linear_issue_tracker", action: "countIssues", args });
+  ade.cto.getLinearCustomViews = async () =>
+    bridgePost("/action", { domain: "linear_issue_tracker", action: "listCustomViews" });
   ade.cto.getLinearProjects = async () =>
     bridgePost("/action", { domain: "linear_issue_tracker", action: "listProjects" });
   ade.cto.setLinearToken = async (args: { token: string }) => {
@@ -121,6 +131,34 @@ function patchLinearMethods(ade: any) {
       action: "getConnectionStatus",
     });
   };
+}
+
+function patchJiraMethods(ade: any, health: BridgeHealth) {
+  const call = (action: string, args?: Record<string, unknown>, pin?: any) => {
+    if (pin && (pin.kind !== "local" || pin.rootPath !== health.projectRoot)) {
+      throw new Error("Jira needs a connected ADE runtime for the pinned project.");
+    }
+    return bridgePost("/action", {
+      domain: "jira",
+      action,
+      ...(args ? { args } : {}),
+    });
+  };
+  ade.jira.getConnectionStatus = (pin?: any) => call("getConnectionStatus", undefined, pin);
+  ade.jira.connect = (args: Record<string, unknown>, pin?: any) => call("connect", args, pin);
+  ade.jira.disconnect = (pin?: any) => call("disconnect", undefined, pin);
+  ade.jira.listProjects = (args: Record<string, unknown> = {}, pin?: any) => call("listProjects", args, pin);
+  ade.jira.listIssues = (args: Record<string, unknown> = {}, pin?: any) => call("listIssues", args, pin);
+  ade.jira.getIssue = (args: Record<string, unknown>, pin?: any) => call("getIssue", args, pin);
+  ade.jira.listComments = (args: Record<string, unknown>, pin?: any) => call("listComments", args, pin);
+  ade.jira.addComment = (args: Record<string, unknown>, pin?: any) => call("addComment", args, pin);
+  ade.jira.updateIssue = (args: Record<string, unknown>, pin?: any) => call("updateIssue", args, pin);
+  ade.jira.listTransitions = (args: Record<string, unknown>, pin?: any) => call("listTransitions", args, pin);
+  ade.jira.transitionIssue = (args: Record<string, unknown>, pin?: any) => call("transitionIssue", args, pin);
+  ade.jira.listAssignableUsers = (args: Record<string, unknown> = {}, pin?: any) => call("listAssignableUsers", args, pin);
+  ade.jira.listLabels = (args: Record<string, unknown> = {}, pin?: any) => call("listLabels", args, pin);
+  ade.jira.getCreateMeta = (args: Record<string, unknown>, pin?: any) => call("getCreateMeta", args, pin);
+  ade.jira.createIssue = (args: Record<string, unknown>, pin?: any) => call("createIssue", args, pin);
 }
 
 function patchLaneMethods(ade: any) {
@@ -158,6 +196,7 @@ export async function attachBrowserRuntimeBridge(): Promise<boolean> {
 
   if (ade.sync && typeof ade.sync === "object") patchSyncMethods(ade);
   if (ade.cto && typeof ade.cto === "object") patchLinearMethods(ade);
+  if (ade.jira && typeof ade.jira === "object") patchJiraMethods(ade, health);
   if (ade.lanes && typeof ade.lanes === "object") patchLaneMethods(ade);
 
   w.__adeRuntimeBridge = true;

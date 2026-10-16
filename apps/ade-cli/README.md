@@ -287,6 +287,7 @@ The runtime exposes two layers of JSON-RPC methods (`src/multiProjectRpcServer.t
 ```text
 ade/initialize   ade/initialized   ping   shutdown   exit
 runtime/info     machineInfo.get   machine.updateAndRestart
+runtime.activitySummary            runtime.updateImpact
 account.call     attention.call
 projects.list    projects.add      projects.remove   projects.touch
 projects.browseDirectories         projects.getDetail
@@ -323,9 +324,20 @@ identity (a chat, run, step or attempt), and it refuses without
 `confirmation: "REMOVE"`, the token `ade machines remove --confirm REMOVE`
 sends.
 
-`machine.updateAndRestart` is the host half of "Update & restart": it checks for
-a newer build for this machine's channel, applies it, and asks the login service
-to restart the brain, reporting one step at a time. It is CTO-gated and always
+`runtime.updateImpact` answers what restarting this machine's ADE would stop:
+the chats mid-turn (by name, with their project) and counts of agent CLI
+sessions and terminals that are open (a restart closes each one, quiet or not), across every booted project and the
+personal-chat runtime. It never boots a project to answer. It is CTO-gated,
+because it names every running chat on the machine; clients show it before an
+update restarts anything.
+
+`machine.updateAndRestart` is the host half of "Update & restart". When this
+machine's desktop app is open it asks that app to install its own update over
+the desktop bridge (`app_update.install`), since an open app owns the brain and
+replaces a standalone runtime installed under it. Otherwise it checks for a
+newer build for this machine's channel, applies it, and asks the login service
+to restart the brain. Either way it reports one step at a time and names the
+route it took. It is CTO-gated and always
 user-initiated. On the machine itself, `ade brain update` is the typed
 equivalent and does not need a running brain; the RPC exists for a client that
 is not on the machine (the desktop's remote-machine card), which the CLI has no
@@ -345,7 +357,7 @@ frozen wire identifier for the method, the action domain, and the item ids even
 though the product surface is now called Activity. Agents on a desktop endpoint
 reach the same operations through `ade actions run attention.<action>`.
 
-`runtimeEvents.subscribe` returns `eventEpoch`, `nextCursor`, `hasMore`, `gap`, and `oldestCursor`; when `gap` is true, the caller's cursor predates the retained buffer and it should refresh state before resuming from `oldestCursor` / `nextCursor`. Every drain of the event buffer (`stream_events`, `personalChats.streamEvents`, and the replay of both subscribe methods) stops at `limit` events or about 1 MiB of events, whichever comes first, and always returns at least one event. `hasMore: true` means more events are waiting: drain again from `nextCursor`. A remote client reads each drain as one RPC reply over the sync socket, so this cap keeps one reply from filling the host's send budget. `category` accepts the categories in `REMOTE_RUNTIME_EVENT_CATEGORIES` (`orchestrator`, `dag_mutation`, `runtime`, `pty`, `cto_voice`) — one tuple that the buffer, this schema enum, and every client guard derive from. `cto_voice` is CTO-only in both transports; see the voice notes under the CLI surface below.
+`runtimeEvents.subscribe` returns `eventEpoch`, `nextCursor`, `hasMore`, `gap`, and `oldestCursor`; when `gap` is true, the caller's cursor predates the retained buffer and it should refresh state before resuming from `oldestCursor` / `nextCursor`. Every drain of the event buffer (`stream_events`, `personalChats.streamEvents`, and the replay of both subscribe methods) stops at `limit` events or about 1 MiB of events, whichever comes first, and always returns at least one event. `hasMore: true` means more events are waiting: drain again from `nextCursor`. A remote client reads each drain as one RPC reply over the sync socket, so this cap keeps one reply from filling the host's send budget. `category` accepts the categories in `REMOTE_RUNTIME_EVENT_CATEGORIES` (`orchestrator`, `dag_mutation`, `runtime`, `pty`) — one tuple that the buffer, this schema enum, and every client guard derive from.
 
 `personalChats.subscribeEvents` / `personalChats.unsubscribeEvents` are machine-scoped RPC methods, not entries in the `personalChats.call` action registry, so they are absent from `ade chat actions --personal` and `ade chat action --personal <action>` rejects them by design. They push `runtime/event` notifications (`scope: "personal"`, `projectId: null`) to a client holding the connection open; the CLI does not use them, because every `ade chat` command is a one-shot plan that polls. `capabilities.personalChats` advertises `pushEvents` and `mcpServers` so a client can tell a runtime that supports these from an older one that would ignore them — both optional, both absent on older runtimes. `personalChats.streamEvents` cursor draining is unchanged and stays the path for clients that cannot hold a socket.
 
@@ -499,12 +511,12 @@ ade sync status --text                    # works with no registered project: th
 ade sync pin generate --text              # pair a phone with a machine that has never opened a project
 ade connect                               # account + login service + account-directory row, idempotent
 ade connect --status --text               # report the three steps without changing anything
-ade connect --headless                    # force the copy-paste device flow
+ade connect --headless                    # sign in from another device: QR code, link, and code
 ade connect --no-login --no-service       # opt out of either half
 ade setup                                 # finish/redo install setup: agent CLIs, account, desktop app, verification, summary
 ade setup --no-desktop --no-prompt        # non-interactive; skips the ~1 GB desktop download
-ade login                                 # loopback OAuth, or device flow on SSH/headless hosts
-ade login --headless                      # print verification URL + user code
+ade login                                 # browser here, plus a QR code + link + code to finish on another device
+ade login --headless                      # open no browser here: QR code + verification URL + user code only
 ade auth status --text                    # account identity + loopback/device/env-token source
 ade account token create --text           # print a self-contained durable ADE_ACCOUNT_TOKEN once
 ade logout
@@ -522,10 +534,19 @@ ade report-issue --send                           # also upload the same redacte
 ade triage                                        # build a redacted context.md + repair playbook and hand them to your first installed agent CLI
 ade triage --provider codex                       # pick the agent CLI (claude | codex | cursor-agent | opencode | droid)
 ade triage --agent --json                         # launch nothing: print contextPath, playbookPath, playbookSource, suggestedPrompt, detected agents
+ade reset --all --dry-run --text                  # list everything a hard reset would remove, changing nothing
+ade reset --all                                   # remove everything ADE put on this computer (asks you to type RESET first)
 ade tools status --text                           # pinned agent CLIs: installed version + entry path per tool, plus the machine tools root
 ade tools ensure --text                           # fetch whatever this build pins and is missing (no names = all); streams progress to stderr
 ade tools ensure codex --text                     # one tool; an unknown name is a usage error listing the pinned set
 ade tools gc --dry-run --text                     # drop cached versions this build no longer pins (keeps the newest superseded one)
+ade providers opencode accounts list --text       # OpenCode logins saved on this machine
+ade providers opencode accounts activate --id <id> --text
+ade providers opencode accounts rename --id <id> --label Work --text
+ade providers opencode accounts remove --id <id> --text
+ade scene preview /tmp/chart.html --text         # render a scene the way a chat will: screenshot path, timings, problems
+cat draft.md | ade scene preview - --theme light  # a fence or a bare body on stdin; --width sets the frame width (default 720)
+
 ade projects list --text
 ade projects inspect /path/to/checkout --json   # classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 ade init
@@ -556,8 +577,24 @@ ade chat create --personal --provider claude --model anthropic/claude-opus-5 --a
 ade chat steer personal-session-id --personal --text "focus on the tradeoffs"   # add --dispatch inline|interrupt for atomic active-turn delivery
 ade chat interrupt personal-session-id --personal --keep-queue
 ade chat restore-queue personal-session-id recovery-id --personal
+ade chat note --personal --session personal-session-id "Drafting the email"   # also ask / activity <value|clear>; from inside a personal chat (ADE_CHAT_SCOPE=personal) the flags are implied
+ade chat create --personal --provider codex --model openai/gpt-5.5 --arg personalProfile=embedded   # SDK-host surface instead of the assistant default
+ade chat interrupt <session> --stop-children                 # also stop the chats it spawned
+ade chat restart <session> [--stop]                          # fresh provider process, conversation kept
+ade chat wait <a> <b> --async [--any]                        # durable: wake me when all (or any) are idle
+ade chat waits --text                                        # list waits; ade chat wait --cancel <id>
+ade chat wait --background --job <id>                        # wake me when my background job ends
+ade chat send <B> --after <A> "start the review"             # send B this once A is idle
+ade prs watch <pr> | ade prs ship <pr> | ade prs unwatch <pr>  # PR Watch / Ship for the calling chat
 ade chat actions --personal --text
 ade chat action --personal modelCatalog --input-json '{"mode":"cached"}' --json
+ade issue list --tracker jira --scope PROJ --text     # tracker-neutral issue reads and writes for Linear, GitHub, or Jira
+ade issue view PROJ-123 --text
+ade jira status --text
+ade jira connect --site https://acme.atlassian.net --email dev@example.com --token-stdin < jira-token.txt
+ade jira list --project PROJ --state open --text
+ade jira issue PROJ-123 --text
+ade jira transition PROJ-123 --to Done
 ade linear attach --this-session --issue-id ENG-431   # attach to the current CLI session ($ADE_CHAT_SESSION_ID)
 ade linear comment "Pushed a fix; CI running"          # write back through the attached runtime
 ade linear set-state ENG-431 <state-id>
@@ -579,11 +616,13 @@ ade history show --id operation-id --text
 ade history commits --lane lane-id --text
 ade history export --lane lane-id --out history.json
 ade diff patch --lane lane-id --path src/file.ts --text
-ade search "login redirect" --text                          # active-project search plus bounded chat hits from every registered project
+ade search "login redirect" --text                          # active-project search plus bounded chat hits from every registered project (read from each project's index file; no project is loaded)
 ade search "flaky test" --kind chat,terminal --lane fix-login --text  # exit 1 when nothing matches
 ade search --status --text                                  # index doc counts, backfill state, index path
 ade prs create --lane lane-id --base main --title "Fix checkout flow" --text  # prints GitHub + ADE PR URLs
 ade prs create --lane lane-id --base main --close-linear-issue-on-merge
+ade prs create --lane lane-id --title "Fix checkout flow" --body-file pr.md --text  # uploads proof the text cites; prints what a reader will miss
+ade prs body 123 --body-file pr.md --text                                        # replace the PR text; same upload and notes
 ade prs list-open --text
 ade prs github-snapshot --include-external-closed --history-page-limit 4
 ade prs github-snapshot --include-state-counts --no-revalidate
@@ -607,6 +646,7 @@ ade new chat --mode chat --lane lane-id --type subagent --prompt "repro the flak
 ade new chat --mode cli --lane lane-id --provider codex --type peer --parent chat-session-id --prompt "review the diff"   # agent-provider CLI sessions record spawn lineage without becoming attached terminals and show in the parent as a subagent card that closes when the CLI exits (use --mode chat for per-turn reports); shell sessions do not record lineage
 ade chat list --lane lane-id --include-automation --no-archived --text
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.6-sol --no-parent --permissions full-auto --print-config --json
+ade chat create --lane lane-id --provider codex --model openai/gpt-6.1-sol --no-parent --ultrafast   # Fast at Codex's Ultrafast tier, on accounts whose Codex catalog offers it (also on `new chat` and `chat handoff`)
 ade chat create --lane lane-id --provider codex --no-parent   # tracked agent shells inherit $ADE_CHAT_SESSION_ID; parented launches must add --type subagent|peer, while --no-parent deliberately opts out
 ade chat launch "fix the flaky test" --provider codex --model openai/gpt-5.6-sol --wait --text   # new-lane chat owned by the brain (chat.startLaunch): fetch base, check out worktree, default lane template, then create the chat + send; --wait polls chat.getLaunch (exit 0 completed / 1 failed, cancelled, or timed out)
 ade chat launches --text                                     # chat.listLaunches: launches running or recently finished on the brain
@@ -616,6 +656,7 @@ ade chat read session-id --limit 20 --max-chars 8000 --text
 ade chat read session-id --page --cursor 4096 --limit 20 --max-chars 8000 --text
 ade chat status session-id --text                            # live turn phase (exit 0 running / 1 idle / 2 blocked); adds a `resume` line while a usage limit is live
 ade chat resume-now session-id --text                        # alias `resume`: send the usage-limit continue prompt now instead of waiting for the reset
+ade chat switch-account session-id --account work --text     # move a Claude/Codex chat to another account; same thread; refused while a turn runs
                                                              # exit 1 when the host refuses (no live usage limit, or a resume already in flight); --json carries { ok, reason, message }
 ade actions run chat.updateSession --input-json '{"sessionId":"session-id","autoContinueAtUsageLimit":true}'   # the desktop pill's "Turn on" / "Try again": re-arm auto-resume after it was paused or opted out (false turns it off)
 ade chat message session-id --kind auto --text "status/context"
@@ -649,13 +690,20 @@ ade chat demote [session-id]                                     # take over a s
 ade chat promote [session-id]                                    # restore a peer as a subagent so it reports to its parent again
 ade chat keep-reporting [session-id]                             # dismiss the takeover prompt without changing the report channel
 ade chat handoff session-id --model openai/gpt-5.6-sol --note "focus on tests"   # brief handoff; add --target-lane <lane-id> to hand off into another lane
+ade chat handoff session-id --machine "Mac mini" --model <model> --prompt "next step"   # move the chat to another machine; --fork, --include-changes, --clone, --when-turn-ends
+ade chat handoff session-id --options --json                     # where the chat can go, and the blockers with fixes; also --cancel, --retry
 ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history (claude/codex/opencode/droid); cursor has no fork surface so ADE replays the transcript into a fresh agent; stays in source lane
+ade chat fork session-id --model openai/gpt-5.6-sol --through-turn turn-id   # keep only the turns through a finished turn (Codex cuts natively; others replay the kept turns)
 ade chat models --provider codex --json                          # model order + supported reasoning tiers
 ade code
 ade code --embedded
 ade tests run --lane lane-id --suite unit --wait
 ade proof list --arg ownerKind=chat --arg ownerId=session-id
 ade proof attach shots/result.png --caption "Checkout complete"
+                                                      # every filing command prints a `cite:` snippet for the agent's answer
+ade proof publish --pr 123 --heading "Proof" --note "Checkout flow" artifact-id [artifact-id ...]
+ade proof publish --pr 123 --in-body                                             # upload the proof the PR text cites, in place
+                                                      # one PR comment; gh 2.99+ --attach uploads the chosen proof, then a github_pr link is added
 ade proof rm artifact-id
 ade proof broken --text                              # list missing/unimported proof records
 ade proof recover artifact-id                       # re-import when the original capture still exists
@@ -711,19 +759,25 @@ ade --socket ios-sim wait-for-element --label Welcome --timeout-ms 8000 --text  
 ade --socket ios-sim assert-visible --label "Order confirmed" --text
 ade --socket ios-sim proof-bundle --caption "Signup succeeds" --text  # screenshot, elements, and log rows as proof
 ade mac-desktop status --text                         # host support, this lane's display, windows, and lease
-ade mac-desktop start --text                          # create the lane's virtual display (macOS runtime host only)
+ade mac-desktop start --text                          # create the lane's virtual display (on a Windows host this is Windows Desktop; see ade screen)
 ade mac-desktop stop --text                           # quit the apps it opened; prints which quit and which stayed on your screen
 ade mac-desktop show --text                           # reveal it in the tools pane; --floating for the card over the chat
 ade mac-desktop release --window <id> --text          # give a window back; omit --window to release the lane's windows
 ade mac-desktop open <app|path|url> --text            # launch onto the display; args after -- belong to the app
 ade mac-desktop observe --text                        # screenshot + numbered elements
 ade mac-desktop click <handle> --text                 # also: type, press, scroll, drag, wait
+ade mac-desktop click --x 900 --y 420 --right --text  # a point: delivered to the app alone, no pointer moves; --real only for hover or a drop onto another app
 ade mac-desktop type "reddit" --submit --text         # --submit presses Return after the text
 ade mac-desktop press return --cmd --text             # modifiers: --cmd --shift --alt --control
 ade mac-desktop record start --caption "flow" --keep-idle --max-seconds 1200 --text
 ade mac-desktop record stop --text                    # duration, real time, and idle cut
 ade mac-desktop proof --caption "Login works" --text  # capture, re-observe, and file proof
 ade mac-desktop actions --text                        # full mac_desktop action inventory
+ade screen status --text                              # host-neutral name: Mac Desktop on macOS, Windows Desktop on Windows (aliases mac-desktop, windows-desktop); product, seat, holder, next step
+ade screen start --text                               # Windows: the private seat (a separate session of the user's account)
+ade screen start --shared --reason "<why>" --text     # Windows: ask the user in this chat for their main desktop; their Allow is the consent
+ade screen focus --window <id> --text                 # Windows: raise one of this lane's windows; also: minimize, close
+ade screen setup --allow-prompt --text                # Windows: the user's one-time admin step; also: takeover (user only)
 ade --socket app-control launch --command "npm run dev" --text
 ade --socket app-control connect --cdp-port 9222 --text           # attach to an already-running app
 ade --socket app-control focus --text
@@ -740,11 +794,12 @@ ade --socket app-control terminal write --data "y\n"               # answer a pr
 ade --socket app-control proof --caption "Settings saved"          # observe and file a proof artifact
 ade --socket app-control actions --text                            # full app_control action inventory
 ade --socket browser open http://localhost:5173 --new-tab --text  # ADE-launched chat/terminal capability required
-ade --socket browser authorize --tab tab-id --text                # native human grant for the current agent + origin
+ade --socket browser open http://localhost:3000/login --profile viewer --text  # own throwaway sign-in, not the user's
+ade --socket browser authorize --text                             # ask the user to let this chat use the ADE browser (only when the setting asks)
 ade --socket browser status --text                                # active tab + tab list; a tab marked "not yours" needs `browser claim`
 ade --socket browser claim --tab tab-id --lane lane-id --text     # attribute an already-open tab to this agent's lane
 ade --socket browser panel --text                                 # reveal the Work sidebar Browser panel
-ade --socket browser dev-servers --text                           # dev servers ADE saw start in its own terminals, scoped to this chat's lane
+ade --socket browser dev-servers --text                           # dev servers running in this chat's lane (terminals, agent shells, listening ports); no desktop needed
 ade --socket browser handoff --tab tab-id --reason "sign in to staging" --text
                                                                   # blocks until a person presses Hand back; raises the Work row's hand and pushes to their phone
 ade --socket browser session start --tab tab-id --text            # then: session <id> click|fill|wait|trace|proof|end
@@ -761,6 +816,8 @@ ade --socket browser proof --tab tab-id --har --caption "Checkout 500s"
 ade --socket browser trace --tab tab-id --text                    # recent browser actions for this tab
 ade --socket browser screenshot --tab tab-id --text
 ade --socket browser actions --text                               # full built_in_browser action inventory
+ade --socket browser attach --tab "Stripe" --text                # only when the user asks: drive a tab of their own Chromium browser (needs remote debugging on)
+ade --socket browser detach --text                               # back to ADE's browser
 ade work-tools state --text                                       # read-only mirror of the desktop Work tools pane for this agent's lane
 ade work-tools state --lane lane-id --text                        # another lane; chat-bound agents always read their own
 ade work-tools actions --text                                     # full work_tools action inventory (setActiveTool is desktop-only)
@@ -773,12 +830,14 @@ ade sync web --text                                # print the browser web-clien
 ade sync web --open                                # also open the pairing link in the default browser
 ade sync web --no-clipboard                        # print only; don't copy the link to the clipboard
 ade secrets list --text
+ade secrets pull --text                            # take account secrets out of the vault onto this machine
 ade secrets get STRIPE_API_KEY --text
 ade secrets set STRIPE_API_KEY --value sk_... --storage account
 ade secrets set LOCAL_TOKEN --value local-value --storage device
 printf %s "$TOKEN" | ade secrets set TOKEN --stdin
 ade secrets set TOKEN --value-file token.txt
 ade secrets delete STRIPE_API_KEY
+ade secrets request WEBHOOK_SECRET --reason "Signs deliveries" --generate  # private secret card in the chat; prints the outcome, never the value
 ade usage snapshot --text                          # live quota headroom per window, the account it belongs to, and the provider limits link
 ade usage stats --preset 7d --text                 # tokens, cost, and activity for a range
 ade usage stats --scope account --text             # merged across every machine on the account
@@ -787,6 +846,11 @@ ade usage stats --scope account --force --text     # skip the account fan-out ra
 ade usage stats --since 2026-08-01T00:00:00Z --until 2026-08-08T00:00:00Z --text
 ade usage turns --days 14 --text                   # per-turn ledger (action usage.getTurnUsageSummary): cost and cache by provider, account, model, plus quota burn rates
 ade usage turns --group-by provider --recent 20 --text  # group by provider (default provider_account_model); add this project's 20 newest turns
+ade router routes --provider codex --limit 20 --text  # rated routes (harness × model × effort) with score, cost, and who bills it
+ade router pick "fix the parser bug" --provider codex --model gpt-6-sol --kind light_edit --text  # dry-run the route the router would pick for one task
+ade router shadow --days 7 --text                     # what the shadow router would have changed for recent subagents (changes no turn)
+ade router efficiency --days 7 --text                 # what it would have saved across every chat thread (turn-ledger replay) and subagent, at list prices
+ade router refresh --text                             # fetch the newest model registry (signed-in accounts)
 ade --role cto usage refresh --text                # live Claude/Codex quota only (same snapshot layout as `usage snapshot`)
 ade --role cto usage refresh --history --text      # local provider history + costs
 ade usage budget get --text
@@ -798,6 +862,12 @@ ade storage snapshot --refresh --text                # force a fresh scan instea
 ade storage compress --text                          # losslessly compress old chat/terminal history
 ade --role cto storage maintenance --text            # run the policy-driven ledger maintenance sweep now (CTO)
 ade storage actions --text                           # raw storage service actions (cleanupPreview/cleanup live here)
+ade archive list --text                              # archived lanes, chats, and shells, newest first (archived rows are hidden from chat/terminal lists unless --include-archived)
+ade archive list --kind chat --older-than 14 --text  # archived chats from 14+ days ago
+ade archive summary --text                           # counts per kind and what is 14+ days old
+ade --role cto archive restore chat:<id> lane:<id>   # unarchive items (CTO); deleting lives in Settings → Archive — the CLI refuses `ade archive delete`
+ade chat list --include-archived --text              # archived chats too
+ade terminal list --chat-session <session-id> --include-archived --text  # archived shells too
 ade actions list --domain chat --text
 ade actions run account_settings.list --args-list-json '["all"]' --text
 ade actions run account_settings.set --args-list-json '["all","appearance.theme","dark"]' --text
@@ -815,13 +885,8 @@ ade --role cto actions run ai.piLoginStart --input-json '{"providerId":"anthropi
 ade actions call stream_events --arg category=runtime --json                                 # drain piAuthStatus prompts/notices raised by an in-flight sign-in
 ade --role cto actions run ai.piLoginSubmit --input-json "$(jq -n --arg v "$PI_API_KEY" '{providerId:"anthropic",requestId:"req-1",value:$v}')"  # answer a prompt; keep the value out of argv and shell history
 ade --role cto actions run ai.piLoginCancel --input-json '{"providerId":"anthropic"}'
-ade actions run ai.getMachineApiKeyStatus --input-json '{"provider":"openai"}' --json         # is a MACHINE-scoped provider key configured, and from the store or the environment; never the key itself
-ade --role cto actions run ai.storeMachineApiKey --input-json "$(jq -n --arg v "$OPENAI_API_KEY" '{provider:"openai",key:$v}')"   # keep the secret out of argv and shell history
-ade --role cto actions run ai.deleteMachineApiKey --input-json '{"provider":"openai"}' --json
 ade actions run cto_state.getThreadHealth --json                           # can the CTO thread take a turn, and is a rotation advised
 ade --role cto actions run cto_state.startFreshSession --json       # retire the CTO thread and open a clean one (CTO-only; memory and identity carry over)
-ade --role cto actions run cto_voice.getState --json                # phase, elapsed, captions, pending confirmation — a read; driving a call is the desktop window's job
-ade --role cto actions run cto_voice.hasKey --json                  # does this machine have an OpenAI key a call could bill to
 ade --role cto actions run computer_use_artifacts.ingestSceneSnapshot --input-json '{"path":".../.ade/artifacts/computer-use/scene.png"}' --json
 ade cursor cloud agents list --text
 ade cursor cloud agents list --archived --limit 100 --text
@@ -895,41 +960,13 @@ more. `ai.piLoginSubmit`'s `value` can be a raw API key: pass it through
 `--input-json` built from an environment variable rather than typing it inline,
 and never echo the result.
 
-Provider keys come in two scopes and neither has a typed command, for the same
-reason `ade secrets` is not one of them: a provider key is not a project secret.
-`ai.storeApiKey` / `ai.deleteApiKey` / `ai.listApiKeys` write the PROJECT's store
-(`<project>/.ade/secrets`); `ai.storeMachineApiKey` / `ai.deleteMachineApiKey` /
-`ai.getMachineApiKeyStatus` write this INSTALL's (`~/.ade/secrets`, or
-`$ADE_HOME`), which is the one a key should live in when it pays for something
-the machine does rather than something the repo does — the CTO voice call's
-OpenAI key is the current example. Both writers are CTO-only; both status reads
-are not, because they answer "is a key configured, and did it come from the
-store or the environment" and never return the key. The secret travels one way,
-in: `storeMachineApiKey` returns the resulting status, not what you sent it.
-Build the `--input-json` from an environment variable as above rather than
-typing the key inline, and never echo the result into a log.
-
-`cto_voice` is in the action registry and therefore listed by `ade --role cto
-actions list --domain cto_voice --text`, with an input contract on each of its
-nine actions — but it is not a CLI workflow, and listing it is not an invitation
-to drive it. Every action is CTO-only with no exceptions (`allExcept: []`, so a
-tenth action added later is operator-only by omission), and every one after
-`getState` / `hasKey` requires the `ownerToken` minted by the desktop window
-that started the call: exactly one window holds the microphone and drains the
-speaker, and `pullAudio` doubles as the heartbeat proving that window is still
-alive. An agent-role caller that tries anyway gets a plain refusal —
-`Action 'cto_voice.start' requires elevated role.` — not a silent no-op. From
-the CLI the useful pair is `cto_voice.getState` (phase, elapsed, captions, any
-pending confirmation) and `cto_voice.hasKey`, both reads.
-
-The `cto_voice` runtime event CATEGORY is gated the same way, in both event
-transports. A call's state events carry its running transcript, so listening to
-one is the same disclosure as reading the CTO thread: `stream_events` and
-`runtimeEvents.subscribe` refuse `category: "cto_voice"` outright from a
-non-CTO caller, and filter those events out of an uncategorised drain or
-subscription rather than failing it — the cursor still advances past what was
-withheld, so a poller cannot stall on them. Audio never enters the buffer at
-all; only phase, captions and approvals do.
+Provider keys have no typed command, for the same reason `ade secrets` is not
+one of them: a provider key is not a project secret. `ai.storeApiKey` /
+`ai.deleteApiKey` / `ai.listApiKeys` write and list the PROJECT's store
+(`<project>/.ade/secrets`). The writers are CTO-only; the list is not, because
+it names providers and never returns a key. Build the `--input-json` from an
+environment variable rather than typing the key inline, and never echo the
+result into a log.
 
 `computer_use_artifacts.ingestSceneSnapshot` is not a second `ade proof attach`.
 It is CTO-only, takes no bytes, and accepts only a path already inside this
@@ -939,11 +976,7 @@ broker lives in the runtime rather than in-process. Agents create proof through
 `ade proof attach` and the validated `ingest_computer_use_artifacts` tool, which
 is the path that checks owner claims and the caller's import root.
 
-The CTO's voice (`voiceName`) and whether it says one short sentence before it
-does real work (`voiceBackchannels`) live on the CTO identity, not in machine settings, so they
-move with the project: read them from `cto_state.getIdentity` and write them
-through `cto_state.updateIdentity` like any other identity field. There is no
-`ade cto` command; `cto_state` and `cto_memory` are reached through `ade actions
+There is no `ade cto` command; `cto_state` and `cto_memory` are reached through `ade actions
 run` only.
 
 Two `cto_state` actions are new and one pair is gone. `getThreadHealth` is a
@@ -968,20 +1001,33 @@ same module behind an IPC snapshot feed for onboarding; there is nothing for
 `ade actions run` to reach that `ade tools status|ensure|gc` does not already
 cover.
 
-`ade browser` is capability-gated: the runtime accepts a `built_in_browser`
-action only from a chat or terminal ADE launched — one that carries the
-`ADE_BROWSER_ACTOR_TOKEN` the desktop minted for it — and the desktop, not the
-daemon, resolves that token, so a call always runs against the lane and tab
-collection it was minted for. A caller-supplied `--lane` on a
-`built_in_browser` action is dropped for that reason; `--lane` still selects
-which lane a *claim* attributes a tab to. `--force` is a reserved takeover
-flag and the runtime rejects it. The one relaxation is `open`/`new-tab`/`panel`
-on a machine with no ADE window: those three are forwarded to a desktop that
-has this lane pinned, which resolves its own capability there.
+`ade browser` needs no token: any process on this machine may use it, like
+`ade mac-desktop`. From a chat, the runtime tags each call with that chat and
+its lane (or the personal tab collection), so the chat owns the tabs it opens;
+a caller-supplied `--lane` is dropped there. From a plain terminal with no chat,
+`--lane` is kept and the call owns no tab. `--force` is a reserved takeover
+flag and the runtime rejects it, and calls from another machine's brain are
+refused. On a machine with no ADE window, `open`/`new-tab`/`panel` are
+forwarded to a desktop that has this lane pinned.
 
-`ade app-control` is not gated by a capability of its own — there is no
-app_control actor token, and the daemon has no app_control-specific scoping
-branch the way it has for `built_in_browser` and `work_tools`. A machine has
+When the user drives the chat from another computer, the chat's browser is the
+one on that computer: `open`, `observe`, `click`, `fill`, `text`, `claim` and
+the other page commands run in the ADE browser of the desktop that sent the
+chat its last message, and the first line of `--text` output says so
+(`browser: on <machine>, the computer the user sits at`). If that desktop does
+not take a command within 4 s, the command runs in this machine's browser and
+says that instead. `--here` picks this machine's browser on purpose, and
+`upload`, `har` and `record` need it, because their file is on this machine.
+See "The browser where the user sits" in `docs/features/remote-runtime/README.md`.
+
+`ade browser attach` / `detach`, and the page commands of a chat attached to
+the user's own browser, never reach ADE's browser or the desktop, so the
+runtime checks them itself: the caller must be a live chat of this project and
+may name only its own chat. See `docs/features/computer-use/README.md`
+("Attach to the user's own browser").
+
+`ade app-control` has no app_control-specific scoping branch the way the daemon
+has for `built_in_browser` and `work_tools`. A machine has
 one active App Control session at a time, and `--lane`/`--chat-session` (or
 `ade app-control claim`) attribute that session to the caller so the Work row,
 the trace and proof artifacts land on the right lane. `--force` here means
@@ -1212,10 +1258,22 @@ ade automations create --from-file rule.json \
 # Reuse an existing lane instead.
 ade automations create --from-file rule.json --lane-mode reuse --lane lane-42
 
+# Run in the trigger PR's own branch (PR triggers only), so the agent can push to the PR.
+# The run reuses the lane already linked to the PR, or opens the branch as a new lane.
+ade automations create --from-file dependabot-rule.json --lane-mode pr-branch
+
 # Custom template (only valid with --lane-name-preset custom).
 ade automations create --from-file rule.json \
   --lane-mode create --lane-name-preset custom \
   --lane-name-template "{{trigger.issue.author}}/{{trigger.issue.title}}"
+
+# Test a rule before it runs for real. preview shows what a real run does;
+# safe runs in a throwaway lane and only reports posts and pushes; live runs
+# for real and needs --yes (without it, or with --plan, it shows the plan).
+ade automations test rule-1 --pr 1542
+ade automations test rule-1 --mode safe --pr 1542
+ade automations test rule-1 --mode live --lane lane-42 --yes
+ade automations cleanup-test <runId>
 
 # Filter run history by status.
 ade automations runs --rule rule-1 --status failed
@@ -1230,6 +1288,32 @@ ade --role cto automations linear-ingress disconnect
 # Scheduled lane cleanups (from delete-lane actions with afterMinutes).
 ade automations cleanups list --text
 ade automations cleanups cancel <cleanupId>
+```
+
+### Webhook automations
+
+A webhook automation gives a service (GitHub, Stripe, Linear, Sentry, anything that can call a URL) a private URL. Each request that reaches it is checked (signature, conditions, duplicates) and then starts the agent. One command makes the URL and the rule:
+
+```bash
+# GitHub issues opened → triage, every delivery as a new turn in this chat
+ade automations webhook create --preset github --filter body.action=opened --in-this-chat --text
+
+# Anything else; no signature; a custom prompt with request fields
+ade automations webhook create --preset generic --no-signature \
+  --name "Deploy failures" --filter body.status=failed \
+  --prompt "The {{trigger.body.service}} deploy failed: {{trigger.body.url}}. Find out why." --text
+```
+
+`create` prints the URL, the steps for pasting it into the service, whether the signing secret is saved yet, and the conditions in words. Filters are `body.<path>=value`, `headers.<name>=value`, `query.<name>=value`, with `!=` (not equal), `~` (contains), `^=` (regex), or a bare path (present). Without `--filter`, the preset's suggested conditions apply; `--any-request` runs on every request. Save the signing secret without pasting it into a chat: `ade secrets request GITHUB_WEBHOOK_SECRET --reason "…" --generate` raises the private secret card.
+
+```bash
+ade automations webhook list --text                 # every webhook automation, URL, last delivery
+ade automations webhook test <wh-id> --text         # ring it like the real service (signed)
+ade automations webhook deliveries <wh-id> --text   # what arrived and why it ran or was skipped
+ade automations webhook delivery <whd-id> --text    # the prompt the agent got, headers, body
+ade automations webhook replay <whd-id>             # run a logged delivery again
+ade automations webhook rotate <wh-id>              # new URL; the old one stops at once
+ade automations webhook retire <wh-id>              # stop a URL no rule uses (deleting a rule does this)
 ```
 
 The standalone `create-lane` action is deprecated. By default the CLI auto-migrates a rule whose first action is `create-lane` into `execution.laneMode: "create"` and carries the template forward. Pass `--allow-legacy` on `create` / `update` to opt out of the migration.

@@ -1,10 +1,20 @@
+import type { CrossMachineHandoffTransport } from "../../../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AdeRuntime, AdeRuntimeSyncOptions } from "../../bootstrap";
-import type { SyncCommandPayload } from "../../../../desktop/src/shared/types";
+import type { SyncCommandPayload, SyncFileRequest } from "../../../../desktop/src/shared/types";
 import type { SyncRemoteCommandExecutionContext } from "../sync/syncRemoteCommandService";
+import type { SyncHostBlocker } from "../sync/syncService";
 import type { ProjectId, ProjectRecord, ProjectRegistry } from "./projectRegistry";
 
 type SwitchSyncHostOptions = {
   deactivatePreviousHost?: boolean;
+  /**
+   * Refuse a target that would follow another machine's brain instead of
+   * hosting. Deactivating the current host releases the machine-wide sync
+   * lease, so switching to such a target would drop every connected client
+   * and leave nothing hosting. Client project switches set this; brain
+   * startup does not, because it already treats a chosen viewer as intended.
+   */
+  requireHostRole?: boolean;
 };
 
 const SYNC_HOST_COLD_BOOT_TIMEOUT_MS = 60_000;
@@ -39,6 +49,27 @@ type FailedScopeBoot = {
 };
 
 class SyncHostPhaseTimeoutError extends Error {}
+
+/** What a client is told when it asks to open a project that follows another machine. */
+export function describeSyncHostBlocker(blocker: SyncHostBlocker): string {
+  const target = blocker.host
+    ? ` at ${blocker.host}${blocker.port != null ? `:${blocker.port}` : ""}`
+    : "";
+  return `This project is set to follow another ADE machine${target}, so this machine cannot open it for sync. Open it on that machine, or disconnect it from that machine on this computer.`;
+}
+
+/** The target project follows another machine, so this machine cannot host it. */
+export class SyncHostRoleBlockedError extends Error {
+  constructor(blocker: SyncHostBlocker) {
+    super(describeSyncHostBlocker(blocker));
+    this.name = "SyncHostRoleBlockedError";
+  }
+}
+
+/** Null when enabling the target's host makes this machine its sync host. */
+export function getSyncHostBlocker(scope: ProjectScope): SyncHostBlocker | null {
+  return scope.runtime.syncService?.getHostBlocker?.() ?? null;
+}
 
 async function runSyncHostPhase<T>(
   phase: string,
@@ -98,6 +129,21 @@ export class ProjectScopeRegistry {
     ): Promise<unknown> => {
       return await this.executeRemoteCommand(payload, context);
     },
+    releaseStreamConnection: (connectionId: string): void => {
+      this.releaseStreamConnection(connectionId);
+    },
+    executeFileRequest: async (
+      projectId: string,
+      payload: SyncFileRequest,
+      context: { isMobile: boolean },
+    ): Promise<unknown> => {
+      const scope = await this.get(projectId);
+      const syncService = scope.runtime.syncService;
+      if (!syncService) {
+        throw new Error(`Phone sync is not available for project ${projectId}.`);
+      }
+      return await syncService.executeRemoteFileRequest(payload, context);
+    },
   };
 
   constructor(
@@ -106,6 +152,12 @@ export class ProjectScopeRegistry {
       syncRuntime?: AdeRuntimeSyncOptions;
       /** Socket endpoint shared by every project scope in this brain. */
       runtimeSocketPath?: string | null;
+      /**
+       * How each project's chat service moves a chat to another machine. One
+       * per brain (it owns the agents' paired connections); late-bound because
+       * the bridge is built after this registry.
+       */
+      crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
       onDisposeProject?: (projectId: ProjectId) => void;
       /** Injectable clock for the failed-boot backoff. Tests only. */
       now?: () => number;
@@ -161,9 +213,15 @@ export class ProjectScopeRegistry {
 
     const record = this.projectRegistry.get(projectId);
     if (!record) {
+      // A project's id is a hash of its folder, so a move gives it a new one.
+      // A window, phone or link that still holds the old id is sent on to the
+      // project it now names instead of being told the project is unknown.
+      const movedTo = this.projectRegistry.resolveMovedProjectId(projectId);
+      if (movedTo && movedTo !== projectId) return await this.get(movedTo, options);
       throw new Error(`Unknown projectId: ${projectId}`);
     }
 
+    this.projectRegistry.assertProjectDataAvailable(record);
     const pending = (async () => {
       if (options.touch ?? true) {
         this.projectRegistry.touch(projectId);
@@ -179,7 +237,16 @@ export class ProjectScopeRegistry {
         chatRuntime: "agent",
         ...(this.options.runtimeSocketPath ? { runtimeSocketPath: this.options.runtimeSocketPath } : {}),
         ...(syncRuntime ? { syncRuntime } : {}),
+        ...(this.options.crossMachineHandoffTransport
+          ? { crossMachineHandoffTransport: this.options.crossMachineHandoffTransport }
+          : {}),
       });
+      try {
+        this.projectRegistry.recordDatabaseIdentity(projectId);
+      } catch (error) {
+        runtime.dispose();
+        throw error;
+      }
       return new ProjectScope({
         registryProjectId: projectId,
         record,
@@ -401,6 +468,12 @@ export class ProjectScopeRegistry {
       await this.configureSyncHostWithTimeout(scope, true, "activation");
       return scope;
     }
+    if (options.requireHostRole) {
+      // Checked before the previous host is touched: refusing here leaves the
+      // current host, its lease, and every connected client as they were.
+      const blocker = getSyncHostBlocker(scope);
+      if (blocker) throw new SyncHostRoleBlockedError(blocker);
+    }
 
     let previousDeactivationAttempted = false;
     let targetActivationAttempted = false;
@@ -547,7 +620,26 @@ export class ProjectScopeRegistry {
       hostStartupEnabled: isHost ? base.hostStartupEnabled ?? true : false,
       hostDiscoveryEnabled: isHost ? base.hostDiscoveryEnabled ?? true : false,
       remoteCommandExecutor: base.remoteCommandExecutor ?? this.remoteCommandExecutor,
+      projectScopes: this,
     };
+  }
+
+  /**
+   * A sync socket closed: end its live Mac Desktop and App Control viewers in
+   * every booted project, not only the host's. One scope failing (or still
+   * booting and then failing) never blocks the others.
+   */
+  private releaseStreamConnection(connectionId: string): void {
+    for (const scopePromise of this.scopes.values()) {
+      void scopePromise
+        .then((scope) => {
+          scope.runtime.syncService?.releaseStreamConnection(connectionId);
+        })
+        .catch(() => {
+          // A scope that failed to boot holds no viewers; one whose release
+          // threw is logged by the sync service itself.
+        });
+    }
   }
 
   private async executeRemoteCommand(

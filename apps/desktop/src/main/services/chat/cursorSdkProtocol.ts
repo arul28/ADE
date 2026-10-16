@@ -440,6 +440,12 @@ export type CursorSdkWorkerResponse =
       sdkRequestId?: string;
     }
   | { type: "hook_request"; requestId: string; request: CursorSdkHookRequest }
+  /**
+   * The hook that asked for `requestId` went away before ADE answered: the gate
+   * script stopped waiting, or Cursor killed it. Nothing can use the answer, so
+   * ADE retires the approval card instead of leaving it pending.
+   */
+  | { type: "hook_abandoned"; requestId: string }
   | { type: "log"; level: "debug" | "info" | "warn" | "error"; message: string; detail?: unknown };
 
 /**
@@ -486,6 +492,20 @@ export function isCursorSdkBackoffErrorText(text: string | null | undefined): bo
     || lower.includes("slow down")
     || lower.includes("back off")
     || lower.includes("429");
+}
+
+/**
+ * Cursor's plan has no usage left for the chosen model ("You're out of usage.
+ * Switch to Auto, or ask your admin to increase your limit"). It is a usage
+ * limit, not a backoff: retrying the same model fails again at once, so it is
+ * kept out of `isCursorSdkBackoffErrorText`, which the worker retries on.
+ */
+export function isCursorSdkUsageExhaustedText(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase().replace(/[\u2018\u2019]/g, "'");
+  return lower.includes("out of usage")
+    || lower.includes("increase your limit")
+    || lower.includes("usage limits exceeded");
 }
 
 /**
@@ -584,7 +604,7 @@ export function classifyCursorSdkErrorText(
   ) {
     return "busy";
   }
-  if (isCursorSdkBackoffErrorText(joined)) return "rate_limit";
+  if (isCursorSdkBackoffErrorText(joined) || isCursorSdkUsageExhaustedText(joined)) return "rate_limit";
   if (isCursorSdkTransportErrorText(joined)) return "network";
   if (
     joined.includes("agent_not_found")

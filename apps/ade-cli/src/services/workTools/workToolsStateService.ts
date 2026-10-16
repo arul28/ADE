@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolvePathWithinRoot } from "../../../../desktop/src/main/services/shared/utils";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
-import type { AppControlStatus } from "../../../../desktop/src/shared/types";
+import type { AppControlStatus, DevServerRecord, DevServersArgs, DevServersResult } from "../../../../desktop/src/shared/types";
 import type { BuiltInBrowserRuntimeStatus } from "../../../../desktop/src/shared/types/builtInBrowserRuntimeStatus";
 // Shared, not main: this is a plain Node process, and a value-import of an
 // Electron-main module would pull `electron` into it.
@@ -134,7 +134,8 @@ export const WORK_TOOLS_STATE_EVENT_DEBOUNCE_MS = 250;
 export const WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS = 2_000;
 
 export type WorkToolsBrowserStatusReader = () => Promise<BuiltInBrowserRuntimeStatus>;
-export type WorkToolsAppControlStatusReader = () => AppControlStatus | Promise<AppControlStatus>;
+/** Reads one lane's App Control status: sessions are per lane. */
+export type WorkToolsAppControlStatusReader = (laneId: string) => AppControlStatus | Promise<AppControlStatus>;
 
 /**
  * The slice of the Mac Desktop service this aggregator is allowed to hold.
@@ -173,6 +174,14 @@ export type WorkToolsStateServiceArgs = {
    * screen. Absent on a runtime that publishes no runtime events.
    */
   showRequests?: WorkToolShowRequests | null;
+  /**
+   * Dev servers this runtime's lanes are running. Read by every desktop on the
+   * project, including one on another machine, which has no other way to know.
+   */
+  devServers?: {
+    list(args: DevServersArgs): Promise<DevServerRecord[]>;
+    probePort(port: number): Promise<boolean>;
+  } | null;
 };
 
 /**
@@ -233,10 +242,16 @@ export type WorkToolsStateService = {
   show(args: unknown): Promise<WorkToolShowResult>;
   /** A desktop renderer answering {@link show}. User clients only. */
   acknowledgeShow(args: unknown): { ok: boolean };
+  /** Dev servers this machine's lanes are running, for the Browser on any machine. */
+  listDevServers(args?: DevServersArgs | null): Promise<DevServersResult>;
+  /** Is anything listening on this machine's loopback port? Never sends it a byte. */
+  probePort(args: { port?: unknown } | null): Promise<boolean>;
   /** An agent drove this chat's Apple device; see `WorkToolShowRequests`. */
   noteAgentAppleActivity(args: AgentDeviceActivity): boolean;
   /** An agent drove this chat's lane Mac Desktop; see `WorkToolShowRequests`. */
   noteAgentMacDesktopActivity(args: AgentDeviceActivity): boolean;
+  /** An agent drove this chat's lane App Control app; see `WorkToolShowRequests`. */
+  noteAgentAppControlActivity(args: AgentDeviceActivity): boolean;
   /** Test/diagnostic hook: flushes a pending debounced event immediately. */
   flushPendingEvents(): void;
   dispose(): void;
@@ -470,6 +485,9 @@ function summarizeMacDesktop(
     lease: status.lease,
     stream: status.stream,
     permissions: status.permissions,
+    // Windows-only host facts; null on a Mac host. A mirror uses this to render
+    // the held/locked/setup cards for a Windows-held lane.
+    windowsDesktop: status.windowsDesktop ?? null,
     // A frame captured before the display went away describes a screen that no
     // longer exists, so it leaves with the display rather than lingering.
     lastObservation: status.display ? lastObservation : null,
@@ -513,10 +531,11 @@ function macDesktopEventLaneId(event: MacDesktopEventPayload): string | null {
       return event.status.laneId;
     case "window-not-parked":
       return event.laneId;
-    case "time-lapse":
-      return event.timeLapse.laneId;
     case "permission-changed":
     case "driver-health":
+    // Windows host state is host-wide too: a lock, a holder change, or setup
+    // completing changes every lane's answer at once.
+    case "windows-desktop-changed":
       return null;
     default: {
       // A new event type is a compile error here until someone decides whether
@@ -680,7 +699,7 @@ export function createWorkToolsStateService(
     if (!reader) return null;
     let status: AppControlStatus;
     try {
-      status = await reader();
+      status = await reader(laneId);
     } catch (error) {
       args.logger?.debug("work_tools.app_control_status_failed", {
         err: error instanceof Error ? error.message : String(error),
@@ -959,12 +978,28 @@ export function createWorkToolsStateService(
       return args.showRequests?.acknowledgeShow(input) ?? { ok: false };
     },
 
+    async listDevServers(input) {
+      if (!args.devServers) return { servers: [] };
+      const laneId = typeof input?.laneId === "string" && input.laneId.trim() ? input.laneId.trim() : null;
+      return { servers: await args.devServers.list({ laneId }) };
+    },
+
+    async probePort(input) {
+      const port = Number(input?.port);
+      if (!args.devServers || !Number.isInteger(port) || port < 1 || port > 65_535) return false;
+      return await args.devServers.probePort(port);
+    },
+
     noteAgentAppleActivity(input) {
       return args.showRequests?.noteAgentAppleActivity(input) ?? false;
     },
 
     noteAgentMacDesktopActivity(input) {
       return args.showRequests?.noteAgentMacDesktopActivity(input) ?? false;
+    },
+
+    noteAgentAppControlActivity(input) {
+      return args.showRequests?.noteAgentAppControlActivity(input) ?? false;
     },
 
     flushPendingEvents() {

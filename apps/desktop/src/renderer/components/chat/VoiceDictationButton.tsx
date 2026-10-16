@@ -35,6 +35,8 @@ function messageForError(error: GlobalVoiceRecorderError): string {
       return "Didn't catch anything there, try again please.";
     case "model_not_installed":
       return "Voice model not installed.";
+    case "engine_unsupported":
+      return "Voice dictation needs a CPU with AVX2 (Intel 2013 / AMD 2015 or newer).";
     case "transcribe_failed":
     default:
       return "Transcription failed. Try again.";

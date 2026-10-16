@@ -7,6 +7,9 @@ import React, {
   type CSSProperties,
   type ReactNode,
 } from "react";
+import type { Icon } from "@phosphor-icons/react";
+
+import { Z_LAYERS } from "./zLayers";
 
 /**
  * Hover *intent*, not hover. A menu is a list you scan by dragging the pointer
@@ -72,6 +75,12 @@ export type MenuSubmenuProps = {
  * from reaching the document-level dismiss listener. Fixed positioning already
  * escapes the lane menu's `overflow-y: auto` clip, which was the only reason to
  * want a portal.
+ *
+ * This is the layer that owns that fixed panel, so `ade-ui/no-fixed-overlay`
+ * stays a deliberate warning here rather than a defect: the hosts it names
+ * (banner, toast viewport, Dialog, HeaderSheet) are different surfaces, and
+ * `docs/design/notices.md` already lists `ContextMenu` — which renders through
+ * this panel — as the primitive for a right-click menu and its click-away.
  */
 export function MenuSubmenu({
   label,
@@ -247,7 +256,7 @@ export function MenuSubmenu({
           className={panelClassName ?? "ade-liquid-glass-menu py-1"}
           style={{
             position: "fixed",
-            zIndex: 60,
+            zIndex: Z_LAYERS.menuPanel,
             minWidth: panelMinWidth,
             maxHeight: `calc(100vh - ${VIEWPORT_MARGIN * 2}px)`,
             overflowY: "auto",
@@ -312,4 +321,55 @@ export function MenuSectionLabel({ children }: { children: ReactNode }) {
 
 export function MenuSeparator() {
   return <div className="my-0.5 h-px bg-border/10" />;
+}
+
+/**
+ * A quiet line inside a submenu panel, for the states that are not choices:
+ * still detecting, nothing found, or a failure worth naming.
+ *
+ * Both "Open in" submenus show these, and they had drifted apart — one in the
+ * menu's own sans type and tokens, one in mono with a raw rose — so the
+ * primitive owns the single appearance now.
+ */
+export function MenuSubmenuStatus({
+  tone = "muted",
+  children,
+}: {
+  tone?: "muted" | "danger";
+  children: ReactNode;
+}) {
+  return (
+    <div
+      role={tone === "danger" ? "alert" : undefined}
+      className={
+        tone === "danger"
+          ? "px-3 py-2 text-[11px] text-[color:var(--color-error)]"
+          : "px-3 py-2 text-[11px] text-muted-fg/55"
+      }
+    >
+      {children}
+    </div>
+  );
+}
+
+/* `hover:bg-muted/40` used to be the hover here and read as nothing at all:
+   `--color-muted` is #1E1B28, a near-black purple, so 40% of it over an already
+   dark menu is imperceptible. Menu rows now use the same foreground-alpha fill
+   every other hoverable surface in the sidebar uses — `bg-fg/…`, not an alpha of
+   white, so the row still reads as hovered on the light theme too. */
+export const MENU_ITEM_CLASS =
+  "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs transition-colors hover:bg-fg/[0.07] focus-visible:bg-fg/[0.07] outline-none";
+export const DESTRUCTIVE_ITEM_CLASS =
+  "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-red-300 transition-colors hover:bg-red-500/10";
+
+export function MenuRowIcon({ icon: Icon, danger = false }: { icon: Icon; danger?: boolean }) {
+  return (
+    <span
+      aria-hidden
+      data-menu-icon=""
+      className={danger ? "inline-flex shrink-0 text-red-300/70" : "inline-flex shrink-0 text-fg/45"}
+    >
+      <Icon size={13} weight="duotone" />
+    </span>
+  );
 }

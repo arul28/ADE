@@ -31,6 +31,17 @@ final class MobileUsageQuotaStore: ObservableObject {
 
   private init() {}
 
+  #if DEBUG
+  /// Fixture screens (`-adePreviewScreen new-chat`) pin a snapshot so the live
+  /// loaders, which would clear it with no paired host, leave it alone.
+  private var previewPinned = false
+
+  func pinPreviewSnapshot(_ snapshot: MobileUsageQuotaSnapshot) {
+    previewPinned = true
+    self.snapshot = snapshot
+  }
+  #endif
+
   /// Loads the ADE activity stats for `range` ("today" | "7d" | "30d" | "year" |
   /// "all"). Serves the in-memory cache immediately when present so range
   /// switching never blanks the page, then refreshes in place.
@@ -93,6 +104,9 @@ final class MobileUsageQuotaStore: ObservableObject {
   }
 
   func load(using syncService: SyncService, refresh: Bool = false) async {
+    #if DEBUG
+    if previewPinned { return }
+    #endif
     guard let hostIdentity = currentHostIdentity(syncService) else {
       loadGeneration += 1
       bind(to: nil)

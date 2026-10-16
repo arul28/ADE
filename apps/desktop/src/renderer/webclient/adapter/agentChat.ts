@@ -9,12 +9,17 @@ import type {
   AgentChatInterruptResult,
   AgentChatLaunchCliResult,
   AgentChatMarkCrossMachineHandoffArgs,
+  AgentChatCrossMachineHandoffOptionsResult,
+  AgentChatCrossMachineHandoffRecord,
+  AgentChatPreviewCrossMachineHandoffResult,
   AgentChatModelCatalog,
+  AgentChatLaunchDefaults,
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatReloadClaudePluginsResult,
   AgentChatRegenerateSessionMetadataResult,
   AgentChatResumeUsageLimitNowResult,
   AgentChatContinueUsageLimitOnAlternateResult,
+  AgentChatSwitchAccountResult,
   AgentChatRestoreCancelledQueueResult,
   AgentChatScheduledWorkItem,
   AgentChatSession,
@@ -23,11 +28,20 @@ import type {
   AgentChatSetScheduledWorkPausedResult,
   AgentChatSteerResult,
   AutoLaneIdentitySuggestion,
-  PromptStashCreateArgs,
-  PromptStashDeleteArgs,
-  PromptStashEntry,
+  DraftClaimArgs,
+  DraftCreateArgs,
+  DraftDeleteArgs,
+  DraftEntry,
+  DraftUpdateArgs,
 } from "../../../shared/types/chat";
 import { deriveSmartLinkPreview } from "../../../shared/smartLinks";
+import type {
+  ChatThreadComment,
+  ChatThreadCommentCreateArgs,
+  ChatThreadCommentDeleteArgs,
+  ChatThreadCommentListArgs,
+  ChatThreadCommentUpdateArgs,
+} from "../../../shared/threadComments";
 import { NO_SUBAGENT_CAPABILITY } from "../../../shared/subagentCapabilities";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
@@ -236,19 +250,52 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         await call("chat.setParallelLaunchState", args, undefined, false);
       },
     },
-    promptStashes: {
+    drafts: {
       list: async (pin?: RuntimePinArg) => {
-        guardPin("promptStashes.list", pin);
-        const result = await call<unknown>("chat.listPromptStashes", {}, []);
-        return Array.isArray(result) ? result as PromptStashEntry[] : [];
+        guardPin("drafts.list", pin);
+        const result = await call<unknown>("chat.listDrafts", {}, []);
+        return Array.isArray(result) ? result as DraftEntry[] : [];
       },
-      create: async (args: PromptStashCreateArgs, pin?: RuntimePinArg) => {
-        guardPin("promptStashes.create", pin);
-        return await callRequiredMutation<PromptStashEntry>("chat.createPromptStash", args);
+      create: async (args: DraftCreateArgs, pin?: RuntimePinArg) => {
+        guardPin("drafts.create", pin);
+        return await callRequiredMutation<DraftEntry>("chat.createDraft", args);
       },
-      delete: async (args: PromptStashDeleteArgs, pin?: RuntimePinArg) => {
-        guardPin("promptStashes.delete", pin);
-        return await callRequiredMutation<boolean>("chat.deletePromptStash", args);
+      delete: async (args: DraftDeleteArgs, pin?: RuntimePinArg) => {
+        guardPin("drafts.delete", pin);
+        return await callRequiredMutation<boolean>("chat.deleteDraft", args);
+      },
+      update: async (args: DraftUpdateArgs, pin?: RuntimePinArg) => {
+        guardPin("drafts.update", pin);
+        const result = await call<unknown>("chat.updateDraft", args, null);
+        return (result ?? null) as DraftEntry | null;
+      },
+      claim: async (args: DraftClaimArgs, pin?: RuntimePinArg) => {
+        guardPin("drafts.claim", pin);
+        const result = await call<unknown>("chat.claimDraft", args, null);
+        return (result ?? null) as DraftEntry | null;
+      },
+      sendNow: async (args: DraftDeleteArgs, pin?: RuntimePinArg) => {
+        guardPin("drafts.sendNow", pin);
+        return await callRequiredMutation<{ ok: boolean; error?: string }>("chat.sendDraftNow", args);
+      },
+    },
+    threadComments: {
+      list: async (args: ChatThreadCommentListArgs, pin?: RuntimePinArg) => {
+        guardPin("threadComments.list", pin);
+        const result = await call<unknown>("chat.listThreadComments", args, []);
+        return Array.isArray(result) ? result as ChatThreadComment[] : [];
+      },
+      create: async (args: ChatThreadCommentCreateArgs, pin?: RuntimePinArg) => {
+        guardPin("threadComments.create", pin);
+        return await callRequiredMutation<ChatThreadComment>("chat.createThreadComment", args);
+      },
+      update: async (args: ChatThreadCommentUpdateArgs, pin?: RuntimePinArg) => {
+        guardPin("threadComments.update", pin);
+        return await callRequiredMutation<ChatThreadComment>("chat.updateThreadComment", args);
+      },
+      delete: async (args: ChatThreadCommentDeleteArgs, pin?: RuntimePinArg) => {
+        guardPin("threadComments.delete", pin);
+        return await callRequiredMutation<{ deleted: boolean }>("chat.deleteThreadComment", args);
       },
     },
     handoff: async (args, pin) => {
@@ -275,6 +322,38 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     markCrossMachineHandoff: async (args: AgentChatMarkCrossMachineHandoffArgs, pin) => {
       guardPin("markCrossMachineHandoff", pin);
       await callRequiredMutation<void>("chat.markCrossMachineHandoff", args);
+    },
+    // The brain-owned move (registered `chat.*` remote commands). Reads are
+    // idempotent; start/cancel/retry/approve/acknowledge are not replayed.
+    getCrossMachineHandoffOptions: async (args, pin) => {
+      guardPin("getCrossMachineHandoffOptions", pin);
+      return await callRequiredRead<AgentChatCrossMachineHandoffOptionsResult>("chat.getCrossMachineHandoffOptions", args);
+    },
+    // Asks the destination through the source brain's own transport; a read,
+    // so it is safe to repeat.
+    previewCrossMachineHandoff: async (args, pin) => {
+      guardPin("previewCrossMachineHandoff", pin);
+      return await callRequiredRead<AgentChatPreviewCrossMachineHandoffResult>("chat.previewCrossMachineHandoff", args);
+    },
+    startCrossMachineHandoff: async (args, pin) => {
+      guardPin("startCrossMachineHandoff", pin);
+      return await callRequiredMutation<AgentChatCrossMachineHandoffRecord>("chat.startCrossMachineHandoff", args);
+    },
+    cancelCrossMachineHandoff: async (args, pin) => {
+      guardPin("cancelCrossMachineHandoff", pin);
+      return await callRequiredMutation<AgentChatCrossMachineHandoffRecord | null>("chat.cancelCrossMachineHandoff", args);
+    },
+    retryCrossMachineHandoff: async (args, pin) => {
+      guardPin("retryCrossMachineHandoff", pin);
+      return await callRequiredMutation<AgentChatCrossMachineHandoffRecord>("chat.retryCrossMachineHandoff", args);
+    },
+    resolveCrossMachineHandoffApproval: async (args, pin) => {
+      guardPin("resolveCrossMachineHandoffApproval", pin);
+      return await callRequiredMutation<AgentChatCrossMachineHandoffRecord | null>("chat.resolveCrossMachineHandoffApproval", args);
+    },
+    acknowledgeCrossMachineHandoff: async (args, pin) => {
+      guardPin("acknowledgeCrossMachineHandoff", pin);
+      return await callRequiredMutation<AgentChatCrossMachineHandoffRecord | null>("chat.acknowledgeCrossMachineHandoff", args);
     },
     send: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("send", pin);
@@ -309,6 +388,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     editSteer: async (args: unknown) => {
       await callRequiredMutation("chat.editSteer", args);
     },
+    moveSteer: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("moveSteer", pin);
+      await callRequiredMutation("chat.moveSteer", args);
+    },
     dispatchSteer: async (args, pin) => {
       guardPin("dispatchSteer", pin);
       return await callRequiredMutation<AgentChatDispatchSteerResult>("chat.dispatchSteer", args);
@@ -328,6 +411,11 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         { mode: "stop_and_clear", cancelledQueuedCount: 0 },
         false,
       );
+    },
+    restartSession: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("restartSession", pin);
+      // A host without the action must fail loudly, not report "not restarted".
+      return await callRequiredMutation("chat.restartSession", args);
     },
     stopTask: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("stopTask", pin);
@@ -358,6 +446,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     dismissPendingInput: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("dismissPendingInput", pin);
       await call("chat.dismissPendingInput", args, undefined, false);
+    },
+    launchDefaults: async (pin?: RuntimePinArg) => {
+      guardPin("launchDefaults", pin);
+      return await call<AgentChatLaunchDefaults | null>("chat.getLaunchDefaults", {}, null);
     },
     models: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("models", pin);
@@ -423,6 +515,12 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("continueUsageLimitOnAlternate", pin);
       return await callRequired<AgentChatContinueUsageLimitOnAlternateResult>(
         "chat.continueUsageLimitOnAlternate", args, "Usage limit", false,
+      );
+    },
+    switchAccount: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("switchAccount", pin);
+      return await callRequired<AgentChatSwitchAccountResult>(
+        "chat.switchAccount", args, "Chat", false,
       );
     },
     setScheduledWorkPaused: async (args: unknown, pin?: RuntimePinArg) => {
@@ -602,6 +700,12 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         guardPin("codex.clearGoal", pin);
         return await call("chat.codex.clearGoal", args, null, false);
       },
+      // Experimental Codex voice is desktop-only while it is being evaluated.
+      realtimeStart: async (): Promise<never> => {
+        throw new Error("Codex voice is available in the desktop app only.");
+      },
+      realtimeStop: async () => {},
+      realtimeState: async () => ({ status: "ended" as const, working: false, captions: [], handoffs: 0, error: null }),
       resetMemory: async (args: unknown, pin?: RuntimePinArg) => {
         guardPin("codex.resetMemory", pin);
         await call("chat.codex.resetMemory", args, undefined, false);

@@ -1,30 +1,41 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type {
   AgentChatCreateArgs,
+  AgentChatPersonalProfile,
   AgentChatSessionSummary,
   PersonalChatAction,
   PersonalChatCallResponse,
   PersonalChatCapabilities,
   RuntimeActivityCounts,
+  RuntimeUpdateImpact,
 } from "../../../../desktop/src/shared/types";
 import { PERSONAL_CHAT_ACTIONS } from "../../../../desktop/src/shared/types";
+import { summarizeRuntimeActivity, summarizeRuntimeUpdateImpact } from "../runtime/runtimeWorkSummary";
+import { USER_ONLY_CONSENT_CARD_REFUSAL } from "../../../../desktop/src/shared/types/macDesktop";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
-import {
-  pathIsWithinRoot,
-  samePathOnPlatform,
-  stripExtendedLengthPrefix,
-  trimTrailingSeparators,
-} from "../../../../desktop/src/shared/pathContainment";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
 import { stripHostOnlyChatMetadata } from "../../../../desktop/src/shared/chatAutoResume";
 import { stripHostAuthoredMessageProvenance } from "../../../../desktop/src/main/services/chat/spawnMissionOwnership";
+import { isPersonalLaneOnlySkillCommand } from "../../../../desktop/src/main/services/chat/personalSession";
+import {
+  personalHostPathContext,
+  validatePersonalHostCwd,
+} from "../../../../desktop/src/main/services/chat/personalHostPaths";
 import type { AdeRuntime } from "../../bootstrap";
 import type { BufferedEvent, EventBufferDrainResult } from "../../eventBuffer";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
-import { readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAttachment";
-import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
+import { IMAGE_MIME_BY_EXTENSION, readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAttachment";
+import {
+  projectAttachmentsDir,
+  stageAttachmentBytes,
+} from "../../../../desktop/src/shared/chatAttachmentStagingFs";
+import {
+  LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
+  legacyAttachmentCapMessage,
+  maxBase64EncodedLength,
+} from "../../../../desktop/src/shared/chatAttachmentLimits";
+import { historyPageBeforeSequence } from "../sync/syncRemoteCommandService";
 
 /**
  * An embedder's message args, with every marker only ADE may author removed.
@@ -63,18 +74,6 @@ type PersonalChatScopeOptions = {
 
 type ObjectArgs = Record<string, unknown>;
 
-export function summarizeRuntimeActivity(runtime: AdeRuntime): RuntimeActivityCounts {
-  return {
-    activeAgentTurns: runtime.agentChatService?.hasActiveWorkloads() ? 1 : 0,
-    activeWorkSessions: runtime.ptyService.list({ status: "running", limit: 500 })
-      .filter(
-        (session) =>
-          session.runtimeState === "running"
-          || session.runtimeState === "waiting-input",
-      ).length,
-  };
-}
-
 function asObject(value: unknown): ObjectArgs {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as ObjectArgs
@@ -90,6 +89,94 @@ function requiredString(value: unknown, label: string): string {
 function requiredBoolean(value: unknown, label: string): boolean {
   if (typeof value !== "boolean") throw new Error(`${label} must be a boolean.`);
   return value;
+}
+
+/**
+ * `personalChats.call` is an untrusted edge, so it never answers a card only
+ * the user may answer (the Mac Desktop input lease, the Windows shared seat).
+ * A personal chat has no lane and so never raises one; this keeps it that way.
+ */
+function refuseUserOnlyConsentCard(
+  service: { isUserOnlyPendingInput?: (args: { sessionId: string; itemId: string }) => boolean },
+  args: ObjectArgs,
+): void {
+  const itemId = typeof args.itemId === "string" ? args.itemId.trim() : "";
+  if (itemId && service.isUserOnlyPendingInput?.({ sessionId: readSessionId(args), itemId })) {
+    throw new Error(USER_ONLY_CONSENT_CARD_REFUSAL);
+  }
+}
+
+/**
+ * A chat row with what the rail reads off its session row: the synced `pinned`
+ * column, and the agent's own reports (`ade chat activity|note|ask`).
+ */
+function withRowMeta<T extends AgentChatSessionSummary>(runtime: AdeRuntime, summary: T): T {
+  const row = runtime.sessionService.get(summary.sessionId);
+  if (!row) return summary;
+  return {
+    ...summary,
+    ...(row.pinned === true ? { pinned: true } : {}),
+    ...(row.activityStatus ? { activityStatus: row.activityStatus } : {}),
+    ...(row.statusNote ? { statusNote: row.statusNote } : {}),
+    ...(row.attentionRequestedAt
+      ? { attentionRequestedAt: row.attentionRequestedAt, attentionMessage: row.attentionMessage ?? null }
+      : {}),
+    ...(!summary.currentTurnStartedAt && row.currentTurnStartedAt
+      ? { currentTurnStartedAt: row.currentTurnStartedAt }
+      : {}),
+  };
+}
+
+/** Is this payload an image by its declared MIME type or its file name? */
+function declaresImage(args: ObjectArgs): boolean {
+  const mime = typeof args.mimeType === "string" ? args.mimeType : typeof args.mime === "string" ? args.mime : "";
+  if (mime.trim().toLowerCase().startsWith("image/")) return true;
+  const dataUrl = typeof args.dataUrl === "string" ? args.dataUrl.trim() : "";
+  if (dataUrl.toLowerCase().startsWith("data:image/")) return true;
+  const filename = typeof args.filename === "string" ? args.filename : "";
+  return Boolean(IMAGE_MIME_BY_EXTENSION[path.extname(filename).toLowerCase()]);
+}
+
+/**
+ * Stage a non-image file a personal chat attaches (a PDF, a CSV, source).
+ *
+ * The same contract as a project's `chat.saveTempAttachment`: base64 bytes up
+ * to the legacy cap, written under a fresh UUID name in this runtime's own
+ * attachment store with only a validated extension kept from the caller's
+ * name. The caller never picks the path, so it can only add a file there, never
+ * read or overwrite one; the agent receives that path like any attachment.
+ */
+async function saveFileTempAttachment(attachmentsDir: string, args: ObjectArgs): Promise<{ path: string }> {
+  const base64 = typeof args.base64 === "string" ? args.base64 : typeof args.data === "string" ? args.data : "";
+  const compact = base64.replace(/\s+/g, "");
+  if (!compact || !/^[A-Za-z0-9+/]+={0,2}$/.test(compact) || compact.length % 4 === 1) {
+    throw new Error("Temporary attachment base64 is invalid.");
+  }
+  if (compact.length > maxBase64EncodedLength(LEGACY_MAX_CHAT_ATTACHMENT_BYTES)) {
+    throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
+  }
+  const content = Buffer.from(compact, "base64");
+  if (content.byteLength > LEGACY_MAX_CHAT_ATTACHMENT_BYTES) {
+    throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
+  }
+  if (content.byteLength === 0) throw new Error("This attachment was empty.");
+  return await stageAttachmentBytes({
+    content,
+    filename: typeof args.filename === "string" ? args.filename : null,
+    attachmentsDir,
+  });
+}
+
+/** `/` entries minus the skills an assistant chat does not get (`PERSONAL_LANE_ONLY_AGENT_SKILLS`). */
+function withoutLaneOnlySkillCommands<T extends { name: string }>(commands: readonly T[]): T[] {
+  return commands.filter((command) => !isPersonalLaneOnlySkillCommand(command.name));
+}
+
+/** The call's args without the ADE-surface claim, which no chat service method takes. */
+function withoutAssistantClaim(args: ObjectArgs): ObjectArgs {
+  if (!("personalProfile" in args)) return args;
+  const { personalProfile: _claim, ...rest } = args;
+  return rest;
 }
 
 function readSessionId(args: ObjectArgs): string {
@@ -114,172 +201,22 @@ function isPersonalChatAction(value: unknown): value is PersonalChatAction {
 }
 
 /**
- * A filesystem root: "/", a Windows drive root, or a bare UNC share root.
- *
- * Deliberately NOT in `shared/pathContainment.ts` with the containment rule:
- * the UNC branch is specific to this guard. `path.win32.parse("\\\\srv\\share")`
- * reports its root as "\\", so the ordinary root comparison below would let a
- * whole file server through as if it were an ordinary folder.
- *
- * Mirrored by `isFilesystemRoot` in `packages/sdk/src/hostConfig.ts`, which
- * runs the same rule client-side.
- */
-function isFilesystemRoot(resolved: string, impl: path.PlatformPath): boolean {
-  const value = impl === path.win32 ? stripExtendedLengthPrefix(resolved, "win32") : resolved;
-  const trimmed = trimTrailingSeparators(value, impl);
-  if (impl === path.win32 && /^[\\/]{2}[^\\/]/.test(trimmed)) {
-    const segments = trimmed.slice(2).split(/[\\/]+/).filter((part) => part.length > 0);
-    return segments.length <= 2;
-  }
-  const root = impl.parse(value).root;
-  if (!root.length) return false;
-  return trimmed === trimTrailingSeparators(root, impl);
-}
-
-/**
- * The filesystem seam `validatePersonalHostCwd` needs, so it stays injectable.
- *
- * One call, and it may throw: `fs.realpathSync.native` on a path that does not
- * exist. The walk below is what turns that into an answer.
- */
-export type PersonalHostCwdFs = { realpathSync: (target: string) => string };
-
-/**
- * The real on-disk path of the deepest existing ancestor, with the missing tail
- * re-joined.
- *
- * `canonicalWindowsPath()` in `services/projects/machineLayout.ts` does exactly
- * this for Windows; the guards below need it on EVERY platform, because a
- * symlink defeats a lexical check the same way on macOS and Linux. The
- * directory may not exist yet — the create path mkdirs it after this returns —
- * so a plain `realpathSync` would throw on the ordinary case.
- *
- * A path that cannot be resolved at all comes back as the caller's own
- * normalization, which is what the checks used to receive unconditionally.
- */
-function canonicalDeepestExisting(
-  value: string,
-  impl: path.PlatformPath,
-  fsImpl: PersonalHostCwdFs,
-): string {
-  const original = impl.normalize(value);
-  const missingParts: string[] = [];
-  let cursor = original;
-  for (;;) {
-    try {
-      return impl.join(fsImpl.realpathSync(cursor), ...missingParts);
-    } catch {
-      const parent = impl.dirname(cursor);
-      if (parent === cursor) return original;
-      missingParts.unshift(impl.basename(cursor));
-      cursor = parent;
-    }
-  }
-}
-
-/**
- * The working directory a host asked a personal chat to run in.
- *
- * A personal chat's agent runs in a 0700 scratch directory under ADE_HOME by
- * default, which is the wrong place for a host whose value is acting on the
- * user's own files: anything the agent writes there is, to that user, gone. So
- * the host may name a directory — but only a directory it plausibly meant.
- *
- * Refused, and why each one:
- *  - a relative path, which would otherwise resolve against whatever the
- *    runtime process happens to be sitting in;
- *  - "~", because expanding it here and not expanding it in the SDK is exactly
- *    the kind of split that makes two careful readers disagree;
- *  - a filesystem, drive, or UNC share root, because a host that passes "/" by
- *    accident and an always-allow permission preset is a very bad afternoon;
- *  - the home directory itself, for the same reason one step smaller;
- *  - anything inside ADE's own state directory, because the agent would be
- *    editing the database, transcripts, and credentials of the runtime hosting
- *    it.
- *
- * Every one of those tests runs on the CANONICAL path, not on a lexical
- * normalization. A lexical check reads `~/work/shortcut` as a folder under
- * `~/work` and admits it, while the symlink behind that name points at `~/.ade`
- * or at `/` — which is precisely the thing the last two rules exist to refuse.
- * `adeDir` and `homeDir` are canonicalized the same way, or a symlinked ADE
- * home would fail to match a canonical candidate that is genuinely inside it.
- *
- * The message is prefixed `invalid_argument:` so the SDK can map it to a stable
- * error code rather than matching on prose.
- *
- * This function is the AUTHORITATIVE copy of the rule. `validateThreadCwd` in
- * `packages/sdk/src/hostConfig.ts` refuses the same five things lexically, on
- * the client, so a caller hears about a bad `cwd` before a round trip; that
- * copy cannot canonicalize because the SDK ships standalone to npm and has no
- * engine filesystem to consult. When a refusal changes here, change it there
- * too.
- */
-export function validatePersonalHostCwd(
-  value: unknown,
-  context: {
-    adeDir: string;
-    homeDir: string;
-    platform?: NodeJS.Platform;
-    /** Injected so a test can stage a symlink without touching a real disk. */
-    fs?: PersonalHostCwdFs;
-  },
-): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== "string") {
-    throw new Error("invalid_argument: requestedCwd must be a string.");
-  }
-  const raw = value.trim();
-  if (!raw.length) return undefined;
-  const platform = context.platform ?? process.platform;
-  const impl = platform === "win32" ? path.win32 : path.posix;
-  if (raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\")) {
-    throw new Error(
-      "invalid_argument: requestedCwd must not start with '~'. Expand the home directory yourself "
-      + "and pass an absolute path.",
-    );
-  }
-  if (!impl.isAbsolute(raw)) {
-    throw new Error(`invalid_argument: requestedCwd must be an absolute path. Received '${raw}'.`);
-  }
-  const fsImpl = context.fs ?? { realpathSync: (target: string) => fs.realpathSync.native(target) };
-  // Strip `\\?\` after canonicalize and before every refusal. realpath on
-  // Windows can keep the prefix while `os.homedir()` / ADE home do not, and
-  // `\\?\C:\` looks like a UNC root to Node — a missed home or ADE-state
-  // refusal, or a missed UNC share-root refusal. The returned path is the
-  // unprefixed spelling so later containment sees one form.
-  const resolved = stripExtendedLengthPrefix(canonicalDeepestExisting(raw, impl, fsImpl), platform);
-  const homeDir = stripExtendedLengthPrefix(canonicalDeepestExisting(context.homeDir, impl, fsImpl), platform);
-  const adeDir = stripExtendedLengthPrefix(canonicalDeepestExisting(context.adeDir, impl, fsImpl), platform);
-  if (isFilesystemRoot(resolved, impl)) {
-    throw new Error(
-      `invalid_argument: requestedCwd must not be a filesystem root. Received '${raw}'.`,
-    );
-  }
-  // `samePathOnPlatform`, not `===`: the case fold and the trailing-separator trim both
-  // decide this answer, and the platform is passed rather than the path flavor
-  // so macOS folds. A guard that refuses must fold — a missed fold skips the
-  // refusal while the OS opens the very same folder.
-  if (samePathOnPlatform(resolved, homeDir, platform)) {
-    throw new Error(
-      "invalid_argument: requestedCwd must not be the home directory itself. Name a folder inside it.",
-    );
-  }
-  if (pathIsWithinRoot(adeDir, resolved, platform)) {
-    throw new Error(
-      "invalid_argument: requestedCwd must not be inside ADE's own state directory.",
-    );
-  }
-  return trimTrailingSeparators(resolved, impl);
-}
-
-/**
  * Machine-owned chat scope. It deliberately stays out of ProjectRegistry, so
  * the synthetic project/lane required by the existing chat + PTY services can
  * never leak into project pickers, recents, or mobile project catalogs.
  */
+const DRAFT_SLASH_COMMANDS_TTL_MS = 15_000;
+
 export class PersonalChatScope {
   private runtimePromise: Promise<AdeRuntime> | null = null;
   private readonly personalTerminalSessions = new Map<string, string>();
+  /**
+   * A new draft's `/` menu, by provider and profile. Every draft pane asks on
+   * mount, and the answer is a walk of the skill and command folders that
+   * blocks this runtime for tens of milliseconds; a few seconds of reuse
+   * makes "New chat" and reopening the Browser dock stop paying for it.
+   */
+  private readonly draftSlashCommands = new Map<string, { at: number; commands: unknown }>();
 
   constructor(private readonly options: PersonalChatScopeOptions = {}) {}
 
@@ -289,6 +226,7 @@ export class PersonalChatScope {
       actions: [...PERSONAL_CHAT_ACTIONS],
       pushEvents: true,
       mcpServers: true,
+      updateMcpServers: true,
     };
   }
 
@@ -303,6 +241,13 @@ export class PersonalChatScope {
     const runtime = await pending.catch(() => null);
     if (!runtime) return { activeAgentTurns: 0, activeWorkSessions: 0 };
     return summarizeRuntimeActivity(runtime);
+  }
+
+  /** Same rule as `activitySummary`: never boots the runtime to answer. */
+  async updateImpact(): Promise<RuntimeUpdateImpact> {
+    const runtime = await this.runtimePromise?.catch(() => null);
+    if (!runtime) return { chats: [], cliSessions: 0, terminals: 0 };
+    return await summarizeRuntimeUpdateImpact(runtime, null);
   }
 
   /**
@@ -348,10 +293,53 @@ export class PersonalChatScope {
             if (session.surface !== "personal") {
               service.ensureSessionSurface(session.sessionId, "personal");
             }
-            return session.surface === "personal"
+            const row = session.surface === "personal"
               ? session
               : { ...session, surface: "personal" as const };
+            return withRowMeta(runtime, row);
           });
+        break;
+      }
+      case "setPinned": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        // The same synced column a Work chat's pin lives in, so a pin made on
+        // one client shows on every client of this machine.
+        runtime.sessionService.updateMeta({ sessionId, pinned: requiredBoolean(args.pinned, "pinned") });
+        const summary = await service.getSessionSummary(sessionId);
+        result = summary ? withRowMeta(runtime, summary) : null;
+        break;
+      }
+      case "slashCommands": {
+        const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+        const session = sessionId ? await this.requirePersonalSession(service, sessionId) : null;
+        const provider = typeof args.provider === "string" && args.provider.trim()
+          ? args.provider.trim() as AgentChatCreateArgs["provider"]
+          : null;
+        // The internal lane, never a caller's: a provider-only lookup reads the
+        // personal workspace, not whatever project the caller has open.
+        const draftKey = sessionId ? null : `${provider ?? ""}:${String(args.personalProfile ?? "")}`;
+        const cached = draftKey ? this.draftSlashCommands.get(draftKey) : undefined;
+        if (cached && Date.now() - cached.at < DRAFT_SLASH_COMMANDS_TTL_MS) {
+          result = cached.commands;
+          break;
+        }
+        const commands = service.getSlashCommands({
+          ...(sessionId ? { sessionId } : {}),
+          ...(provider ? { provider } : {}),
+          laneId: await this.getInternalLaneId(runtime),
+        });
+        // An assistant chat's skill catalog withholds the lane-only skills;
+        // the `/` menu walks the unfiltered skill roots, so withhold them here
+        // too. A legacy row (no profile) counts when the caller makes the
+        // assistant claim, the same rule `claimForAssistant` persists.
+        const assistant = this.options.runtimeProfile !== "embedded"
+          && (session
+            ? session.personalProfile === "assistant"
+              || (session.personalProfile == null && args.personalProfile === "assistant")
+            : args.personalProfile === "assistant");
+        result = assistant ? withoutLaneOnlySkillCommands(commands) : commands;
+        if (draftKey) this.draftSlashCommands.set(draftKey, { at: Date.now(), commands: result });
         break;
       }
       case "create": {
@@ -359,15 +347,12 @@ export class PersonalChatScope {
         const model = requiredString(args.model, "model");
         const laneId = await this.getInternalLaneId(runtime);
         const kickoffText = typeof args.kickoffText === "string" ? args.kickoffText.trim() : "";
-        // Validated here rather than in the chat service: this is the boundary
-        // an external embedder speaks to, and the refusal has to happen before
-        // a session row exists, not after one is created pointing somewhere it
-        // should never have pointed.
-        const machineLayout = resolveMachineAdeLayout();
-        const hostCwd = validatePersonalHostCwd(args.requestedCwd, {
-          adeDir: machineLayout.adeDir,
-          homeDir: os.homedir(),
-        });
+        // `requestedCwd` is validated here, at the boundary an external
+        // embedder speaks to, because the directory is created below, before
+        // any session row exists. `attachmentRoots` is validated by the chat
+        // service, which applies the same rule (`personalHostPaths`) on every
+        // route.
+        const hostCwd = validatePersonalHostCwd(args.requestedCwd, personalHostPathContext());
         if (hostCwd) {
           // 0755, not the 0700 of the runtime's own scratch workspace: this is
           // a directory the user is meant to open in a file browser, which is
@@ -384,8 +369,22 @@ export class PersonalChatScope {
           automationRunId: _automationRunId,
           orchestrationParentSessionId: _orchestrationParentSessionId,
           kickoffText: _kickoffText,
+          attachmentRoots: _attachmentRoots,
+          personalProfile: _personalProfile,
+          // Stamped only by the RPC server on an agent's or the CTO's call. A
+          // caller-sent actor here would claim a launcher it does not have.
+          runtimeActor: _runtimeActor,
           ...forwarded
         } = args;
+        // What this chat is for. An embedded runtime (an SDK host) is always
+        // `embedded`, whatever the caller sent. Elsewhere only an explicit
+        // `assistant` — what ADE's own UI and `ade chat create --personal`
+        // send — gets the assistant surface; an absent value stays `embedded`,
+        // so an SDK client attached to this runtime keeps today's behavior.
+        const personalProfile: AgentChatPersonalProfile = this.options.runtimeProfile !== "embedded"
+          && args.personalProfile === "assistant"
+          ? "assistant"
+          : "embedded";
         const created = await service.createSession({
           ...forwarded,
           // Named explicitly rather than left to `...forwarded`: these are the
@@ -410,11 +409,19 @@ export class PersonalChatScope {
           // would silently drop it the moment someone reads that list as the
           // definition of what a personal chat may not set.
           ...(hostCwd ? { requestedCwd: hostCwd } : {}),
+          // Validated and canonicalized by the chat service, which applies the
+          // same rule on every route (`validatePersonalAttachmentRoots`).
+          ...(args.attachmentRoots !== undefined
+            ? { attachmentRoots: args.attachmentRoots as AgentChatCreateArgs["attachmentRoots"] }
+            : {}),
           laneId,
           provider,
           model,
           surface: "personal",
-          sessionProfile: "light",
+          personalProfile,
+          // The assistant runs as a full chat (tool gate, approval cards, the
+          // user's MCP servers); the SDK surface keeps the lean profile.
+          sessionProfile: personalProfile === "assistant" ? "workflow" : "light",
           permissionMode: typeof args.permissionMode === "string"
             ? args.permissionMode as AgentChatCreateArgs["permissionMode"]
             : "default",
@@ -425,9 +432,13 @@ export class PersonalChatScope {
         result = await service.getSessionSummary(created.id);
         break;
       }
-      case "getSummary":
-        result = await this.requirePersonalSession(service, readSessionId(args));
+      case "getSummary": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        this.claimForAssistant(service, sessionId, args);
+        result = await this.requirePersonalSession(service, sessionId);
         break;
+      }
       case "read": {
         const sessionId = readSessionId(args);
         await this.requirePersonalSession(service, sessionId);
@@ -441,11 +452,13 @@ export class PersonalChatScope {
       }
       case "send":
         await this.requirePersonalSession(service, readSessionId(args));
-        result = await service.sendMessage(withUntrustedChatMetadata(args) as never);
+        this.claimForAssistant(service, readSessionId(args), args);
+        result = await service.sendMessage(withUntrustedChatMetadata(withoutAssistantClaim(args)) as never);
         break;
       case "steer":
         await this.requirePersonalSession(service, readSessionId(args));
-        result = await service.steer(withUntrustedChatMetadata(args) as never);
+        this.claimForAssistant(service, readSessionId(args), args);
+        result = await service.steer(withUntrustedChatMetadata(withoutAssistantClaim(args)) as never);
         break;
       case "cancelSteer":
         await this.requirePersonalSession(service, readSessionId(args));
@@ -454,6 +467,10 @@ export class PersonalChatScope {
       case "editSteer":
         await this.requirePersonalSession(service, readSessionId(args));
         result = await service.editSteer(args as never);
+        break;
+      case "moveSteer":
+        await this.requirePersonalSession(service, readSessionId(args));
+        result = await service.moveSteer(args as never);
         break;
       case "dispatchSteer":
         await this.requirePersonalSession(service, readSessionId(args));
@@ -491,10 +508,12 @@ export class PersonalChatScope {
         break;
       case "respondToInput":
         await this.requirePersonalSession(service, readSessionId(args));
+        refuseUserOnlyConsentCard(service, args);
         result = await service.respondToInput(args as never);
         break;
       case "approve":
         await this.requirePersonalSession(service, readSessionId(args));
+        refuseUserOnlyConsentCard(service, args);
         result = await service.approveToolUse(args as never);
         break;
       case "pendingInputs": {
@@ -545,7 +564,35 @@ export class PersonalChatScope {
       case "updateSession": {
         const sessionId = readSessionId(args);
         await this.requirePersonalSession(service, sessionId);
-        result = await service.updateSession(args as never);
+        // `mcpServers` and `attachmentRoots` ride through with the rest: the
+        // chat service accepts both only for a personal session, which
+        // `requirePersonalSession` has just established, and validates them
+        // exactly as create does. `runtimeActor` is dropped: only the RPC
+        // server stamps it, so a caller-sent actor never reaches the service.
+        const { runtimeActor: _runtimeActor, ...updateArgs } = args;
+        await service.updateSession(updateArgs as never);
+        // The same shape create returns. The summary already withholds header
+        // values, so the reply never echoes back a credential the host sent.
+        result = await service.getSessionSummary(sessionId);
+        break;
+      }
+      case "rerunLastTurn": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        const text = args.text;
+        if (text !== undefined && typeof text !== "string") {
+          throw new Error("invalid_argument: text must be a string.");
+        }
+        // Dropping a malformed list would resend the original attachments.
+        if (args.attachments !== undefined && !Array.isArray(args.attachments)) {
+          throw new Error("invalid_argument: attachments must be an array.");
+        }
+        result = await service.rerunLastTurn({
+          sessionId,
+          ...(text !== undefined ? { text } : {}),
+          ...(typeof args.displayText === "string" ? { displayText: args.displayText } : {}),
+          ...(Array.isArray(args.attachments) ? { attachments: args.attachments as never } : {}),
+        });
         break;
       }
       case "archive":
@@ -588,8 +635,11 @@ export class PersonalChatScope {
       case "getEventHistoryPage": {
         const sessionId = readSessionId(args);
         await this.requirePersonalSession(service, sessionId);
+        // chatLogV2 durable cursor; takes precedence over the byte cursor.
+        const beforeSequence = historyPageBeforeSequence(args.beforeSequence);
         result = await service.getChatEventHistoryPage(sessionId, {
           beforeOffset: Number(args.beforeOffset),
+          ...(beforeSequence != null ? { beforeSequence } : {}),
           ...(typeof args.maxBytes === "number" ? { maxBytes: args.maxBytes } : {}),
           ...(signal ? { signal } : {}),
         });
@@ -641,10 +691,11 @@ export class PersonalChatScope {
         break;
       }
       case "saveTempAttachment":
-        result = await saveImageTempAttachment(
-          projectAttachmentsDir(runtime.projectRoot),
-          args,
-        );
+        // An image keeps the strict route (bytes sniffed against the declared
+        // type). Any other file is staged as bytes, like a project chat's.
+        result = declaresImage(args)
+          ? await saveImageTempAttachment(projectAttachmentsDir(runtime.projectRoot), args)
+          : await saveFileTempAttachment(projectAttachmentsDir(runtime.projectRoot), args);
         break;
       case "getImageDataUrl": {
         const attachmentsRoot = await fs.promises.realpath(
@@ -659,6 +710,42 @@ export class PersonalChatScope {
           dataUrl: `data:${image.mimeType};base64,${image.data.toString("base64")}`,
           mimeType: image.mimeType,
         };
+        break;
+      }
+      // The agent's own row reports. A personal chat's `ade chat activity`
+      // lands here (the CLI routes it by `--personal` / `ADE_CHAT_SCOPE`); the
+      // session service validates the value exactly as a project's does.
+      case "setSessionActivity": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        const value = args.value ?? null;
+        if (value !== null && typeof value !== "string") {
+          throw new Error("setSessionActivity requires a supported string `value` or null.");
+        }
+        if (!runtime.sessionService.setSessionActivity(sessionId, value)) {
+          throw new Error(`Personal chat session '${sessionId}' was not found.`);
+        }
+        result = { ok: true, sessionId, value };
+        break;
+      }
+      case "setSessionStatusNote": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        if (typeof args.note !== "string") throw new Error("setSessionStatusNote requires a string `note` field.");
+        if (!runtime.sessionService.setStatusNote(sessionId, args.note || null)) {
+          throw new Error(`Personal chat session '${sessionId}' was not found.`);
+        }
+        result = { ok: true, sessionId };
+        break;
+      }
+      case "requestSessionAttention": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        const message = requiredString(args.message, "message");
+        if (!runtime.sessionService.requestAttention(sessionId, message)) {
+          throw new Error(`Personal chat session '${sessionId}' was not found.`);
+        }
+        result = { ok: true, sessionId };
         break;
       }
     }
@@ -778,6 +865,19 @@ export class PersonalChatScope {
     runtime?.dispose();
   }
 
+  /**
+   * The personal runtime, booting it when needed. For the brain's wake router,
+   * which delivers a child's completion into a personal chat that asked for it.
+   */
+  async runtimeForDelivery(): Promise<AdeRuntime> {
+    return await this.getRuntime();
+  }
+
+  /** The personal runtime only if it is already up; never boots it. */
+  peekRuntime(): Promise<AdeRuntime> | null {
+    return this.runtimePromise;
+  }
+
   private async getRuntime(): Promise<AdeRuntime> {
     if (this.runtimePromise) return await this.runtimePromise;
     this.runtimePromise = this.createRuntime();
@@ -839,6 +939,23 @@ export class PersonalChatScope {
       return { ...summary, surface: "personal" };
     }
     return summary;
+  }
+
+  /**
+   * The legacy-row upgrade rule. ADE's own Chats surfaces (desktop, web, iOS,
+   * `ade chat --personal`) send `personalProfile: "assistant"` on the calls that
+   * use a chat; a row written before profiles existed (no profile at all) then
+   * becomes an `assistant` chat, persisted. Never on an embedded-profile runtime
+   * (an SDK host's), never for a row with an explicit profile, and never by
+   * omission: an SDK client attached to this runtime does not send the claim.
+   */
+  private claimForAssistant(
+    service: NonNullable<AdeRuntime["agentChatService"]>,
+    sessionId: string,
+    args: ObjectArgs,
+  ): void {
+    if (this.options.runtimeProfile === "embedded" || args.personalProfile !== "assistant") return;
+    service.adoptLegacyPersonalSessionAsAssistant?.(sessionId);
   }
 
   private requirePersonalTerminal(ptyId: string, sessionId?: string): string {

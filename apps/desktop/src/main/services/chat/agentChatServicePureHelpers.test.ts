@@ -114,14 +114,17 @@ describe("buildComputerUseDirective", () => {
     expect(result).toContain("$ADE_CLI_PATH");
     // The Codex/OpenAI computer-use plugin drives the real screen: only on request.
     expect(result).toMatch(/`mcp__computer_use`[^\n]*drives the user's real screen/);
-    // `ade proof capture/record` is the real screen too, so it is not the default.
-    expect(result).toMatch(/`ade proof capture` and `ade proof record` capture the user's whole real screen/);
+    // Proof of desktop work is the lane screen. The user's screen is an explicit flag.
+    expect(result).toMatch(/capture the lane's screen/);
+    expect(result).toMatch(/--real-screen/);
+    expect(result).not.toMatch(/`ade proof capture` and `ade proof record` capture the user's whole real screen/);
   });
 
   it("says nothing about a lane screen on a host that cannot give one", () => {
     const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }))!;
     expect(result).not.toContain("Mac Desktop");
-    expect(result).toContain("Use `ade proof capture` for a reviewer-facing checkpoint");
+    expect(result).toMatch(/`ade proof capture` and `ade proof record` are refused/);
+    expect(result).toMatch(/--real-screen/);
   });
 
   it("emits no directive when no artifact broker is attached", () => {
@@ -169,13 +172,6 @@ describe("buildComputerUseDirective", () => {
     expect(result).toContain("Ghost OS (Desktop Automation)");
     expect(result).toContain("ghost_context");
     expect(result).toContain("ghost_annotate");
-  });
-
-  it("includes agent-browser section when agent-browser is available", () => {
-    const status = makeBackendStatus({ agentBrowser: true });
-    const result = buildComputerUseDirective(status);
-    expect(result).toContain("agent-browser (Browser Automation)");
-    expect(result).not.toContain("Ghost OS (Desktop Automation)");
   });
 
   it("includes ADE Local fallback section when local fallback is enabled", () => {

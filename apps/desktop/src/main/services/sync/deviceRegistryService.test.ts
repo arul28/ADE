@@ -1,11 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { isCrsqliteAvailable } from "../state/crsqliteExtension";
 import { openKvDb } from "../state/kvDb";
 import { nowIso } from "../shared/utils";
-import { createDeviceRegistryService } from "./deviceRegistryService";
+import { createDeviceRegistryService, localSyncDeviceDefaults } from "./deviceRegistryService";
 
 function createLogger() {
   return {
@@ -23,6 +23,24 @@ function makeProjectRoot(prefix: string): string {
 }
 
 describe("deviceRegistryService", () => {
+  it("advertises real Hyper-V LAN adapters and filters host-only virtual networks", () => {
+    const networkInterfaces = vi.spyOn(os, "networkInterfaces").mockReturnValue({
+      "vEthernet (WSL)": [{ address: "172.25.0.1", family: "IPv4", internal: false, netmask: "255.255.0.0", mac: "00:00:00:00:00:01", cidr: "172.25.0.1/16" }],
+      "vEthernet (Default Switch)": [{ address: "172.26.0.1", family: "IPv4", internal: false, netmask: "255.255.0.0", mac: "00:00:00:00:00:02", cidr: "172.26.0.1/16" }],
+      docker0: [{ address: "172.17.0.1", family: "IPv4", internal: false, netmask: "255.255.0.0", mac: "00:00:00:00:00:03", cidr: "172.17.0.1/16" }],
+      "vEthernet (External)": [{ address: "192.168.1.25", family: "IPv4", internal: false, netmask: "255.255.255.0", mac: "00:00:00:00:00:04", cidr: "192.168.1.25/24" }],
+      en0: [{ address: "192.168.1.30", family: "IPv4", internal: false, netmask: "255.255.255.0", mac: "00:00:00:00:00:05", cidr: "192.168.1.30/24" }],
+      tailscale0: [{ address: "100.70.0.4", family: "IPv4", internal: false, netmask: "255.255.255.255", mac: "00:00:00:00:00:06", cidr: "100.70.0.4/32" }],
+    } as unknown as ReturnType<typeof os.networkInterfaces>);
+
+    const defaults = localSyncDeviceDefaults();
+    networkInterfaces.mockRestore();
+
+    expect(defaults.ipAddresses).toEqual(["192.168.1.25", "192.168.1.30"]);
+    expect(defaults.lastHost).toBe("192.168.1.25");
+    expect(defaults.tailscaleIp).toBe("100.70.0.4");
+  });
+
   it("keeps a stable local device identity across restarts and bootstraps the cluster brain", async () => {
     const projectRoot = makeProjectRoot("ade-device-registry-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

@@ -23,6 +23,7 @@ import type { createLaneService } from "../lanes/laneService";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
 import { nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
+import { stripHostRuntimeEnv } from "../shared/hostRuntimeEnv";
 
 type ActiveRunEntry = {
   laneId: string;
@@ -296,14 +297,11 @@ export function createTestService({
       }
     })();
 
-    const invocation = resolveCliSpawnInvocation(suite.command[0]!, suite.command.slice(1), {
-      ...process.env,
-      ...suite.env,
-      ...(overlay.env ?? {})
-    });
+    const suiteEnv = stripHostRuntimeEnv({ ...process.env, ...suite.env, ...(overlay.env ?? {}) });
+    const invocation = resolveCliSpawnInvocation(suite.command[0]!, suite.command.slice(1), suiteEnv);
     const child: ChildProcessByStdio<null, Readable, Readable> = spawn(invocation.command, invocation.args, {
       cwd,
-      env: { ...process.env, ...suite.env, ...(overlay.env ?? {}) },
+      env: suiteEnv,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,

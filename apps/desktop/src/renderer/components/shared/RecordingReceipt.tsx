@@ -51,6 +51,34 @@ export function RecordingPill({
 }
 
 /**
+ * "Making demo…" — between a recording's stop and its demo being filed. The
+ * raw file is being cut, zoomed and sized; the receipt follows when it is done.
+ */
+export function MakingDemoPill({
+  marker,
+  className,
+  style,
+}: {
+  marker?: Marker;
+  className?: string;
+  style?: CSSProperties;
+}) {
+  return (
+    <div
+      {...marker}
+      style={style}
+      className={cn(
+        "absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-full border border-border bg-surface px-3 py-1 font-sans text-xs text-fg shadow-sm",
+        className,
+      )}
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)] motion-safe:animate-pulse" />
+      <span>Making demo…</span>
+    </div>
+  );
+}
+
+/**
  * "Saved to proof · 0:23 · 8.5 MB · [Open]" — the receipt after a capture.
  *
  * It states what exists, where it went, and how to get at it, then the caller
@@ -97,7 +125,7 @@ export function RecordingSavedRow({
       </span>
       <button
         type="button"
-        className="ml-auto shrink-0 rounded px-2 py-0.5 font-medium text-accent hover:bg-white/[0.07]"
+        className="ml-auto shrink-0 rounded px-2 py-0.5 font-medium text-accent hover:bg-fg/[0.07]"
         onClick={onOpen}
       >
         Open
@@ -105,7 +133,7 @@ export function RecordingSavedRow({
       <button
         type="button"
         aria-label="Dismiss"
-        className="shrink-0 rounded p-0.5 text-muted-fg hover:bg-white/[0.07] hover:text-fg"
+        className="shrink-0 rounded p-0.5 text-muted-fg hover:bg-fg/[0.07] hover:text-fg"
         onClick={onDismiss}
       >
         <X size={12} />

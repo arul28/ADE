@@ -4,17 +4,20 @@ import type {
 } from "../../../desktop/src/shared/types/attention";
 import {
   ATTENTION_CONTRACT_VERSION,
-  activityItemTier,
   attentionDestinationDeepLink,
-  sortAttentionItems,
 } from "../../../desktop/src/shared/types/attention";
+import { activityBoardColumn } from "../../../desktop/src/shared/attention/activityBoardColumn";
 import {
-  activityStateGroup,
-  type ActivityStateGroup,
+  ACTIVITY_COLUMN_PRESENTATION,
+  ACTIVITY_COLUMNS,
+  activityItemFailed,
+  activityWaitingReasonLabel,
+  type ActivityColumn,
 } from "../../../desktop/src/renderer/components/activity/activityPresentation";
 import {
-  activityFeedItems,
   activityNotificationItems,
+  activitySectionCounts,
+  activitySections,
 } from "../../../desktop/src/renderer/components/activity/activityPriority";
 import type { AdeAccountSessionState } from "../../../desktop/src/shared/types/account";
 import {
@@ -25,13 +28,7 @@ import {
 import { formatRelativePastTime } from "./relativeTime";
 import type { AdeCodeConnection } from "./types";
 
-export type ActivityPaneGroupId =
-  | "needs-you"
-  | "failing"
-  | "done"
-  | "live"
-  | "recent"
-  | "notifications";
+export type ActivityPaneGroupId = ActivityColumn | "notifications";
 
 export type ActivityPaneGroup = {
   id: ActivityPaneGroupId;
@@ -46,13 +43,18 @@ export type ActivityPaneModel = {
   title: string;
   message: string;
   recovery: NonNullable<AttentionSnapshot["availability"]>["recovery"];
-  waitingCount: number;
-  liveCount: number;
+  /** The chip in force: null is All. */
+  column: ActivityColumn | null;
+  /** Agents per column, unaffected by the chip so every chip keeps its count. */
+  counts: Record<ActivityColumn, number>;
+  /** Done rows folded into one line under All; 0 when Done is listed. */
+  foldedDoneCount: number;
 };
 
 export type ActivityPaneEntry =
   | { kind: "heading"; key: string; label: string }
-  | { kind: "item"; key: string; item: AttentionItem; itemIndex: number };
+  | { kind: "item"; key: string; item: AttentionItem; itemIndex: number }
+  | { kind: "fold"; key: string; label: string };
 
 type AccountStatus = {
   signedIn: boolean;
@@ -312,129 +314,87 @@ export async function acknowledgeActivityItem(
 }
 
 /**
- * The TUI's five headings, expressed purely as a function of the canonical
- * Activity state group. The pane keeps its own vocabulary (it splits the
- * canonical `done` band into unreviewed outcomes and the ambient tail, which a
- * scrolling terminal list needs), but it may not disagree with the rule about
- * WHICH band a row is in — that rule is mirrored across the renderer, the
- * notch, iOS, and the relay, and this pane is a fifth mirror.
- *
- * Pinned by `activityStateGroup.cases.json` in activityPane.test.ts.
+ * The chips, in key order: 0 is All, 1–4 the Work board's four columns. The
+ * same five chips the desktop and phone panels show.
  */
-export const ACTIVITY_PANE_GROUP_BY_STATE_GROUP = {
-  "needs-you": "needs-you",
-  failed: "failing",
-  planning: "live",
-  working: "live",
-  // Idle is quiet history, so it files with the ambient tail — the same
-  // heading idle-TIER rows already reach via the split below. What it must
-  // never do again is file with `live`: a `stale` row used to be counted as
-  // LIVE NOW, which is how this pane claimed working agents hours after they
-  // stopped. It is deliberately not `done` either; nothing here finished.
-  idle: "recent",
-  // `done` splits below on seen/idle; this is the band, not the final heading.
-  done: "done",
-} as const satisfies Record<ActivityStateGroup, ActivityPaneGroupId>;
+export const ACTIVITY_PANE_CHIPS: readonly (ActivityColumn | null)[] = [null, ...ACTIVITY_COLUMNS];
+
+/** The chip a digit key selects, or undefined for any other key. */
+export function activityPaneChipForKey(input: string): ActivityColumn | null | undefined {
+  if (!/^[0-4]$/.test(input)) return undefined;
+  return ACTIVITY_PANE_CHIPS[Number(input)];
+}
 
 /**
- * Terminal mark for one Activity row, keyed off the same six-state table the
- * grouping uses. The view used to switch on raw phase, which is how `stale`
- * (idle, including a snoozed overlay) painted as a red failure diamond and a
- * failed overlay that still carried `running` on an older publisher would have
- * kept the working spinner. Tone names are TUI tokens, not desktop hues.
+ * Terminal mark for one Activity row, keyed off its column. A failed agent
+ * sits under Needs you with its own red cross, like the desktop's red mark.
+ * Tone names are TUI tokens, not desktop hues.
  */
 export type ActivityPaneMarkTone =
   | "attention"
   | "error"
-  | "violet"
   | "running"
   | "neutral"
   | "done";
 
 export type ActivityPaneMark = {
-  group: ActivityStateGroup;
+  column: ActivityColumn | null;
   glyph: string;
   tone: ActivityPaneMarkTone;
 };
 
-export const ACTIVITY_PANE_MARK_BY_STATE_GROUP = {
-  "needs-you": { glyph: "!", tone: "attention" },
-  failed: { glyph: "×", tone: "error" },
-  planning: { glyph: "◐", tone: "violet" },
+export const ACTIVITY_PANE_MARK_BY_COLUMN = {
+  needs_you: { glyph: "!", tone: "attention" },
   working: { glyph: "●", tone: "running" },
-  idle: { glyph: "○", tone: "neutral" },
+  waiting: { glyph: "‖", tone: "neutral" },
   done: { glyph: "✓", tone: "done" },
-} as const satisfies Record<ActivityStateGroup, Omit<ActivityPaneMark, "group">>;
+} as const satisfies Record<ActivityColumn, Omit<ActivityPaneMark, "column">>;
 
 export function activityItemMark(item: AttentionItem): ActivityPaneMark {
-  const group = activityStateGroup(item);
-  return { group, ...ACTIVITY_PANE_MARK_BY_STATE_GROUP[group] };
-}
-
-export function groupForItem(item: AttentionItem): ActivityPaneGroupId {
-  const group = ACTIVITY_PANE_GROUP_BY_STATE_GROUP[activityStateGroup(item)];
-  if (group !== "done") return group;
-  // Disk-only roster rows are quiet history: an ended chat still carries phase
-  // `completed` with no seenAt, which would otherwise file every session the
-  // account has ever finished under DONE, UNREVIEWED and count it as waiting.
-  // Already-seen outcomes join them in the tail. Desktop orders the same rows
-  // the same way inside its `done` section — see `activitySections` in
-  // apps/desktop/src/renderer/components/activity/activityPriority.ts.
-  if (activityItemTier(item) === "idle" || item.seenAt !== null) return "recent";
-  return "done";
+  const column = activityBoardColumn(item);
+  if (!column) return { column: null, glyph: "◇", tone: "neutral" };
+  if (activityItemFailed(item)) return { column, glyph: "×", tone: "error" };
+  return { column, ...ACTIVITY_PANE_MARK_BY_COLUMN[column] };
 }
 
 const GROUP_LABELS: Record<ActivityPaneGroupId, string> = {
-  "needs-you": "NEEDS YOU",
-  failing: "FAILING OR BLOCKED",
-  done: "DONE, UNREVIEWED",
-  live: "LIVE NOW",
-  recent: "RECENT",
+  needs_you: "NEEDS YOU",
+  working: "WORKING",
+  waiting: "WAITING",
+  done: "DONE",
   notifications: "NOTIFICATIONS",
 };
 
 export function buildActivityPaneModel(
   snapshot: AttentionSnapshot,
-  now = Date.now(),
+  options: { column?: ActivityColumn | null; now?: number } = {},
 ): ActivityPaneModel {
+  const now = options.now ?? Date.now();
+  const column = options.column ?? null;
   // Activity is an AGENT feed on every surface. Pull requests, checks and
   // review outcomes still arrive — they push and badge — but they are not
-  // session rows, because a lane with an open PR rendered twice: once as the
-  // agent working it and once as the PR. `activityFeedItems` /
-  // `activityNotificationItems` are the same split the renderer and the notch
-  // use, and they also drop dismissed and expired rows, which this pane
-  // previously kept.
-  const visible = sortAttentionItems(activityFeedItems(snapshot.items, now));
-  const buckets = new Map<ActivityPaneGroupId, AttentionItem[]>();
-  for (const item of visible) {
-    const group = groupForItem(item);
-    const bucket = buckets.get(group) ?? [];
-    bucket.push(item);
-    buckets.set(group, bucket);
+  // session rows, so they sit in their own notification tail and are never
+  // counted in a column. `activitySections` / `activityNotificationItems` are
+  // the same split the desktop panel uses, and they drop dismissed and expired
+  // rows.
+  const sections = activitySections(snapshot.items, now);
+  const counts = activitySectionCounts(sections);
+  // Done folds into one line under All, as it does on desktop and the phone:
+  // it is the most common state and the least urgent one. Picking the Done
+  // chip lists it.
+  const foldedDoneCount = column === null ? counts.done : 0;
+  const groups: ActivityPaneGroup[] = sections
+    .filter((section) => (column ? section.id === column : section.id !== "done"))
+    .map((section) => ({ id: section.id, label: GROUP_LABELS[section.id], items: section.items }));
+  if (column === null) {
+    groups.push({
+      id: "notifications",
+      label: GROUP_LABELS.notifications,
+      items: activityNotificationItems(snapshot.items, now),
+    });
   }
-  // The notification tail, mirroring `activityFeedOrder`: agent sections first,
-  // then everything that is not an agent and would have pushed a notification.
-  buckets.set("notifications", activityNotificationItems(snapshot.items, now));
-  const order: ActivityPaneGroupId[] = [
-    "needs-you",
-    "failing",
-    "done",
-    "live",
-    "recent",
-    "notifications",
-  ];
-  const groups = order
-    .map((id): ActivityPaneGroup => ({
-      id,
-      label: GROUP_LABELS[id],
-      items: buckets.get(id) ?? [],
-    }))
-    .filter((group) => group.items.length > 0);
-  const items = groups.flatMap((group) => group.items);
-  const waitingCount = groups
-    .filter((group) => group.id === "needs-you" || group.id === "failing" || group.id === "done")
-    .reduce((count, group) => count + group.items.length, 0);
-  const liveCount = groups.find((group) => group.id === "live")?.items.length ?? 0;
+  const populated = groups.filter((group) => group.items.length > 0);
+  const items = populated.flatMap((group) => group.items);
   const availability = snapshot.availability ?? {
     state: snapshot.scope === "machine" ? "degraded" as const : "ready" as const,
     title: snapshot.scope === "machine" ? "This machine only" : "Account Activity",
@@ -446,14 +406,28 @@ export function buildActivityPaneModel(
 
   return {
     snapshot,
-    groups,
+    groups: populated,
     items,
     title: availability.title,
     message: availability.message,
     recovery: availability.recovery,
-    waitingCount,
-    liveCount,
+    column,
+    counts,
+    foldedDoneCount,
   };
+}
+
+/** "All 12 · Needs you 2 · Working 5 · Waiting 1 · Done 4", one entry per chip. */
+export function activityPaneChips(
+  model: ActivityPaneModel,
+): { key: string; label: string; count: number; selected: boolean }[] {
+  const total = ACTIVITY_COLUMNS.reduce((sum, id) => sum + model.counts[id], 0);
+  return ACTIVITY_PANE_CHIPS.map((chip, index) => ({
+    key: String(index),
+    label: chip ? ACTIVITY_COLUMN_PRESENTATION[chip].label : "All",
+    count: chip ? model.counts[chip] : total,
+    selected: model.column === chip,
+  }));
 }
 
 export function activityItemDeepLink(item: AttentionItem): string {
@@ -471,7 +445,7 @@ export function activityItemElapsed(item: AttentionItem, nowMs = Date.now()): st
 }
 
 export function activityItemContext(item: AttentionItem): string {
-  return [item.project.name, item.laneName, item.machine.name]
+  return [activityWaitingReasonLabel(item), item.project.name, item.laneName, item.machine.name]
     .filter((value): value is string => Boolean(value?.trim()))
     .join(" · ");
 }
@@ -484,11 +458,18 @@ export function activityPaneEntries(
   const all: ActivityPaneEntry[] = [];
   let itemIndex = 0;
   for (const group of model.groups) {
+    // Done folds in below the live columns, ahead of the notification tail.
+    if (group.id === "notifications" && model.foldedDoneCount > 0) {
+      all.push({ kind: "fold", key: "fold:done", label: `✓ ${model.foldedDoneCount} done · 4 to show` });
+    }
     all.push({ kind: "heading", key: `heading:${group.id}`, label: group.label });
     for (const item of group.items) {
       all.push({ kind: "item", key: item.id, item, itemIndex });
       itemIndex += 1;
     }
+  }
+  if (model.foldedDoneCount > 0 && !model.groups.some((group) => group.id === "notifications")) {
+    all.push({ kind: "fold", key: "fold:done", label: `✓ ${model.foldedDoneCount} done · 4 to show` });
   }
   if (all.length <= maxRows) {
     return { entries: all, hiddenBefore: 0, hiddenAfter: 0 };

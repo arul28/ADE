@@ -26,6 +26,7 @@ import type {
   AccountSettingsResult,
   AccountSettingsWriteOptions,
 } from "../../../shared/types/accountSettings";
+import { HARNESS_PRESETS_SETTING_KEY } from "../../../shared/harnessPresets";
 import {
   createAccountActionBridge,
   type AccountActionPool,
@@ -99,7 +100,7 @@ export function createAccountSettingsSyncService(options: AccountSettingsSyncOpt
         rejectFalse: true,
         ...writeOptions,
       });
-      if (result.ok && scope === "all" && key === "harnessPresets") {
+      if (result.ok && scope === "all" && key === HARNESS_PRESETS_SETTING_KEY) {
         await options.onHarnessPresetsChanged?.();
       }
       return result;
@@ -114,7 +115,7 @@ export function createAccountSettingsSyncService(options: AccountSettingsSyncOpt
         rejectFalse: true,
         ...writeOptions,
       });
-      if (result.ok && scope === "all" && key === "harnessPresets") {
+      if (result.ok && scope === "all" && key === HARNESS_PRESETS_SETTING_KEY) {
         await options.onHarnessPresetsChanged?.();
       }
       return result;

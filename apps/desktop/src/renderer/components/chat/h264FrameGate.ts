@@ -1,8 +1,8 @@
 /**
- * The decoder-safety gate for pushed H.264 records.
+ * The decoder-safety gate for H.264 records.
  *
- * The host may skip frames under backpressure; its contract is that a resumed
- * stream always begins again at a keyframe. Every P-frame until that keyframe
+ * The host may skip pushed frames under backpressure; its contract is that a
+ * resumed stream always begins again at a keyframe. Every P-frame until that keyframe
  * references a picture the decoder never saw, and handing those to WebCodecs
  * paints corruption that outlives the drop. The same rule applies after a
  * decoder error or a config change: the decoder has no reference picture, so
@@ -10,15 +10,16 @@
  *
  * Pure and synchronous, so the rule is testable without a decoder or a socket.
  * The iOS live view carries the same state machine in
- * `MacDesktopStreamFrameGate`.
+ * `H264FrameGate` (`H264SampleBufferFeeder.swift`).
  */
 
 export type H264FrameGate = {
   /**
    * Whether a frame may reach the decoder. The first frame after a reset (or
-   * after a sequence gap) must be a keyframe.
+   * after a sequence gap) must be a keyframe. A transport without sequence
+   * numbers passes none, and only the keyframe wait applies.
    */
-  shouldDeliver(keyframe: boolean, seq: number): boolean;
+  shouldDeliver(keyframe: boolean, seq?: number): boolean;
   /** The decoder lost its references; hold P-frames until the next keyframe. */
   requireKeyframe(): void;
   /** A new subscription or a rebuilt decoder: start over from a keyframe. */
@@ -32,12 +33,14 @@ export function createH264FrameGate(): H264FrameGate {
   let awaitingKeyframe = true;
 
   return {
-    shouldDeliver(keyframe: boolean, seq: number): boolean {
-      if (lastSeq !== null && seq > lastSeq + 1) {
-        // A gap means the host skipped records: the reference chain is broken.
-        awaitingKeyframe = true;
+    shouldDeliver(keyframe: boolean, seq?: number): boolean {
+      if (seq !== undefined) {
+        if (lastSeq !== null && seq > lastSeq + 1) {
+          // A gap means the host skipped records: the reference chain is broken.
+          awaitingKeyframe = true;
+        }
+        lastSeq = seq;
       }
-      lastSeq = seq;
       if (awaitingKeyframe) {
         if (!keyframe) return false;
         awaitingKeyframe = false;

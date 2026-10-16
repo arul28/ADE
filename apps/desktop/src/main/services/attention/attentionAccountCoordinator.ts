@@ -95,7 +95,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Cap on the remembered-revision cache; an account snapshot tops out well below. */
 const MAX_REMEMBERED_ITEM_REVISIONS = 4_096;
 
-/** Matches the notch snapshot parser's bound on the same field. */
+/** Matches the Activity item parser's bound on the same field. */
 const MAX_ALERT_FINGERPRINT_LENGTH = 1_024;
 
 /** The revisions for one chunk. Sent whole, a map would name ids outside it. */
@@ -537,7 +537,7 @@ export class AttentionAccountCoordinator {
    *
    * The renderer's numbers are authoritative: they are the revisions the user
    * actually saw. The coordinator's own map is a per-process cache written by
-   * whichever surface polled last — a notch refresh, another window, the web
+   * whichever surface polled last — another window, the web
    * shell — so treating it as the source of truth quoted a revision nobody had
    * been shown and manufactured staleness for every live item. It is kept only
    * to fill in items the caller did not send.
@@ -609,7 +609,7 @@ export class AttentionAccountCoordinator {
     }
     return (
       "Account Activity requires a newer connected ADE brain. "
-      + "Update and restart ADE on the host machine so the notch can receive account-wide work."
+      + "Update and restart ADE on the host machine to see account-wide work."
     );
   }
 

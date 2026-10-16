@@ -18,6 +18,13 @@ export type AccountVaultItem = {
   updatedAt: string;
   /** Device id allowed to rotate this credential; null when it never rotates. */
   refreshOwner?: string | null;
+  /**
+   * True on a tombstone: the key was deleted on some machine.
+   *
+   * A consumer that holds its own copy has to drop it — this is the only signal
+   * that says the credential is gone rather than merely unreadable.
+   */
+  deleted?: boolean;
 };
 
 /** Every account-vault call answers with a value or an ordinary failure result. */

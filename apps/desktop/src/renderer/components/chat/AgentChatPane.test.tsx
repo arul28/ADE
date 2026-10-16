@@ -1,6 +1,8 @@
 /* @vitest-environment jsdom */
 
+import { mergeAgentChatLiveEvents } from "../../../shared/chatHistoryMerge";
 import React from "react";
+import { encodeRoutePresetId } from "../../../shared/harnessRoutes";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -42,6 +44,7 @@ import {
 } from "../../lib/draftLaunchJobs";
 import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
 import { useAppStore } from "../../state/appStore";
+import { MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES } from "./chatHistoryWindow";
 import { confirmDialog } from "../ui/dialog/confirm";
 
 vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
@@ -180,8 +183,8 @@ function buildSession(sessionId: string, overrides: Partial<AgentChatSessionSumm
     sessionId,
     laneId: "lane-1",
     provider: "codex",
-    model: "gpt-5.4",
-    modelId: "openai/gpt-5.4",
+    model: "gpt-5.5",
+    modelId: "openai/gpt-5.5",
     endedAt: null,
     lastOutputPreview: null,
     summary: null,
@@ -249,8 +252,8 @@ function buildCreatedSession(sessionId: string, overrides: Partial<AgentChatSess
     id: sessionId,
     laneId: "lane-1",
     provider: "codex",
-    model: "gpt-5.4",
-    modelId: "openai/gpt-5.4",
+    model: "gpt-5.5",
+    modelId: "openai/gpt-5.5",
     status: "idle",
     sessionProfile: "workflow",
     reasoningEffort: "xhigh",
@@ -299,12 +302,12 @@ function seedRuntimeModelCatalog(): void {
             key: "default",
             label: "Codex",
             models: [{
-              id: "openai/gpt-5.4",
-              runtimeModelId: "gpt-5.4",
+              id: "openai/gpt-5.5",
+              runtimeModelId: "gpt-5.5",
               provider: "codex",
               providerKey: "codex",
               groupKey: "codex",
-              displayName: "GPT-5.4",
+              displayName: "GPT-5.5",
               isDefault: false,
               isAvailable: true,
             }],
@@ -469,7 +472,7 @@ function seedReasoningCursorRuntimeModelCatalog(): { modelId: string; concreteMo
 }
 
 function seedFastOpenCodeRuntimeModelCatalog(): string {
-  const modelId = "opencode/openai/gpt-5.4";
+  const modelId = "opencode/openai/gpt-5.5";
   rememberWorkPaneCatalog({
     fetchedAt: "2026-05-22T00:00:00.000Z",
     groups: [{
@@ -485,7 +488,7 @@ function seedFastOpenCodeRuntimeModelCatalog(): string {
           label: "OpenCode",
           models: [{
             id: modelId,
-            runtimeModelId: "openai/gpt-5.4",
+            runtimeModelId: "openai/gpt-5.5",
             provider: "opencode",
             providerKey: "opencode",
             groupKey: "opencode",
@@ -718,7 +721,7 @@ function installAdeMocks(options?: {
     },
     agentChat: {
       models: vi.fn().mockImplementation(async ({ provider }: { provider: string }) => {
-        if (provider === "codex") return [{ id: "gpt-5.4" }];
+        if (provider === "codex") return [{ id: "gpt-5.5" }];
         if (provider === "claude") return options?.includeClaudeModel ? [{ id: "anthropic/claude-sonnet-5" }] : [];
         if (provider === "cursor") return options?.cursorModels ?? [];
         if (provider === "opencode") return [{ id: "openai/gpt-5.4-mini" }];
@@ -796,13 +799,13 @@ function installAdeMocks(options?: {
       },
       fileSearch: vi.fn().mockResolvedValue([]),
       saveTempAttachment,
-      promptStashes: {
+      drafts: {
         list: vi.fn().mockResolvedValue([]),
         create: vi.fn().mockResolvedValue({
           id: "stash-1",
           text: "saved",
           provider: "codex",
-          modelId: "openai/gpt-5.4",
+          modelId: "openai/gpt-5.5",
           createdAt: "2026-07-28T12:00:00.000Z",
         }),
         delete: vi.fn().mockResolvedValue(true),
@@ -1471,7 +1474,7 @@ describe("AgentChatPane remote startup", () => {
       },
       models: { claude: [], codex: [], cursor: [], droid: [] },
       features: [],
-      availableModelIds: ["openai/gpt-5.4"],
+      availableModelIds: ["openai/gpt-5.5"],
     }) as any;
     const remoteRoot = seedRemoteChatStore();
     await getAiStatusCached({ projectRoot: remoteRoot });
@@ -1615,7 +1618,7 @@ describe("AgentChatPane remote startup", () => {
       detectedAuth: [
         { type: "cli-subscription", cli: "codex", authenticated: true },
       ],
-      availableModelIds: ["openai/gpt-5.4"],
+      availableModelIds: ["openai/gpt-5.5"],
     } as AiSettingsStatus;
     const authorizedStatus: AiSettingsStatus = {
       ...unauthorizedStatus,
@@ -1627,7 +1630,7 @@ describe("AgentChatPane remote startup", () => {
         { type: "cli-subscription", cli: "codex", authenticated: true },
         { type: "api-key", provider: "cursor" },
       ],
-      availableModelIds: ["openai/gpt-5.4", "cursor/auto"],
+      availableModelIds: ["openai/gpt-5.5", "cursor/auto"],
     } as AiSettingsStatus;
 
     const session = buildSession("session-1", { status: "idle" });
@@ -1710,7 +1713,7 @@ describe("AgentChatPane remote startup", () => {
         detectedAuth: [
           { type: "cli-subscription", cli: "codex", authenticated: true },
         ],
-        availableModelIds: ["openai/gpt-5.4"],
+        availableModelIds: ["openai/gpt-5.5"],
       } as AiSettingsStatus;
       const authorizedStatus: AiSettingsStatus = {
         ...unauthorizedStatus,
@@ -1722,7 +1725,7 @@ describe("AgentChatPane remote startup", () => {
           { type: "cli-subscription", cli: "codex", authenticated: true },
           { type: "api-key", provider: "cursor" },
         ],
-        availableModelIds: ["openai/gpt-5.4", "cursor/auto"],
+        availableModelIds: ["openai/gpt-5.5", "cursor/auto"],
       } as AiSettingsStatus;
 
       const session = buildSession("session-1", { status: "idle" });
@@ -1790,14 +1793,14 @@ describe("AgentChatPane remote startup", () => {
         models: { claude: [], codex: [], cursor: [], droid: [] },
         features: [],
         detectedAuth: [],
-        availableModelIds: ["opencode/openai/gpt-5.4"],
+        availableModelIds: ["opencode/openai/gpt-5.5"],
         opencodeBinaryInstalled: true,
       } as AiSettingsStatus;
 
       const session = buildSession("session-opencode-1", {
         status: "idle",
         provider: "opencode",
-        modelId: "opencode/openai/gpt-5.4",
+        modelId: "opencode/openai/gpt-5.5",
       });
       installAdeMocks({ sessions: [session], aiStatus: openCodeStatus });
       useAppStore.setState({
@@ -2495,11 +2498,14 @@ describe("AgentChatPane companion drawers", () => {
 
   describe("chat actions drawer sections", () => {
     const drawerSections = () => screen.getByTestId("chat-actions-drawer-sections");
-    const expectSingleScroll = () => {
-      expect(screen.getByTestId("chat-actions-drawer-scroll").className).toContain("overflow-auto");
-      expect(
-        drawerSections().querySelector("[class*='overflow-y-auto'], [class*='overflow-auto'], [class*='min-h-full'], .h-full"),
-      ).toBeNull();
+    const visibleRegions = () =>
+      screen.queryAllByTestId("chat-actions-drawer-region")
+        .filter((region) => !region.className.split(/\s+/).includes("hidden"));
+    const expectRegionScrollers = () => {
+      expect(screen.getByTestId("chat-actions-drawer-scroll").className).toContain("overflow-y-auto");
+      for (const region of visibleRegions()) {
+        expect(region.querySelector("[class*='overflow-y-auto']")).toBeTruthy();
+      }
     };
     const attachmentEvent = (sessionId: string): AgentChatEventEnvelope => ({
       sessionId,
@@ -2518,14 +2524,14 @@ describe("AgentChatPane companion drawers", () => {
       fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
 
       // The agents section is always handed over and renders nothing here, so
-      // the line is the sole child left, which is what its `only:block` shows.
+      // no region shows and the empty line is visible.
       const line = await screen.findByTestId("chat-actions-drawer-empty");
-      expect(line.matches(":only-child")).toBe(true);
-      expect(line.className).toContain("only:block");
+      expect(line.className).not.toContain("hidden");
+      expect(visibleRegions()).toHaveLength(0);
       expect(screen.getByTestId("chat-actions-drawer-scroll").closest(".ade-floating-side-pane")).not.toBeNull();
       expect(screen.queryByText(/No agent activity|Single-agent mode|No sources yet|No features yet/i)).toBeNull();
       expect(screen.queryByText("Sources")).toBeNull();
-      expectSingleScroll();
+      expectRegionScrollers();
     });
 
     it("mounts Sources for a non-Codex chat once it has a source, and only then", async () => {
@@ -2552,9 +2558,8 @@ describe("AgentChatPane companion drawers", () => {
         expect(within(drawerSections()).getByText("Sources")).toBeTruthy();
       });
       expect(within(drawerSections()).getByText("spec.md")).toBeTruthy();
-      expect(screen.getByTestId("chat-actions-drawer-empty").matches(":only-child")).toBe(false);
-      // The Sources section draws no scroller or placeholder of its own.
-      expectSingleScroll();
+      expect(screen.getByTestId("chat-actions-drawer-empty").className).toContain("hidden");
+      expectRegionScrollers();
       expect(screen.queryByText(/No sources yet|used in this Codex chat/i)).toBeNull();
     });
 
@@ -2577,14 +2582,18 @@ describe("AgentChatPane companion drawers", () => {
         } as AgentChatEventEnvelope);
       });
 
-      await waitFor(() => {
-        expect(within(drawerSections()).getByTestId("chat-subagents-pane")).toBeTruthy();
+      // Wait on the visibility itself. A region's `hidden` class is applied by a
+      // MutationObserver once its content arrives, so asserting the class right
+      // after the pane's existence reads the previous render — on a machine
+      // where the observer's callback lands later, the pane is there and its
+      // region is still hidden.
+      const regions = await waitFor(() => {
+        const visible = visibleRegions();
+        expect(visible).toHaveLength(1);
+        return visible;
       });
-      const sections = [...drawerSections().children].filter(
-        (child) => child.getAttribute("data-testid") !== "chat-actions-drawer-empty",
-      );
-      expect(sections.map((child) => child.getAttribute("data-testid"))).toEqual(["chat-subagents-pane"]);
-      expectSingleScroll();
+      expect(within(regions[0]!).getByTestId("chat-subagents-pane")).toBeTruthy();
+      expectRegionScrollers();
     });
 
     it("right-pane host (beside an open terminal pane) keeps the drawer to one scroll", async () => {
@@ -2619,7 +2628,7 @@ describe("AgentChatPane companion drawers", () => {
       const scroll = screen.getByTestId("chat-actions-drawer-scroll");
       expect(scroll.closest(".ade-floating-side-pane")).toBeNull();
       expect(scroll.closest("[class*='bg-surface/80']")).not.toBeNull();
-      expectSingleScroll();
+      expectRegionScrollers();
     });
   });
 
@@ -3275,7 +3284,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(includedModel.getAttribute("aria-disabled")).not.toBe("true");
 
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
-    const excludedModelLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const excludedModelLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     expect(screen.queryByRole("option", { name: new RegExp(escapeRegExp(excludedModelLabel), "i") })).toBeNull();
   });
 
@@ -3290,7 +3299,7 @@ describe("AgentChatPane submit recovery", () => {
     ].map(encodeURIComponent).join(":");
     window.localStorage.setItem(launchConfigKey, JSON.stringify({
       version: 1,
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       updatedAt: "2026-05-20T12:00:00.000Z",
       controls: {
         interactionMode: "default",
@@ -3309,7 +3318,7 @@ describe("AgentChatPane submit recovery", () => {
       availableModelIdsOverride: [],
     });
 
-    const modelLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const modelLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(modelLabel)}`, "i") })).toBeTruthy();
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "This must not launch with a stale model." } });
@@ -3324,8 +3333,8 @@ describe("AgentChatPane submit recovery", () => {
   it("blocks active session submit when a constrained list excludes the current model", async () => {
     const session = buildSession("stale-model-session", {
       title: "Stale model chat",
-      model: "gpt-5.4",
-      modelId: "openai/gpt-5.4",
+      model: "gpt-5.5",
+      modelId: "openai/gpt-5.5",
     });
     const { send } = installAdeMocks({ sessions: [session] });
     seedDrawerStore();
@@ -3361,7 +3370,7 @@ describe("AgentChatPane submit recovery", () => {
     ].map(encodeURIComponent).join(":");
     window.localStorage.setItem(launchConfigKey, JSON.stringify({
       version: 1,
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       reasoningEffort: "xhigh",
       fastMode: true,
       executionMode: "focused",
@@ -3380,10 +3389,10 @@ describe("AgentChatPane submit recovery", () => {
     }));
 
     renderParallelDraftPane({
-      availableModelIdsOverride: ["openai/gpt-5.4"],
+      availableModelIdsOverride: ["openai/gpt-5.5"],
     });
 
-    const modelLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const modelLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(modelLabel)}`, "i") })).toBeTruthy();
     expect((await findModelTrigger()).textContent).toMatch(/Fast/);
     expect(screen.getByLabelText("Reasoning effort").textContent).toContain("XH");
@@ -3395,7 +3404,7 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(create).toHaveBeenCalledWith(expect.objectContaining({
-        modelId: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.5",
         reasoningEffort: "xhigh",
         fastMode: true,
         permissionMode: "full-auto",
@@ -3426,7 +3435,7 @@ describe("AgentChatPane submit recovery", () => {
     ].map(encodeURIComponent).join(":");
     window.localStorage.setItem(launchConfigKey, JSON.stringify({
       version: 1,
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       reasoningEffort: "xhigh",
       fastMode: false,
       executionMode: "focused",
@@ -3445,7 +3454,7 @@ describe("AgentChatPane submit recovery", () => {
     }));
 
     renderParallelDraftPane({
-      availableModelIdsOverride: ["openai/gpt-5.4"],
+      availableModelIdsOverride: ["openai/gpt-5.5"],
     });
 
     const approvalButton = await screen.findByRole("button", { name: "Codex permission mode" });
@@ -3461,7 +3470,7 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(create).toHaveBeenCalledWith(expect.objectContaining({
-        modelId: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.5",
         reasoningEffort: "high",
         fastMode: true,
         permissionMode: "full-auto",
@@ -3503,7 +3512,7 @@ describe("AgentChatPane submit recovery", () => {
     ].map(encodeURIComponent).join(":");
     window.localStorage.setItem(launchConfigKey, JSON.stringify({
       version: 1,
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       reasoningEffort: "xhigh",
       fastMode: false,
       executionMode: "focused",
@@ -3546,7 +3555,7 @@ describe("AgentChatPane submit recovery", () => {
 
     render(<DraftLaneHarness />);
 
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(codexLabel)}`, "i") })).toBeTruthy();
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
@@ -3566,8 +3575,8 @@ describe("AgentChatPane submit recovery", () => {
       resolveLaneTwoSessions([
         buildSession("lane-2-previous", {
           laneId: "lane-2",
-          model: "gpt-5.4",
-          modelId: "openai/gpt-5.4",
+          model: "gpt-5.5",
+          modelId: "openai/gpt-5.5",
           reasoningEffort: "high",
         }),
       ]);
@@ -3971,6 +3980,49 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("recovers a locked chat's model once its summary can be read again", async () => {
+    // A Work chat is locked to one session and learns its title and model from
+    // its summary. While the brain cannot answer, the chat shows no model; a
+    // finished chat gets no events that would ask again, so only the pane's
+    // own retry brings the model back once the brain answers.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      // Its own id: the pane remembers summaries across mounts, and a chat it
+      // has read before would show its model from the start.
+      const session = buildSession("session-summary-recovery", { status: "idle", title: "Finished chat" });
+      installAdeMocks({ sessions: [session] });
+      let brainUp = false;
+      const getSummary = vi.mocked(window.ade.agentChat.getSummary);
+      getSummary.mockImplementation(async () => {
+        if (!brainUp) throw new Error("brain restarting");
+        return session;
+      });
+      const modelLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
+      const currentModel = new RegExp(`current: ${escapeRegExp(modelLabel)}`, "i");
+
+      render(
+        <MemoryRouter>
+          <AgentChatPane laneId={session.laneId} lockSessionId={session.sessionId} hideSessionTabs onSessionCreated={vi.fn()} />
+        </MemoryRouter>,
+      );
+      await waitFor(() => expect(getSummary).toHaveBeenCalled());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      expect(screen.queryByRole("button", { name: currentModel })).toBeNull();
+
+      brainUp = true;
+      const readsBeforeRecovery = getSummary.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(getSummary.mock.calls.length).toBeGreaterThan(readsBeforeRecovery);
+      expect(await screen.findByRole("button", { name: currentModel })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("restores the idle summary and composer after send dispatch fails", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const { send } = installAdeMocks({
@@ -3991,6 +4043,44 @@ describe("AgentChatPane submit recovery", () => {
       expect(getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Retry this idle turn.");
     });
+  });
+
+  it.each([
+    { name: "never arrives", earlierCopy: false, arrives: false, restored: true },
+    { name: "arrives after the call timed out", earlierCopy: false, arrives: true, restored: false },
+    // An identical message sent a minute earlier proves nothing about this one.
+    { name: "never arrives, though an identical earlier message is in the chat", earlierCopy: true, arrives: false, restored: true },
+  ])("a send whose call times out goes back in the composer only if it $name", async ({ earlierCopy, arrives, restored }) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const text = "Ship the queue fix.";
+      const session = buildSession("session-1", { status: "idle" });
+      const userMessage = (timestamp: string) => ({
+        sessionId: session.sessionId,
+        timestamp,
+        event: { type: "user_message", text, turnId: "turn-x" },
+      }) as AgentChatEventEnvelope;
+      const { send, emitChatEvent } = installAdeMocks({
+        sessions: [session],
+        sendError: new Error("Remote ADE service timed out waiting for method ade/actions/call chat.sendMessage (30000ms)"),
+        transcript: earlierCopy ? `${JSON.stringify(userMessage(new Date(Date.now() - 60_000).toISOString()))}\n` : "",
+      });
+
+      renderPane(session);
+      const textbox = await screen.findByRole("textbox");
+      fireEvent.change(textbox, { target: { value: text } });
+      fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+      await waitFor(() => expect(send).toHaveBeenCalled());
+      // The call gave up, not the send: the composer stays clear while it may still arrive.
+      await waitFor(() => expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(""));
+
+      if (arrives) act(() => emitChatEvent(userMessage(new Date().toISOString())));
+      await act(async () => { await vi.advanceTimersByTimeAsync(121_000); });
+
+      await waitFor(() => expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(restored ? text : ""));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("restores the backend summary and composer after steer dispatch fails", async () => {
@@ -4374,6 +4464,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Stop checking docs and just drive the browser.",
         displayText: "Stop checking docs and just drive the browser.",
+        sentByUser: true,
       }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
@@ -4491,7 +4582,7 @@ describe("AgentChatPane submit recovery", () => {
   it("reports a failed queued-message removal instead of dropping the rejection", async () => {
     const session = buildSession("session-1", {
       provider: "codex",
-      model: "gpt-5.4",
+      model: "gpt-5.5",
     });
     const { cancelSteer, emitChatEvent } = installAdeMocks({
       sessions: [session],
@@ -4696,7 +4787,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         timestamp: "2026-07-10T18:18:53.066Z",
         sequence: 5,
-        event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.4" },
+        event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.5" },
       },
     ];
     const { emitChatEvent, send } = installAdeMocks({
@@ -4711,23 +4802,17 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    expect(await screen.findByText("Provider capacity")).toBeTruthy();
-    // The failed-turn card is host-authored now: it says what went wrong and
-    // what to do, and never titles the row "Error". The failure class still
-    // has a home in the identity footer asserted above.
+    expect(await screen.findByText("Model at capacity")).toBeTruthy();
+    // Capacity failures use the same retry/details line as other provider
+    // failures; model selection stays in the composer.
     expect(screen.queryByText("Error")).toBeNull();
-    expect(screen.getByText("Couldn't start this turn")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
     expect(screen.getByText("Selected model is at capacity. Please try a different model.")).toBeTruthy();
     expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
     expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
 
-    const modelTrigger = screen.getByRole("button", { name: /^Select model/ });
-    fireEvent.click(screen.getByRole("button", { name: "Choose model" }));
-    await waitFor(() => expect(modelTrigger.getAttribute("aria-expanded")).toBe("true"));
-    fireEvent.click(modelTrigger);
-
-    const retryButton = screen.getByRole("button", { name: "Retry turn" }) as HTMLButtonElement;
-    const chooseModelButton = screen.getByRole("button", { name: "Choose model" }) as HTMLButtonElement;
+    const retryButton = screen.getByRole("button", { name: "Retry" }) as HTMLButtonElement;
     act(() => {
       emitChatEvent({
         sessionId: session.sessionId,
@@ -4738,7 +4823,6 @@ describe("AgentChatPane submit recovery", () => {
     });
     await waitFor(() => {
       expect(retryButton.disabled).toBe(true);
-      expect(chooseModelButton.disabled).toBe(true);
     });
     fireEvent.click(retryButton);
     expect(send).not.toHaveBeenCalled();
@@ -4754,12 +4838,11 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         timestamp: "2026-07-10T18:18:55.001Z",
         sequence: 8,
-        event: { type: "done", status: "completed", turnId: "turn-next", model: "gpt-5.4" },
+        event: { type: "done", status: "completed", turnId: "turn-next", model: "gpt-5.5" },
       });
     });
     await waitFor(() => {
       expect(retryButton.disabled).toBe(false);
-      expect(chooseModelButton.disabled).toBe(false);
     });
 
     fireEvent.click(retryButton);
@@ -4795,20 +4878,15 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("floats the usage-limit pill above the composer and opts out through updateSession", async () => {
-    // The pill renders from the host's `usageLimitResume` ALONE. It used to be
-    // an amber block inside the transcript's failure card, anchored to a
-    // client-side walk for the newest usage-limit error — which meant the one
-    // control that says when this chat comes back scrolled away with the row
-    // that armed it.
+  it("shows the usage-limit composer chip and lets the user cancel auto-resume", async () => {
     const session = buildSession("session-1", {
       status: "idle",
       awaitingInput: false,
       usageLimitResume: {
         state: "armed",
         provider: "codex",
-        fireAt: "2026-07-10T20:30:00.000Z",
-        resetAt: "2026-07-10T20:28:30.000Z",
+        fireAt: "2099-07-10T20:30:00.000Z",
+        resetAt: "2099-07-10T20:28:30.000Z",
         scheduleId: "auto-resume:session-1",
         attempts: 1,
         providerDetail: "Resets at 4:30 PM ET",
@@ -4840,20 +4918,23 @@ describe("AgentChatPane submit recovery", () => {
               errorInfo: { category: "rate_limit" as const, provider: "Codex" },
             },
           },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.066Z",
+            sequence: 3,
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-limit", model: "gpt-5.5" },
+          },
         ],
       },
     });
 
     renderPane(session);
 
-    const pill = await screen.findByTestId("usage-limit-resume-pill");
-    expect(pill.getAttribute("data-usage-limit-state")).toBe("armed");
-    // The old amber block is gone; the failure card keeps only its recovery
-    // affordances.
-    expect(screen.queryByTestId("auto-resume-scheduled")).toBeNull();
+    const chip = await screen.findByTestId("usage-limit-chip");
+    expect(chip.getAttribute("data-usage-limit-state")).toBe("armed");
+    expect(screen.queryByText("Rate limited by Codex.")).toBeNull();
 
-    fireEvent.click(pill);
-    fireEvent.click(await screen.findByTestId("usage-limit-resume-opt-out"));
+    fireEvent.click(await screen.findByTestId("usage-limit-auto-resume-toggle"));
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith({
         sessionId: session.sessionId,
@@ -4862,15 +4943,7 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("shows the pill on the first paint, before the session list has arrived", async () => {
-    // The mount flash, in the TABBED pane: the pane knows the chat is parked on
-    // a limit from `initialSessionSummary` long before `listSessions` answers
-    // (the locked single-session mode seeds its list from that summary, the
-    // tabbed one does not). Deriving the resume state from the SELECTED session
-    // — which only ever comes out of that list — left the pill missing, and the
-    // failed turn wearing a red FAILED line instead of its quiet footer, for
-    // the whole round trip. `renderedSession` carries the same fallback the
-    // transcript is already rendered from.
+  it("shows the usage-limit chip on first paint before the session list arrives", async () => {
     const session = buildSession("session-1", {
       status: "idle",
       awaitingInput: false,
@@ -4890,21 +4963,58 @@ describe("AgentChatPane submit recovery", () => {
 
     renderTabbedPane(session);
 
-    const pill = await screen.findByTestId("usage-limit-resume-pill");
-    expect(pill.getAttribute("data-usage-limit-state")).toBe("armed");
+    const chip = await screen.findByTestId("usage-limit-chip");
+    expect(chip.getAttribute("data-usage-limit-state")).toBe("armed");
   });
 
-  it("renders no pill at all when the host reports no live usage limit", async () => {
+  it("resumes an opted-out limit and offers the available alternate account", async () => {
+    const session = buildSession("session-1", {
+      status: "idle",
+      awaitingInput: false,
+      usageLimitResume: {
+        state: "opted_out",
+        provider: "codex",
+        fireAt: "2099-07-10T20:30:00.000Z",
+        resetAt: "2099-07-10T20:28:30.000Z",
+        scheduleId: null,
+        attempts: 0,
+        providerDetail: null,
+        turnId: "turn-limit",
+        updatedAt: "2026-07-10T18:19:00.000Z",
+        alternateAccount: { instanceId: "account-work", label: "Work account" },
+      },
+    });
+    const { updateSession } = installAdeMocks({ sessions: [session] });
+    const continueOnAlternate = vi.fn().mockResolvedValue({ ok: true });
+    window.ade.agentChat.continueUsageLimitOnAlternate = continueOnAlternate as any;
+
+    renderPane(session);
+
+    const chip = await screen.findByTestId("usage-limit-chip");
+    expect(chip.getAttribute("data-usage-limit-state")).toBe("opted_out");
+    const resumeButton = await screen.findByTestId("usage-limit-auto-resume-toggle");
+    expect(resumeButton.textContent).toMatch(/^Resume in /);
+    fireEvent.click(resumeButton);
+    await waitFor(() => expect(updateSession).toHaveBeenCalledWith({
+      sessionId: session.sessionId,
+      autoContinueAtUsageLimit: true,
+    }, null));
+
+    fireEvent.click(await screen.findByTestId("usage-limit-continue-on-account"));
+    await waitFor(() => expect(continueOnAlternate).toHaveBeenCalledWith({ sessionId: session.sessionId }, null));
+  });
+
+  it("renders no usage-limit chip when the host reports no live usage limit", async () => {
     const session = buildSession("session-1", { status: "idle", awaitingInput: false });
     installAdeMocks({ sessions: [session] });
 
     renderPane(session);
 
     await screen.findByTestId("work-chat-session-header");
-    expect(screen.queryByTestId("usage-limit-resume-pill")).toBeNull();
+    expect(screen.queryByTestId("usage-limit-chip")).toBeNull();
   });
 
-  it("renders the usage-limit failure card for Codex's raw `usageLimitReached` errorInfo", async () => {
+  it("suppresses Codex's raw usage-limit error row and shows the turn footer", async () => {
     // The exact shape Codex forwards: no structured `errorInfo.category`, just
     // the opaque provider string, and it spells the limit "usageLimitReached"
     // — not "usageLimitExceeded". The host computes `usageLimitResume` off
@@ -4934,7 +5044,7 @@ describe("AgentChatPane submit recovery", () => {
             sessionId: session.sessionId,
             timestamp: "2026-07-10T18:18:53.066Z",
             sequence: 2,
-            event: { type: "done" as const, status: "failed" as const, turnId: "turn-limit", model: "gpt-5.4" },
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-limit", model: "gpt-5.5" },
           },
         ],
       },
@@ -4942,13 +5052,15 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    expect(await screen.findByText("Usage limit")).toBeTruthy();
+    expect(await screen.findByText(/^Usage limit$/)).toBeTruthy();
+    expect(screen.queryByText("You've hit your usage limit.")).toBeNull();
   });
 
 
-  it("drops the scheduled-wake marker when the user retries an auto-resumed turn", async () => {
-    // Otherwise the replayed marker makes the host treat a user-initiated retry
-    // as the schedule's own turn and skip the cancel it promises.
+  it("drops the scheduled-wake marker when the user retries a resumed turn", async () => {
+    // A non-limit provider failure can make an auto-resumed prompt retryable;
+    // replaying its marker would make the host mistake the human retry for a
+    // scheduler send and skip its cleanup.
     const session = buildSession("session-1", { status: "idle", awaitingInput: false });
     const { send } = installAdeMocks({
       sessions: [session],
@@ -4981,16 +5093,16 @@ describe("AgentChatPane submit recovery", () => {
             sequence: 2,
             event: {
               type: "error" as const,
-              message: "Usage limit exceeded again.",
+              message: "The response stream disconnected.",
               turnId: "turn-resumed",
-              errorInfo: { category: "rate_limit" as const, provider: "Codex" },
+              errorInfo: "responseStreamDisconnected",
             },
           },
           {
             sessionId: session.sessionId,
             timestamp: "2026-07-10T20:30:04.066Z",
             sequence: 3,
-            event: { type: "done" as const, status: "failed" as const, turnId: "turn-resumed", model: "gpt-5.4" },
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-resumed", model: "gpt-5.5" },
           },
         ],
       },
@@ -4998,7 +5110,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry turn" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
@@ -5008,12 +5120,10 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("drops the manual-resume marker when the user retries a Resume now turn", async () => {
-    // `usageLimitResume: "manual"` is the OTHER host-only exemption: the Resume
-    // now path cancels the durable row itself and awaits it, so its own send
-    // must skip the sweep. A user Retry of that same turn is not that path —
-    // replaying the marker leaves the armed row alive to fire an unattended
-    // prompt later. Neither host-only key may survive a replay.
+  it("drops the manual-resume marker when the user retries a resumed turn", async () => {
+    // `usageLimitResume: "manual"` is a host-only exemption for the original
+    // continue send. A later retry after a different provider failure is a
+    // user send and must not inherit that exemption.
     const session = buildSession("session-1", { status: "idle", awaitingInput: false });
     const { send } = installAdeMocks({
       sessions: [session],
@@ -5042,16 +5152,16 @@ describe("AgentChatPane submit recovery", () => {
             sequence: 2,
             event: {
               type: "error" as const,
-              message: "Usage limit exceeded again.",
+              message: "The response stream disconnected.",
               turnId: "turn-manual-resume",
-              errorInfo: { category: "rate_limit" as const, provider: "Codex" },
+              errorInfo: "responseStreamDisconnected",
             },
           },
           {
             sessionId: session.sessionId,
             timestamp: "2026-07-10T20:30:04.066Z",
             sequence: 3,
-            event: { type: "done" as const, status: "failed" as const, turnId: "turn-manual-resume", model: "gpt-5.4" },
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-manual-resume", model: "gpt-5.5" },
           },
         ],
       },
@@ -5059,7 +5169,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry turn" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
     await waitFor(() => expect(send).toHaveBeenCalled());
     const sent = send.mock.calls[0]![0] as { metadata?: Record<string, unknown> };
     expect(sent.metadata).toEqual({ hostContinuation: { reason: "provider_schedule_cleanup" } });
@@ -5095,16 +5205,16 @@ describe("AgentChatPane submit recovery", () => {
             sequence: 2,
             event: {
               type: "error" as const,
-              message: "Usage limit exceeded again.",
+              message: "The response stream disconnected.",
               turnId: "turn-manual-resume",
-              errorInfo: { category: "rate_limit" as const, provider: "Codex" },
+              errorInfo: "responseStreamDisconnected",
             },
           },
           {
             sessionId: session.sessionId,
             timestamp: "2026-07-10T20:30:04.066Z",
             sequence: 3,
-            event: { type: "done" as const, status: "failed" as const, turnId: "turn-manual-resume", model: "gpt-5.4" },
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-manual-resume", model: "gpt-5.5" },
           },
         ],
       },
@@ -5112,14 +5222,14 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry turn" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
     await waitFor(() => expect(send).toHaveBeenCalled());
     expect(send.mock.calls[0]![0]).not.toHaveProperty("metadata");
   });
 
   it("skips steer messages during provider-failure retry and surfaces a rejected resend", async () => {
     const session = buildSession("session-1", { status: "idle", awaitingInput: false });
-    const { send } = installAdeMocks({
+    const { send, steer } = installAdeMocks({
       sessions: [session],
       sendError: new Error("turn is already active"),
       eventHistory: {
@@ -5159,7 +5269,7 @@ describe("AgentChatPane submit recovery", () => {
             sessionId: session.sessionId,
             timestamp: "2026-07-10T18:18:53.066Z",
             sequence: 5,
-            event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.4" },
+            event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.5" },
           },
         ],
       },
@@ -5167,80 +5277,17 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry turn" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Retry the original prompt.",
       }), null);
     });
+    expect(steer).not.toHaveBeenCalled();
     expect((await screen.findByRole("alert")).textContent).toContain(
       "A turn is already active in this thread. Wait for it to finish before retrying.",
     );
-  });
-
-  it("does not carry a pending provider-failure model request into another session", async () => {
-    const failedSession = buildSession("session-failed", { status: "idle", awaitingInput: false });
-    const nextSession = buildSession("session-next", { status: "idle", awaitingInput: false });
-    installAdeMocks({
-      sessions: [failedSession, nextSession],
-      eventHistory: ({ sessionId }) => ({
-        sessionId,
-        truncated: false,
-        sessionFound: true,
-        events: sessionId === failedSession.sessionId
-          ? [
-            {
-              sessionId,
-              timestamp: "2026-07-10T18:18:53.000Z",
-              sequence: 1,
-              event: {
-                type: "error",
-                message: "Selected model is at capacity. Please try a different model.",
-                turnId: "turn-capacity",
-                errorInfo: "serverOverloaded",
-              },
-            },
-            {
-              sessionId,
-              timestamp: "2026-07-10T18:18:53.066Z",
-              sequence: 2,
-              event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.4" },
-            },
-          ]
-          : [],
-      }),
-    });
-
-    const view = render(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId={failedSession.laneId}
-          lockSessionId={failedSession.sessionId}
-          hideSessionTabs
-          initialSessionSummary={failedSession}
-          modelSelectionLocked
-        />
-      </MemoryRouter>,
-    );
-
-    fireEvent.click(await screen.findByRole("button", { name: "Choose model" }));
-    expect(screen.getByRole("button", { name: /^Select model/ }).getAttribute("aria-expanded")).toBe("false");
-
-    view.rerender(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId={nextSession.laneId}
-          lockSessionId={nextSession.sessionId}
-          hideSessionTabs
-          initialSessionSummary={nextSession}
-        />
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: /^Select model/ }).getAttribute("aria-expanded")).toBe("false");
-    });
   });
 
   it.each([
@@ -5308,8 +5355,8 @@ describe("AgentChatPane submit recovery", () => {
           type: "done",
           turnId: "turn-1",
           status: "completed",
-          model: "gpt-5.4",
-          modelId: "openai/gpt-5.4",
+          model: "gpt-5.5",
+          modelId: "openai/gpt-5.5",
         },
       });
     });
@@ -5350,6 +5397,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Recover by starting a new turn.",
         displayText: "Recover by starting a new turn.",
+        sentByUser: true,
       }, null);
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
@@ -5379,6 +5427,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Please keep going.",
         displayText: "Please keep going.",
+        sentByUser: true,
       }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
@@ -5400,6 +5449,43 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalled();
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Retry after the failure.");
     });
+  });
+
+  it("sends from the composer in a chat started on an ad-hoc route the model registry does not know", async () => {
+    // `ade chat create --provider claude --via opencode-go --model deepseek-v4.1-flash`
+    const presetId = encodeRoutePresetId({
+      harness: "claude",
+      source: { kind: "opencode", providerId: "opencode-go" },
+      model: "deepseek-v4.1-flash",
+    });
+    const session = buildSession("session-routed", {
+      status: "idle",
+      provider: "claude",
+      model: "deepseek-v4.1-flash",
+      modelId: undefined,
+      presetId,
+    });
+    const { send } = installAdeMocks({ includeClaudeModel: true, sessions: [session] });
+    const updateSession = vi.fn();
+    window.ade.agentChat.updateSession = updateSession as any;
+
+    renderPane(session);
+    // Model discovery finds other models but not the route's raw DeepSeek id.
+    await waitFor(() => expect(window.ade.agentChat.models).toHaveBeenCalledWith(expect.objectContaining({ provider: "claude" })));
+    await act(async () => { await Promise.resolve(); });
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Reply with two." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "session-routed",
+        text: "Reply with two.",
+      }), null);
+    });
+    expect(screen.queryByText("Select a model first")).toBeNull();
+    // The chat keeps its route: sending is not a model switch.
+    expect(updateSession.mock.calls.map(([args]) => args?.modelId).filter(Boolean)).toEqual([]);
   });
 
   it("sends the selected Claude interaction mode with the next turn", async () => {
@@ -5671,7 +5757,7 @@ describe("AgentChatPane submit recovery", () => {
         type: "done",
         status: "completed",
         turnId: "turn-hydrated",
-        model: "gpt-5.4",
+        model: "gpt-5.5",
       },
     });
 
@@ -6421,11 +6507,11 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(within(localView).getByRole("button", { name: /^Select model/ }));
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
 
-    const openAiModel = await screen.findByRole("option", { name: "GPT-5.4" });
-    expect(openAiModel.getAttribute("data-model-id")).toBe("openai/gpt-5.4");
+    const openAiModel = await screen.findByRole("option", { name: "GPT-5.5" });
+    expect(openAiModel.getAttribute("data-model-id")).toBe("openai/gpt-5.5");
     expect(openAiModel.getAttribute("aria-disabled")).toBeNull();
     fireEvent.click(openAiModel);
-    expect(await screen.findByRole("button", { name: /Select model \(current: GPT-5\.4\)/i })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /Select model \(current: GPT-5\.5\)/i })).toBeTruthy();
   });
 
   it("hides chat handoff when the pane cannot open the created work chat", async () => {
@@ -6530,6 +6616,10 @@ describe("AgentChatPane submit recovery", () => {
 
     openChatHandoff(session.sessionId, "local");
     fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
+    const localView = await screen.findByTestId("handoff-local");
+    fireEvent.click(within(localView).getByRole("button", { name: /^Select model/ }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(/GPT-5\.5/i);
     fireEvent.change(await screen.findByLabelText("Extra instructions"), {
       target: { value: "Prioritize the drawer regression before broad cleanup." },
     });
@@ -6538,7 +6628,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
         sourceSessionId: session.sessionId,
-        targetModelId: "openai/gpt-5.4-mini",
+        targetModelId: "openai/gpt-5.5",
         mode: "brief",
         handoffNote: "Prioritize the drawer regression before broad cleanup.",
         reasoningEffort: "xhigh",
@@ -6553,6 +6643,9 @@ describe("AgentChatPane submit recovery", () => {
         cursorConfigValues: {},
       }), null);
       expect(onSessionCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "session-2" }), { source: "handoff" });
+      // A successful handoff closes the form instead of leaving it over the
+      // new chat.
+      expect(screen.queryByTestId("handoff-local")).toBeNull();
     });
   });
 
@@ -6570,6 +6663,10 @@ describe("AgentChatPane submit recovery", () => {
 
     openChatHandoff(session.sessionId, "local");
     fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
+    const localView = await screen.findByTestId("handoff-local");
+    fireEvent.click(within(localView).getByRole("button", { name: /^Select model/ }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(/GPT-5\.5/i);
     fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
 
     await waitFor(() => {
@@ -6578,7 +6675,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(jobs[0]).toEqual(expect.objectContaining({
         sourceSessionId: session.sessionId,
         laneId: session.laneId,
-        targetModelLabel: "GPT-5.4-Mini",
+        targetModelLabel: "GPT-5.5",
         targetToolType: "codex-chat",
         status: "preparing-summary",
       }));
@@ -6784,6 +6881,103 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("defaults fork and brief to the source chat's model", async () => {
+    // Codex source on gpt-5.5, with a Claude alternative in the catalog: the
+    // form must start on the model this chat runs on, not the alternative.
+    seedRuntimeModelCatalog();
+    const session = buildSession("session-1", { status: "idle" });
+    const { handoff } = installAdeMocks({
+      includeClaudeModel: true,
+      sessions: [session],
+      handoffResult: {
+        session: buildCreatedSession("session-2"),
+        usedFallbackSummary: false,
+      },
+    });
+
+    renderPane(session);
+
+    openChatHandoff(session.sessionId, "local");
+    const localView = await screen.findByTestId("handoff-local");
+    await waitFor(() => {
+      expect(within(localView).getByRole("button", { name: /Select model \(current: GPT-5\.5\)/i })).toBeTruthy();
+    });
+
+    // The brief tab shares the target and must not snap back to the alternative.
+    fireEvent.click(within(localView).getByRole("button", { name: /^Brief$/ }));
+    expect(within(localView).getByRole("button", { name: /Select model \(current: GPT-5\.5\)/i })).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+
+    await waitFor(() => {
+      expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
+        sourceSessionId: session.sessionId,
+        targetModelId: "openai/gpt-5.5",
+        mode: "brief",
+      }), null);
+    });
+  });
+
+  it("shows a failed local handoff's error inside the form and keeps it open", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({
+      sessions: [session],
+      handoffError: new Error("The handoff could not reach the runtime."),
+    });
+
+    renderPane(session);
+
+    openChatHandoff(session.sessionId, "local");
+    fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+
+    const localView = await screen.findByTestId("handoff-local");
+    // The pane's own error line sits behind the form, so the failure has to be
+    // shown where the user is looking.
+    await waitFor(() => {
+      expect(within(localView).getByText("The handoff could not reach the runtime.")).toBeTruthy();
+    });
+    // The form stays open so the note is not lost and the user can retry.
+    expect(within(localView).getByRole("button", { name: "Cancel" })).toBeTruthy();
+  });
+
+  it("closes the local handoff form when the pane switches chats", async () => {
+    const first = buildSession("session-1", { status: "idle" });
+    const second = buildSession("session-2", { status: "idle" });
+    installAdeMocks({ sessions: [first, second] });
+
+    const view = render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={first.laneId}
+          lockSessionId={first.sessionId}
+          hideSessionTabs
+          initialSessionSummary={first}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    openChatHandoff(first.sessionId, "local");
+    await screen.findByTestId("handoff-local");
+
+    // The pane is re-pointed at another chat while the form is open; a form
+    // left mounted would hand off the wrong chat.
+    view.rerender(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={second.laneId}
+          lockSessionId={second.sessionId}
+          hideSessionTabs
+          initialSessionSummary={second}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.queryByTestId("handoff-local")).toBeNull());
+  });
+
   it("shows replay truncation disclosure after fork handoff", async () => {
     const session = buildSession("session-1", { status: "idle" }); // codex source
     installAdeMocks({
@@ -6904,10 +7098,10 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   /**
-   * The reverse: the chat itself lives on another machine. Only that machine can
-   * package its history, so the card stays off — and says which machine to open.
+   * The reverse: the chat itself lives on another machine. The brain's options
+   * response has no destination machines, so the setup shows its empty state.
    */
-  it("blocks cross-machine handoff for a chat pinned to another machine and names it", async () => {
+  it("shows the empty destination list for a chat pinned to another machine", async () => {
     const studioBinding = {
       kind: "remote" as const,
       key: "remote:target-studio:project-studio",
@@ -6948,11 +7142,46 @@ describe("AgentChatPane submit recovery", () => {
       selectedLaneId: "lane-studio",
     });
 
+    // The chat's own machine IS connected and handoff-capable. It must still be
+    // left out of the destination list, which is what empties the machine list.
+    (window.ade as any).agentChat.getCrossMachineHandoffOptions = vi.fn().mockResolvedValue({
+      machines: [],
+      blockers: [],
+      changes: null,
+      current: null,
+    });
+    (window.ade as any).remoteRuntime = {
+      onConnectionSnapshotChanged: vi.fn().mockReturnValue(() => {}),
+      getConnectionSnapshot: vi.fn().mockResolvedValue({
+        connections: [{
+          state: "connected",
+          target: { id: studioBinding.targetId, name: "Mac Studio" },
+          capabilities: { projects: true, machineProjects: { handoffStoragePreflight: true } },
+        }],
+      }),
+    };
+    (window.ade as any).git = {
+      ...(window.ade as any).git,
+      getSyncStatus: vi.fn().mockResolvedValue({
+        diverged: false,
+        behind: 0,
+        ahead: 0,
+        hasUpstream: true,
+        recommendedAction: null,
+      }),
+      getOriginRemote: vi.fn().mockResolvedValue({
+        remoteUrl: "git@github.com:arul28/ade.git",
+        branch: "studio-lane",
+      }),
+    };
+
     renderPane(session);
 
     openChatHandoff(session.sessionId, "remote");
 
-    expect(await screen.findByText(/This chat runs on Mac Studio\./i)).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: /Continue on another computer/i })).toBeTruthy();
+    expect(await screen.findByText("No other machines on this account")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Mac Studio/ })).toBeNull();
   });
 
   /**
@@ -7089,7 +7318,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
 
     fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
@@ -7112,6 +7341,75 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("shows a folded pasted prompt as the optimistic first message in a new chat", async () => {
+    const onSessionCreated = vi.fn().mockImplementation(() => new Promise<void>(() => {}));
+    const { send } = installAdeMocks({ sessions: [] });
+    let resolveSend!: () => void;
+    send.mockImplementation(() => new Promise<void>((resolve) => {
+      resolveSend = resolve;
+    }));
+    seedDrawerStore();
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane laneId="lane-1" forceNewSession onSessionCreated={onSessionCreated} />
+      </MemoryRouter>,
+    );
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox");
+    if (typeof Blob.prototype.arrayBuffer !== "function") {
+      Object.defineProperty(Blob.prototype, "arrayBuffer", {
+        configurable: true,
+        value(this: Blob) {
+          return new Promise<ArrayBuffer>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as ArrayBuffer);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsArrayBuffer(this);
+          });
+        },
+      });
+    }
+    const pastedTask = Array.from({ length: 200 }, (_, index) => `task line ${index}`).join("\n");
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      configurable: true,
+      value: {
+        files: [],
+        items: [],
+        getData: (type: string) => type === "text/plain" ? pastedTask : "",
+      },
+    });
+    fireEvent(textbox, pasteEvent);
+    await screen.findByText("pasted-text.txt");
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "created-session",
+        text: "",
+        displayText: "",
+        attachments: [{
+          path: "/tmp/project-under-test/.ade/attachments/pasted-text.txt",
+          type: "file",
+          intent: "user_prompt",
+        }],
+      }), null);
+    });
+    const messageCard = await screen.findByTestId("chat-file-attachment-chip");
+    const userMessage = messageCard.closest("[data-chat-user-message-card]");
+    expect(userMessage).toBeInstanceOf(HTMLElement);
+    expect(within(userMessage as HTMLElement).queryByText("Pasted text prompt")).toBeNull();
+    await act(async () => resolveSend());
+  });
+
   it("copies a new chat prompt before session creation failures can lose it", async () => {
     const { writeClipboardText } = installAdeMocks({
       sessions: [],
@@ -7129,7 +7427,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7160,7 +7458,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7191,7 +7489,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7229,7 +7527,7 @@ describe("AgentChatPane submit recovery", () => {
       );
 
       const trigger = await screen.findByRole("button", { name: /^Select model/ });
-      const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+      const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
 
       fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
@@ -7271,7 +7569,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ onSessionCreated });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7288,7 +7586,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(suggestLaneName).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-created",
         prompt: "Fix auto create lane routing.",
-        modelId: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.5",
         fallbackName: "Fix Auto Create Lane Routing",
       }), LOCAL_PROJECT_BINDING);
       // The lane is created instantly with the deterministic name; the backend
@@ -7333,7 +7631,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7383,7 +7681,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7423,7 +7721,7 @@ describe("AgentChatPane submit recovery", () => {
       renderAutoCreateDraftPane();
 
       const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-      const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+      const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
       fireEvent.pointerDown(modelTrigger, { button: 0 });
       fireEvent.click(modelTrigger);
       fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7474,7 +7772,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7508,7 +7806,7 @@ describe("AgentChatPane submit recovery", () => {
     ].map(encodeURIComponent).join(":");
     window.localStorage.setItem(launchConfigKey, JSON.stringify({
       version: 1,
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       updatedAt: "2026-05-28T12:00:00.000Z",
       controls: {
         interactionMode: "default",
@@ -7526,7 +7824,7 @@ describe("AgentChatPane submit recovery", () => {
     renderParallelDraftPane({
       initialEntry: "/lanes?laneId=lane-1",
       suppressDraftLaunchNavigation: true,
-      availableModelIdsOverride: ["openai/gpt-5.4"],
+      availableModelIdsOverride: ["openai/gpt-5.5"],
     });
 
     const textbox = await screen.findByRole("textbox");
@@ -7536,7 +7834,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(create).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-1",
-        modelId: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.5",
       }), LOCAL_PROJECT_BINDING);
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "created-session",
@@ -7699,7 +7997,7 @@ describe("AgentChatPane submit recovery", () => {
     });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7829,7 +8127,7 @@ describe("AgentChatPane submit recovery", () => {
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Create this on my MacBook." } });
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7890,7 +8188,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ onSessionCreated });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7943,7 +8241,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ onSessionCreated });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7961,6 +8259,8 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: "created-session",
         text: "This first send will fail.",
       }), LOCAL_PROJECT_BINDING);
+    });
+    await waitFor(() => {
       expect(deleteChat).toHaveBeenCalledWith(
         { sessionId: "created-session" },
         LOCAL_PROJECT_BINDING,
@@ -7991,7 +8291,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8034,7 +8334,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ onSessionCreated });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8080,7 +8380,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ onSessionCreated, projectBinding: binding });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8163,7 +8463,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ projectBinding: binding });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8185,19 +8485,22 @@ describe("AgentChatPane submit recovery", () => {
 
   it("restores the Work draft bucket after remount with text, model, and attachment refs", async () => {
     installAdeMocks({ sessions: [] });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     window.localStorage.setItem(composerDraftStorageKeyForTest({
       projectRoot: "/tmp/project-under-test",
       companionStateKey: "draft:lane-1",
     }), JSON.stringify({
       version: 1,
       text: "Persist this Work draft.",
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       reasoningEffort: null,
       fastMode: false,
       executionMode: "focused",
       controls: {},
-      attachments: [{ path: "/tmp/project-under-test/spec.md", type: "file" }],
+      attachments: [
+        { path: "/tmp/project-under-test/spec.md", type: "file" },
+        { path: "/tmp/project-under-test/pasted-text.txt", type: "file", intent: "user_prompt" },
+      ],
       attachmentOwnerBinding: {
         kind: "local",
         key: "local:/tmp/project-under-test",
@@ -8223,14 +8526,20 @@ describe("AgentChatPane submit recovery", () => {
 
     expect(await screen.findByDisplayValue("Persist this Work draft.")).toBeTruthy();
     expect(screen.getByText("spec.md")).toBeTruthy();
+    expect(screen.getByText("pasted-text.txt")).toBeTruthy();
     await waitFor(() => {
-      expect(JSON.parse(window.localStorage.getItem(composerDraftStorageKeyForTest({
+      const stored = JSON.parse(window.localStorage.getItem(composerDraftStorageKeyForTest({
         projectRoot: "/tmp/project-under-test",
         companionStateKey: "draft:lane-1",
-      }))!).attachmentOwnerBinding).toMatchObject({
+      }))!);
+      expect(stored.attachmentOwnerBinding).toMatchObject({
         kind: "local",
         key: "local:/tmp/project-under-test",
       });
+      expect(stored.attachments).toEqual(expect.arrayContaining([
+        { path: "/tmp/project-under-test/spec.md", type: "file" },
+        { path: "/tmp/project-under-test/pasted-text.txt", type: "file", intent: "user_prompt" },
+      ]));
     });
   });
 
@@ -8243,7 +8552,7 @@ describe("AgentChatPane submit recovery", () => {
     window.localStorage.setItem(storageKey, JSON.stringify({
       version: 1,
       text: "Persisted with visual context.",
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       reasoningEffort: null,
       fastMode: false,
       executionMode: "focused",
@@ -8319,7 +8628,7 @@ describe("AgentChatPane submit recovery", () => {
     }), JSON.stringify({
       version: 1,
       text: "Persisted with bad refs.",
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       controls: {},
       attachments: [
         { type: "file" },
@@ -8360,7 +8669,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8414,7 +8723,7 @@ describe("AgentChatPane submit recovery", () => {
     const rendered = renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8467,7 +8776,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const firstPane = renderAutoCreateDraftPane({ draftContextTargetId });
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8555,7 +8864,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8603,7 +8912,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ draftContextTargetId: "work:draft:lane-1:chat" });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8652,7 +8961,7 @@ describe("AgentChatPane submit recovery", () => {
     window.localStorage.setItem(draftStorageKey, JSON.stringify({
       version: 1,
       text: submittedPrompt,
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       reasoningEffort: null,
       fastMode: false,
       executionMode: "focused",
@@ -8688,7 +8997,7 @@ describe("AgentChatPane submit recovery", () => {
       snapshot: {
         text: submittedPrompt,
         draft: submittedPrompt,
-        modelId: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.5",
         reasoningEffort: null,
         fastMode: false,
         cursorCloudServiceTier: null,
@@ -8702,6 +9011,7 @@ describe("AgentChatPane submit recovery", () => {
           codexConfigSource: "flags",
           opencodePermissionMode: "edit",
           droidPermissionMode: "auto-low",
+          musePermissionMode: "onRequest",
           cursorModeId: "agent",
           cursorConfigValues: {},
         },
@@ -8757,7 +9067,7 @@ describe("AgentChatPane submit recovery", () => {
           snapshot: {
             text: "Recover from a stuck launch.",
             draft: "Recover from a stuck launch.",
-            modelId: "openai/gpt-5.4",
+            modelId: "openai/gpt-5.5",
             reasoningEffort: null,
             fastMode: false,
             executionMode: "focused",
@@ -8800,7 +9110,7 @@ describe("AgentChatPane submit recovery", () => {
       renderAutoCreateDraftPane();
 
       const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-      const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+      const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
       fireEvent.pointerDown(modelTrigger, { button: 0 });
       fireEvent.click(modelTrigger);
       fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8862,7 +9172,7 @@ describe("AgentChatPane submit recovery", () => {
     const rendered = renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8902,7 +9212,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8988,7 +9298,7 @@ describe("AgentChatPane submit recovery", () => {
     const paneOne = screen.getByTestId("lane-one-pane");
     const paneTwo = screen.getByTestId("lane-two-pane");
     const modelTrigger = await within(paneOne).findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -9018,7 +9328,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -9058,7 +9368,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -9113,7 +9423,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
 
     fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
@@ -9340,7 +9650,7 @@ describe("AgentChatPane submit recovery", () => {
     ].map(encodeURIComponent).join(":");
     window.localStorage.setItem(launchConfigKey, JSON.stringify({
       version: 1,
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       reasoningEffort: "medium",
       fastMode: false,
       executionMode: "focused",
@@ -9370,7 +9680,7 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(codexLabel)}`, "i") })).toBeTruthy();
 
     fireEvent.click(await screen.findByRole("button", { name: "Codex permission mode" }));
@@ -9678,7 +9988,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ workDraftKind: "cli", onLaunchCliSession });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -9695,7 +10005,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(suggestLaneName).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-created",
         prompt: "Launch a CLI agent on a new lane.",
-        modelId: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.5",
       }), LOCAL_PROJECT_BINDING);
       expect(createLane).toHaveBeenCalledWith(expect.objectContaining({
         name: "Launch Cli Agent New Lane",
@@ -9737,7 +10047,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ workDraftKind: "cli", onLaunchCliSession });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -9805,7 +10115,7 @@ describe("AgentChatPane submit recovery", () => {
           type: "done",
           turnId: "turn-1",
           status: "completed",
-          model: "gpt-5.4",
+          model: "gpt-5.5",
         },
       });
     });
@@ -9821,7 +10131,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
 
     fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
@@ -9990,7 +10300,7 @@ describe("AgentChatPane submit recovery", () => {
       .toBe(String(openedAtMs));
   });
 
-  it("shows unattended scheduled wakes as one compact review card", async () => {
+  it("marks what arrived while the chat was closed with one New since divider", async () => {
     const openedAtMs = Date.parse("2026-07-10T12:00:00.000Z");
     vi.spyOn(Date, "now").mockReturnValue(openedAtMs);
     const session = buildSession("session-1", { title: "Scheduled work" });
@@ -9998,7 +10308,6 @@ describe("AgentChatPane submit recovery", () => {
       `ade.chat.lastViewed.v1:${session.sessionId}`,
       String(Date.parse("2026-07-10T10:00:00.000Z")),
     );
-    const longOutcome = "Deployment completed after a very long diagnostic summary that should remain in the transcript instead of being crammed into the notice.";
     installAdeMocks({
       sessions: [session],
       eventHistory: {
@@ -10008,47 +10317,15 @@ describe("AgentChatPane submit recovery", () => {
         events: [
           {
             sessionId: session.sessionId,
-            timestamp: "2026-07-10T10:30:00.000Z",
+            timestamp: "2026-07-10T09:00:00.000Z",
             sequence: 1,
-            event: {
-              type: "user_message",
-              text: "Check CI",
-              deliveryState: "delivered",
-              turnId: "turn-wake-1",
-              metadata: {
-                scheduledWake: {
-                  scheduleId: "wake-1",
-                  kind: "wakeup",
-                  firedAt: "2026-07-10T10:30:00.000Z",
-                  reason: "Check CI",
-                },
-              },
-            },
+            event: { type: "text", text: "Read before you left", turnId: "turn-old" },
           },
           {
             sessionId: session.sessionId,
-            timestamp: "2026-07-10T10:31:00.000Z",
+            timestamp: "2026-07-10T10:30:00.000Z",
             sequence: 2,
-            event: { type: "text", text: longOutcome, turnId: "turn-wake-1" },
-          },
-          {
-            sessionId: session.sessionId,
-            timestamp: "2026-07-10T11:30:00.000Z",
-            sequence: 3,
-            event: {
-              type: "user_message",
-              text: "Check deployment",
-              deliveryState: "delivered",
-              turnId: "turn-wake-2",
-              metadata: {
-                scheduledWake: {
-                  scheduleId: "wake-2",
-                  kind: "wakeup",
-                  firedAt: "2026-07-10T11:30:00.000Z",
-                  reason: "Check deployment",
-                },
-              },
-            },
+            event: { type: "text", text: "Arrived while you were away", turnId: "turn-new" },
           },
         ],
       },
@@ -10056,18 +10333,13 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    const digest = await screen.findByTestId("chat-away-digest");
-    expect(within(digest).getByText("While you were away")).toBeTruthy();
-    expect(within(digest).getByText("2 scheduled wakeups ran")).toBeTruthy();
-    expect(within(digest).queryByText(longOutcome)).toBeNull();
-    expect(screen.getByTestId("chat-composer-notice-overlay").contains(digest)).toBe(true);
-
-    const review = within(digest).getByRole("button", { name: "Review" });
-    expect(review.getAttribute("title")).toBe("First wakeup: Check CI");
-    expect(within(digest).getAllByRole("button")).toHaveLength(2);
-
-    fireEvent.click(within(digest).getByRole("button", { name: "Dismiss while-you-were-away summary" }));
-    await waitFor(() => expect(screen.queryByTestId("chat-away-digest")).toBeNull());
+    const divider = await screen.findByTestId("chat-new-since-divider");
+    const before = await screen.findByText("Read before you left");
+    const after = screen.getByText("Arrived while you were away");
+    expect(before.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(divider.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByTestId("chat-new-since-divider")).toHaveLength(1);
+    expect(screen.queryByTestId("chat-away-digest")).toBeNull();
   });
 
   it("does not reserve an empty notice row above a live app-panel composer", async () => {
@@ -10680,14 +10952,14 @@ describe("AgentChatPane submit recovery", () => {
 
     renderParallelDraftPane({
       availableModelIdsOverride: [
-        "openai/gpt-5.4",
+        "openai/gpt-5.5",
         "anthropic/claude-sonnet-5",
       ],
     });
     const launchBinding = useAppStore.getState().projectBinding;
 
     const baseModelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(baseModelTrigger, { button: 0 });
     fireEvent.click(baseModelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -10711,19 +10983,19 @@ describe("AgentChatPane submit recovery", () => {
       expect(suggestLaneName).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-1",
         prompt: "Fix the login bug",
-        modelId: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.5",
         fallbackName: "Fix Login Bug",
       }), launchBinding);
       expect(createChild).toHaveBeenCalledTimes(2);
     });
     // Child lanes are created instantly with the deterministic base name…
     expect(createChild.mock.calls.map(([args]) => args.name)).toEqual([
-      "Fix Login Bug-codex-gpt-5-4",
+      "Fix Login Bug-codex-gpt-5-5",
       "Fix Login Bug-claude-sonnet-5",
     ]);
     // …then renamed to the AI base name in the background.
     await waitFor(() => {
-      expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-child-1", name: "fix-login-codex-gpt-5-4" }, launchBinding);
+      expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-child-1", name: "fix-login-codex-gpt-5-5" }, launchBinding);
       expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-child-2", name: "fix-login-claude-sonnet-5" }, launchBinding);
     });
 
@@ -10736,7 +11008,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(create).toHaveBeenNthCalledWith(1, expect.objectContaining({
       laneId: "lane-child-1",
       provider: "codex",
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
     }), launchBinding);
     expect(create).toHaveBeenNthCalledWith(2, expect.objectContaining({
       laneId: "lane-child-2",
@@ -10861,13 +11133,13 @@ describe("AgentChatPane submit recovery", () => {
 
     renderParallelDraftPane({
       availableModelIdsOverride: [
-        "openai/gpt-5.4",
+        "openai/gpt-5.5",
         "anthropic/claude-sonnet-5",
       ],
     });
 
     const baseModelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(baseModelTrigger, { button: 0 });
     fireEvent.click(baseModelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -10951,7 +11223,7 @@ describe("AgentChatPane Work draft launches", () => {
 
   async function sendOnAutoCreateLane(text: string, options: { background?: boolean } = {}) {
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -10987,10 +11259,10 @@ describe("AgentChatPane Work draft launches", () => {
       laneName: "Fix Auto Create Lane Routing",
       prompt: "Fix auto create lane routing.",
       displayPrompt: "Fix auto create lane routing.",
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       originClientId: expect.stringMatching(/^desktop-window:/),
     });
-    expect(args.chat?.create).toMatchObject({ provider: "codex", modelId: "openai/gpt-5.4" });
+    expect(args.chat?.create).toMatchObject({ provider: "codex", modelId: "openai/gpt-5.5" });
     expect(args.chat?.create).not.toHaveProperty("laneId");
     expect(args.chat?.message).toMatchObject({
       text: "Fix auto create lane routing.",
@@ -11077,7 +11349,7 @@ describe("AgentChatPane Work draft launches", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -11142,12 +11414,12 @@ describe("AgentChatPane Work draft launches", () => {
       laneId: "lane-new",
       laneName: "Fix Login Redirect",
       prompt: "Fix the login redirect",
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
     });
     applyChatLaunchSnapshot(LOCAL_PROJECT_BINDING, launch);
     // The host answers a queued message with the launch holding its own copy.
     let hostSequence = 2;
-    api.queueMessage.mockImplementation((async (args: { text: string }) => {
+    api.queueMessage.mockImplementation((async (args: { text: string; displayText?: string }) => {
       const current = getChatLaunchEntry("launch-chat-1")!.snapshot;
       hostSequence += 1;
       return {
@@ -11155,7 +11427,7 @@ describe("AgentChatPane Work draft launches", () => {
         sequence: hostSequence,
         queuedMessages: [
           ...current.queuedMessages.filter((message) => !message.id.startsWith("local:")),
-          { id: `q-host-${hostSequence}`, text: args.text, createdAt: "2026-09-22T10:00:04.000Z" },
+          { id: `q-host-${hostSequence}`, text: args.displayText ?? args.text, createdAt: "2026-09-22T10:00:04.000Z" },
         ],
       };
     }) as any);
@@ -11166,7 +11438,13 @@ describe("AgentChatPane Work draft launches", () => {
 
     render(
       <MemoryRouter>
-        <AgentChatPane laneId="lane-new" lockSessionId="launch-chat-1" hideSessionTabs onSessionCreated={vi.fn()} />
+        <AgentChatPane
+          laneId="lane-new"
+          lockSessionId="launch-chat-1"
+          hideSessionTabs
+          onSessionCreated={vi.fn()}
+          ambientTurnContext={() => "Current Browser tab: Checkout"}
+        />
       </MemoryRouter>,
     );
 
@@ -11188,7 +11466,8 @@ describe("AgentChatPane Work draft launches", () => {
     await waitFor(() => {
       expect(api.queueMessage).toHaveBeenCalledWith(expect.objectContaining({
         launchId: "launch-chat-1",
-        text: "Also check the logout path",
+        text: "Current Browser tab: Checkout\n\nAlso check the logout path",
+        displayText: "Also check the logout path",
       }), LOCAL_PROJECT_BINDING);
     });
     expect(await screen.findByText("Also check the logout path")).toBeTruthy();
@@ -11237,7 +11516,7 @@ describe("AgentChatPane Work draft launches", () => {
     await waitFor(() => {
       expect(api.queueMessage).toHaveBeenCalledWith(expect.objectContaining({
         launchId: "launch-chat-1",
-        text: "And the signup path",
+        text: "Current Browser tab: Checkout\n\nAnd the signup path",
       }), LOCAL_PROJECT_BINDING);
     });
     expect(send).not.toHaveBeenCalled();
@@ -11346,6 +11625,38 @@ describe("shouldPromoteSessionForComputerUse", () => {
 });
 
 describe("deriveRuntimeState", () => {
+  it("follows a streamed turn batch by batch: text keeps the state, a steer and the end of the turn change it", () => {
+    const at = (second: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-07-16T12:00:${String(second).padStart(2, "0")}.000Z`,
+      event,
+    });
+    const started = [at(0, { type: "status", turnStatus: "started", turnId: "turn-1" })];
+    expect(deriveRuntimeState(started)).toMatchObject({ turnActive: true, pendingSteers: [], pendingInputs: [] });
+
+    const streaming = mergeAgentChatLiveEvents(started, [
+      at(1, { type: "text", text: "one", messageId: "m-1", turnId: "turn-1" }),
+      at(2, { type: "tool_call", tool: "bash", args: {}, itemId: "call-1", turnId: "turn-1" }),
+    ]);
+    expect(deriveRuntimeState(streaming)).toMatchObject({ turnActive: true, pendingSteers: [] });
+
+    const steered = mergeAgentChatLiveEvents(streaming, [
+      at(3, { type: "user_message", text: "also this", steerId: "steer-1", deliveryState: "queued" }),
+    ]);
+    expect(deriveRuntimeState(steered).pendingSteers.map((steer) => steer.steerId)).toEqual(["steer-1"]);
+
+    // More text after the steer must not drop it.
+    const moreText = mergeAgentChatLiveEvents(steered, [at(4, { type: "text", text: "two", messageId: "m-1", turnId: "turn-1" })]);
+    expect(deriveRuntimeState(moreText)).toMatchObject({ turnActive: true });
+    expect(deriveRuntimeState(moreText).pendingSteers.map((steer) => steer.steerId)).toEqual(["steer-1"]);
+
+    const ended = mergeAgentChatLiveEvents(moreText, [
+      at(5, { type: "user_message", text: "also this", steerId: "steer-1", deliveryState: "delivered" }),
+      at(6, { type: "done", turnId: "turn-1", status: "completed" }),
+    ]);
+    expect(deriveRuntimeState(ended)).toMatchObject({ turnActive: false, pendingSteers: [] });
+  });
+
   it("clears a staged steer when Claude reports that its command started", () => {
     const events: AgentChatEventEnvelope[] = [
       {
@@ -11599,6 +11910,25 @@ describe("mergeChatHistorySnapshot", () => {
     expect(merged[3]).toBe(secondTail);
   });
 
+  // A stale cached view that then took live events: the stretch between the
+  // two was never on screen, so its rows (here, a subagent's result) must come
+  // from the snapshot or scrollback, not be pinned out by a glued-on prefix.
+  it("drops a stale prefix that ends before a snapshot head the view never saw", () => {
+    const staleCached = envelope("2026-10-06T05:28:00.000Z", 10, "stale cached");
+    const missedHead = envelope("2026-10-06T07:00:00.000Z", 20, "snapshot head");
+    const liveTail = envelope("2026-10-06T08:40:00.000Z", 30, "live tail");
+    const parsedLiveTail = envelope("2026-10-06T08:40:00.000Z", 30, "live tail");
+
+    const merged = mergeChatHistorySnapshot([missedHead, parsedLiveTail], [staleCached, liveTail]);
+
+    expect(merged.map((entry) => entry.event.type === "text" ? entry.event.text : "")).toEqual([
+      "snapshot head",
+      "live tail",
+    ]);
+    expect(merged).not.toContain(staleCached);
+    expect(merged[1]).toBe(liveTail);
+  });
+
   it("reuses existing snapshot entries while appending newly recovered events", () => {
     const first = envelope("2026-04-30T23:14:47.751Z", 1003, "first");
     const parsedFirst = envelope("2026-04-30T23:14:47.751Z", 1003, "first");
@@ -11819,25 +12149,29 @@ describe("selectDepartedChatSessionViewCacheSessions", () => {
 describe("selectAgentChatSessionViewEvictions", () => {
   const MB = 1024 * 1024;
 
-  it("keeps everything under both ceilings", () => {
+  it("keeps every view under the byte ceiling, however many chats there are", () => {
     expect(selectAgentChatSessionViewEvictions([
       { sessionId: "a", estimatedBytes: 10 * MB },
       { sessionId: "b", estimatedBytes: 10 * MB },
     ])).toEqual([]);
+    const manySmallChats = Array.from({ length: 200 }, (_, index) => ({
+      sessionId: `s${index}`,
+      estimatedBytes: 256 * 1_024,
+    }));
+    expect(selectAgentChatSessionViewEvictions(manySmallChats)).toEqual([]);
+    // 600 of them are 150MB: the oldest go until the rest fit in 128MB.
+    const tooMany = Array.from({ length: 600 }, (_, index) => ({
+      sessionId: `s${index}`,
+      estimatedBytes: 256 * 1_024,
+    }));
+    const evicted = selectAgentChatSessionViewEvictions(tooMany);
+    expect(evicted).toEqual(tooMany.slice(0, 88).map((entry) => entry.sessionId));
   });
 
   it("evicts oldest-first until the 128MB total is respected", () => {
     // 4 x 45MB = 180MB: dropping the two oldest brings the total to 90MB.
     const entries = ["a", "b", "c", "d"].map((sessionId) => ({ sessionId, estimatedBytes: 45 * MB }));
     expect(selectAgentChatSessionViewEvictions(entries)).toEqual(["a", "b"]);
-  });
-
-  it("evicts oldest-first until the entry ceiling is respected", () => {
-    const entries = Array.from({ length: 10 }, (_, index) => ({
-      sessionId: `s${index}`,
-      estimatedBytes: 1_024,
-    }));
-    expect(selectAgentChatSessionViewEvictions(entries)).toEqual(["s0", "s1"]);
   });
 });
 
@@ -11965,6 +12299,18 @@ describe("resolveMergedSnapshotHistoryCursor", () => {
     })).toBe(0);
   });
 
+  it("keeps a partly paged-back position when a refresh overlaps the resident transcript", () => {
+    const existing = [event(1, "oldest"), event(2, "middle"), event(3, "latest")];
+    expect(resolveMergedSnapshotHistoryCursor({
+      snapshotCursor: 8_192,
+      currentCursor: 4_096,
+      snapshotEvents: existing.slice(1),
+      existingEvents: existing,
+      mergedEvents: existing,
+      detached: false,
+    })).toBe(4_096);
+  });
+
   it("re-arms paging for a detached or replaced transcript", () => {
     const existing = [event(1, "oldest"), event(2, "latest")];
     const replacement = [event(9, "replacement")];
@@ -12044,8 +12390,8 @@ describe("subagent auto-open storage", () => {
 
 describe("parallel launch helpers", () => {
   it("keeps same-family model lane suffixes distinct", () => {
-    expect(parallelLaneModelSuffix(getModelById("openai/gpt-5.4"))).toBe("codex-gpt-5-4");
-    expect(parallelLaneModelSuffix(getModelById("openai/gpt-5.4-mini"))).toBe("codex-gpt-5-4-mini");
+    expect(parallelLaneModelSuffix(getModelById("openai/gpt-5.5"))).toBe("codex-gpt-5-5");
+    expect(parallelLaneModelSuffix(getModelById("openai/gpt-5.6-sol"))).toBe("codex-gpt-5-6-sol");
   });
 
   it("preserves the default attachment review request when project docs are prepended", () => {
@@ -12429,6 +12775,110 @@ describe("older transcript paging retries", () => {
     expect(screen.queryByLabelText("Retry loading earlier messages")).toBeNull();
   }, 25_000);
 
+  it("stops idle backfill at the resident cap instead of dropping the live tail", async () => {
+    const session = buildSession("session-1", { title: "Huge chat" });
+    // One older event whose resident estimate alone is over the cap: the cap
+    // merge keeps the oldest events, so applying it would drop the tail.
+    const oversized = "x".repeat(Math.ceil(MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES / 2) + 1);
+    let pageRequests = 0;
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: historySnapshotWithOlderPages(session.sessionId),
+      eventHistoryPage: async (args) => {
+        pageRequests += 1;
+        return {
+          sessionId: args.sessionId,
+          // A whole older turn (one batch is one page). The oversized payload
+          // rides in a field the transcript never draws.
+          events: [{
+            sessionId: args.sessionId,
+            timestamp: "2026-07-10T11:00:00.000Z",
+            sequence: 0,
+            event: { type: "user_message", text: "older prompt", padding: oversized } as AgentChatEventEnvelope["event"],
+          }],
+          startOffset: Math.floor(args.beforeOffset / 2),
+          hasMore: true,
+          sessionFound: true,
+        };
+      },
+    });
+
+    // The reader sits at the live tail of a long chat, far from the top, so
+    // only idle backfill (not the near-top or underfill paths) asks for pages.
+    // jsdom has no layout or idle callbacks; give the transcript pane both.
+    const isPane = (el: Element) => el.classList.contains("ade-chat-timeline-pane");
+    const descriptors = (["scrollHeight", "clientHeight", "scrollTop"] as const)
+      .map((prop) => [prop, Object.getOwnPropertyDescriptor(Element.prototype, prop)!] as const);
+    const geometry = { scrollHeight: 200_000, clientHeight: 600, scrollTop: 199_400 };
+    for (const [prop, original] of descriptors) {
+      Object.defineProperty(Element.prototype, prop, {
+        configurable: true,
+        get(this: Element) { return isPane(this) ? geometry[prop] : original.get?.call(this); },
+        set(this: Element, value: number) { if (!isPane(this)) original.set?.call(this, value); },
+      });
+    }
+    const originalIdle = [window.requestIdleCallback, window.cancelIdleCallback] as const;
+    window.requestIdleCallback = (callback: IdleRequestCallback) => window.setTimeout(
+      () => callback({ didTimeout: false, timeRemaining: () => 50 }),
+      0,
+    );
+    window.cancelIdleCallback = (handle: number) => window.clearTimeout(handle);
+    try {
+      renderPane(session);
+      expect(await screen.findByText("newest visible message")).toBeTruthy();
+      // No scroll: the Work pane backfills on its own.
+      await waitFor(() => expect(pageRequests).toBe(1));
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(screen.getByText("newest visible message")).toBeTruthy();
+      expect(screen.queryByText("older prompt")).toBeNull();
+      // The refused page stops backfill for this chat rather than re-asking.
+      expect(pageRequests).toBe(1);
+    } finally {
+      for (const [prop, original] of descriptors) Object.defineProperty(Element.prototype, prop, original);
+      [window.requestIdleCallback, window.cancelIdleCallback] = originalIdle;
+    }
+  });
+
+  it("ends the retry ladder of a page request still in flight when the pane unmounts", async () => {
+    const session = buildSession("session-1", { title: "Long chat" });
+    let pageAttempts = 0;
+    let failFirstPage!: (error: Error) => void;
+    const firstPage = new Promise<AgentChatEventHistoryPage>((_resolve, reject) => {
+      failFirstPage = reject;
+    });
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: historySnapshotWithOlderPages(session.sessionId),
+      eventHistoryPage: async () => {
+        pageAttempts += 1;
+        if (pageAttempts === 1) return firstPage;
+        throw new Error("remote hop dropped");
+      },
+    });
+
+    const view = renderPane(session);
+    await screen.findByText("newest visible message");
+    await requestOlderHistoryByScroll();
+    await waitFor(() => expect(pageAttempts).toBe(1));
+
+    // The pane goes away while its page is still out; the page then fails.
+    view.unmount();
+    vi.useFakeTimers();
+    try {
+      failFirstPage(new Error("remote hop dropped"));
+      // Past both backoff steps (800ms, 2400ms): nothing may retry for a pane
+      // that no longer exists.
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(pageAttempts).toBe(1);
+      expect(window.ade.agentChat.getEventHistoryPage).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("cancels pending paging retries when the session switches", async () => {
     const sessionA = buildSession("session-1", { title: "Chat A" });
     const sessionB = buildSession("session-2", { title: "Chat B" });
@@ -12581,7 +13031,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
     renderPane(session);
 
     // Support is asked of the chat's machine, not the tab's.
-    await waitFor(() => expect(window.ade.appControl.getStatus).toHaveBeenCalledWith(machineB));
+    await waitFor(() => expect(window.ade.appControl.getStatus).toHaveBeenCalledWith({ laneId: "lane-b" }, machineB));
 
     const appControlButton = (await screen.findAllByRole("button", { name: "Open App Control drawer" }))[0]!;
     fireEvent.click(appControlButton);
@@ -12673,7 +13123,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
 
     renderPane(session);
 
-    await waitFor(() => expect(window.ade.agentChat.promptStashes.list).toHaveBeenCalledWith(
+    await waitFor(() => expect(window.ade.agentChat.drafts.list).toHaveBeenCalledWith(
       machineB,
     ));
     expect(useAppStore.getState().projectBinding).toEqual(machineB);
@@ -12999,6 +13449,10 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
   }
 
   async function selectCursorCloudMachine() {
+    if (screen.queryByRole("button", { name: "Send to Cursor Cloud" })) {
+      await waitFor(() => expect((screen.getByRole("button", { name: "Send to Cursor Cloud" }) as HTMLButtonElement).disabled).toBe(false));
+      return;
+    }
     fireEvent.click(await screen.findByRole("button", { name: /Choose machine/ }));
     // Opening the picker refetches repos; the cloud row stays disabled until that
     // settles. Clicking it early is a no-op, which is what flakes "Advanced" /
@@ -13050,6 +13504,11 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     return renderAutoCreateDraftPane(paneArgs);
   }
 
+  const existingCloudLanes = [
+    { id: "lane-primary", name: "Primary", laneType: "primary", branchRef: "refs/heads/main", worktreePath: "/tmp/project-under-test" },
+    { id: "lane-1", name: "current-lane", laneType: "worktree", branchRef: "refs/heads/current-lane", worktreePath: "/tmp/project-under-test/current-lane", parentLaneId: "lane-primary", tags: ["ade:cloud:cursor"] },
+  ];
+
   beforeEach(() => {
     seedCursorChatCatalog();
   });
@@ -13085,22 +13544,22 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
 
   it("opens the all-agents Cursor Cloud panel from the composer overflow", async () => {
     installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
-    const { listRepositories } = installCursorCloudMocks();
+    installCursorCloudMocks();
     renderCursorCloudDraft();
 
     await selectCursorCloudMachine();
+    const openPanel = vi.fn();
+    window.addEventListener("ade:open-cloud-agents", openPanel, { once: true });
     fireEvent.click(await screen.findByRole("button", { name: "More composer controls" }));
-    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Open Cursor Cloud agents" }));
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: /Cursor Cloud agents/ }));
 
-    expect(await screen.findByText("Cursor Cloud agents")).toBeTruthy();
-    expect(listRepositories).toHaveBeenCalled();
-    expect(window.ade.ai.cursorCloudListAgents).toHaveBeenCalled();
+    expect(openPanel).toHaveBeenCalledWith(expect.objectContaining({ detail: { provider: "cursor" } }));
   });
 
   it("keeps an existing lane's branch as the cloud agent's starting ref", async () => {
     installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
     const { createRun, openChat } = installCursorCloudMocks();
-    renderCursorCloudDraft();
+    renderCursorCloudDraft({ lanes: existingCloudLanes });
     await selectCursorCloudMachine();
 
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Fix the flaky test." } });
@@ -13148,7 +13607,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     await selectCursorCloudMachine();
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /New cloud lane/i }));
 
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Start something new." } });
     fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
@@ -13171,7 +13630,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     await selectCursorCloudMachine();
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /New cloud lane/i }));
 
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Start something new." } });
     fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
@@ -13189,7 +13648,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     await selectCursorCloudMachine();
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /New cloud lane/i }));
 
     // The readiness probe targets the primary lane; the synthetic auto-create id never
     // reaches the brain. Cloud mode survives the lane switch.
@@ -13211,7 +13670,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
       recommendedAction: "pull",
     });
     Object.assign(window.ade.git, { getSyncStatus });
-    renderCursorCloudDraft();
+    renderCursorCloudDraft({ lanes: existingCloudLanes });
     await selectCursorCloudMachine();
 
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Use what origin has." } });
@@ -13238,7 +13697,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
         recommendedAction: "rebase",
       }),
     });
-    renderCursorCloudDraft();
+    renderCursorCloudDraft({ lanes: existingCloudLanes });
     await selectCursorCloudMachine();
 
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Try to launch anyway." } });
@@ -13268,7 +13727,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
         { name: "origin/current-lane", isRemote: true, isCurrent: false, upstream: null },
       ]),
     });
-    renderCursorCloudDraft();
+    renderCursorCloudDraft({ lanes: existingCloudLanes });
     await selectCursorCloudMachine();
 
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Ship the unpushed commits." } });
@@ -13602,7 +14061,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     const status = cursorAvailableAiStatus();
     (status as unknown as { availableModelIds: string[] }).availableModelIds = [
       CURSOR_MODEL_ID,
-      "gpt-5.4",
+      "gpt-5.5",
     ];
     installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: status });
     installCursorCloudMocks();
@@ -13612,7 +14071,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
 
     fireEvent.click(await findModelTrigger());
     await waitFor(() => expect(screen.getAllByText(/Composer Cloud/).length).toBeGreaterThan(0));
-    expect(screen.queryByText("gpt-5.4")).toBeNull();
+    expect(screen.queryByText("gpt-5.5")).toBeNull();
   });
 
   async function revealRowTooltip(row: HTMLElement) {
@@ -13676,7 +14135,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
     const { createRun } = installCursorCloudMocks();
     createRun.mockRejectedValue(new Error("Cursor Cloud create failed"));
-    renderCursorCloudDraft();
+    renderCursorCloudDraft({ lanes: existingCloudLanes });
     await selectCursorCloudMachine();
 
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Retry this draft." } });
@@ -13937,7 +14396,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
   it("sends without selected secrets and does not block on an empty picker", async () => {
     installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
     const { createRun, openChat } = installCursorCloudMocks();
-    renderCursorCloudDraft();
+    renderCursorCloudDraft({ lanes: existingCloudLanes });
     await selectCursorCloudMachine();
 
     expect(await screen.findByRole("button", { name: "Advanced" })).toBeTruthy();
@@ -14000,7 +14459,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
       title: "Fix flakes",
       headRefName: "current-lane",
     });
-    renderCursorCloudDraft();
+    renderCursorCloudDraft({ lanes: existingCloudLanes });
     await selectCursorCloudMachine();
 
     fireEvent.click(await screen.findByRole("button", { name: "Advanced" }));

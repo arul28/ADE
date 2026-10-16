@@ -3,7 +3,6 @@ import {
   PendingInputRequest,
   acquireCursorSdkConnection,
   bridgeClaudeSessionToQuery,
-  buildOpenCodePromptParts,
   claudeSdkCreateSessionCompat,
   claudeSdkResumeSessionCompat,
   createAgentChatService,
@@ -985,6 +984,89 @@ describe("createAgentChatService", () => {
       )).toBe(true);
     });
 
+    it("expands an ADE skill queued as a steer during an active Claude turn", async () => {
+      const skillDir = path.join(tmpRoot, ".claude", "skills", "ship");
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+        "---",
+        "name: ship",
+        "description: Ship the lane",
+        "---",
+        "",
+        "Ship the lane.",
+        "",
+        "Task: $ARGUMENTS",
+        "",
+      ].join("\n"));
+
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let finishActiveTurn!: () => void;
+      const activeTurnGate = new Promise<void>((resolve) => { finishActiveTurn = resolve; });
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-skill-steer", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+          };
+          await activeTurnGate;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-skill-steer",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const activeTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Do the foreground work",
+        timeoutMs: 15_000,
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "text" && event.event.text.includes("Still working"),
+      );
+
+      const result = await service.sendMessage({
+        sessionId: session.id,
+        text: "/ship resume for lane x",
+      }, { routeActiveToSteer: true });
+      expect(result).toMatchObject({ queued: true });
+
+      finishActiveTurn();
+      await activeTurn;
+      await vi.waitFor(() => {
+        const delivered = send.mock.calls
+          .map((call) => String(call[0]))
+          .find((prompt) => prompt.includes("Ship the lane."));
+        expect(delivered, "the queued steer is delivered as the ADE expansion").toBeTruthy();
+        expect(delivered).toContain("Task: resume for lane x");
+        expect(delivered?.trimStart().startsWith("/ship")).toBe(false);
+      });
+    });
+
     it("does not steer /compact during an active Claude turn", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);
@@ -1120,13 +1202,38 @@ describe("createAgentChatService", () => {
         && event.event.attachments?.some((attachment) => attachment.path === attachmentPath),
       )).toBe(true);
 
+      const pastedPrompt = "Follow this pasted request as the chat task.";
+      const pastedPromptPath = path.join(tmpRoot, "pasted-text.txt");
+      fs.writeFileSync(pastedPromptPath, pastedPrompt);
+      const pastedPromptResult = await service.sendMessage({
+        sessionId: session.id,
+        text: "",
+        attachments: [{ path: pastedPromptPath, type: "file", intent: "user_prompt" }],
+      }, { routeActiveToSteer: true });
+      expect(pastedPromptResult).toMatchObject({ queued: true, steerId: expect.any(String) });
+      const queuedPastedMessage = events.find((event) =>
+        event.event.type === "user_message"
+        && event.event.deliveryState === "queued"
+        && event.event.text.includes(pastedPrompt)
+        && event.event.attachments?.some((attachment) => attachment.path === pastedPromptPath),
+      );
+      expect(queuedPastedMessage?.event).toMatchObject({ displayText: "" });
+
       finishActiveTurn();
       await activeTurn;
       await vi.waitFor(() => {
         expect(send.mock.calls.some(([payload]) =>
           JSON.stringify(payload).includes("Please review the attached files."),
         )).toBe(true);
+        expect(send.mock.calls.some(([payload]) =>
+          JSON.stringify(payload).includes(pastedPrompt),
+        )).toBe(true);
       });
+      const deliveredPastedPayloads = send.mock.calls
+        .map(([payload]) => JSON.stringify(payload))
+        .filter((payload) => payload.includes(pastedPrompt));
+      expect(deliveredPastedPayloads).toHaveLength(1);
+      expect(deliveredPastedPayloads[0].split(pastedPrompt)).toHaveLength(2);
       // Claude's persistent streaming-input query consumes the queued steer
       // without creating a replacement SDK stream.
       expect(streamCall).toBe(2);
@@ -1392,6 +1499,105 @@ describe("createAgentChatService", () => {
           }),
         }),
       ]));
+    });
+
+    it("moveSteer delivers queued Claude messages in the order the user set", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let finishActiveTurn!: () => void;
+      const activeTurnGate = new Promise<void>((resolve) => { finishActiveTurn = resolve; });
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-move-steer", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+          };
+          await activeTurnGate;
+        }
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-move-steer",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const activeTurn = service.runSessionTurn({ sessionId: session.id, text: "Foreground work", timeoutMs: 15_000 });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "text" && event.event.text.includes("Still working"),
+      );
+      const first = await service.sendMessage({ sessionId: session.id, text: "QUEUED-FIRST" }, { routeActiveToSteer: true }) as { steerId?: string };
+      const second = await service.sendMessage({ sessionId: session.id, text: "QUEUED-SECOND" }, { routeActiveToSteer: true }) as { steerId?: string };
+      expect(first.steerId && second.steerId).toBeTruthy();
+
+      await service.moveSteer({ sessionId: session.id, steerId: second.steerId!, toIndex: 0 });
+
+      expect(events.some((event) =>
+        event.event.type === "queue_reordered"
+        && JSON.stringify(event.event.steerIds) === JSON.stringify([second.steerId, first.steerId]),
+      )).toBe(true);
+      finishActiveTurn();
+      await activeTurn;
+      await vi.waitFor(() => {
+        const delivered = send.mock.calls.map((call) => String(call[0])).join("\n");
+        expect(delivered).toContain("QUEUED-FIRST");
+        expect(delivered).toContain("QUEUED-SECOND");
+        expect(delivered.indexOf("QUEUED-SECOND")).toBeLessThan(delivered.indexOf("QUEUED-FIRST"));
+      });
+    });
+
+    it("moveSteer reorders a torn-down chat's persisted queue and refuses provider-owned queues", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        pendingSteers: [
+          { steerId: "steer-a", text: "A" },
+          { steerId: "steer-b", text: "B" },
+          { steerId: "steer-c", text: "C" },
+        ],
+      });
+
+      await service.moveSteer({ sessionId: session.id, steerId: "steer-c", toIndex: 0 });
+      expect(readPersistedChatState(session.id).pendingSteers?.map((steer: { steerId: string }) => steer.steerId))
+        .toEqual(["steer-c", "steer-a", "steer-b"]);
+      expect(events.some((event) =>
+        event.event.type === "queue_reordered"
+        && JSON.stringify(event.event.steerIds) === JSON.stringify(["steer-c", "steer-a", "steer-b"]),
+      )).toBe(true);
+
+      // A later cancel rewrites the file from the persisted queue; the new order survives it.
+      await service.cancelSteer({ sessionId: session.id, steerId: "steer-a", requireQueued: true });
+      expect(readPersistedChatState(session.id).pendingSteers?.map((steer: { steerId: string }) => steer.steerId))
+        .toEqual(["steer-c", "steer-b"]);
+      await expect(service.moveSteer({ sessionId: session.id, steerId: "steer-a", toIndex: 0 }))
+        .rejects.toThrow(/no longer queued/i);
+
+      const codex = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.5" });
+      await expect(service.moveSteer({ sessionId: codex.id, steerId: "steer-x", toIndex: 0 }))
+        .rejects.toThrow(/keeps its own queue/i);
     });
 
     it("throws when steering an unknown session", async () => {
@@ -1924,7 +2130,12 @@ describe("createAgentChatService", () => {
         && event.event.status === "completed");
     });
 
-    it("dispatchSteer mode:'interrupt' uses Claude priority-now without tearing down the query", async () => {
+    // Claude Code keeps a slow WebFetch running, and moves a running Bash
+    // command to the background, only for a person's "now".
+    it.each([
+      { sender: "a person", sentByUser: true, origin: { kind: "human" } },
+      { sender: "an agent", sentByUser: undefined, origin: undefined },
+    ])("dispatchSteer mode:'interrupt' uses Claude priority-now without tearing down the query ($sender)", async ({ sentByUser, origin }) => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -1971,7 +2182,7 @@ describe("createAgentChatService", () => {
 
       // Queue two steers — the second one will be the dispatch target
       await service.steer({ sessionId: session.id, text: "first queued" });
-      await service.steer({ sessionId: session.id, text: "interrupt with me" });
+      await service.steer({ sessionId: session.id, text: "interrupt with me", ...(sentByUser ? { sentByUser } : {}) });
 
       const target = events.find((e) =>
         e.event.type === "user_message"
@@ -1991,6 +2202,7 @@ describe("createAgentChatService", () => {
         .map((call: any[]) => call[0])
         .find((arg: any) => arg?.priority === "now" && arg?.shouldQuery === true);
       expect(interruptPayload).toBeDefined();
+      expect(interruptPayload.origin).toEqual(origin);
       expect(queryInterrupt).not.toHaveBeenCalled();
 
       await service.interrupt({ sessionId: session.id });
@@ -2053,6 +2265,9 @@ describe("createAgentChatService", () => {
       });
       const sessionId = "restored-staged-claude";
       const steerId = "restored-steer";
+      const pastedPath = path.join(tmpRoot, "restored-pasted-text.txt");
+      const pastedBody = "Read this pasted file once.";
+      fs.writeFileSync(pastedPath, pastedBody);
       sessionService.create({
         sessionId,
         laneId: "lane-1",
@@ -2067,7 +2282,12 @@ describe("createAgentChatService", () => {
         provider: "claude",
         model: "sonnet",
         sdkSessionId: "sdk-restored",
-        pendingSteers: [{ steerId, text: "Handle this restored message" }],
+        pendingSteers: [{
+          steerId,
+          text: `Attached file contents:\n\n${pastedBody}\n\nHandle this restored message`,
+          displayText: "Handle this restored message",
+          attachments: [{ path: pastedPath, type: "file", intent: "user_prompt" }],
+        }],
         updatedAt: "2026-07-10T12:00:00.000Z",
       });
       await service.resumeSession({ sessionId });
@@ -2082,7 +2302,95 @@ describe("createAgentChatService", () => {
         && (event.event as any).steerId === steerId
         && /delivering/i.test((event.event as any).message)
       )).toBe(true);
+      const deliveredPastedMessage = events.find((event) =>
+        event.event.type === "user_message"
+        && event.event.attachments?.some((attachment) => attachment.path === pastedPath),
+      );
+      expect(deliveredPastedMessage?.event).toMatchObject({ displayText: "Handle this restored message" });
       expect(readPersistedChatState(sessionId).pendingSteers).toBeUndefined();
+    });
+
+    it("auto-delivers a restored pasted-file queue once after the active turn and keeps the typed request visible", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      let releaseTurn!: () => void;
+      const turnGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
+      let streamCall = 0;
+      const handle = {
+        send,
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-restored-auto-queue", slash_commands: [] };
+            yield {
+              type: "assistant",
+              message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+            };
+            await turnGate;
+          }
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-restored-auto-queue",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      };
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(handle as any);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(handle as any);
+
+      const { service, sessionService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const sessionId = "restored-pasted-auto-queue";
+      const steerId = "restored-pasted-auto-steer";
+      const pastedPath = path.join(tmpRoot, "restored-auto-queued-paste.txt");
+      const pastedBody = "Auto-queued pasted content should arrive once.";
+      fs.writeFileSync(pastedPath, pastedBody);
+      sessionService.create({
+        sessionId,
+        laneId: "lane-1",
+        toolType: "claude-chat",
+        title: "Restored queued paste",
+        startedAt: "2026-07-10T12:00:00.000Z",
+      });
+      writePersistedChatState(sessionId, {
+        version: 2,
+        sessionId,
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        sdkSessionId: "sdk-restored-auto-queue",
+        pendingSteers: [{
+          steerId,
+          text: `Attached file contents:\n\n${pastedBody}\n\nHandle this restored message`,
+          displayText: "Handle this restored message",
+          attachments: [{ path: pastedPath, type: "file", intent: "user_prompt" }],
+        }],
+        updatedAt: "2026-07-10T12:00:00.000Z",
+      });
+      await service.resumeSession({ sessionId });
+
+      const activeTurn = service.runSessionTurn({ sessionId, text: "Finish the foreground work", timeoutMs: 15_000 });
+      await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "text" && event.event.text.includes("Still working"),
+      );
+      releaseTurn();
+      await activeTurn;
+
+      await vi.waitFor(() => {
+        expect(send.mock.calls.some(([payload]) => JSON.stringify(payload).includes(pastedBody))).toBe(true);
+      });
+      const pastedPayloads = send.mock.calls
+        .map(([payload]) => JSON.stringify(payload))
+        .filter((payload) => payload.includes(pastedBody));
+      expect(pastedPayloads).toHaveLength(1);
+      expect(pastedPayloads[0].split(pastedBody)).toHaveLength(2);
+      const deliveredPastedMessage = events.find((event) =>
+        event.event.type === "user_message"
+        && event.event.steerId === steerId
+        && event.event.attachments?.some((attachment) => attachment.path === pastedPath),
+      );
+      expect(deliveredPastedMessage?.event).toMatchObject({ displayText: "Handle this restored message" });
+      service.forceDisposeAll();
     });
 
     it("dispatchSteer rejects interrupt on Codex sessions but accepts inline", async () => {
@@ -2240,427 +2548,7 @@ describe("createAgentChatService", () => {
       expect(result.cancelled).toBe(false);
     });
 
-    it("delivers queued OpenCode steers with attachments after the active turn settles", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      const firstTurnControl: { release?: () => void } = {};
-      let streamCallCount = 0;
-      vi.mocked(streamText).mockImplementation(() => {
-        streamCallCount += 1;
-        if (streamCallCount === 1) {
-          return {
-            fullStream: (async function* () {
-              await new Promise<void>((resolve) => {
-                firstTurnControl.release = resolve;
-              });
-              yield { type: "finish", usage: {} };
-            })(),
-          } as any;
-        }
-        return {
-          fullStream: (async function* () {
-            yield { type: "finish", usage: {} };
-          })(),
-        } as any;
-      });
-      vi.mocked(buildOpenCodePromptParts).mockClear();
 
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      const firstTurn = service.runSessionTurn({
-        sessionId: session.id,
-        text: "Finish the active turn first.",
-      });
-      for (let attempt = 0; attempt < 20 && vi.mocked(buildOpenCodePromptParts).mock.calls.length < 1; attempt += 1) {
-        await Promise.resolve();
-      }
-      expect(vi.mocked(buildOpenCodePromptParts).mock.calls.length).toBeGreaterThanOrEqual(1);
-
-      const attachmentPath = path.join(tmpRoot, "opencode-steer-context.txt");
-      fs.writeFileSync(attachmentPath, "OpenCode steer attachment context.");
-
-      const steerResult = await service.steer({
-        sessionId: session.id,
-        text: "Then review the attached context.",
-        attachments: [{ path: attachmentPath, type: "file" }],
-      });
-      expect(steerResult.queued).toBe(true);
-
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "user_message"
-          && (event.event as any).deliveryState === "queued"
-          && event.event.text === "Then review the attached context."
-          && JSON.stringify((event.event as any).attachments ?? []).includes("opencode-steer-context.txt"),
-      );
-
-      expect(firstTurnControl.release).toBeTypeOf("function");
-      firstTurnControl.release!();
-      await firstTurn;
-
-      for (let attempt = 0; attempt < 50 && vi.mocked(buildOpenCodePromptParts).mock.calls.length < 2; attempt += 1) {
-        await Promise.resolve();
-      }
-      expect(vi.mocked(buildOpenCodePromptParts).mock.calls).toHaveLength(2);
-      expect(vi.mocked(buildOpenCodePromptParts).mock.calls[1]?.[0]).toEqual(expect.objectContaining({
-        prompt: expect.stringContaining("Then review the attached context."),
-        files: expect.arrayContaining([
-          expect.objectContaining({
-            path: expect.stringContaining("opencode-steer-context.txt"),
-            filename: "opencode-steer-context.txt",
-          }),
-        ]),
-      }));
-
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "user_message"
-          && event.event.text === "Then review the attached context."
-          && JSON.stringify((event.event as any).attachments ?? []).includes("opencode-steer-context.txt")
-          && (event.event as any).deliveryState !== "queued",
-      );
-    });
-
-    it("folds an inline OpenCode steer into the live turn through the v2 delivery", async () => {
-      const { events, service, session, finishFirstTurn } = await startHeldOpenCodeTurn();
-
-      const steerResult = await service.steer({
-        sessionId: session.id,
-        text: "Fold this into the live turn.",
-        dispatchMode: "inline",
-      });
-      expect(steerResult.queued).toBe(false);
-      expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
-      expect(mockState.openCodeV2SteerCalls[0]).toEqual(expect.objectContaining({
-        sessionID: expect.any(String),
-        delivery: "steer",
-        // The server validates its `msg_` message-ID brand; a bare uuid would
-        // 400 and silently degrade every inline steer to the queue.
-        id: expect.stringMatching(/^msg_/),
-        prompt: expect.objectContaining({ text: expect.stringContaining("Fold this into the live turn.") }),
-      }));
-
-      const delivered = await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "user_message"
-          && event.event.text === "Fold this into the live turn."
-          && (event.event as any).deliveryState === "inline",
-      );
-      expect((delivered.event as any).steerId).toBe(steerResult.steerId);
-      // Shown as "Steering…" before the round trip, then moved on: one row.
-      const rows = events.filter((event) =>
-        event.event.type === "user_message" && event.event.text === "Fold this into the live turn.");
-      expect(rows.map((event) => (event.event as any).deliveryState)).toEqual(["accepted", "inline"]);
-      expect(rows.every((event) => (event.event as any).steerId === steerResult.steerId)).toBe(true);
-
-      await finishFirstTurn();
-    });
-
-    it("queues an OpenCode steer that carries per-message overrides instead of folding it inline", async () => {
-      const { events, service, session, finishFirstTurn } = await startHeldOpenCodeTurn();
-
-      // The v2 steer prompt carries text and file parts only, so an execution
-      // override picked for this message cannot ride it. The row must stage
-      // instead, preserving the directive for the turn boundary.
-      const steerResult = await service.steer({
-        sessionId: session.id,
-        text: "Keep my execution override.",
-        dispatchMode: "inline",
-        executionMode: "focused",
-      });
-      expect(steerResult.queued).toBe(true);
-      expect(mockState.openCodeV2SteerCalls).toHaveLength(0);
-      expect(events.some((entry) =>
-        entry.event.type === "user_message"
-        && entry.event.text === "Keep my execution override."
-        && (entry.event as any).deliveryState === "queued"
-      )).toBe(true);
-      expect(events.some((entry) =>
-        entry.event.type === "user_message"
-        && entry.event.text === "Keep my execution override."
-        && (entry.event as any).deliveryState === "inline"
-      )).toBe(false);
-
-      await finishFirstTurn();
-    });
-
-    it("keeps a staged OpenCode steer with overrides staged instead of promoting it inline", async () => {
-      const { events, service, session, finishFirstTurn } = await startHeldOpenCodeTurn();
-
-      const queued = await service.steer({
-        sessionId: session.id,
-        text: "Promote me with my override.",
-        executionMode: "focused",
-      });
-      expect(queued.queued).toBe(true);
-      const queuedRow = events.find((entry) =>
-        entry.event.type === "user_message"
-        && entry.event.text === "Promote me with my override."
-        && (entry.event as any).deliveryState === "queued"
-      );
-      const steerId = (queuedRow!.event as any).steerId as string;
-
-      const dispatchResult = await service.dispatchSteer({
-        sessionId: session.id,
-        steerId,
-        mode: "inline",
-      });
-      expect(dispatchResult.dispatchedAt).toBeNull();
-      expect(mockState.openCodeV2SteerCalls).toHaveLength(0);
-      expect(events.some((entry) =>
-        entry.event.type === "user_message"
-        && entry.event.text === "Promote me with my override."
-        && (entry.event as any).deliveryState === "inline"
-      )).toBe(false);
-
-      await finishFirstTurn();
-    });
-
-    it("queues an inline OpenCode steer when the live delivery is refused", async () => {
-      mockState.openCodeV2SteerError = new Error("steer delivery refused");
-      const { events, service, session, finishFirstTurn } = await startHeldOpenCodeTurn();
-
-      const steerResult = await service.steer({
-        sessionId: session.id,
-        text: "This one has to wait.",
-        dispatchMode: "inline",
-      });
-      expect(steerResult.queued).toBe(true);
-      expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
-      // The row it was offered on reads queued again, not "Steering…".
-      expect(events.filter((entry) =>
-        entry.event.type === "user_message" && entry.event.text === "This one has to wait."
-      ).map((entry) => (entry.event as any).deliveryState)).toEqual(["accepted", "queued"]);
-      expect(events.some((entry) =>
-        entry.event.type === "system_notice"
-        && /couldn't go into the running turn/i.test(entry.event.message)
-      )).toBe(true);
-
-      await finishFirstTurn();
-    });
-
-    it("names a non-file attachment in the prompt when the inline OpenCode steer skips it", async () => {
-      const { events, service, session, finishFirstTurn } = await startHeldOpenCodeTurn();
-
-      const steerResult = await service.steer({
-        sessionId: session.id,
-        text: "Fold in this linked image.",
-        attachments: [{
-          type: "image-url",
-          path: "https://cdn.example.com/reference.png",
-          url: "https://cdn.example.com/reference.png",
-        }],
-        dispatchMode: "inline",
-      });
-      expect(steerResult.queued).toBe(false);
-      const promptText = mockState.openCodeV2SteerCalls[0]?.prompt?.text as string;
-      // The URL cannot be a file part, so it must still reach the model as text.
-      expect(promptText).toContain("Attached context:");
-      expect(promptText).toContain("https://cdn.example.com/reference.png");
-      expect(mockState.openCodeV2SteerCalls[0]?.prompt?.files ?? []).toHaveLength(0);
-
-      await finishFirstTurn();
-    });
-
-    it("refuses a cancel while an OpenCode promotion is in flight", async () => {
-      const { events, service, session, finishFirstTurn } = await startHeldOpenCodeTurn();
-
-      const queued = await service.steer({
-        sessionId: session.id,
-        text: "Do not cancel me mid-flight.",
-      });
-      expect(queued.queued).toBe(true);
-      const queuedRow = events.find((entry) =>
-        entry.event.type === "user_message"
-        && entry.event.text === "Do not cancel me mid-flight."
-        && (entry.event as any).deliveryState === "queued"
-      );
-      const steerId = (queuedRow!.event as any).steerId as string;
-
-      let releaseSteer!: () => void;
-      mockState.openCodeV2SteerBarrier = new Promise<void>((resolve) => {
-        releaseSteer = resolve;
-      });
-      const dispatch = service.dispatchSteer({ sessionId: session.id, steerId, mode: "inline" });
-      for (let attempt = 0; attempt < 20 && mockState.openCodeV2SteerCalls.length < 1; attempt += 1) {
-        await Promise.resolve();
-      }
-      expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
-
-      await expect(service.cancelSteer({ sessionId: session.id, steerId }))
-        .rejects.toThrow("already being dispatched");
-
-      releaseSteer();
-      await expect(dispatch).resolves.toMatchObject({ dispatchedAt: expect.any(Number) });
-      expect(events.some((entry) =>
-        entry.event.type === "user_message"
-        && entry.event.text === "Do not cancel me mid-flight."
-        && (entry.event as any).deliveryState === "inline"
-      )).toBe(true);
-
-      await finishFirstTurn();
-    });
-
-    it("sends a refused OpenCode steer as its own turn when the live turn already ended", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      const firstTurnControl: { release?: () => void } = {};
-      let streamCallCount = 0;
-      vi.mocked(streamText).mockImplementation(() => {
-        streamCallCount += 1;
-        if (streamCallCount === 1) {
-          return {
-            fullStream: (async function* () {
-              await new Promise<void>((resolve) => {
-                firstTurnControl.release = resolve;
-              });
-              yield { type: "finish", usage: {} };
-            })(),
-          } as any;
-        }
-        return {
-          fullStream: (async function* () {
-            yield { type: "finish", usage: {} };
-          })(),
-        } as any;
-      });
-      vi.mocked(buildOpenCodePromptParts).mockClear();
-      mockState.openCodeV2SteerError = new Error("steer delivery refused");
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      const firstTurn = service.runSessionTurn({
-        sessionId: session.id,
-        text: "Start the long turn.",
-      });
-      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
-        await Promise.resolve();
-      }
-
-      // Hold the refused steer in flight across the turn boundary, so the
-      // queue fallback lands after the tail already drained.
-      let releaseSteer!: () => void;
-      mockState.openCodeV2SteerBarrier = new Promise<void>((resolve) => {
-        releaseSteer = resolve;
-      });
-      const steerResult = service.steer({
-        sessionId: session.id,
-        text: "I should still be delivered.",
-        dispatchMode: "inline",
-      });
-      for (let attempt = 0; attempt < 20 && mockState.openCodeV2SteerCalls.length < 1; attempt += 1) {
-        await Promise.resolve();
-      }
-      expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
-
-      firstTurnControl.release!();
-      await firstTurn;
-      releaseSteer();
-
-      await expect(steerResult).resolves.toMatchObject({ queued: false });
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "user_message"
-          && event.event.text === "I should still be delivered."
-          && (event.event as any).deliveryState !== "queued",
-      );
-      expect(vi.mocked(buildOpenCodePromptParts).mock.calls.length).toBeGreaterThanOrEqual(2);
-    });
-
-    it("bridges OpenCode question events through ADE's question UI", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-      mockState.openCodeQuestionForNextPrompt = {
-        id: "opencode-question-1",
-        questions: [
-          {
-            header: "Scope",
-            question: "Which surface should I inspect first?",
-            options: [
-              { label: "CLI", description: "Check terminal resume." },
-              { label: "Chat", description: "Check SDK chat." },
-            ],
-            custom: true,
-          },
-        ],
-      };
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      const turn = service.runSessionTurn({
-        sessionId: session.id,
-        text: "Ask a clarifying question.",
-      });
-
-      const questionEvent = await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope => {
-          if (event.event.type !== "approval_request") return false;
-          const detail = event.event.detail as { request?: PendingInputRequest } | undefined;
-          return detail?.request?.source === "opencode"
-            && detail.request.kind === "structured_question"
-            && detail.request.providerMetadata?.openCodeQuestion === true;
-        },
-      );
-      const request = ((questionEvent.event as any).detail as { request: PendingInputRequest }).request;
-      expect(request.questions[0]?.question).toBe("Which surface should I inspect first?");
-      expect(request.questions[0]?.options?.map((option) => option.value)).toEqual(["CLI", "Chat"]);
-
-      // Answer only AFTER the turn has completed. The ask runs detached, so the
-      // loop reaches idle without waiting, and this is the interleaving that pins
-      // the completion path's refusal to cancel an open question card: cancel
-      // there and the card is gone before the user answers.
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "done" && event.event.status === "completed",
-      );
-
-      await service.respondToInput({
-        sessionId: session.id,
-        itemId: request.itemId ?? request.requestId,
-        decision: "accept",
-        answers: { q_1: "Chat" },
-      });
-      await turn;
-
-      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
-      expect(openCodeState.questionReply).toHaveBeenCalledWith({
-        requestID: "opencode-question-1",
-        directory: expect.stringMatching(/project$/),
-        answers: [["Chat"]],
-      }, { throwOnError: true });
-    });
 
     /**
      * Reported twice on 2026-09-22 against an OpenCode chat: an "OPENCODE
@@ -2682,124 +2570,6 @@ describe("createAgentChatService", () => {
      * The restarted service below is that state exactly: same session row,
      * same transcript, no runtime, no waiter.
      */
-    it("re-routes an answer whose waiter died instead of losing it", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-      mockState.openCodeQuestionForNextPrompt = {
-        id: "opencode-question-orphaned",
-        questions: [
-          {
-            header: "Simulator build for proof",
-            question: "How should I proceed?",
-            options: [
-              { label: "Build now, clean up after", description: "One focused build." },
-              { label: "Free space first", description: "Stop and wait." },
-            ],
-            custom: true,
-          },
-        ],
-      };
-
-      const first = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await first.service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-      const turn = first.service.runSessionTurn({
-        sessionId: session.id,
-        text: "Ask a clarifying question.",
-      });
-      const questionEvent = await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope => {
-          if (event.event.type !== "approval_request") return false;
-          const detail = event.event.detail as { request?: PendingInputRequest } | undefined;
-          return detail?.request?.providerMetadata?.openCodeQuestion === true;
-        },
-      );
-      const request = ((questionEvent.event as any).detail as { request: PendingInputRequest }).request;
-      const itemId = request.itemId ?? request.requestId;
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "done" && event.event.status === "completed",
-      );
-      await turn;
-
-      // The durable half has to be on disk before the restart: that transcript
-      // is the only place the restarted brain can learn the card's shape.
-      const transcriptPath = first.sessionService.get(session.id)!.transcriptPath;
-      await waitForCondition(
-        () => fs.existsSync(transcriptPath) && fs.readFileSync(transcriptPath, "utf8").includes(itemId),
-        "the question card to reach the transcript",
-      );
-
-      // The suite stubs the transcript parser to `[]` by default; a restarted
-      // brain has nothing BUT the transcript, so this test needs the real one.
-      installRealTranscriptParser();
-
-      const restartedEvents: AgentChatEventEnvelope[] = [];
-      const restarted = createService({
-        onEvent: (event: AgentChatEventEnvelope) => restartedEvents.push(event),
-      }).service;
-
-      await restarted.respondToInput({
-        sessionId: session.id,
-        itemId,
-        decision: "accept",
-        answers: { [request.questions[0]!.id]: "Build now, clean up after" },
-      });
-
-      // 1. The answer reached the agent. Not "a call was made" — the session
-      //    carries a user message holding what the owner picked, which is the
-      //    thing that was missing when he had to retype it.
-      const delivered = await waitForEvent(
-        restartedEvents,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "user_message"
-          && event.event.text.includes("Build now, clean up after"),
-      );
-      expect(delivered.event.type).toBe("user_message");
-
-      // 2. The receipt tells the truth. An answered question must never be
-      //    recorded as unanswered.
-      const receipt = restartedEvents.find((entry) =>
-        entry.event.type === "pending_input_resolved" && entry.event.itemId === itemId);
-      expect(receipt, "answering the card must write a receipt").toBeTruthy();
-      expect((receipt!.event as { resolution: string }).resolution).toBe("accepted");
-      expect((receipt!.event as { answers?: Record<string, unknown> }).answers)
-        .toMatchObject({ [request.questions[0]!.id]: "Build now, clean up after" });
-
-      // 3. No dead end.
-      expect(restartedEvents.some((entry) =>
-        entry.event.type === "system_notice"
-        && entry.event.message === "That request is no longer active.")).toBe(false);
-
-      // 4. Answering twice must not undo the first answer. The second response
-      //    finds an `accepted` receipt and changes nothing.
-      const receiptsBefore = restartedEvents.filter((entry) =>
-        entry.event.type === "pending_input_resolved" && entry.event.itemId === itemId).length;
-      await restarted.respondToInput({
-        sessionId: session.id,
-        itemId,
-        decision: "accept",
-        answers: { [request.questions[0]!.id]: "Build now, clean up after" },
-      });
-      expect(restartedEvents.filter((entry) =>
-        entry.event.type === "pending_input_resolved" && entry.event.itemId === itemId).length)
-        .toBe(receiptsBefore);
-      expect(restartedEvents.some((entry) =>
-        entry.event.type === "system_notice"
-        && entry.event.message === "That request is no longer active.")).toBe(false);
-    });
 
     it("sends Claude image follow-ups as SDK user messages after an earlier text turn", async () => {
       const send = vi.fn().mockResolvedValue(undefined);

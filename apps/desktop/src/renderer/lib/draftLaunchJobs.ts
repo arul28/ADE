@@ -3,6 +3,7 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
   AgentChatDroidPermissionMode,
+  AgentChatMusePermissionMode,
   AgentChatExecutionMode,
   AgentChatFileRef,
   AgentChatContextAttachment,
@@ -62,6 +63,7 @@ export type NativeControlState = {
   codexConfigSource: AgentChatCodexConfigSource;
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
   droidPermissionMode: AgentChatDroidPermissionMode;
+  musePermissionMode: AgentChatMusePermissionMode;
   cursorModeId: string | null;
   cursorConfigValues: Record<string, AgentChatCursorConfigValue>;
 };
@@ -72,6 +74,8 @@ export type DraftLaunchSnapshot = {
   modelId: string;
   reasoningEffort: string | null;
   fastMode: boolean;
+  /** "ultrafast" when Fast was set to Codex's Ultrafast tier; absent is plain Fast. */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier: CursorCloudServiceTier | null;
   executionMode: AgentChatExecutionMode;
   interactionMode: AgentChatInteractionMode;
@@ -111,7 +115,7 @@ export type DraftLaunchJobStatus = "naming-lane" | "creating-lane" | "starting-s
  * lane, start the agent, hand over the prompt — but each stage takes visibly longer and happens
  * off this machine, so the status line says so rather than claiming a local session is starting.
  */
-export type DraftLaunchTarget = "local" | "cursor-cloud";
+export type DraftLaunchTarget = "local" | "cursor-cloud" | "devin-cloud";
 
 export type DraftLaunchJob = {
   id: string;

@@ -2,7 +2,7 @@
  * A brain has no caller identity of its own.
  *
  * ADE stamps every agent shell with who is calling: the chat session, the
- * orchestration run, the browser capability minted for that chat. A CLI run
+ * orchestration run. A CLI run
  * from that shell reads them to say "this call is that agent's". A brain must
  * not: it serves every client on the machine, and the env caller context in
  * `adeRpcServer` falls back to the process env for EVERY connection that did
@@ -28,7 +28,6 @@ export const BRAIN_INHERITED_CALLER_ENV_KEYS = [
   "ADE_CHAT_SESSION_ID",
   "ADE_PARENT_CHAT_SESSION_ID",
   "ADE_SPAWN_KIND",
-  "ADE_BROWSER_ACTOR_TOKEN",
   "ADE_RUN_ID",
   "ADE_STEP_ID",
   "ADE_ATTEMPT_ID",
@@ -59,8 +58,17 @@ export function describeDroppedCallerIdentity(dropped: readonly string[]): strin
  * The sentence for a brain whose role ceiling refuses the desktop. Desktop,
  * phone and web clients connect at `cto`; a lower ceiling refuses them at the
  * handshake with "default role … cannot serve CLI role cto".
+ *
+ * An embedded runtime (the ADE SDK's sidecar, `--profile embedded`) is silent:
+ * it serves exactly one host at role `agent` on purpose, so the desktop,
+ * phone and web clients this sentence warns about are not there to be refused,
+ * and the command it recommends does not apply.
  */
-export function describeBrainRoleCeiling(role: AdeRuntimeRole): string | null {
+export function describeBrainRoleCeiling(
+  role: AdeRuntimeRole,
+  opts: { embedded?: boolean } = {},
+): string | null {
   if (role === "cto") return null;
+  if (opts.embedded) return null;
   return `This brain serves at role ${role}, so ADE desktop, phone and web clients (role cto) will be refused. Start it as \`ade --role cto serve\` to serve them.`;
 }

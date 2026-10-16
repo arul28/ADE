@@ -1195,15 +1195,27 @@ function normalizeScopeRoots(scopeRoots: readonly string[] | null | undefined): 
   return Array.from(roots);
 }
 
+/**
+ * Called once per provider project folder, and a project's scope holds every
+ * lane's worktree, so the realpaths are memoised against the caller's array
+ * the same way `scopeIndexFor` is.
+ */
+const scopeRootVariantsByRootsArray = new WeakMap<readonly string[], string[]>();
+
 function scopeRootPathVariants(scopeRoots: readonly string[] | null | undefined): string[] {
+  if (!scopeRoots) return [];
+  const cached = scopeRootVariantsByRootsArray.get(scopeRoots);
+  if (cached) return cached;
   const roots = new Set<string>();
-  for (const root of scopeRoots ?? []) {
+  for (const root of scopeRoots) {
     const clean = root.trim();
     if (!clean) continue;
     roots.add(path.resolve(clean));
     roots.add(realishPath(clean));
   }
-  return Array.from(roots);
+  const variants = Array.from(roots);
+  scopeRootVariantsByRootsArray.set(scopeRoots, variants);
+  return variants;
 }
 
 /**

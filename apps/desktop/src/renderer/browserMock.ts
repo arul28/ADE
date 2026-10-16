@@ -1,3 +1,4 @@
+import { createBrowserMockMusic } from "./browserMockMusic";
 /**
  * Browser-safe mock for `window.ade`.
  * Injected only when the Electron preload bridge is absent (i.e. opening the
@@ -30,15 +31,39 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import {
+  applyBrowserMockBrainDown,
+  applyBrowserMockUpdateAndFallback,
+  browserMockBrainDownScenario,
+  browserMockRecoveryScenario,
+  createBrowserMockRecoveryBridges,
+  showBrowserMockBrainDownPending,
+  showBrowserMockRecoveryScreen,
+} from "./browserMockRecovery";
+import type { BuiltInBrowserAgentAccessSnapshot } from "../shared/types/builtInBrowser";
+import type {
+  AppControlEventPayload,
+  AppControlRecordingStatus,
+  AppControlSession,
+} from "../shared/types/appControl";
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
 import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
 import { deriveSmartLinkPreview } from "../shared/smartLinks";
+import {
+  formatThreadReviewBlock,
+  normalizeThreadCommentAnchor,
+  prependThreadReview,
+  type ChatThreadComment,
+  type ChatThreadCommentCreateArgs,
+  type ChatThreadCommentUpdateArgs,
+} from "../shared/threadComments";
 import { createChatLaunchSnapshot, toQueuedMessage } from "../shared/chatLaunch";
 // The fixture must demo the link the product actually opens, so it reads the
 // same source the host stamps onto every snapshot.
 import { usageProviderAccountUrl } from "../shared/types/usage";
 import { remoteProjectBindingKey } from "../shared/projectIdentity";
+import { mcpSecretVaultKey, mcpSecretVaultKeyPrefix } from "../shared/mcpRegistry";
 import {
   CHAT_MENTION_KINDS,
   CHAT_MENTION_MAX_PER_KIND,
@@ -56,6 +81,11 @@ import {
   type AgentChatRecoverTurnArgs,
   type AgentChatRecoverTurnResult,
   type AgentChatPrepareCrossMachineHandoffArgs,
+  type AgentChatCrossMachineHandoffRecord,
+  type AgentChatCrossMachineHandoffSessionArgs,
+  type AgentChatRetryCrossMachineHandoffArgs,
+  type AgentChatPreviewCrossMachineHandoffArgs,
+  type AgentChatStartCrossMachineHandoffArgs,
   type AgentChatInterruptResult,
   type ChatMentionKind,
   type ChatMentionSuggestArgs,
@@ -68,13 +98,20 @@ import {
   type AgentChatRestoreCancelledQueueResult,
   type AgentChatResolveUnprocessedMessageArgs,
   type AgentChatResolveUnprocessedMessageResult,
-  MAX_PROMPT_STASHES,
-  type PromptStashCreateArgs,
-  type PromptStashEntry,
+  type AgentChatSendArgs,
+  type AgentChatSteerArgs,
+  type AgentChatCancelSteerArgs,
+  type AgentChatMoveSteerArgs,
+  MAX_DRAFTS,
+  type DraftCreateArgs,
+  type DraftUpdateArgs,
+  type DraftEntry,
   type RemoteRuntimeActionRequest,
 } from "../shared/types";
 import type { ChatLaunchEvent, ChatLaunchSnapshot } from "../shared/types/chatLaunch";
 import type { AccountSettingRow } from "../shared/types/accountSettings";
+import type { ProviderCompactionSettings } from "../shared/compactionSettings";
+import type { ProviderInstanceSettingsPatch } from "../shared/types/providerInstances";
 import type {
   ApiCredentialGetArgs,
   ApiCredentialListArgs,
@@ -101,6 +138,17 @@ import { attachBrowserRuntimeBridge } from "./browserRuntimeBridge";
 import { rendererPlatformAttribute } from "./lib/platform";
 import { applyHostedWebZoom } from "./lib/webZoom";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "./lib/zoom";
+import {
+  DEFAULT_ARCHIVE_STALE_DAYS,
+  type ArchiveActionArgs,
+  type ArchiveActionResult,
+  type ArchivedItem,
+  type ArchiveListArgs,
+  type ArchiveListResult,
+  type ArchiveSummary,
+  type ArchiveSummaryArgs,
+} from "../shared/types/archive";
+import { emptyArchiveCounts } from "../shared/archive";
 
 // The browser preview holds no power locks, so it reports the honest default.
 const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
@@ -123,6 +171,79 @@ const resolved =
   <T>(v: T) =>
   async () =>
     v;
+/**
+ * In-memory "Agents can use the ADE browser" for the browser-mock renderer.
+ * `window.__adeMockBrowserAgentPrompt()` opens a sample prompt so the dialog
+ * can be looked at without a live agent.
+ */
+function createMockBrowserAgentAccess() {
+  type Snapshot = BuiltInBrowserAgentAccessSnapshot;
+  let snapshot: Snapshot = { mode: "all", laneGrants: [], chatGrants: [], prompts: [] };
+  const listeners = new Set<(next: Snapshot) => void>();
+  const emit = () => {
+    for (const listener of listeners) listener(snapshot);
+    return snapshot;
+  };
+  if (typeof window !== "undefined") {
+    (window as unknown as Record<string, unknown>).__adeMockBrowserAgentPrompt = (mode: "lanes" | "chats" = "lanes") => {
+      snapshot = {
+        ...snapshot,
+        mode,
+        prompts: [...snapshot.prompts, {
+          id: `mock-${Date.now()}`,
+          chatSessionId: "3f1c2a9e-0000-4000-8000-000000000001",
+          chatTitle: "Fix the sign-in redirect",
+          laneId: "7b2d4e10-0000-4000-8000-000000000002",
+          laneName: "auth-refactor",
+          projectRoot: "/Users/me/Projects/web-app",
+          canAllowLane: mode === "lanes",
+          canAllowChat: true,
+          requestedAt: new Date().toISOString(),
+        }],
+      };
+      emit();
+    };
+  }
+  return {
+    get: async () => snapshot,
+    setMode: async (mode: Snapshot["mode"]) => {
+      snapshot = { ...snapshot, mode, prompts: mode === "all" ? [] : snapshot.prompts };
+      return emit();
+    },
+    answer: async (promptId: string, answer: string) => {
+      const prompt = snapshot.prompts.find((entry) => entry.id === promptId);
+      if (!prompt) return snapshot;
+      const now = new Date().toISOString();
+      snapshot = {
+        mode: answer === "all" ? "all" : snapshot.mode,
+        laneGrants: answer === "lane" && prompt.laneId
+          ? [{ projectRoot: prompt.projectRoot, laneId: prompt.laneId, laneName: prompt.laneName, grantedAt: now }, ...snapshot.laneGrants]
+          : snapshot.laneGrants,
+        chatGrants: answer === "chat" && prompt.chatSessionId
+          ? [{ chatSessionId: prompt.chatSessionId, chatTitle: prompt.chatTitle, laneName: prompt.laneName, grantedAt: now }, ...snapshot.chatGrants]
+          : snapshot.chatGrants,
+        prompts: snapshot.prompts.filter((entry) => entry.id !== promptId),
+      };
+      return emit();
+    },
+    revoke: async (args: { kind: string; laneId?: string; chatSessionId?: string }) => {
+      snapshot = {
+        ...snapshot,
+        laneGrants: args.kind === "all" ? [] : snapshot.laneGrants.filter((grant) => !(args.kind === "lane" && grant.laneId === args.laneId)),
+        chatGrants: args.kind === "all" ? [] : snapshot.chatGrants.filter((grant) => !(args.kind === "chat" && grant.chatSessionId === args.chatSessionId)),
+      };
+      return emit();
+    },
+    onChange: (cb: (next: Snapshot) => void) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+  };
+}
+
+/** The browser preview's move records, by source chat id. */
+const browserMockCrossMachineMoves = new Map<string, AgentChatCrossMachineHandoffRecord>();
+
 const resolvedArg =
   <T>(v: T) =>
   async (_a: any) =>
@@ -139,6 +260,64 @@ const resolvedArg2 =
   <T>(v: T) =>
   async (_a: any, _b: any) =>
     v;
+
+/**
+ * In-memory archive for the browser preview: a few archived lanes, chats, and
+ * shells of different ages, so Settings → Archive and the reminder banner have
+ * something to show. Restore and delete drop the item from the list.
+ */
+function createMockArchive() {
+  const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60_000).toISOString();
+  let items: ArchivedItem[] = [
+    { kind: "chat", id: "mock-archived-chat-1", title: "Refactor auth middleware", laneId: "lane-auth", laneName: "auth-refactor", laneColor: "#38bdf8", archivedAt: daysAgo(2), sizeBytes: 412_000, toolType: "claude-chat" },
+    { kind: "shell", id: "mock-archived-shell-1", title: "npm run dev", laneId: "lane-auth", laneName: "auth-refactor", laneColor: "#38bdf8", archivedAt: daysAgo(5), sizeBytes: 38_000, toolType: "shell", parentChatId: "mock-archived-chat-1" },
+    { kind: "lane", id: "lane-old-spike", title: "old-spike", laneId: "lane-old-spike", laneName: "old-spike", laneColor: "#f472b6", archivedAt: daysAgo(21), sizeBytes: 184 * 1024 ** 2, worktreePresent: true, branchRef: "ade/old-spike" },
+    { kind: "chat", id: "mock-archived-chat-2", title: "Investigate flaky test", laneId: "lane-old-spike", laneName: "old-spike", laneColor: "#f472b6", archivedAt: daysAgo(30), sizeBytes: 1_250_000, toolType: "codex-chat" },
+    { kind: "lane", id: "lane-reclaimed", title: "reclaimed-experiment", laneId: "lane-reclaimed", laneName: "reclaimed-experiment", laneColor: "#a3e635", archivedAt: daysAgo(60), sizeBytes: null, worktreePresent: false, branchRef: "ade/reclaimed-experiment" },
+  ];
+  const ageDays = (item: ArchivedItem) => (Date.now() - Date.parse(item.archivedAt)) / (24 * 60 * 60_000);
+  const remove = async (args: ArchiveActionArgs, _pin?: unknown): Promise<ArchiveActionResult> => {
+    const result: ArchiveActionResult = { done: [], failed: [] };
+    for (const ref of args?.items ?? []) {
+      const before = items.length;
+      items = items.filter((item) => !(item.kind === ref.kind && item.id === ref.id));
+      if (items.length < before) result.done.push(ref);
+      else result.failed.push({ ...ref, error: "Not archived." });
+    }
+    return result;
+  };
+  return {
+    list: async (args?: ArchiveListArgs, _pin?: unknown): Promise<ArchiveListResult> => ({
+      items: items.filter((item) =>
+        (!args?.kinds?.length || args.kinds.includes(item.kind))
+        && (!args?.olderThanDays || ageDays(item) >= args.olderThanDays)),
+    }),
+    summary: async (args?: ArchiveSummaryArgs, _pin?: unknown): Promise<ArchiveSummary> => {
+      const olderThanDays = args?.olderThanDays ?? DEFAULT_ARCHIVE_STALE_DAYS;
+      const byKind = emptyArchiveCounts();
+      const staleByKind = emptyArchiveCounts();
+      let staleBytes: number | null = null;
+      for (const item of items) {
+        byKind[item.kind] += 1;
+        if (ageDays(item) < olderThanDays) continue;
+        staleByKind[item.kind] += 1;
+        if (item.sizeBytes != null) staleBytes = (staleBytes ?? 0) + item.sizeBytes;
+      }
+      const oldest = [...items].sort((a, b) => Date.parse(a.archivedAt) - Date.parse(b.archivedAt))[0];
+      return {
+        total: items.length,
+        byKind,
+        olderThanDays,
+        staleTotal: staleByKind.lane + staleByKind.chat + staleByKind.shell,
+        staleByKind,
+        staleBytes,
+        oldestArchivedAt: oldest?.archivedAt ?? null,
+      };
+    },
+    restore: remove,
+    delete: remove,
+  };
+}
 /* ── chatLaunch (browser preview) ─────────────────────────────────────────
    A small simulator so the Vite preview shows a new-lane launch moving:
    fetch → check out files (with %) → start agent, a few hundred ms apart. A
@@ -271,6 +450,319 @@ function browserMockPlatform(): string {
   return rendererPlatformAttribute();
 }
 
+/* ── App Control (browser preview) ───────────────────────────────────────
+   A stateful mock so the App Control pane, its strip, the recording chrome and
+   the floating player can be looked at in the Vite preview. Pick the starting
+   state with the URL (plain or hash query), remembered in localStorage:
+
+     ?adeAppControl=off         No app: the Off card with Launch and Attach
+     ?adeAppControl=live        An attached app with a live frame (default)
+     ?adeAppControl=recording   The same app, recording for 12 seconds
+     ?adeAppControl=permission  Record refused: Screen Recording is off
+
+   Launch or Attach from the Off card goes live, Stop goes back to Off, and
+   Record / Stop recording round-trip with a "Saved to proof" receipt. */
+
+type MockAppControlState = "off" | "live" | "recording" | "permission";
+
+function browserMockAppControlState(): MockAppControlState {
+  const raw = browserMockOverride("adeAppControl", "ade.mock.appControl")?.trim().toLowerCase();
+  return raw === "off" || raw === "recording" || raw === "permission" ? raw : "live";
+}
+
+/** A believable app window, drawn as SVG and rasterized once for frames. */
+function mockAppControlSvg(): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800">
+  <rect width="1280" height="800" fill="#0f1115"/>
+  <rect width="1280" height="44" fill="#171a21"/>
+  <circle cx="24" cy="22" r="6" fill="#ff5f57"/><circle cx="44" cy="22" r="6" fill="#febc2e"/><circle cx="64" cy="22" r="6" fill="#28c840"/>
+  <text x="640" y="27" fill="#9aa3b2" font-family="-apple-system,Segoe UI,sans-serif" font-size="14" text-anchor="middle">ADE Playground</text>
+  <rect x="0" y="44" width="240" height="756" fill="#13161c"/>
+  <g font-family="-apple-system,Segoe UI,sans-serif" font-size="14" fill="#c9d1dc">
+    <rect x="12" y="64" width="216" height="32" rx="6" fill="#232838"/>
+    <text x="28" y="85">Inbox</text><text x="28" y="125" fill="#8b94a3">Drafts</text><text x="28" y="161" fill="#8b94a3">Settings</text>
+  </g>
+  <g font-family="-apple-system,Segoe UI,sans-serif">
+    <text x="288" y="112" fill="#e6ebf2" font-size="28" font-weight="600">Sign in to continue</text>
+    <text x="288" y="144" fill="#8b94a3" font-size="15">Use the account you set up in the playground.</text>
+    <rect x="288" y="180" width="440" height="44" rx="8" fill="#171a21" stroke="#2c3240"/>
+    <text x="304" y="208" fill="#6b7383" font-size="15">you@example.com</text>
+    <rect x="288" y="240" width="440" height="44" rx="8" fill="#171a21" stroke="#2c3240"/>
+    <text x="304" y="268" fill="#6b7383" font-size="15">Password</text>
+    <rect x="288" y="308" width="140" height="42" rx="8" fill="#7c6cf6"/>
+    <text x="358" y="335" fill="#ffffff" font-size="15" font-weight="600" text-anchor="middle">Sign in</text>
+  </g>
+  <rect x="820" y="96" width="400" height="260" rx="12" fill="#171a21" stroke="#232838"/>
+  <text x="844" y="132" fill="#c9d1dc" font-family="-apple-system,Segoe UI,sans-serif" font-size="15" font-weight="600">Activity</text>
+  <rect x="844" y="152" width="352" height="10" rx="5" fill="#232838"/><rect x="844" y="152" width="220" height="10" rx="5" fill="#7c6cf6"/>
+  <rect x="844" y="180" width="352" height="10" rx="5" fill="#232838"/><rect x="844" y="180" width="140" height="10" rx="5" fill="#38bdf8"/>
+</svg>`;
+  return `data:image/svg+xml;base64,${btoa(svg)}`;
+}
+
+function createMockAppControl() {
+  type Listener = (event: AppControlEventPayload) => void;
+  const listeners = new Set<Listener>();
+  let state = browserMockAppControlState();
+  let laneId: string | null = null;
+  let recordingStartedAt: string | null = state === "recording" ? new Date(Date.now() - 12_000).toISOString() : null;
+  let pngBase64: string | null = null;
+  let frameTimer: number | null = null;
+  const svgDataUrl = mockAppControlSvg();
+
+  const session = (): AppControlSession => ({
+    id: "mock-app-control-session",
+    appKind: "electron",
+    label: "ADE Playground",
+    projectRoot: MOCK_PROJECT.rootPath,
+    laneId,
+    cwd: MOCK_PROJECT.rootPath,
+    command: "pnpm dev",
+    pid: 4242,
+    terminalSessionId: null,
+    terminalPtyId: null,
+    cdpPort: 9222,
+    cdpEndpoint: "ws://127.0.0.1:9222/devtools/page/mock",
+    cdpTargetId: "mock-target",
+    provider: "cdp",
+    driver: "cdp",
+    chatSessionId: null,
+    startedAt: new Date(Date.now() - 60_000).toISOString(),
+    connectedAt: new Date(Date.now() - 58_000).toISOString(),
+    status: "connected",
+    lastError: null,
+    lastObservationId: null,
+    lastTraceEntryId: null,
+  });
+  const activeSession = () => (state === "off" ? null : session());
+  const permissionsDenied = { screenRecording: "denied", accessibility: "granted" } as const;
+  const recordingStatus = (): AppControlRecordingStatus => ({
+    laneId: laneId ?? "",
+    running: state === "recording",
+    startedAt: state === "recording" ? recordingStartedAt : null,
+    filePath: null,
+    durationMs: null,
+    caption: state === "recording" ? "App Control recording of ADE Playground" : null,
+    engine: "window-capture",
+    lastError: state === "permission" ? "Screen Recording is off for ADE." : null,
+    permissions: state === "permission" ? permissionsDenied : null,
+  });
+  const emit = (event: AppControlEventPayload) => {
+    for (const listener of [...listeners]) listener(event);
+  };
+  const rasterize = async (): Promise<string | null> => {
+    if (pngBase64) return pngBase64;
+    try {
+      const image = new Image();
+      image.src = svgDataUrl;
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = 1280;
+      canvas.height = 800;
+      canvas.getContext("2d")?.drawImage(image, 0, 0);
+      pngBase64 = canvas.toDataURL("image/jpeg", 0.8).split(",")[1] ?? null;
+    } catch {
+      pngBase64 = null;
+    }
+    return pngBase64;
+  };
+  const emitFrame = async () => {
+    if (state === "off" || !laneId) return;
+    const data = await rasterize();
+    if (!data) return;
+    emit({
+      type: "frame",
+      laneId,
+      frame: {
+        sessionId: "mock-app-control-session",
+        laneId,
+        cdpTargetId: "mock-target",
+        data,
+        mimeType: "image/jpeg",
+        width: 1280,
+        height: 800,
+        scale: 1,
+        viewportWidth: 1280,
+        viewportHeight: 800,
+        capturedAt: new Date().toISOString(),
+      },
+    });
+  };
+  // A screencast only while something listens, once a second: enough for the
+  // "live" look without a 30 fps loop in a preview tab.
+  const syncFrames = () => {
+    if (listeners.size > 0 && state !== "off") {
+      if (frameTimer == null) frameTimer = window.setInterval(() => void emitFrame(), 1_000);
+      void emitFrame();
+    } else if (frameTimer != null) {
+      window.clearInterval(frameTimer);
+      frameTimer = null;
+    }
+  };
+  const noteLane = (args: any) => {
+    const next = typeof args?.laneId === "string" && args.laneId ? args.laneId : null;
+    if (next) laneId = next;
+  };
+  const goLive = async (args: any) => {
+    noteLane(args);
+    state = "live";
+    emit({ type: "session-started", laneId, session: session() });
+    syncFrames();
+    return session();
+  };
+
+  return {
+    getStatus: async (args?: any) => {
+      noteLane(args);
+      const current = activeSession();
+      return {
+        platform: "darwin" as NodeJS.Platform,
+        supported: true,
+        laneId,
+        activeSession: current,
+        sessions: current ? [current] : [],
+        providers: [{ provider: "cdp" as const, available: true }],
+      };
+    },
+    launch: goLive,
+    launchInTerminal: goLive,
+    connect: goLive,
+    stop: async (args?: any) => {
+      noteLane(args);
+      const previous = activeSession();
+      state = "off";
+      recordingStartedAt = null;
+      emit({ type: "session-stopped", laneId, previousSession: previous });
+      syncFrames();
+      return { ok: true as const, previousSession: previous };
+    },
+    focusWindow: resolvedArg({ ok: true as const }),
+    minimizeWindow: resolvedArg({ ok: true as const }),
+    screenshot: async () => ({
+      sessionId: "mock-app-control-session",
+      capturedAt: new Date().toISOString(),
+      width: 1280,
+      height: 800,
+      dataUrl: svgDataUrl,
+    }),
+    getSnapshot: async (args?: any) => {
+      noteLane(args);
+      return {
+        session: activeSession(),
+        capturedAt: new Date().toISOString(),
+        screenshot: state === "off" ? null : {
+          sessionId: "mock-app-control-session",
+          cdpTargetId: "mock-target",
+          capturedAt: new Date().toISOString(),
+          width: 1280,
+          height: 800,
+          dataUrl: svgDataUrl,
+        },
+        screen: { width: 1280, height: 800, scale: 1, viewportWidth: 1280, viewportHeight: 800, scaleX: 1, scaleY: 1 },
+        elements: [],
+        hitElement: null,
+        providers: [{ provider: "cdp" as const, available: true, elementCount: 0 }],
+        url: "http://localhost:5173/sign-in",
+        title: "ADE Playground",
+      };
+    },
+    inspectPoint: resolvedArg({} as any),
+    selectPoint: resolvedArg({} as any),
+    click: resolvedArg({ ok: true as const }),
+    typeText: resolvedArg({ ok: true as const }),
+    scroll: resolvedArg({ ok: true as const }),
+    dispatchKey: resolvedArg({ ok: true as const }),
+    listTargets: async () => (state === "off" ? [] : [
+      { id: "mock-target", title: "ADE Playground", url: "http://localhost:5173/sign-in", type: "page", active: true },
+    ]),
+    attachToTarget: async () => session(),
+    listDrivers: async () => ({
+      platform: "darwin" as NodeJS.Platform,
+      activeDriver: "cdp" as const,
+      drivers: [
+        { driver: "cdp" as const, status: "available" as const, reason: null, implemented: true },
+        {
+          driver: "computer_use" as const,
+          status: "unavailable" as const,
+          reason: "The computer-use App Control driver is not built yet.",
+          implemented: false,
+        },
+      ],
+    }),
+    observe: resolvedArg({} as any),
+    getTrace: async () => ({ sessionId: activeSession()?.id ?? null, entries: [] }),
+    windows: async () => ({ sessionId: activeSession()?.id ?? null, activeTargetId: "mock-target", windows: [] }),
+    switchWindow: async () => ({ sessionId: activeSession()?.id ?? null, activeTargetId: "mock-target", windows: [] }),
+    getRecordingStatus: async (args?: any) => {
+      noteLane(args);
+      return recordingStatus();
+    },
+    getLatestFrame: async () => null,
+    startRecording: async (args?: any) => {
+      noteLane(args);
+      if (state === "permission") {
+        const status = recordingStatus();
+        emit({ type: "recording-changed", laneId: laneId ?? "", status });
+        return status;
+      }
+      state = "recording";
+      recordingStartedAt = new Date().toISOString();
+      const status = { ...recordingStatus(), caption: args?.caption ?? null };
+      emit({ type: "recording-changed", laneId: laneId ?? "", status });
+      return status;
+    },
+    stopRecording: async (args?: any) => {
+      noteLane(args);
+      const startedAt = recordingStartedAt;
+      state = "live";
+      recordingStartedAt = null;
+      const durationMs = startedAt ? Math.max(1_000, Date.now() - Date.parse(startedAt)) : 0;
+      const status: AppControlRecordingStatus = {
+        ...recordingStatus(),
+        running: false,
+        filePath: `${MOCK_PROJECT.rootPath}/.ade/artifacts/app-control-recording.mp4`,
+        durationMs,
+        wallDurationMs: durationMs,
+        idleCutMs: 0,
+        bytes: 3_400_000,
+        caption: "App Control recording of ADE Playground",
+        proofArtifactId: "mock-app-control-proof",
+        chatSessionId: args?.chatSessionId ?? null,
+      };
+      emit({ type: "recording-changed", laneId: laneId ?? "", status });
+      return status;
+    },
+    captureProof: async (args?: any) => {
+      noteLane(args);
+      return {
+        artifactId: "mock-app-control-still",
+        filePath: `${MOCK_PROJECT.rootPath}/.ade/cache/app-control-observations/mock/obs-mock.png`,
+        width: 1280,
+        height: 800,
+        caption: args?.caption ?? "App Control screenshot · ADE Playground",
+        laneId: laneId ?? "",
+        chatSessionId: args?.chatSessionId ?? null,
+        artifacts: [],
+        links: [],
+      };
+    },
+    onEvent: (listener: Listener) => {
+      listeners.add(listener);
+      // The permission state is the answer a refused start gave: say it once
+      // to whoever subscribes, so the card is on screen without a click.
+      if (state === "permission" && laneId) {
+        const status = recordingStatus();
+        window.setTimeout(() => listener({ type: "recording-changed", laneId: laneId ?? "", status }), 0);
+      }
+      syncFrames();
+      return () => {
+        listeners.delete(listener);
+        syncFrames();
+      };
+    },
+  };
+}
+
 const DEFAULT_BROWSER_MOCK_CODEX_MODEL =
   getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-6-astra";
 const DEFAULT_BROWSER_MOCK_CLAUDE_MODEL =
@@ -338,6 +830,8 @@ const now = new Date().toISOString();
  * the real store synthesizes on read. Mutable so the mock's create/rename/
  * remove handlers round-trip in the preview instead of looking broken.
  */
+const mockLogins = new Map<string, import("../shared/types").ProviderLoginStatus>();
+
 const mockProviderInstances: Array<{
   id: string;
   provider: "claude" | "codex";
@@ -348,6 +842,13 @@ const mockProviderInstances: Array<{
   createdAt: string;
   account?: { email?: string; plan?: string };
   signedIn: boolean;
+  loginBroken?: boolean;
+  sameLoginAs?: string;
+  replacedAccount?: { email: string; plan?: string; replacedAt: string };
+  subagentPromptCacheTtl?: "1h";
+  mainPromptCacheTtl?: "5m" | "1h";
+  onExtraUsage?: "stop";
+  compaction?: ProviderCompactionSettings;
 }> = [
   {
     id: "claude",
@@ -468,9 +969,29 @@ const browserMockIosElementResult = (
   matchCount: 0,
   message: "Browser preview has no iOS simulator.",
   waitedMs: null,
+  effect: { status: "not_checked", reason: "nothing was sent" },
 });
 
 const WELCOME_VIDEO_STORAGE_KEY = "ade.browserMock.welcomeVideoState";
+
+/**
+ * Preview-only: `?mockGate=signed_out|expired|unreadable` opens the launch
+ * gate in that account state (the welcome video is skipped so the sign-in
+ * screen shows directly). Signing in clears it for the rest of the page load.
+ */
+type BrowserMockGateState = "signed_out" | "expired" | "unreadable";
+let browserMockGateSignedIn = false;
+
+function browserMockGateState(): BrowserMockGateState | null {
+  if (browserMockGateSignedIn) return null;
+  try {
+    const value = new URLSearchParams(window.location.search).get("mockGate");
+    if (value === "expired" || value === "unreadable") return value;
+    return value === null ? null : "signed_out";
+  } catch {
+    return null;
+  }
+}
 
 function readBrowserMockWelcomeVideoState() {
   try {
@@ -535,97 +1056,206 @@ const MOCK_LINEAR_PROJECTS = [
     icon: null,
     color: "#5E6AD2",
   },
+  {
+    id: "mock-linear-project-sync",
+    name: "Sync reliability",
+    slug: "sync-reliability",
+    teamName: "ADE",
+    teamKey: "ADE",
+    icon: null,
+    color: "#4CB782",
+  },
 ];
 
-const MOCK_LINEAR_ISSUES = [
-  {
-    id: "mock-linear-issue-1",
-    identifier: "ADE-101",
-    title: "Polish Work tab header layout",
-    description: "Align tabs, tools toggle, and lane bands in the Work chrome.",
-    url: "https://linear.app/ade/issue/ADE-101/polish-work-tab-header-layout",
-    projectId: "mock-linear-project",
-    projectSlug: "desktop-polish",
-    projectName: "Desktop polish",
-    teamId: "mock-linear-team",
-    teamKey: "ADE",
-    teamName: "ADE",
-    stateId: "mock-linear-state-started",
-    stateName: "In Progress",
-    stateType: "started",
-    priority: 2,
-    priorityLabel: "high",
-    labels: [],
-    metadataTags: [],
-    assigneeId: "mock-linear-user",
-    assigneeName: "Mock Linear User",
-    creatorId: "mock-linear-user",
-    creatorName: "Mock Linear User",
-    blockerIssueIds: [],
-    hasOpenBlockers: false,
-    dueDate: null,
-    estimate: 3,
-    archivedAt: null,
-    completedAt: null,
-    canceledAt: null,
-    startedAt: now,
-    createdAt: now,
-    updatedAt: now,
-    raw: {},
-  },
-  {
-    id: "mock-linear-issue-2",
-    identifier: "ADE-102",
-    title: "Chat actions drawer parity",
-    description: "Unify Proof, Agents, and Handoff into one tabbed drawer.",
-    url: "https://linear.app/ade/issue/ADE-102/chat-actions-drawer-parity",
-    projectId: "mock-linear-project",
-    projectSlug: "desktop-polish",
-    projectName: "Desktop polish",
-    teamId: "mock-linear-team",
-    teamKey: "ADE",
-    teamName: "ADE",
-    stateId: "mock-linear-state-todo",
-    stateName: "Todo",
-    stateType: "unstarted",
-    priority: 3,
-    priorityLabel: "medium",
-    labels: [],
-    metadataTags: [],
-    assigneeId: null,
-    assigneeName: null,
-    creatorId: "mock-linear-user",
-    creatorName: "Mock Linear User",
-    blockerIssueIds: [],
-    hasOpenBlockers: false,
-    dueDate: null,
-    estimate: 2,
-    archivedAt: null,
-    completedAt: null,
-    canceledAt: null,
-    startedAt: null,
-    createdAt: now,
-    updatedAt: now,
-    raw: {},
-  },
+const MOCK_LINEAR_STATES = [
+  { id: "mock-linear-state-started", name: "In Progress", type: "started", teamId: "mock-linear-team", teamKey: "ADE" },
+  { id: "mock-linear-state-todo", name: "Todo", type: "unstarted", teamId: "mock-linear-team", teamKey: "ADE" },
+  { id: "mock-linear-state-backlog", name: "Backlog", type: "backlog", teamId: "mock-linear-team", teamKey: "ADE" },
+  { id: "mock-linear-state-done", name: "Done", type: "completed", teamId: "mock-linear-team", teamKey: "ADE" },
+  { id: "mock-linear-state-canceled", name: "Canceled", type: "canceled", teamId: "mock-linear-team", teamKey: "ADE" },
 ];
+
+const MOCK_LINEAR_LABELS = [
+  { id: "mock-linear-label-bug", name: "Bug", color: "#EB5757", teamId: "mock-linear-team", teamKey: "ADE" },
+  { id: "mock-linear-label-feature", name: "Feature", color: "#5E6AD2", teamId: "mock-linear-team", teamKey: "ADE" },
+  { id: "mock-linear-label-perf", name: "Performance", color: "#F2C94C", teamId: null, teamKey: null },
+  { id: "mock-linear-label-ux", name: "UX", color: "#4CB782", teamId: null, teamKey: null },
+];
+
+const MOCK_LINEAR_USERS = [
+  { id: "mock-linear-user", name: "Mock Linear User", displayName: "Mock Linear User", email: "mock@example.com", avatarUrl: null, active: true },
+  { id: "mock-linear-user-2", name: "Riley Chen", displayName: "Riley Chen", email: "riley@example.com", avatarUrl: null, active: true },
+];
+
+type MockLinearIssueSeed = {
+  n: number;
+  title: string;
+  state: string;
+  priority: number;
+  labels?: string[];
+  assignee?: string | null;
+  project?: string;
+  cycle?: boolean;
+};
+
+const MOCK_LINEAR_SEEDS: MockLinearIssueSeed[] = [
+  { n: 101, title: "Polish Work tab header layout", state: "mock-linear-state-started", priority: 2, labels: ["mock-linear-label-ux"], assignee: "mock-linear-user", cycle: true },
+  { n: 102, title: "Chat actions drawer parity", state: "mock-linear-state-todo", priority: 3, labels: ["mock-linear-label-feature"], cycle: true },
+  { n: 103, title: "Sync reconnect drops the last changeset", state: "mock-linear-state-started", priority: 1, labels: ["mock-linear-label-bug", "mock-linear-label-perf"], assignee: "mock-linear-user-2", project: "mock-linear-project-sync" },
+  { n: 104, title: "Split header into reusable pane chrome", state: "mock-linear-state-todo", priority: 4, assignee: "mock-linear-user", cycle: true },
+  { n: 105, title: "Lane list flickers on project switch", state: "mock-linear-state-todo", priority: 2, labels: ["mock-linear-label-bug"], project: "mock-linear-project-sync" },
+  { n: 106, title: "Keyboard shortcuts for the Linear pane", state: "mock-linear-state-backlog", priority: 0, labels: ["mock-linear-label-feature", "mock-linear-label-ux", "mock-linear-label-perf"] },
+  { n: 107, title: "Retry budget for relay heartbeats", state: "mock-linear-state-backlog", priority: 3, project: "mock-linear-project-sync" },
+  { n: 108, title: "Settings search misses nested sections", state: "mock-linear-state-done", priority: 3, labels: ["mock-linear-label-bug"], assignee: "mock-linear-user-2" },
+  { n: 109, title: "Remove legacy toast host", state: "mock-linear-state-canceled", priority: 4 },
+];
+
+function mockLinearRef(issue: { id: string; identifier: string; title: string; stateId: string; stateName: string; stateType: string }) {
+  return { id: issue.id, identifier: issue.identifier, title: issue.title, stateId: issue.stateId, stateName: issue.stateName, stateType: issue.stateType };
+}
+
+function buildMockLinearIssue(seed: MockLinearIssueSeed) {
+  const state = MOCK_LINEAR_STATES.find((entry) => entry.id === seed.state)!;
+  const project = MOCK_LINEAR_PROJECTS.find((entry) => entry.id === (seed.project ?? "mock-linear-project"))!;
+  const assignee = MOCK_LINEAR_USERS.find((entry) => entry.id === seed.assignee) ?? null;
+  const labels = (seed.labels ?? []).map((id) => MOCK_LINEAR_LABELS.find((entry) => entry.id === id)!);
+  const identifier = `ADE-${seed.n}`;
+  const priorityLabel = (["none", "urgent", "high", "normal", "low"] as const)[seed.priority] ?? "none";
+  const slug = seed.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return {
+    id: `mock-linear-issue-${seed.n}`,
+    identifier,
+    title: seed.title,
+    description: `${seed.title}.\n\n- Reproduce in the Vite preview\n- Keep Windows parity`,
+    url: `https://linear.app/ade/issue/${identifier}/${slug}`,
+    branchName: `mock/${identifier.toLowerCase()}-${slug}`.slice(0, 60),
+    projectId: project.id,
+    projectSlug: project.slug,
+    projectName: project.name,
+    teamId: "mock-linear-team",
+    teamKey: "ADE",
+    teamName: "ADE",
+    stateId: state.id,
+    stateName: state.name,
+    stateType: state.type,
+    priority: seed.priority,
+    priorityLabel,
+    labels: labels.map((label) => label.name.toLowerCase()),
+    labelColors: labels.map((label) => ({ id: label.id, name: label.name, color: label.color })),
+    cycleId: seed.cycle ? "mock-linear-cycle" : null,
+    cycleName: seed.cycle ? "Cycle 12" : null,
+    metadataTags: [],
+    assigneeId: assignee?.id ?? null,
+    assigneeName: assignee?.displayName ?? null,
+    assigneeAvatarUrl: null,
+    creatorId: "mock-linear-user",
+    creatorName: "Mock Linear User",
+    childIssues: [] as ReturnType<typeof mockLinearRef>[],
+    parentIssue: null as ReturnType<typeof mockLinearRef> | null,
+    blockedByIssues: [] as ReturnType<typeof mockLinearRef>[],
+    blockingIssues: [] as ReturnType<typeof mockLinearRef>[],
+    relatedIssues: [] as ReturnType<typeof mockLinearRef>[],
+    blockerIssueIds: [] as string[],
+    hasOpenBlockers: false,
+    dueDate: null,
+    estimate: seed.priority === 0 ? null : 5 - seed.priority,
+    archivedAt: null,
+    completedAt: state.type === "completed" ? now : null,
+    canceledAt: state.type === "canceled" ? now : null,
+    startedAt: state.type === "started" ? now : null,
+    createdAt: new Date(Date.now() - seed.n * 3_600_000).toISOString(),
+    updatedAt: new Date(Date.now() - (seed.n - 100) * 1_800_000).toISOString(),
+    raw: {},
+  };
+}
+
+const MOCK_LINEAR_ISSUES = MOCK_LINEAR_SEEDS.map(buildMockLinearIssue);
+
+function relinkMockLinearIssues(): void {
+  const byNumber = (n: number) => MOCK_LINEAR_ISSUES.find((issue) => issue.identifier === `ADE-${n}`)!;
+  const [a, b, c, d, e] = [byNumber(101), byNumber(102), byNumber(103), byNumber(104), byNumber(105)];
+  a.childIssues = [mockLinearRef(d)];
+  d.parentIssue = mockLinearRef(a);
+  a.blockingIssues = [mockLinearRef(b)];
+  b.blockedByIssues = [mockLinearRef(a)];
+  c.relatedIssues = [mockLinearRef(e)];
+  e.relatedIssues = [mockLinearRef(c)];
+  for (const issue of MOCK_LINEAR_ISSUES) {
+    issue.blockerIssueIds = issue.blockedByIssues.map((ref) => ref.id);
+    issue.hasOpenBlockers = issue.blockedByIssues.some((ref) => ref.stateType !== "completed" && ref.stateType !== "canceled");
+  }
+}
+relinkMockLinearIssues();
+
+const MOCK_LINEAR_VIEWS = [
+  { id: "mock-linear-view-bugs", name: "Open bugs", description: "Bugs not done", icon: null, color: "#EB5757", teamKey: "ADE", shared: true },
+];
+
+type MockLinearSearchArgs = {
+  projectId?: string | null;
+  stateTypes?: string[];
+  stateIds?: string[];
+  assigneeId?: string | null;
+  assignedToViewer?: boolean;
+  activeCycle?: boolean;
+  customViewId?: string | null;
+  priority?: number | null;
+  query?: string | null;
+};
+
+function mockLinearMatches(issue: (typeof MOCK_LINEAR_ISSUES)[number], args: MockLinearSearchArgs = {}): boolean {
+  if (args.projectId && issue.projectId !== args.projectId) return false;
+  if (args.stateTypes?.length && !args.stateTypes.includes(issue.stateType)) return false;
+  if (args.stateIds?.length && !args.stateIds.includes(issue.stateId)) return false;
+  if (args.assigneeId && issue.assigneeId !== args.assigneeId) return false;
+  if (!args.assigneeId && args.assignedToViewer && issue.assigneeId !== "mock-linear-user") return false;
+  if (args.activeCycle && !issue.cycleId) return false;
+  if (args.customViewId === "mock-linear-view-bugs" && (!issue.labels.includes("bug") || issue.stateType === "completed" || issue.stateType === "canceled")) return false;
+  if (typeof args.priority === "number" && issue.priority !== args.priority) return false;
+  const query = args.query?.trim().toLowerCase();
+  if (query && !`${issue.identifier} ${issue.title} ${issue.description}`.toLowerCase().includes(query)) return false;
+  return true;
+}
+
+function mockLinearUpdate(args: {
+  issueId: string;
+  stateId?: string;
+  assigneeId?: string | null;
+  priority?: number;
+  addedLabelIds?: string[];
+  removedLabelIds?: string[];
+}) {
+  const issue = MOCK_LINEAR_ISSUES.find((entry) => entry.id === args.issueId);
+  if (!issue) throw new Error("Issue not found in browser preview.");
+  if (args.stateId) {
+    const state = MOCK_LINEAR_STATES.find((entry) => entry.id === args.stateId);
+    if (state) Object.assign(issue, { stateId: state.id, stateName: state.name, stateType: state.type });
+  }
+  if (args.assigneeId !== undefined) {
+    const user = MOCK_LINEAR_USERS.find((entry) => entry.id === args.assigneeId) ?? null;
+    Object.assign(issue, { assigneeId: user?.id ?? null, assigneeName: user?.displayName ?? null });
+  }
+  if (typeof args.priority === "number") {
+    issue.priority = args.priority;
+    issue.priorityLabel = (["none", "urgent", "high", "normal", "low"] as const)[args.priority] ?? "none";
+  }
+  const removed = new Set(args.removedLabelIds ?? []);
+  const kept = issue.labelColors.filter((label) => !removed.has(label.id));
+  const added = (args.addedLabelIds ?? [])
+    .map((id) => MOCK_LINEAR_LABELS.find((entry) => entry.id === id))
+    .filter((label): label is (typeof MOCK_LINEAR_LABELS)[number] => Boolean(label) && !kept.some((entry) => entry.id === label!.id))
+    .map((label) => ({ id: label.id, name: label.name, color: label.color }));
+  issue.labelColors = [...kept, ...added];
+  issue.labels = issue.labelColors.map((label) => label.name.toLowerCase());
+  issue.updatedAt = new Date().toISOString();
+  return { ...issue };
+}
 
 const MOCK_LINEAR_PICKER = {
   projects: MOCK_LINEAR_PROJECTS,
-  users: [
-    {
-      id: "mock-linear-user",
-      name: "Mock Linear User",
-      displayName: "Mock Linear User",
-      email: "mock@example.com",
-      avatarUrl: null,
-      active: true,
-    },
-  ],
-  states: [
-    { id: "mock-linear-state-started", name: "In Progress", type: "started", teamId: "mock-linear-team" },
-    { id: "mock-linear-state-todo", name: "Todo", type: "unstarted", teamId: "mock-linear-team" },
-  ],
+  users: MOCK_LINEAR_USERS,
+  states: MOCK_LINEAR_STATES,
+  labels: MOCK_LINEAR_LABELS,
 };
 
 /** Browser mock lane health; matches `LaneHealthCheck` in shared types. */
@@ -770,6 +1400,9 @@ const BUILTIN_MOCK_SESSIONS: any[] = [
       targetKind: "session",
       targetId: "mock-session-claude-1",
       launch: {},
+      // Launched on the second Claude sign-in, so the chat account note has
+      // a non-default account to show.
+      instanceId: "claude-work",
     },
   },
   {
@@ -986,19 +1619,21 @@ const MOCK_COMMIT_TRAILERS = [
 ];
 const MOCK_COMMIT_MESSAGES = new Map<string, string>();
 
-function mockLaneRecentCommits(args: any = {}): any[] | null {
-  const lane = MOCK_LANES.find((row) => row.id === args?.laneId);
-  if (!lane || MOCK_COMMIT_POOL.length === 0) return null;
-  const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : 30;
-  const ahead = lane.laneType === "primary" ? limit : Math.max(0, lane.status?.ahead ?? 0);
-  const count = Math.min(limit, ahead + 5);
+function mockCommitsForLane(lane: any, count: number): any[] {
+  const ahead = lane.laneType === "primary" ? count : Math.max(0, lane.status?.ahead ?? 0);
+  const total = Math.min(count, ahead + 5);
   let seed = 0;
   for (const ch of String(lane.id)) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
   const end = Date.parse(lane.lastCommitAt ?? "") || Date.now() - 20 * 60_000;
   const start = Date.parse(lane.createdAt ?? "") || end - 7 * 86_400_000;
-  const step = Math.max(12 * 60_000, (end - start) / Math.max(1, Math.min(ahead, count)));
+  // A stable denominator (not the request-dependent row count), so a commit's
+  // timestamp does not shift between pages and reorder the union.
+  const timestampSlots = lane.laneType === "primary"
+    ? Math.max(1, MOCK_COMMIT_POOL.length)
+    : Math.max(1, lane.status?.ahead ?? 0);
+  const step = Math.max(12 * 60_000, (end - start) / timestampSlots);
   const lanePrefix = String(lane.id).replace(/[^0-9a-f]/gi, "").padEnd(8, "0").slice(0, 8);
-  return Array.from({ length: count }, (_, index) => {
+  return Array.from({ length: total }, (_, index) => {
     const source = MOCK_COMMIT_POOL[(seed + index) % MOCK_COMMIT_POOL.length];
     const sourceSha = String(source.sha);
     const sha = `${sourceSha.slice(0, 7)}${index.toString(16).padStart(4, "0")}${lanePrefix}${sourceSha.slice(19)}`;
@@ -1015,6 +1650,21 @@ function mockLaneRecentCommits(args: any = {}): any[] | null {
       pushed: index > 0,
     };
   });
+}
+
+function mockLaneRecentCommits(args: any = {}): any[] | null {
+  const lane = MOCK_LANES.find((row) => row.id === args?.laneId);
+  if (!lane || MOCK_COMMIT_POOL.length === 0) return null;
+  const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : 30;
+  const skip = Number.isFinite(args?.skip) ? Math.max(0, Math.floor(args.skip)) : 0;
+  // "All lanes" unions every lane; both scopes page by `skip` so the preview's
+  // "Load older" advances instead of re-reading page one.
+  const lanes = args?.scope === "lanes"
+    ? [lane, ...MOCK_LANES.filter((row) => row.id !== lane.id)]
+    : [lane];
+  const rows = lanes.flatMap((row) => mockCommitsForLane(row, limit + skip));
+  rows.sort((a, b) => Date.parse(b.authoredAt) - Date.parse(a.authoredAt));
+  return rows.slice(skip, skip + limit);
 }
 
 const ADE_DB_OPERATIONS: any[] =
@@ -1263,7 +1913,7 @@ function isMockChatToolType(toolType: unknown): boolean {
 
 function inferMockChatProvider(
   session: any,
-): "claude" | "codex" | "cursor" | "droid" | "opencode" {
+): "claude" | "codex" | "cursor" | "droid" | "muse" | "opencode" {
   const metadataProvider = String(session?.resumeMetadata?.provider ?? "")
     .trim()
     .toLowerCase();
@@ -1272,6 +1922,7 @@ function inferMockChatProvider(
     metadataProvider === "codex" ||
     metadataProvider === "cursor" ||
     metadataProvider === "droid" ||
+    metadataProvider === "muse" ||
     metadataProvider === "opencode"
   ) {
     return metadataProvider;
@@ -1283,6 +1934,7 @@ function inferMockChatProvider(
   if (toolType.startsWith("codex")) return "codex";
   if (toolType === "cursor" || toolType.startsWith("cursor")) return "cursor";
   if (toolType === "droid-chat" || toolType.startsWith("droid")) return "droid";
+  if (toolType.startsWith("muse")) return "muse";
   return "opencode";
 }
 
@@ -1408,7 +2060,25 @@ function getMockChatTranscriptEvents(sessionId: string): any[] {
   const base = Array.isArray(events)
     ? events.filter((entry) => entry?.sessionId === sessionId && entry?.event)
     : [];
-  return [...base, ...browserMockQuestionEvents(sessionId)];
+  return [...base, ...browserMockQuestionEvents(sessionId), ...(browserMockSentEvents.get(sessionId) ?? [])];
+}
+
+// Live chat events in the preview: messages sent here and thread-comment
+// changes reach the pane through the same `onEvent` path the host uses.
+const browserMockChatListeners = new Set<(envelope: any) => void>();
+const browserMockSentEvents = new Map<string, any[]>();
+const browserMockStagedSteers = new Map<string, string[]>();
+const browserMockThreadComments = new Map<string, ChatThreadComment[]>();
+
+function emitBrowserMockChatEvent(sessionId: string, event: Record<string, unknown>, persist = false): void {
+  const envelope = { sessionId, timestamp: new Date().toISOString(), event };
+  if (persist) browserMockSentEvents.set(sessionId, [...(browserMockSentEvents.get(sessionId) ?? []), envelope]);
+  for (const listener of browserMockChatListeners) listener(envelope);
+}
+
+function setBrowserMockThreadComments(sessionId: string, comments: ChatThreadComment[]): void {
+  browserMockThreadComments.set(sessionId, comments);
+  emitBrowserMockChatEvent(sessionId, { type: "session_meta_updated", threadComments: comments });
 }
 
 function latestMockDoneEvent(events: any[]): any | null {
@@ -1420,22 +2090,24 @@ function latestMockDoneEvent(events: any[]): any | null {
 }
 
 function fallbackMockModelForProvider(
-  provider: "claude" | "codex" | "cursor" | "droid" | "opencode",
+  provider: "claude" | "codex" | "cursor" | "droid" | "muse" | "opencode",
 ): string {
   if (provider === "claude") return "sonnet";
   if (provider === "codex") return DEFAULT_BROWSER_MOCK_CODEX_MODEL;
   if (provider === "cursor") return "auto";
   if (provider === "droid") return "claude-opus-4-6";
+  if (provider === "muse") return "muse-spark-1.3";
   return "opencode/mock";
 }
 
 function fallbackMockModelIdForProvider(
-  provider: "claude" | "codex" | "cursor" | "droid" | "opencode",
+  provider: "claude" | "codex" | "cursor" | "droid" | "muse" | "opencode",
 ): string {
   if (provider === "claude") return DEFAULT_BROWSER_MOCK_CLAUDE_MODEL;
   if (provider === "codex") return DEFAULT_BROWSER_MOCK_CODEX_MODEL;
   if (provider === "cursor") return "cursor/auto";
   if (provider === "droid") return "droid/claude-opus-4-6";
+  if (provider === "muse") return "muse/muse-spark-1.3";
   return "opencode/mock";
 }
 
@@ -1484,6 +2156,11 @@ function mockAgentChatSummaryFromSession(session: any): any | null {
       session.resumeMetadata?.opencodePermissionMode ?? undefined,
     droidPermissionMode:
       session.resumeMetadata?.droidPermissionMode ?? undefined,
+    musePermissionMode:
+      session.resumeMetadata?.musePermissionMode ?? undefined,
+    instanceId: session.resumeMetadata?.instanceId ?? undefined,
+    presetId: session.resumeMetadata?.presetId ?? undefined,
+    credentialId: session.resumeMetadata?.credentialId ?? undefined,
     cursorModeSnapshot: session.resumeMetadata?.cursorModeSnapshot ?? undefined,
     cursorModeId: session.resumeMetadata?.cursorModeId ?? null,
     cursorConfigValues: session.resumeMetadata?.cursorConfigValues ?? null,
@@ -3010,11 +3687,104 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
   ],
 };
 
+/** A PR's stack membership, the way the host's githubStackStore builds it. */
+function mockStackMembership(stack: any, entry: any): any {
+  const isOpen = (candidate: any) => candidate.state === "open" && !candidate.mergedAt;
+  return {
+    id: stack.id,
+    number: stack.number,
+    size: stack.entries.length,
+    position: entry.position,
+    baseBranch: stack.baseBranch,
+    openThroughHere: isOpen(entry)
+      ? stack.entries.filter((candidate: any) => candidate.position <= entry.position && isOpen(candidate)).length
+      : 0,
+  };
+}
+
+// A demo GitHub Stack: #151 sits on #142, so previews can show the stack UI.
+{
+  const stackPrs = [142, 151];
+  const pulls = stackPrs.map((number) =>
+    BUILTIN_MOCK_GITHUB_SNAPSHOT.repoPullRequests.find((pull: any) => pull.githubPrNumber === number));
+  if (pulls.every(Boolean)) {
+    BUILTIN_MOCK_GITHUB_SNAPSHOT.stacks = [{
+      id: "mock-stack-7",
+      number: 7,
+      nodeId: "MOCK_STACK_7",
+      repoOwner: "acme",
+      repoName: "ade",
+      baseBranch: "main",
+      open: true,
+      createdAt: now,
+      syncedAt: now,
+      lastError: null,
+      entries: pulls.map((pull: any, index: number) => ({
+        githubPrNumber: pull.githubPrNumber,
+        position: index + 1,
+        state: "open",
+        isDraft: false,
+        mergedAt: null,
+        headBranch: pull.headBranch,
+        headSha: `mock-sha-${pull.githubPrNumber}`,
+      })),
+    }];
+    const stack = BUILTIN_MOCK_GITHUB_SNAPSHOT.stacks[0];
+    pulls.forEach((pull: any, index: number) => {
+      pull.stack = mockStackMembership(stack, stack.entries[index]);
+    });
+  }
+}
+
 const MOCK_GITHUB_SNAPSHOT: any = normalizeGitHubSnapshot(
   USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.githubSnapshot
     ? ADE_DB_SNAPSHOT.githubSnapshot
     : BUILTIN_MOCK_GITHUB_SNAPSHOT,
 );
+
+const MOCK_JIRA_ACCOUNT = {
+  accountId: "mock-jira-user-1",
+  displayName: "Morgan Lee",
+  avatarUrl: null,
+  emailAddress: "morgan@example.com",
+};
+const MOCK_JIRA_PROJECTS = [
+  { id: "10000", key: "ADE", name: "ADE Platform", avatarUrl: null },
+  { id: "10001", key: "PAY", name: "Payments", avatarUrl: null },
+];
+const MOCK_JIRA_ISSUES: any[] = [
+  {
+    id: "20001", key: "ADE-101", projectKey: "ADE", title: "Keep issue filters when switching lanes",
+    status: { id: "3", name: "In Progress", category: "indeterminate" },
+    issueType: { id: "10001", name: "Task", iconUrl: null, subtask: false },
+    priority: { id: "3", name: "Medium", iconUrl: null }, assignee: MOCK_JIRA_ACCOUNT, reporter: MOCK_JIRA_ACCOUNT,
+    labels: ["ui", "issues"], parentKey: null, url: "https://ade.atlassian.net/browse/ADE-101",
+    createdAt: "2026-09-10T14:00:00.000Z", updatedAt: "2026-10-14T17:15:00.000Z",
+    description: "Keep the selected Jira filters while moving between lanes.", dueDate: null, subtasks: [],
+    comments: [{ id: "30001", author: MOCK_JIRA_ACCOUNT, body: "The filter state should survive a lane switch.", createdAt: "2026-10-14T16:00:00.000Z", updatedAt: "2026-10-14T16:00:00.000Z" }],
+    commentsCursor: null, totalComments: 1, permissions: { edit: true, comment: true, transition: true, assign: true },
+  },
+  {
+    id: "20002", key: "ADE-102", projectKey: "ADE", title: "Add retry details to Jira rate limits",
+    status: { id: "1", name: "To Do", category: "new" },
+    issueType: { id: "10000", name: "Bug", iconUrl: null, subtask: false },
+    priority: { id: "2", name: "High", iconUrl: null }, assignee: null, reporter: MOCK_JIRA_ACCOUNT,
+    labels: ["bug", "api"], parentKey: null, url: "https://ade.atlassian.net/browse/ADE-102",
+    createdAt: "2026-10-08T11:30:00.000Z", updatedAt: "2026-10-13T12:20:00.000Z",
+    description: "Show the retry time when Jira answers with HTTP 429.", dueDate: null, subtasks: [],
+    comments: [], commentsCursor: null, totalComments: 0, permissions: { edit: true, comment: true, transition: true, assign: true },
+  },
+  {
+    id: "20003", key: "PAY-21", projectKey: "PAY", title: "Document payment retry workflow",
+    status: { id: "6", name: "Done", category: "done" },
+    issueType: { id: "10002", name: "Story", iconUrl: null, subtask: false },
+    priority: { id: "4", name: "Low", iconUrl: null }, assignee: MOCK_JIRA_ACCOUNT, reporter: MOCK_JIRA_ACCOUNT,
+    labels: ["docs"], parentKey: null, url: "https://ade.atlassian.net/browse/PAY-21",
+    createdAt: "2026-08-20T08:15:00.000Z", updatedAt: "2026-10-10T09:10:00.000Z",
+    description: "Document the retry states and recovery path.", dueDate: null, subtasks: [],
+    comments: [], commentsCursor: null, totalComments: 0, permissions: { edit: true, comment: true, transition: true, assign: true },
+  },
+];
 
 function browserMockPrSummaryWithStack(pr: any): any {
   const pull = MOCK_GITHUB_SNAPSHOT.repoPullRequests.find(
@@ -3129,7 +3899,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   };
 
   const BROWSER_MOCK_PROVIDER_CONNECTION = (
-    provider: "claude" | "codex" | "cursor" | "droid",
+    provider: "claude" | "codex" | "cursor" | "droid" | "muse",
   ) => ({
     provider,
     // Detected-but-not-authed, which is what makes the demo quota fixture below
@@ -3169,7 +3939,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     models: { claude: [], codex: [], cursor: [], droid: [] },
     availableModelIds: [
       "anthropic/claude-sonnet-5",
-      "anthropic/claude-haiku-4-5",
+      "anthropic/claude-haiku-5-5",
       "openai/gpt-5-codex",
     ],
     features: [
@@ -3182,6 +3952,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       codex: BROWSER_MOCK_PROVIDER_CONNECTION("codex"),
       cursor: BROWSER_MOCK_PROVIDER_CONNECTION("cursor"),
       droid: BROWSER_MOCK_PROVIDER_CONNECTION("droid"),
+      muse: BROWSER_MOCK_PROVIDER_CONNECTION("muse"),
     },
   };
 
@@ -3209,6 +3980,40 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     willLastToReset: used <= elapsed,
     resetsInHours,
   });
+  // Recents for the welcome screen preview: one repo on three machines, a
+  // couple on two, and a few local-only, so the machine stack has every shape.
+  const browserMockAgo = (ms: number) => new Date(BROWSER_MOCK_NOW_MS - ms).toISOString();
+  const browserMockRemoteRecent = (
+    targetId: string,
+    runtimeName: string,
+    hostname: string,
+    projectId: string,
+    displayName: string,
+    rootPath: string,
+    agoMs: number,
+    gitOriginUrl: string | null,
+  ) => ({
+    rootPath,
+    displayName,
+    lastOpenedAt: browserMockAgo(agoMs),
+    exists: true,
+    kind: "remote" as const,
+    gitOriginUrl,
+    remote: { targetId, projectId, runtimeName, hostname, gitOriginUrl },
+  });
+  const BROWSER_MOCK_RECENT_PROJECTS: any[] = [
+    { rootPath: "/Users/arul/ADE", displayName: "ADE", lastOpenedAt: browserMockAgo(4 * 60_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:arul28/ADE.git", pinned: true },
+    browserMockRemoteRecent("mock-remote", "Studio Mac", "studio.local", "ade", "ADE", "/Users/admin/ADE", 2 * 3_600_000, "https://github.com/arul28/ADE"),
+    browserMockRemoteRecent("mock-windows", "windows", "win-box.local", "ade", "ADE", "C:/Users/arul/ADE", 3 * 86_400_000, "https://github.com/arul28/ADE"),
+    { rootPath: "/Users/arul/Projects/berth", displayName: "berth", lastOpenedAt: browserMockAgo(55 * 60_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:arul28/berth.git" },
+    browserMockRemoteRecent("mock-remote", "Studio Mac", "studio.local", "berth", "berth", "/Users/admin/Projects/berth", 6 * 3_600_000, "https://github.com/arul28/berth"),
+    { rootPath: "/Users/arul/Projects/portfolio-site", displayName: "portfolio-site", lastOpenedAt: browserMockAgo(5 * 3_600_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:arul28/portfolio-site.git" },
+    browserMockRemoteRecent("mock-remote", "Studio Mac", "studio.local", "beat-lab", "beat-lab", "/Users/admin/Music/beat-lab", 26 * 3_600_000, "https://github.com/arul28/beat-lab"),
+    { rootPath: "/Users/arul/Projects/ios-companion", displayName: "ios-companion", lastOpenedAt: browserMockAgo(2 * 86_400_000), exists: true, kind: "local", gitOriginUrl: null },
+    browserMockRemoteRecent("mock-windows", "windows", "win-box.local", "game-engine", "game-engine", "C:/Users/arul/dev/game-engine", 4 * 86_400_000, "https://github.com/arul28/game-engine"),
+    { rootPath: "/Users/arul/Projects/dotfiles", displayName: "dotfiles", lastOpenedAt: browserMockAgo(9 * 86_400_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:arul28/dotfiles.git" },
+    { rootPath: "/Users/arul/Projects/notes-api", displayName: "notes-api", lastOpenedAt: browserMockAgo(14 * 86_400_000), exists: true, kind: "local", gitOriginUrl: null },
+  ];
   const BROWSER_MOCK_USAGE_SNAPSHOT: any = {
     accounts: [
       {
@@ -3234,6 +4039,19 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         machines: [{ machineKey: "nucbox", label: "nucbox-1", checkedAt: now }],
         url: usageProviderAccountUrl("claude"),
       },
+      {
+        id: "claude:arul.sharma@example.com",
+        instanceId: "claude-side",
+        label: "Side",
+        provider: "claude",
+        email: "arul.sharma@example.com",
+        plan: "Claude Max 5x",
+        machines: [{ machineKey: "studio", label: "studio-mbp", checkedAt: now }],
+        url: usageProviderAccountUrl("claude"),
+      },
+      { id: "cursor:dev@example.com", label: "Default", provider: "cursor", email: "dev@example.com", plan: "Cursor Pro", machines: [{ machineKey: "studio", label: "studio-mbp", checkedAt: now }] },
+      { id: "copilot:arul28", label: "arul28", provider: "copilot", plan: "Copilot Pro", machines: [{ machineKey: "studio", label: "studio-mbp", checkedAt: now }] },
+      { id: "opencode:dev@example.com", label: "Default", provider: "opencode", email: "dev@example.com", plan: "OpenCode Go", machines: [{ machineKey: "studio", label: "studio-mbp", checkedAt: now }] },
       {
         id: "codex:dev@example.com",
         instanceId: "codex",
@@ -3316,6 +4134,18 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         resetsInMs: 6 * 86_400_000 + 6 * 3_600_000,
         pacing: browserMockPacing(71, 14, 150),
       },
+      {
+        provider: "claude",
+        windowType: "weekly",
+        accountId: "claude:arul.sharma@example.com",
+        percentUsed: 84,
+        resetsAt: browserMockResetAt(1 * 86_400_000 + 3 * 3_600_000),
+        resetsInMs: 1 * 86_400_000 + 3 * 3_600_000,
+        pacing: browserMockPacing(84, 80, 27),
+      },
+      { provider: "cursor", windowType: "monthly", accountId: "cursor:dev@example.com", percentUsed: 38, resetsAt: browserMockResetAt(17 * 86_400_000), resetsInMs: 17 * 86_400_000 },
+      { provider: "copilot", windowType: "monthly", accountId: "copilot:arul28", percentUsed: 97, resetsAt: browserMockResetAt(9 * 86_400_000), resetsInMs: 9 * 86_400_000 },
+      { provider: "opencode", windowType: "weekly", accountId: "opencode:dev@example.com", percentUsed: 12, resetsAt: browserMockResetAt(4 * 86_400_000), resetsInMs: 4 * 86_400_000 },
     ],
     pacing: browserMockPacing(48, 42, 151),
     providerStatus: {
@@ -3470,9 +4300,165 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     typeof ADE_DB_SNAPSHOT.adeUsageStatsByPreset === "object"
       ? ADE_DB_SNAPSHOT.adeUsageStatsByPreset
       : {};
+  /**
+   * A believable range of usage for the preview, so the Usage page and the
+   * Activity card can be laid out against real-looking shapes instead of an
+   * empty skeleton. Deterministic: the same day always gets the same numbers.
+   */
+  const makeBrowserSampleAdeUsageStats = (preset: AdeUsageRangePreset): any => {
+    const base = makeBrowserEmptyAdeUsageStats(preset);
+    const noise = (seed: number) => {
+      const x = Math.sin(seed * 12.9898) * 43758.5453;
+      return x - Math.floor(x);
+    };
+    const providerMix: Array<[string, number, number]> = [
+      ["claude", 0.52, 6.2],
+      ["codex", 0.31, 3.4],
+      ["cursor", 0.11, 2.1],
+      ["gemini", 0.06, 0.9],
+    ];
+    const totalDays = base.daily.length;
+    const daily = base.daily.map((point: any, index: number) => {
+      const dayNumber = Math.floor(Date.parse(`${point.date}T00:00:00Z`) / 86_400_000);
+      const weekday = new Date(`${point.date}T12:00:00Z`).getUTCDay();
+      const quiet = weekday === 0 || weekday === 6 ? 0.35 : 1;
+      const idle = noise(dayNumber + 7) < 0.12 && index < totalDays - 3;
+      const trend = 0.55 + (index / Math.max(1, totalDays - 1)) * 0.6;
+      const scale = idle ? 0 : quiet * trend * (0.45 + noise(dayNumber) * 0.9);
+      const totalTokens = Math.round(scale * 9_200_000);
+      const byProvider: Record<string, { totalTokens: number; costUsd: number }> = {};
+      for (const [provider, share, costPerMillion] of providerMix) {
+        const tokens = Math.round(totalTokens * share * (0.7 + noise(dayNumber * 3 + share * 10) * 0.6));
+        if (tokens > 0) byProvider[provider] = { totalTokens: tokens, costUsd: (tokens / 1_000_000) * costPerMillion };
+      }
+      const sessions = idle ? 0 : Math.max(1, Math.round(scale * 14));
+      const interactions = idle ? 0 : Math.round(scale * 120);
+      return {
+        ...point,
+        totalTokens,
+        inputTokens: Math.round(totalTokens * 0.82),
+        outputTokens: Math.round(totalTokens * 0.18),
+        cachedTokens: Math.round(totalTokens * 0.61),
+        sessions,
+        interactions,
+        durationMs: sessions * 38 * 60_000,
+        commits: idle ? 0 : Math.round(scale * 9),
+        insertions: idle ? 0 : Math.round(scale * 1_400),
+        deletions: idle ? 0 : Math.round(scale * 520),
+        filesChanged: idle ? 0 : Math.round(scale * 34),
+        githubCommits: idle ? 0 : Math.round(scale * 8),
+        githubPrs: idle ? 0 : Math.round(scale * 2),
+        githubAdditions: idle ? 0 : Math.round(scale * 1_250),
+        githubDeletions: idle ? 0 : Math.round(scale * 480),
+        clients: idle
+          ? {}
+          : {
+              desktop: Math.round(interactions * 0.81),
+              tui: Math.round(interactions * 0.11),
+              mobile: Math.round(interactions * 0.06),
+              web: Math.round(interactions * 0.02),
+            },
+        byProvider,
+      };
+    });
+    const sum = (pick: (point: any) => number) => daily.reduce((acc: number, point: any) => acc + (pick(point) || 0), 0);
+    const providers = providerMix.map(([provider]) => {
+      const totalTokens = sum((point) => point.byProvider[provider]?.totalTokens ?? 0);
+      const rangeCostUsd = sum((point) => point.byProvider[provider]?.costUsd ?? 0);
+      return {
+        provider,
+        totalTokens,
+        inputTokens: Math.round(totalTokens * 0.82),
+        outputTokens: Math.round(totalTokens * 0.18),
+        cachedTokens: Math.round(totalTokens * 0.61),
+        rangeCostUsd,
+        todayCostUsd: daily.at(-1)?.byProvider[provider]?.costUsd ?? 0,
+        last30dCostUsd: rangeCostUsd,
+        estimation: provider === "cursor" ? "chars" : "exact",
+        pricingSource: "list",
+        costSplit: {
+          input: rangeCostUsd * 0.34,
+          cacheRead: rangeCostUsd * 0.21,
+          cacheWrite: rangeCostUsd * 0.09,
+          output: rangeCostUsd * 0.36,
+          other: 0,
+          fastPremium: 0,
+          ultrafastPremium: 0,
+        },
+      };
+    });
+    const modelRows: Array<[string, string, number]> = [
+      ["claude", "claude-opus-5-5", 0.7],
+      ["claude", "claude-sonnet-5", 0.3],
+      ["codex", "gpt-5.6", 0.8],
+      ["codex", "gpt-5.6-mini", 0.2],
+      ["cursor", "cursor-fast", 1],
+      ["gemini", "gemini-3-pro", 1],
+    ];
+    const models = modelRows.map(([provider, model, share]) => {
+      const owner = providers.find((entry) => entry.provider === provider)!;
+      const totalTokens = Math.round(owner.totalTokens * share);
+      return {
+        provider,
+        model,
+        calls: Math.round(totalTokens / 42_000),
+        totalTokens,
+        inputTokens: Math.round(totalTokens * 0.82),
+        outputTokens: Math.round(totalTokens * 0.18),
+        cachedTokens: Math.round(totalTokens * 0.61),
+        costUsd: owner.rangeCostUsd * share,
+      };
+    });
+    const totalTokens = sum((point) => point.totalTokens);
+    const totalCost = providers.reduce((acc, entry) => acc + entry.rangeCostUsd, 0);
+    const interactions = sum((point) => point.interactions);
+    const activeDays = daily.filter((point: any) => point.totalTokens > 0).length;
+    const clientTotal = (client: string) => sum((point) => point.clients?.[client] ?? 0);
+    return {
+      ...base,
+      summary: {
+        ...base.summary,
+        totalTokens,
+        observedProviderTokens: totalTokens,
+        observedProviderInputTokens: Math.round(totalTokens * 0.82),
+        observedProviderOutputTokens: Math.round(totalTokens * 0.18),
+        observedProviderCachedTokens: Math.round(totalTokens * 0.61),
+        observedProviderCostRangeUsd: totalCost,
+        observedProviderCost30dUsd: totalCost,
+        observedProviderCostTodayUsd: providers.reduce((acc, entry) => acc + entry.todayCostUsd, 0),
+        chatSessions: sum((point) => point.sessions),
+        terminalSessions: Math.round(sum((point) => point.sessions) * 0.4),
+        commitsCreated: sum((point) => point.commits),
+        insertions: sum((point) => point.insertions),
+        deletions: sum((point) => point.deletions),
+        filesChanged: sum((point) => point.filesChanged),
+        prsTracked: sum((point) => point.githubPrs),
+        prsMerged: Math.round(sum((point) => point.githubPrs) * 0.7),
+        prAdditions: sum((point) => point.githubAdditions),
+        prDeletions: sum((point) => point.githubDeletions),
+        totalInteractions: interactions,
+        activeDays,
+        currentStreakDays: 4,
+        longestStreakDays: Math.min(activeDays, 17),
+        longestSessionMs: 3 * 3_600_000 + 12 * 60_000,
+      },
+      providers,
+      models,
+      clients: ["desktop", "tui", "mobile", "web"].map((client) => ({
+        client,
+        interactions: clientTotal(client),
+        activeDays: Math.round(activeDays * (client === "desktop" ? 1 : 0.4)),
+        sessions: Math.round(clientTotal(client) / 9),
+        lastActiveAt: now,
+      })),
+      daily,
+      pricingUpdatedAt: now,
+      freshness: { state: "fresh", providerUpdatedAt: now, githubUpdatedAt: now },
+    };
+  };
   const getBrowserAdeUsageStats = async (args?: { preset?: string }) => {
     const preset = isAdeUsageRangePreset(args?.preset) ? args.preset : "7d";
-    return BROWSER_ADE_USAGE_STATS_BY_PRESET[preset] ?? makeBrowserEmptyAdeUsageStats(preset);
+    return BROWSER_ADE_USAGE_STATS_BY_PRESET[preset] ?? makeBrowserSampleAdeUsageStats(preset);
   };
 
   const BROWSER_MOCK_BUDGET_CONFIG: any = {
@@ -3556,9 +4542,71 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   };
 
   const browserMockPersonalChats: any[] = [];
-  const browserMockPromptStashes: PromptStashEntry[] = [];
+  const browserMockDrafts: DraftEntry[] = [];
+
+  /**
+   * Hold plain drafts at the same cap the runtime does, and never drop an
+   * armed send to make room — the real store exempts them, and a mock that
+   * spliced the whole list would hide that the exemption exists.
+   */
+  function browserMockPruneDrafts(): void {
+    const plain = browserMockDrafts.filter((entry) => entry.kind !== "scheduled");
+    const excess = plain.length - MAX_DRAFTS;
+    if (excess <= 0) return;
+    // Newest-first, so the tail of the plain entries is the oldest.
+    const doomed = new Set(plain.slice(-excess).map((entry) => entry.id));
+    for (let index = browserMockDrafts.length - 1; index >= 0; index -= 1) {
+      const candidate = browserMockDrafts[index];
+      if (candidate && doomed.has(candidate.id)) browserMockDrafts.splice(index, 1);
+    }
+  }
   const browserMockPersonalChatEvents = new Map<string, any[]>();
   let browserMockPersonalChatSequence = 0;
+  /** Every personal event in order, so `streamEvents` can replay them like the runtime buffer. */
+  const browserMockPersonalChatStream: Array<{ id: number; payload: Record<string, unknown> }> = [];
+  /** One connected model, so the personal composer can create and send in the preview. */
+  const browserMockPersonalChatModelCatalog = {
+    fetchedAt: new Date(0).toISOString(),
+    groups: [{
+      key: "claude",
+      displayName: "Claude",
+      providers: [{
+        key: "anthropic",
+        displayName: "Anthropic",
+        badgeColor: "#D97706",
+        modelCount: 1,
+        subsections: [{
+          key: "__default__",
+          label: "",
+          models: [{
+            id: "anthropic/claude-sonnet-5-5",
+            runtimeModelId: "claude-sonnet-5-5",
+            modelId: "anthropic/claude-sonnet-5-5",
+            provider: "claude",
+            providerKey: "anthropic",
+            providerId: "anthropic",
+            providerName: "Anthropic",
+            groupKey: "claude",
+            displayName: "Claude Sonnet 5.5",
+            description: null,
+            isDefault: true,
+            aliases: [],
+            reasoningEfforts: [],
+            defaultReasoningEffort: null,
+            maxThinkingTokens: null,
+            family: "anthropic",
+            supportsReasoning: false,
+            supportsTools: true,
+            color: "#D97706",
+            isAvailable: true,
+            connected: true,
+            requiresConfiguration: false,
+            sourceRuntime: "claude",
+          }],
+        }],
+      }],
+    }],
+  };
 
   const appendBrowserMockPersonalChatEvent = (
     sessionId: string,
@@ -3572,6 +4620,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     const events = browserMockPersonalChatEvents.get(sessionId) ?? [];
     events.push(envelope);
     browserMockPersonalChatEvents.set(sessionId, events);
+    browserMockPersonalChatStream.push({ id: browserMockPersonalChatStream.length + 1, payload: envelope });
     return envelope;
   };
 
@@ -3640,7 +4689,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         imageUrl: null,
         configured: true,
       };
-      const status = () => (signedOut() ? signedOutStatus : signedInStatus);
+      const status = () => {
+        const gate = browserMockGateState();
+        if (gate) {
+          return {
+            ...signedOutStatus,
+            sessionState: gate,
+            sessionReadState: gate === "unreadable" ? ("unreadable" as const) : undefined,
+          };
+        }
+        return signedOut() ? signedOutStatus : signedInStatus;
+      };
       return {
         status: async () => status(),
         startLogin: async () => ({
@@ -3650,6 +4709,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         }),
         pollLogin: async () => {
           setSignedOut(false);
+          browserMockGateSignedIn = true;
           return {
             status: "signed_in" as const,
             message: null,
@@ -3702,8 +4762,23 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           // One preset bound to something this machine has, one that is not:
           // the unbound row is the state the "not set up here" note exists for.
           presets: [
-            { id: "hp_1", name: "Opus on work account", harness: "claude", model: "claude-opus-4-1", bound: true },
-            { id: "hp_9", name: "Droid on a key this Mac lacks", harness: "droid", model: "claude-sonnet-4-5", bound: false },
+            {
+              id: "hp_1",
+              name: "Opus on work account",
+              harness: "claude",
+              model: "claude-opus-4-1",
+              logo: { kind: "provider", providerId: "anthropic" },
+              accentColor: "#7c5ce0",
+              bound: true,
+            },
+            {
+              id: "hp_9",
+              name: "Droid on a key this Mac lacks",
+              harness: "droid",
+              model: "claude-sonnet-4-5",
+              logo: { kind: "ade" },
+              bound: false,
+            },
           ],
         }),
         listMachines: async () => {
@@ -3796,6 +4871,62 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           return { ok: true as const, value: null };
         },
         sync: async () => ({ ok: true as const, value: null }),
+      };
+    })(),
+    // Settings > MCP servers, in memory. Values given to `setSecret` are kept
+    // only as "held" flags, as the real bridge never hands one back either.
+    mcpRegistry: (() => {
+      const held = new Set<string>();
+      const secretKey = (ref: { server: string; field: string; name: string }) =>
+        mcpSecretVaultKey(ref.server, ref.field === "header" ? "header" : "env", ref.name);
+      const found = [
+        { name: "linear", transport: "http" as const, url: "https://mcp.linear.app/mcp", envNames: [], headerNames: [], providers: ["codex" as const, "droid" as const] },
+        {
+          name: "posthog",
+          transport: "stdio" as const,
+          command: "npx",
+          args: ["-y", "mcp-remote@latest", "https://mcp.posthog.com/sse"],
+          envNames: ["POSTHOG_AUTH_HEADER"],
+          headerNames: [],
+          providers: ["codex" as const],
+        },
+      ];
+      return {
+        context: async () => ({ deviceOffKey: "device.browser-mock.mcp.off", repoScope: "repo:github.com/ade/browser-preview", cached: null }),
+        check: async (args: { servers: Array<{ name: string; transport: string; command?: string; envNames: string[]; headerNames: string[] }> }) => ({
+          ok: true as const,
+          value: {
+            heldSecretKeys: [...held],
+            missingCommands: args.servers
+              .filter((server) => server.transport === "stdio" && server.command === "missing-command")
+              .map((server) => server.name),
+          },
+        }),
+        setSecret: async (args: { server: string; field: string; name: string; value: string }) => {
+          held.add(secretKey(args));
+          return { ok: true as const, value: null };
+        },
+        removeSecret: async (args: { server: string; field: string; name: string }) => {
+          held.delete(secretKey(args));
+          return { ok: true as const, value: null };
+        },
+        pruneSecrets: async (args: { server: string; keep: { envNames: string[]; headerNames: string[] } | null }) => {
+          const keep = new Set([
+            ...(args.keep?.envNames ?? []).map((name) => secretKey({ server: args.server, field: "env", name })),
+            ...(args.keep?.headerNames ?? []).map((name) => secretKey({ server: args.server, field: "header", name })),
+          ]);
+          for (const key of [...held]) {
+            if (key.startsWith(mcpSecretVaultKeyPrefix(args.server)) && !keep.has(key)) held.delete(key);
+          }
+          return { ok: true as const, value: null };
+        },
+        scan: async () => ({ servers: found, skipped: [] }),
+        import: async (args: { name: string }) => {
+          const server = found.find((entry) => entry.name === args.name);
+          if (!server) return { ok: false as const, rejected: true as const, message: "That server is no longer in a provider's settings on this computer." };
+          const { providers: _providers, ...definition } = server;
+          return { ok: true as const, value: { ...definition, enabled: true } };
+        },
       };
     })(),
     app: {
@@ -3898,7 +5029,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         },
         openProjectTabs: [MOCK_PROJECT],
       }),
-      getWelcomeVideoState: async () => readBrowserMockWelcomeVideoState(),
+      getWelcomeVideoState: async () => {
+        const state = readBrowserMockWelcomeVideoState();
+        return browserMockGateState() && !state.completedAt && !state.dismissedAt
+          ? { ...state, dismissedAt: new Date().toISOString() }
+          : state;
+      },
       markWelcomeVideoSeen: async (reason: "completed" | "dismissed" = "dismissed") => {
         const current = readBrowserMockWelcomeVideoState();
         const next = {
@@ -3909,7 +5045,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         writeBrowserMockWelcomeVideoState(next);
         return next;
       },
-      getLaunchGateState: resolved({ resolved: true }),
+      getLaunchGateState: async () => ({ resolved: browserMockGateState() === null }),
       resolveLaunchGate: resolved({ resolved: true as const }),
       setWindowProjectTabs: resolved({ openProjectTabs: [MOCK_PROJECT] }),
       newWindow: resolved({ windowId: 2 }),
@@ -3917,6 +5053,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         windowId: 2,
         project: MOCK_PROJECT,
       }),
+      projectTabDragStart: resolvedArg({ windowId: null }),
+      projectTabDragMove: () => {},
+      projectTabDragEnd: resolvedArg({ merged: false, intoSender: false }),
+      onAdoptProjectTab: () => () => {},
       closeWindow: resolvedArg({ closed: false }),
       onProjectChanged: () => () => {},
       onProjectBindingChanged: () => () => {},
@@ -3936,6 +5076,24 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       openPath: resolvedArg(undefined),
       openPathInEditor: resolvedArg(undefined),
       logDebugEvent: () => {},
+    },
+    // Sample project secrets so the Secrets page renders its list in the preview.
+    projectSecrets: {
+      list: resolved({
+        secrets: [
+          { name: "STRIPE_API_KEY", createdAt: now, updatedAt: now, valueLength: 32, storage: "account" },
+          { name: "OPENAI_API_KEY", createdAt: now, updatedAt: now, valueLength: 51, storage: "account" },
+          { name: "DATABASE_URL", createdAt: now, updatedAt: now, valueLength: 64, storage: "device" },
+        ],
+        storage: { path: `${MOCK_PROJECT.rootPath}/.ade/secrets`, encrypted: true, scope: "project" },
+      }),
+      get: resolvedArg({ name: "STRIPE_API_KEY", createdAt: now, updatedAt: now, valueLength: 32, storage: "account", value: "sk_test_preview" }),
+      set: resolvedArg({ name: "NEW_KEY", createdAt: now, updatedAt: now, valueLength: 8, storage: "account" }),
+      delete: resolvedArg({ deleted: true, name: "" }),
+      pullFromAccount: resolved({ state: "pulled" as const, added: 0, updated: 0 }),
+      chooseEnvFile: resolved(null),
+      importEnv: resolvedArg({ imported: [], replaced: [] }),
+      exportEnv: resolved({ filePath: "", secretCount: 0 }),
     },
     storage: {
       getPressure: resolved({
@@ -4000,6 +5158,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         dbSizeBytes: 20 * 1024 ** 2,
       }),
     },
+    archive: createMockArchive(),
     project: {
       openRepo: resolved(MOCK_PROJECT),
       chooseDirectory: resolvedArg(null),
@@ -4039,7 +5198,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         deletedPaths: [],
         clearedAt: new Date().toISOString(),
       }),
-      listRecent: resolved([]),
+      listRecent: resolved(BROWSER_MOCK_RECENT_PROJECTS),
       findForRepo: resolved(null),
       closeCurrent: resolved(undefined),
       resolveIcon: resolvedArg({
@@ -4124,6 +5283,29 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           lastError: null,
           lastAttemptedAt: Date.now(),
           connectedAt: Date.now(),
+        }, {
+          target: {
+            id: "mock-windows",
+            name: "windows",
+            hostname: "win-box.local",
+            transport: "paired",
+            pairedMachine: { hostIdentity: "mock-windows" },
+            sshUser: null,
+            port: null,
+            sshKeyPath: null,
+            lastSeenArch: "win32-x64",
+            runtimeBinaryVersion: "0.0.0-browser",
+            lastConnectedAt: Date.now() - 3 * 86_400_000,
+          },
+          state: "idle",
+          arch: "win32-x64",
+          version: "0.0.0-browser",
+          route: null,
+          capabilities: null,
+          projects: [],
+          lastError: null,
+          lastAttemptedAt: Date.now() - 3 * 86_400_000,
+          connectedAt: null,
         }],
         connectedCount: 1,
         updatedAt: Date.now(),
@@ -4201,6 +5383,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         openableProjectRoot: null,
         entries: [],
       }),
+      chooseProjectIcon: async (_id: string, _rootPath: string) => null,
+      removeProjectIcon: async (_id: string, _rootPath: string) => null,
       getProjectDetail: async (_id: string, rootPath: string) => ({
         rootPath,
         isGitRepo: true,
@@ -4380,27 +5564,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       storeApiKey: resolvedArg(undefined),
       deleteApiKey: resolvedArg(undefined),
       listApiKeys: resolved([]),
-      // Machine-scoped provider keys. The preview has no credential store, so
-      // report "not configured" rather than letting the card show a key-store
-      // failure the user cannot act on in a browser.
-      getMachineApiKeyStatus: async (provider: string) => ({
-        provider,
-        configured: false,
-        source: null,
-        envVar: "OPENAI_API_KEY",
-      }),
-      storeMachineApiKey: async (provider: string) => ({
-        provider,
-        configured: true,
-        source: "store" as const,
-        envVar: "OPENAI_API_KEY",
-      }),
-      deleteMachineApiKey: async (provider: string) => ({
-        provider,
-        configured: false,
-        source: null,
-        envVar: "OPENAI_API_KEY",
-      }),
       verifyApiKey: resolvedArg({
         provider: "mock",
         ok: false,
@@ -4413,6 +5576,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       opencodeOAuthCancel: resolvedArg(undefined),
       setOpencodeProviderKey: resolvedArg({ ok: false, error: "browser" } as any),
       clearOpencodeProviderKey: resolvedArg({ ok: false, error: "browser" } as any),
+      opencodeAccounts: resolvedArg({ accounts: [] }),
+      opencodeAccountActivate: resolvedArg({ ok: false, error: "browser" } as any),
+      opencodeAccountRename: resolvedArg({ ok: false, error: "browser" } as any),
+      opencodeAccountRemove: resolvedArg({ ok: false, error: "browser" } as any),
+      opencodeCloudConnect: resolvedArg({ ok: false, error: "browser" } as any),
       refreshModelsDev: resolved({ lastFetchedAt: null }),
       onOpencodeOAuthStatus: () => () => {},
       piLoginProviders: resolved([]),
@@ -4431,6 +5599,20 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onCursorAuthStatus: () => () => {},
       cursorCloudOpenChat: resolvedArg({ sessionId: "", session: null } as any),
       cursorCloudWatchMirror: resolvedArg(undefined),
+    },
+    cloudAgents: {
+      list: async (args: { provider: "devin" | "cursor" }) => ({
+        provider: args.provider,
+        items: [],
+        fetchedAt: new Date().toISOString(),
+        capabilities: { stop: false, archive: false, vmShell: false, web: false },
+        unavailableReason: null,
+        models: [],
+      }),
+      open: resolvedArg({ chatSessionId: "", laneId: "", laneName: null, createdLane: false }),
+      stop: resolvedArg({ stopped: true as const }),
+      archive: async (args: { archived: boolean }) => ({ archived: args.archived }),
+      launch: resolvedArg({ chatSessionId: "", laneId: "", laneName: null, createdLane: false }),
     },
     agentTools: {
       detect: resolved([]),
@@ -4604,6 +5786,44 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         summary: "Manual run completed.",
         billingCode: "auto:session-review",
       }),
+      planTest: resolvedArg({
+        mode: "safe",
+        ruleName: "Session review",
+        event: "Now, with no event",
+        lane: "A new throwaway lane from the default branch.",
+        steps: [
+          {
+            index: 0,
+            title: "Agent chat",
+            detail: "Default model. Prompt: Review the session.",
+            effect: "runs",
+            note: "The agent is told this is a test, and not to push, post, or comment.",
+            alwaysRun: false,
+          },
+        ],
+        afterwards: ["The test lane stays, so you can look at what it did."],
+        problems: [],
+        warnings: [],
+      }),
+      runTest: resolvedArg({
+        id: "run-test-1",
+        automationId: "auto-session-review",
+        chatSessionId: null,
+        triggerType: "manual",
+        startedAt: now,
+        endedAt: null,
+        status: "running",
+        executionKind: "agent-session",
+        actionsCompleted: 0,
+        actionsTotal: 1,
+        errorMessage: null,
+        spendUsd: 0,
+        confidence: null,
+        triggerMetadata: { test: { mode: "safe", event: "Now, with no event", lanes: [], cleanedUpAt: null } },
+        summary: null,
+        billingCode: "auto:session-review",
+      }),
+      cleanUpTestRun: resolvedArg({ removed: [], failed: [] }),
       getHistory: resolvedArg(
         USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.runs)
           ? ADE_DB_AUTOMATIONS.runs
@@ -5118,6 +6338,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onProxyEvent: noop,
     },
     sessions: {
+      getLifecycleSettings: resolved({ autoSettleLaneSessionsOnPrMerge: true }),
+      updateLifecycleSettings: resolvedArg({ autoSettleLaneSessionsOnPrMerge: true }),
       list: async (args: any = {}) => {
         let rows = MOCK_SESSIONS;
         if (typeof args?.laneId === "string" && args.laneId.trim()) {
@@ -5163,7 +6385,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             (chat) => args.includeArchived === true || !chat.archivedAt,
           );
         }
-        if (action === "modelCatalog") result = { groups: [], fetchedAt: new Date().toISOString() };
+        if (action === "modelCatalog") result = browserMockPersonalChatModelCatalog;
+        if (action === "slashCommands") result = [];
+        if (action === "setPinned") {
+          const chat = browserMockPersonalChats.find((entry) => entry.sessionId === args.sessionId);
+          if (chat) chat.pinned = args.pinned === true;
+          result = chat ?? null;
+        }
         if (action === "models") result = [];
         if (action === "create") {
           const now = new Date().toISOString();
@@ -5356,7 +6584,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         }
         return { action, result };
       },
-      streamEvents: async ({ cursor = 0 }: any = {}) => ({ events: [], nextCursor: cursor, hasMore: false }),
+      streamEvents: async ({ cursor = 0, limit = 200 }: any = {}) => {
+        const events = browserMockPersonalChatStream.filter((entry) => entry.id > cursor).slice(0, limit);
+        return { events, nextCursor: events.at(-1)?.id ?? cursor, hasMore: false };
+      },
     },
     chatLaunch: {
       start: async (args: any = {}) => startBrowserMockChatLaunch(args),
@@ -5418,6 +6649,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         return mockAgentChatSummaryFromSession(session) ?? null;
       },
       create: resolvedArg({ id: "mock" }),
+      launchCli: resolvedArg({ sessionId: "mock-cli", ptyId: "mock-pty", pid: null, attachedLinearIssueIds: [] } as any),
       suggestLaneName: resolvedArg("browser-mock-chat"),
       generateAutoLaneIdentity: async (args: any = {}) => ({
         laneTitle: String(args.fallbackName ?? "Browser Mock Chat"),
@@ -5432,14 +6664,53 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         get: resolvedArg(null),
         set: resolvedArg(undefined),
       },
-      promptStashes: {
-        list: async (_pin?: OpenProjectBinding | null) => browserMockPromptStashes.map((entry) => ({
+      threadComments: {
+        list: async (args: { sessionId: string }) => browserMockThreadComments.get(args.sessionId) ?? [],
+        create: async (args: ChatThreadCommentCreateArgs) => {
+          const anchor = normalizeThreadCommentAnchor(args.anchor);
+          if (!anchor || !args.body.trim()) throw new Error("A comment needs text and an anchor.");
+          const at = new Date().toISOString();
+          const comment: ChatThreadComment = {
+            id: globalThis.crypto.randomUUID(),
+            sessionId: args.sessionId,
+            messageKey: args.messageKey,
+            messageExcerpt: args.messageExcerpt,
+            anchor,
+            body: args.body.trim(),
+            includeInNextSend: true,
+            createdAt: at,
+            updatedAt: at,
+          };
+          setBrowserMockThreadComments(args.sessionId, [...(browserMockThreadComments.get(args.sessionId) ?? []), comment]);
+          return comment;
+        },
+        update: async (args: ChatThreadCommentUpdateArgs) => {
+          const current = browserMockThreadComments.get(args.sessionId) ?? [];
+          const previous = current.find((comment) => comment.id === args.commentId);
+          if (!previous) throw new Error("That comment no longer exists.");
+          const next: ChatThreadComment = {
+            ...previous,
+            ...(typeof args.body === "string" ? { body: args.body.trim() } : {}),
+            ...(typeof args.includeInNextSend === "boolean" ? { includeInNextSend: args.includeInNextSend } : {}),
+            updatedAt: new Date().toISOString(),
+          };
+          setBrowserMockThreadComments(args.sessionId, current.map((comment) => (comment.id === next.id ? next : comment)));
+          return next;
+        },
+        delete: async (args: { sessionId: string; commentId: string }) => {
+          const current = browserMockThreadComments.get(args.sessionId) ?? [];
+          setBrowserMockThreadComments(args.sessionId, current.filter((comment) => comment.id !== args.commentId));
+          return { deleted: current.some((comment) => comment.id === args.commentId) };
+        },
+      },
+      drafts: {
+        list: async (_pin?: OpenProjectBinding | null) => browserMockDrafts.map((entry) => ({
           ...entry,
           attachments: entry.attachments?.map((attachment) => ({ ...attachment })),
         })),
-        create: async (args: PromptStashCreateArgs, _pin?: OpenProjectBinding | null) => {
+        create: async (args: DraftCreateArgs, _pin?: OpenProjectBinding | null) => {
           const attachments = (args.attachments ?? []).map((attachment) => ({ ...attachment }));
-          const entry: PromptStashEntry = {
+          const entry: DraftEntry = {
             id: globalThis.crypto.randomUUID(),
             text: args.text,
             attachments,
@@ -5448,15 +6719,70 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             provider: args.provider ?? null,
             modelId: args.modelId ?? null,
             createdAt: new Date().toISOString(),
+            ...(args.schedule
+              ? {
+                kind: "scheduled" as const,
+                status: "scheduled" as const,
+                scheduledAt: args.schedule.scheduledAt,
+                deliveryPolicy: args.schedule.deliveryPolicy ?? "wait",
+                targetKind: args.schedule.targetKind,
+                targetSessionId: args.schedule.targetSessionId ?? null,
+                targetLaneId: args.schedule.targetLaneId ?? null,
+                targetMachineKey: args.schedule.targetMachineKey ?? null,
+                permissionMode: args.schedule.permissionMode ?? null,
+              }
+              : { kind: "draft" as const, status: "draft" as const }),
           };
-          browserMockPromptStashes.unshift(entry);
-          browserMockPromptStashes.splice(MAX_PROMPT_STASHES);
+          browserMockDrafts.unshift(entry);
+          browserMockPruneDrafts();
           return entry;
         },
+        update: async (
+          args: DraftUpdateArgs,
+          _pin?: OpenProjectBinding | null,
+        ): Promise<DraftEntry | null> => {
+          const index = browserMockDrafts.findIndex((entry) => entry.id === args.id);
+          if (index < 0) return null;
+          const current = browserMockDrafts[index]!;
+          const next: DraftEntry = {
+            ...current,
+            ...(args.text === undefined ? {} : { text: args.text }),
+            updatedAt: new Date().toISOString(),
+            ...(args.unschedule
+              ? { kind: "draft" as const, status: "draft" as const, scheduledAt: null }
+              : args.schedule
+                ? {
+                  kind: "scheduled" as const,
+                  status: "scheduled" as const,
+                  scheduledAt: args.schedule.scheduledAt,
+                  deliveryPolicy: args.schedule.deliveryPolicy ?? "wait",
+                  targetKind: args.schedule.targetKind,
+                  targetSessionId: args.schedule.targetSessionId ?? null,
+                  targetLaneId: args.schedule.targetLaneId ?? null,
+                  targetMachineKey: args.schedule.targetMachineKey ?? null,
+                }
+                : {}),
+          };
+          browserMockDrafts[index] = next;
+          return next;
+        },
+        sendNow: async ({ id }: { id: string }, _pin?: OpenProjectBinding | null) => {
+          const index = browserMockDrafts.findIndex((entry) => entry.id === id);
+          if (index < 0) return { ok: false, error: "That draft is gone." };
+          return { ok: true };
+        },
+        // Claim-first: the row is consumed and handed back, and a second claim
+        // finds nothing — the same shape the real runtime returns.
+        claim: async ({ id }: { id: string }, _pin?: OpenProjectBinding | null) => {
+          const index = browserMockDrafts.findIndex((entry) => entry.id === id);
+          if (index < 0) return null;
+          const [claimed] = browserMockDrafts.splice(index, 1);
+          return claimed ? { ...claimed } : null;
+        },
         delete: async ({ id }: { id: string }, _pin?: OpenProjectBinding | null) => {
-          const index = browserMockPromptStashes.findIndex((entry) => entry.id === id);
+          const index = browserMockDrafts.findIndex((entry) => entry.id === id);
           if (index < 0) return false;
-          browserMockPromptStashes.splice(index, 1);
+          browserMockDrafts.splice(index, 1);
           return true;
         },
       },
@@ -5487,6 +6813,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             codexConfigSource: args.codexConfigSource,
             opencodePermissionMode: args.opencodePermissionMode,
             droidPermissionMode: args.droidPermissionMode,
+            musePermissionMode: args.musePermissionMode,
             permissionMode: args.permissionMode,
             cursorModeId: args.cursorModeId,
           },
@@ -5501,13 +6828,142 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       validateCrossMachineSource: resolvedArg(undefined),
       markCrossMachineHandoff: resolvedArg(undefined),
-      send: resolvedArg(undefined),
-      steer: async () => ({
-        steerId: globalThis.crypto.randomUUID(),
-        queued: true,
+      // The brain-owned move. The preview has one paired machine with the
+      // repository, so the setup modal can be walked end to end.
+      getCrossMachineHandoffOptions: async (args: AgentChatCrossMachineHandoffSessionArgs) => ({
+        machines: [{
+          machineKey: "mock-remote",
+          name: "Mock remote",
+          online: true,
+          unavailableReason: null,
+          hasRepository: true,
+        }],
+        blockers: [],
+        changes: null,
+        current: browserMockCrossMachineMoves.get(args.sourceSessionId) ?? null,
       }),
-      cancelSteer: resolvedArg(undefined),
+      previewCrossMachineHandoff: async (args: AgentChatPreviewCrossMachineHandoffArgs) => ({
+        machineKey: "mock-remote",
+        machineName: "Mock remote",
+        hasRepository: true,
+        preflight: {
+          providerAuthorized: true,
+          modelAvailable: true,
+          remoteBranchHeadSha: "1234567890abcdef1234567890abcdef12345678",
+          existingLaneId: null,
+          blockingErrors: [],
+          warnings: [],
+          ...(args.mode === "fork" ? { forkHandoffSupport: { supported: true } } : {}),
+          gitBundleSupport: true,
+        },
+      }),
+      startCrossMachineHandoff: async (args: AgentChatStartCrossMachineHandoffArgs) => {
+        const now = new Date().toISOString();
+        const record: AgentChatCrossMachineHandoffRecord = {
+          handoffId: `mock-move-${Date.now()}`,
+          state: args.whenTurnEnds ? "pending" : "sending",
+          checkpoint: null,
+          targetMachineKey: "mock-remote",
+          targetMachineName: "Mock remote",
+          mode: args.mode ?? "brief",
+          targetModelId: args.targetModelId,
+          includeChanges: args.includeChanges === true,
+          requestedBy: "user",
+          requestedAt: now,
+          updatedAt: now,
+          reason: null,
+          targetLaneId: null,
+          targetSessionId: null,
+          resumedHere: false,
+        };
+        browserMockCrossMachineMoves.set(args.sourceSessionId, record);
+        return record;
+      },
+      cancelCrossMachineHandoff: async (args: AgentChatCrossMachineHandoffSessionArgs) => {
+        const current = browserMockCrossMachineMoves.get(args.sourceSessionId);
+        if (!current) return null;
+        const next = { ...current, state: "cancelled" as const, updatedAt: new Date().toISOString() };
+        browserMockCrossMachineMoves.set(args.sourceSessionId, next);
+        return next;
+      },
+      retryCrossMachineHandoff: async (args: AgentChatRetryCrossMachineHandoffArgs) => {
+        const current = browserMockCrossMachineMoves.get(args.sourceSessionId);
+        if (!current) throw new Error("There is no move to retry.");
+        const next = {
+          ...current,
+          ...(args.asBrief ? { mode: "brief" as const } : {}),
+          state: "sending" as const,
+          reason: null,
+          updatedAt: new Date().toISOString(),
+        };
+        browserMockCrossMachineMoves.set(args.sourceSessionId, next);
+        return next;
+      },
+      resolveCrossMachineHandoffApproval: async (args: { sourceSessionId: string; approve: boolean }) => {
+        const current = browserMockCrossMachineMoves.get(args.sourceSessionId);
+        if (!current) return null;
+        const next = {
+          ...current,
+          state: args.approve ? "sending" as const : "cancelled" as const,
+          updatedAt: new Date().toISOString(),
+        };
+        browserMockCrossMachineMoves.set(args.sourceSessionId, next);
+        return next;
+      },
+      acknowledgeCrossMachineHandoff: async (args: AgentChatCrossMachineHandoffSessionArgs) => {
+        const current = browserMockCrossMachineMoves.get(args.sourceSessionId);
+        if (!current) return null;
+        const next = { ...current, resumedHere: true, updatedAt: new Date().toISOString() };
+        browserMockCrossMachineMoves.set(args.sourceSessionId, next);
+        return next;
+      },
+      send: async (args: AgentChatSendArgs) => {
+        let text = args.text;
+        if (args.includeThreadComments) {
+          const current = browserMockThreadComments.get(args.sessionId) ?? [];
+          const block = formatThreadReviewBlock(current.filter((comment) => comment.includeInNextSend));
+          text = prependThreadReview(text, block);
+          setBrowserMockThreadComments(args.sessionId, current.filter((comment) => !comment.includeInNextSend));
+        }
+        emitBrowserMockChatEvent(args.sessionId, {
+          type: "user_message",
+          text,
+          ...(args.displayText !== undefined ? { displayText: args.displayText } : {}),
+        }, true);
+      },
+      // The staged queue behaves like the host's: a steer stages a queued
+      // bubble, a cancel retires it, and a move publishes the new order.
+      steer: async (args: AgentChatSteerArgs) => {
+        const steerId = globalThis.crypto.randomUUID();
+        const queue = browserMockStagedSteers.get(args.sessionId) ?? [];
+        browserMockStagedSteers.set(args.sessionId, [...queue, steerId]);
+        emitBrowserMockChatEvent(args.sessionId, {
+          type: "user_message",
+          text: args.text,
+          steerId,
+          deliveryState: "queued",
+          ...(args.attachments?.length ? { attachments: args.attachments } : {}),
+          ...(args.contextAttachments?.length ? { contextAttachments: args.contextAttachments } : {}),
+        }, true);
+        return { steerId, queued: true };
+      },
+      cancelSteer: async (args: AgentChatCancelSteerArgs) => {
+        const queue = browserMockStagedSteers.get(args.sessionId) ?? [];
+        browserMockStagedSteers.set(args.sessionId, queue.filter((id) => id !== args.steerId));
+        emitBrowserMockChatEvent(args.sessionId, {
+          type: "system_notice",
+          noticeKind: "info",
+          steerId: args.steerId,
+          message: "Queued message cancelled.",
+        }, true);
+      },
       editSteer: resolvedArg(undefined),
+      moveSteer: async (args: AgentChatMoveSteerArgs) => {
+        const queue = (browserMockStagedSteers.get(args.sessionId) ?? []).filter((id) => id !== args.steerId);
+        queue.splice(Math.max(0, Math.min(queue.length, args.toIndex)), 0, args.steerId);
+        browserMockStagedSteers.set(args.sessionId, queue);
+        emitBrowserMockChatEvent(args.sessionId, { type: "queue_reordered", steerIds: queue }, true);
+      },
       dispatchSteer: resolvedArg({
         delivered: false,
         reason: "Browser mock does not run chat sessions.",
@@ -5518,6 +6974,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         cancelledQueuedCount: 0,
       }),
       stopTask: resolvedArg({ sessionId: "", taskId: "", stopped: false }),
+      restartSession: resolvedArg({ sessionId: "", restarted: true, stoppedTurn: false, backgroundJobsStopped: 0 }),
       restoreCancelledQueue: resolvedArg<AgentChatRestoreCancelledQueueResult>({
         restored: false,
         restoredCount: 0,
@@ -5558,6 +7015,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       approve: resolvedArg(undefined),
       respondToInput: resolvedArg(undefined),
       dismissPendingInput: resolvedArg(undefined),
+      launchDefaults: resolvedArg(null),
       models: resolvedArg([]),
       modelCatalog: resolvedArg({ groups: [], fetchedAt: new Date(0).toISOString() }),
       archive: resolvedArg(undefined),
@@ -5583,7 +7041,15 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         nextWakeAt: null,
       }),
       warmupModel: resolvedArg(undefined),
-      onEvent: noop,
+      onEvent: (listener: (envelope: any) => void) => {
+        browserMockChatListeners.add(listener);
+        // `window.__adeMockEmitChatEvent(sessionId, event)` streams a chat event
+        // into the preview the way the host would (scripts/perf-chat-stream.mjs).
+        (window as unknown as Record<string, unknown>).__adeMockEmitChatEvent ??= emitBrowserMockChatEvent;
+        return () => {
+          browserMockChatListeners.delete(listener);
+        };
+      },
       slashCommands: resolvedArg([]),
       listClaudePlugins: resolvedArg([]),
       listCodexPlugins: resolvedArg([]),
@@ -5713,6 +7179,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       resolveSmartLinkPreview: async ({ url }: { url: string }) => deriveSmartLinkPreview(url),
       resolveSmartLinkImage: async () => ({ dataUrl: null }),
       resolveSourceFavicons: async () => ({ icons: {} }),
+      getMcpApp: async () => ({ status: "unavailable" as const, reason: "Apps do not run in the browser preview." }),
+      mcpAppRequest: async () => ({ ok: false as const, error: { code: -32000, message: "Apps do not run in the browser preview." } }),
+      listMcpAppGrants: async () => ({ server: null, tools: [] }),
+      revokeMcpAppGrant: async () => ({ server: null, tools: [] }),
       getEventHistory: async (arg: {
         sessionId: string;
         maxEvents?: number;
@@ -5765,37 +7235,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         };
       },
     },
-    appControl: {
-      getStatus: resolved({
-        platform: "darwin",
-        supported: false,
-        activeSession: null,
-        providers: [{
-          provider: "cdp",
-          available: false,
-          detail: "Browser preview does not run App Control.",
-        }],
-      }),
-      launch: resolvedArg({} as any),
-      launchInTerminal: resolvedArg({} as any),
-      connect: resolvedArg({} as any),
-      stop: resolved({ ok: true as const, previousSession: null }),
-      screenshot: resolvedArg({ dataUrl: null } as any),
-      getSnapshot: resolvedArg({
-        screenshot: null,
-        elements: [],
-        hitElement: null,
-        screen: { width: 0, height: 0, scale: 1 },
-      } as any),
-      inspectPoint: resolvedArg({} as any),
-      selectPoint: resolvedArg({} as any),
-      click: resolved({ ok: true as const }),
-      typeText: resolved({ ok: true as const }),
-      scroll: resolved({ ok: true as const }),
-      dispatchKey: resolved({ ok: true as const }),
-      listTargets: resolved([]),
-      attachToTarget: resolvedArg({} as any),
-      onEvent: () => () => {},
+    appControl: createMockAppControl(),
+    // No tools pane runs in the preview; the Work keep-alive still subscribes.
+    workTools: {
+      getLaneState: resolved(null),
+      setActiveTool: resolvedArg(undefined),
+      readObservationPreview: resolvedArg(null),
+      onShowRequest: noop,
+      acknowledgeShow: resolvedArg({ ok: false }),
     },
     iosSimulator: {
       /*
@@ -5841,6 +7288,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       deviceDelete: resolvedArg(undefined as any),
       deviceDetach: resolvedArg(null as any),
       deviceDeleteInstalled: resolvedArg(undefined as any),
+      deviceCleanup: resolvedArg({ deleted: [], poweredOff: [], forgottenRows: [], released: [], errors: [] } as any),
       listDevices: resolved([]),
       listLaunchTargets: resolved([]),
       launch: resolvedArg({} as any),
@@ -6056,6 +7504,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       listPermissions: resolved({ permissions: [] }),
       clearPermissions: resolvedArg({ removed: 0, permissions: [] }),
+      agentAccess: createMockBrowserAgentAccess(),
       loginImport: {
         capabilities: resolved({ platform: "other" as const, anySupported: false, browsers: [] }),
         listSources: resolved({
@@ -6075,6 +7524,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       navigate: resolvedArg({} as any),
       createTab: resolvedArg({} as any),
       switchTab: resolvedArg({} as any),
+      handTabToChat: resolvedArg({} as any),
       closeTab: resolvedArg({} as any),
       reload: resolvedArg({} as any),
       goBack: resolvedArg({} as any),
@@ -6286,10 +7736,31 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         },
       }),
       getLinearIssuePickerData: resolvedArg(MOCK_LINEAR_PICKER),
-      searchLinearIssues: resolvedArg({
-        issues: MOCK_LINEAR_ISSUES,
+      searchLinearIssues: async (args: MockLinearSearchArgs = {}) => ({
+        issues: MOCK_LINEAR_ISSUES.filter((issue) => mockLinearMatches(issue, args)).map((issue) => ({ ...issue })),
         pageInfo: { hasNextPage: false, endCursor: null },
       }),
+      countLinearIssues: async (args: { queries?: Record<string, MockLinearSearchArgs> } = {}) => ({
+        counts: Object.fromEntries(Object.entries(args.queries ?? {}).map(([key, query]) => [
+          key,
+          { count: MOCK_LINEAR_ISSUES.filter((issue) => mockLinearMatches(issue, query)).length, capped: false },
+        ])),
+      }),
+      getLinearCustomViews: resolvedArg(MOCK_LINEAR_VIEWS),
+      getLinearIssue: async (args: { issueId: string }) => {
+        const issue = MOCK_LINEAR_ISSUES.find((entry) => entry.id === args.issueId);
+        return issue ? { ...issue } : null;
+      },
+      updateLinearIssue: async (args: Parameters<typeof mockLinearUpdate>[0]) => mockLinearUpdate(args),
+      getLinearIssueComments: resolvedArg([
+        {
+          id: "mock-linear-comment-1",
+          body: "Repro is stable on the preview build.",
+          createdAt: now,
+          userName: "riley",
+          userDisplayName: "Riley Chen",
+        },
+      ]),
       getLinearConnectionStatus: resolvedArg(MOCK_LINEAR_CONNECTION),
       setLinearToken: resolvedArg({
         ...MOCK_LINEAR_CONNECTION,
@@ -6456,6 +7927,64 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         }
         return instance;
       },
+      // A simulated sign-in: the link appears at once, the code prompt after a
+      // beat, and a pasted code finishes it — enough to walk every state.
+      loginStart: async (args: { id: string }) => {
+        const instance = mockProviderInstanceById(args.id);
+        const loginId = `mock-login-${Date.now()}`;
+        mockLogins.set(loginId, {
+          loginId,
+          instanceId: instance.id,
+          provider: instance.provider,
+          state: "running",
+          url: instance.provider === "claude"
+            ? "https://claude.ai/oauth/authorize?code=true&client_id=mock&response_type=code"
+            : "https://auth.openai.com/oauth/authorize?client_id=mock",
+          awaitingCode: false,
+          output: "Opening browser to sign in…\nIf the browser didn't open, visit the link below.\n",
+          startedAt: new Date().toISOString(),
+        });
+        setTimeout(() => {
+          const login = mockLogins.get(loginId);
+          if (login?.state === "running") {
+            login.awaitingCode = true;
+            login.output += "Paste code here if prompted > ";
+          }
+        }, 1500);
+        return { ...mockLogins.get(loginId)! };
+      },
+      loginStatus: async (args: { loginId: string }) => ({ ...mockLogins.get(args.loginId)! }),
+      loginSubmitCode: async (args: { loginId: string; code: string }) => {
+        const login = mockLogins.get(args.loginId)!;
+        login.awaitingCode = false;
+        login.state = "verifying";
+        login.output += "\nLogin successful.\n";
+        setTimeout(() => {
+          const instance = mockProviderInstanceById(login.instanceId);
+          instance.signedIn = true;
+          instance.account = instance.account ?? { email: "new.account@example.com", plan: "Claude Max 20x" };
+          login.state = "succeeded";
+          login.email = instance.account.email;
+          login.endedAt = new Date().toISOString();
+        }, 900);
+        return { ...login };
+      },
+      loginCancel: async (args: { loginId: string }) => {
+        const login = mockLogins.get(args.loginId)!;
+        login.state = "cancelled";
+        return { ...login };
+      },
+      signOut: async (args: { id: string }) => {
+        const instance = mockProviderInstanceById(args.id);
+        delete instance.account;
+        instance.signedIn = false;
+        return instance;
+      },
+      dismissReplaced: async (args: { id: string }) => {
+        const instance = mockProviderInstanceById(args.id);
+        delete instance.replacedAccount;
+        return instance;
+      },
       setAccent: async (args: { id: string; accentColor: string | null }) => {
         const instance = mockProviderInstanceById(args.id);
         if (args.accentColor) instance.accentColor = args.accentColor;
@@ -6466,9 +7995,27 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         ({ ...mockProviderInstanceSettings[args.provider] }),
       setSettings: async (args: {
         provider: "claude" | "codex";
-        settings: { smartBalance?: boolean; autoStartWindows?: boolean };
+        instanceId?: string;
+        settings: ProviderInstanceSettingsPatch;
       }) => {
         const current = mockProviderInstanceSettings[args.provider];
+        const account = args.instanceId ? mockProviderInstances.find((entry) => entry.id === args.instanceId) : undefined;
+        if (account && args.settings && Object.hasOwn(args.settings, "compaction")) {
+          if (args.settings.compaction) account.compaction = args.settings.compaction;
+          else delete account.compaction;
+        }
+        if (account && args.settings && Object.hasOwn(args.settings, "subagentPromptCacheTtl")) {
+          if (args.settings.subagentPromptCacheTtl === "1h") account.subagentPromptCacheTtl = "1h";
+          else delete account.subagentPromptCacheTtl;
+        }
+        if (account && args.settings && Object.hasOwn(args.settings, "mainPromptCacheTtl")) {
+          if (args.settings.mainPromptCacheTtl) account.mainPromptCacheTtl = args.settings.mainPromptCacheTtl;
+          else delete account.mainPromptCacheTtl;
+        }
+        if (account && args.settings && Object.hasOwn(args.settings, "onExtraUsage")) {
+          if (args.settings.onExtraUsage === "stop") account.onExtraUsage = "stop";
+          else delete account.onExtraUsage;
+        }
         if (typeof args.settings?.smartBalance === "boolean") current.smartBalance = args.settings.smartBalance;
         if (typeof args.settings?.autoStartWindows === "boolean") {
           current.autoStartWindows = args.settings.autoStartWindows;
@@ -6933,6 +8480,53 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       listRepoCollaborators: resolved([]),
       onStatusChanged: noop,
     },
+    jira: {
+      getConnectionStatus: resolved({ connected: true, siteUrl: "https://ade.atlassian.net", email: "morgan@example.com", account: MOCK_JIRA_ACCOUNT, error: null, checkedAt: new Date().toISOString() }),
+      connect: resolvedArg({ connected: true, siteUrl: "https://ade.atlassian.net", email: "morgan@example.com", account: MOCK_JIRA_ACCOUNT, error: null, checkedAt: new Date().toISOString() }),
+      disconnect: resolved({ connected: false, siteUrl: null, email: null, account: null, error: null, checkedAt: new Date().toISOString() }),
+      listProjects: async (args: any = {}) => MOCK_JIRA_PROJECTS.filter((project) => !args.query || `${project.key} ${project.name}`.toLowerCase().includes(String(args.query).toLowerCase())),
+      listIssues: async (args: any = {}) => {
+        const projectKeys = Array.isArray(args.projectKeys) ? args.projectKeys : [];
+        const query = String(args.query ?? "").toLowerCase();
+        const matches = MOCK_JIRA_ISSUES.filter((issue) =>
+          (!projectKeys.length || projectKeys.includes(issue.projectKey))
+          && (args.state !== "done" || issue.status.category === "done")
+          && (args.state !== "open" || issue.status.category !== "done")
+          && (!query || `${issue.key} ${issue.title} ${issue.labels.join(" ")}`.toLowerCase().includes(query))
+          && (args.assignee !== "me" || issue.assignee?.accountId === MOCK_JIRA_ACCOUNT.accountId),
+        );
+        const limit = Math.max(1, Math.min(100, Number(args.limit) || 50));
+        const start = Number.parseInt(String(args.cursor ?? "0"), 10) || 0;
+        const issues = matches.slice(start, start + limit);
+        return { issues, nextCursor: start + issues.length < matches.length ? String(start + issues.length) : null };
+      },
+      getIssue: async (args: any) => MOCK_JIRA_ISSUES.find((issue) => issue.key === args.key) ?? MOCK_JIRA_ISSUES[0],
+      listComments: async (args: any) => {
+        const issue = MOCK_JIRA_ISSUES.find((candidate) => candidate.key === args.key) ?? MOCK_JIRA_ISSUES[0];
+        return { comments: issue.comments, nextCursor: null };
+      },
+      addComment: async (args: any) => ({ id: `mock-jira-comment-${Date.now()}`, author: MOCK_JIRA_ACCOUNT, body: String(args.body ?? ""), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }),
+      updateIssue: resolved(undefined),
+      listTransitions: async () => [
+        { id: "11", name: "Start Progress", to: { id: "3", name: "In Progress", category: "indeterminate" } },
+        { id: "21", name: "Resolve Issue", to: { id: "6", name: "Done", category: "done" } },
+        { id: "31", name: "Reopen Issue", to: { id: "1", name: "To Do", category: "new" } },
+      ],
+      transitionIssue: resolved(undefined),
+      listAssignableUsers: resolved([MOCK_JIRA_ACCOUNT, { accountId: "mock-jira-user-2", displayName: "Taylor Kim", avatarUrl: null, emailAddress: "taylor@example.com" }, { accountId: "mock-jira-user-3", displayName: "Casey Rivera", avatarUrl: null, emailAddress: "casey@example.com" }]),
+      listLabels: async (args: any = {}) => ["api", "bug", "docs", "issues", "ui"].filter((label) => !args.query || label.includes(String(args.query).toLowerCase())),
+      getCreateMeta: async (args: any) => ({
+        projectKey: String(args.projectKey ?? "ADE").toUpperCase(),
+        issueTypes: [
+          { id: "10000", name: "Bug", iconUrl: null, subtask: false, fields: [{ id: "summary", name: "Summary", required: true, supported: true }, { id: "description", name: "Description", required: false, supported: true }] },
+          { id: "10001", name: "Task", iconUrl: null, subtask: false, fields: [{ id: "summary", name: "Summary", required: true, supported: true }, { id: "labels", name: "Labels", required: false, supported: true }] },
+          { id: "10002", name: "Story", iconUrl: null, subtask: false, fields: [{ id: "summary", name: "Summary", required: true, supported: true }] },
+          { id: "10003", name: "Sub-task", iconUrl: null, subtask: true, fields: [{ id: "summary", name: "Summary", required: true, supported: true }, { id: "customfield_10011", name: "Release train", required: true, supported: false }] },
+        ],
+        priorities: [{ id: "2", name: "High", iconUrl: null }, { id: "3", name: "Medium", iconUrl: null }, { id: "4", name: "Low", iconUrl: null }],
+      }),
+      createIssue: async (args: any) => ({ id: `mock-jira-${Date.now()}`, key: `${String(args.projectKey ?? "ADE").toUpperCase()}-104`, url: `https://ade.atlassian.net/browse/${String(args.projectKey ?? "ADE").toUpperCase()}-104` }),
+    },
     prs: {
       createFromLane: resolvedArg(
         USE_ADE_DB_SNAPSHOT ? null : (NORMAL_PRS[0] ?? null),
@@ -7072,7 +8666,40 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         title: "AI-drafted title",
         body: "AI-drafted body",
       }),
-      land: resolvedArg({ success: true, prNumber: 142, sha: "abc123" }),
+      land: async (args: { prId?: string }) => {
+        const pr = ALL_PRS.find((item: any) => item.id === args?.prId) ?? null;
+        const stack = pr ? browserMockPrSummaryWithStack(pr).stack : null;
+        // A stacked PR merges with every open PR below it, as the host's async stack merge does.
+        const stackPrNumbers = stack
+          ? (MOCK_GITHUB_SNAPSHOT.stacks.find((item: any) => item.number === stack.number)?.entries ?? [])
+              .filter((entry: any) => entry.position <= stack.position && entry.state === "open" && !entry.mergedAt)
+              .map((entry: any) => entry.githubPrNumber)
+          : null;
+        // Record the merge, so the next list read shows it as the host would.
+        const mergedAt = new Date().toISOString();
+        for (const number of stackPrNumbers ?? (pr ? [pr.githubPrNumber] : [])) {
+          for (const item of [...ALL_PRS, ...MOCK_GITHUB_SNAPSHOT.repoPullRequests]) {
+            if (item.githubPrNumber !== number) continue;
+            Object.assign(item, { state: "merged", mergedAt });
+            if (item.id && MOCK_STATUS_BY_PR[item.id]) MOCK_STATUS_BY_PR[item.id].state = "merged";
+          }
+          const entry = stack
+            ? MOCK_GITHUB_SNAPSHOT.stacks.find((item: any) => item.number === stack.number)?.entries
+                ?.find((candidate: any) => candidate.githubPrNumber === number)
+            : null;
+          if (entry) Object.assign(entry, { state: "closed", mergedAt });
+        }
+        return {
+          prId: args?.prId ?? "",
+          prNumber: pr?.githubPrNumber ?? 142,
+          success: true,
+          mergeCommitSha: "abc123",
+          branchDeleted: false,
+          laneArchived: false,
+          error: null,
+          ...(stack ? { mergeStatus: "merged", stackPrNumbers } : {}),
+        };
+      },
       retargetBase: resolvedArg(undefined),
       openInGitHub: resolvedArg(undefined),
       createIntegration: resolvedArg({}),
@@ -7110,12 +8737,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             },
           ]),
         ),
-      listWithConflicts: resolved(ALL_PRS),
-      listSnapshots: async (args?: { prId?: string }) => {
+      // Fresh copies, so a refresh after a mock merge re-renders the rows.
+      listWithConflicts: async () => ALL_PRS.map(browserMockPrSummaryWithStack),
+      listSnapshots: async (args?: { prId?: string; prIds?: string[] }) => {
         let snapshots = ADE_DB_PR_SNAPSHOTS;
         const prId = args?.prId?.trim();
         if (prId) {
           snapshots = snapshots.filter((snapshot) => snapshot.prId === prId);
+        } else if (Array.isArray(args?.prIds)) {
+          const wanted = new Set(args.prIds);
+          snapshots = snapshots.filter((snapshot) => wanted.has(snapshot.prId));
         }
         return snapshots;
       },
@@ -7159,6 +8790,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           }),
         };
         MOCK_GITHUB_SNAPSHOT.stacks = [...MOCK_GITHUB_SNAPSHOT.stacks, stack];
+        // Mark each PR as stacked, as the host's stack membership does.
+        for (const entry of stack.entries) {
+          const pull = MOCK_GITHUB_SNAPSHOT.repoPullRequests.find(
+            (item: any) => item.githubPrNumber === entry.githubPrNumber,
+          );
+          if (!pull) continue;
+          pull.stack = mockStackMembership(stack, entry);
+        }
         return stack;
       },
       addGitHubStackPullRequests: async (args: {
@@ -7202,6 +8841,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         const [stack] = MOCK_GITHUB_SNAPSHOT.stacks.splice(index, 1);
         return stack ?? null;
       },
+      linkChatSession: async () => ({ ok: true }),
+      unlinkChatSession: async () => ({ ok: true }),
+      setChatWatch: async () => null,
+      getChatWatches: async () => [],
+      linkChatStack: async () => ({ ok: true, linked: 0 }),
+      listChatSessionsForPr: async () => [],
+      getStackLinkOffer: async () => null,
       listIntegrationWorkflows: resolved(MOCK_INTEGRATION_WORKFLOWS),
       aiResolutionStart: async () => ({
         sessionId: "mock-pr-ai-session",
@@ -7452,11 +9098,41 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     updateSetPreferences: async (
       preferences: AutoUpdatePreferences,
     ): Promise<AutoUpdatePreferences> => preferences,
-    updateGetInstallImpact: resolved({ connectedPhones: [] }),
+    updateGetInstallImpact: resolved({ checked: true, chats: [], cliSessions: 0, terminals: 0, connectedPhones: [] }),
     updateQuitAndInstall: resolved(true),
     updateCancelAutoApply: resolved(false),
     updateDismissInstalledNotice: resolved(undefined),
+    updateRelaunchApp: resolved(false),
     onUpdateEvent: noop,
+    music: createBrowserMockMusic(),
+    // Recovery screen + hard reset scenarios (`?adeRecovery=<state>`; see
+    // browserMockRecovery.ts for every recovery and brain-down preview URL).
+    ...createBrowserMockRecoveryBridges(),
   };
+  // Brain-down banner scenarios (`?adeBrainDown=<cause>`).
+  applyBrowserMockBrainDown((window as any).ade);
+  applyBrowserMockUpdateAndFallback((window as any).ade);
   void attachBrowserRuntimeBridge();
+  if (browserMockBrainDownScenario() === "updating") {
+    // After the mock project has opened; that open clears transition errors.
+    window.setTimeout(() => {
+      void import("./state/appStore").then(({ useAppStore }) => {
+        showBrowserMockBrainDownPending(
+          (error) => useAppStore.setState({ projectTransitionError: error }),
+          MOCK_PROJECT.rootPath,
+        );
+      });
+    }, 2_500);
+  }
+  if (browserMockRecoveryScenario()) {
+    // After the mock project has opened; that open clears transition errors.
+    window.setTimeout(() => {
+      void import("./state/appStore").then(({ useAppStore }) => {
+        showBrowserMockRecoveryScreen(
+          (error) => useAppStore.setState({ projectTransitionError: error }),
+          MOCK_PROJECT.rootPath,
+        );
+      });
+    }, 2_500);
+  }
 } // window

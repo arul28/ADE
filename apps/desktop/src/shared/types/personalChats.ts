@@ -14,8 +14,11 @@ import type {
   AgentChatRestoreCancelledQueueArgs,
   AgentChatDispatchSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatMoveSteerArgs,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
+  AgentChatProvider,
+  AgentChatSlashCommand,
   PendingInputRequest,
   AgentChatRecoverTurnArgs,
   AgentChatRecoverTurnResult,
@@ -44,6 +47,7 @@ export const PERSONAL_CHAT_ACTIONS = [
   "steer",
   "cancelSteer",
   "editSteer",
+  "moveSteer",
   "dispatchSteer",
   "cancelDispatchedSteer",
   "interrupt",
@@ -61,11 +65,14 @@ export const PERSONAL_CHAT_ACTIONS = [
   "resumeUsageLimitNow",
   "continueUsageLimitOnAlternate",
   "updateSession",
+  "setPinned",
+  "rerunLastTurn",
   "archive",
   "unarchive",
   "delete",
   "models",
   "modelCatalog",
+  "slashCommands",
   "getEventHistory",
   "getEventHistoryPage",
   "terminalCreate",
@@ -74,9 +81,18 @@ export const PERSONAL_CHAT_ACTIONS = [
   "terminalDispose",
   "saveTempAttachment",
   "getImageDataUrl",
+  // The agent's own Chats-row reports (`ade chat activity|note|ask` from inside
+  // a personal chat). The personal runtime has no socket of its own, so these
+  // reach it through the brain like every other personal action.
+  "setSessionActivity",
+  "setSessionStatusNote",
+  "requestSessionAttention",
 ] as const;
 
 export type PersonalChatAction = (typeof PERSONAL_CHAT_ACTIONS)[number];
+
+/** The most `attachmentRoots` one personal chat may name. */
+export const MAX_PERSONAL_CHAT_ATTACHMENT_ROOTS = 32;
 
 export type PersonalChatRemoteCommandAction =
   | `personalChats.${PersonalChatAction}`
@@ -117,15 +133,25 @@ export type PersonalChatCreateArgs = Omit<
   | "orchestrationParentSessionId"
 > & { kickoffText?: string };
 
+/**
+ * Sent by ADE's own Chats surfaces (desktop, web, iOS, `ade chat --personal`)
+ * on the calls that use a chat. A chat written before profiles existed (no
+ * `personalProfile`) becomes an `assistant` chat the first time one of these
+ * claims it; an explicit `embedded` chat, and any chat on an embedded-profile
+ * runtime, never does. An SDK host never sends it.
+ */
+export type PersonalChatAssistantClaim = { personalProfile?: "assistant" };
+
 export type PersonalChatCallArgs =
   | { action: "list"; args?: { includeArchived?: boolean } }
   | { action: "create"; args: PersonalChatCreateArgs }
-  | { action: "getSummary"; args: { sessionId: string } }
+  | { action: "getSummary"; args: { sessionId: string } & PersonalChatAssistantClaim }
   | { action: "read"; args: { sessionId: string; limit?: number; since?: string } }
-  | { action: "send"; args: AgentChatSendArgs }
-  | { action: "steer"; args: AgentChatSteerArgs }
+  | { action: "send"; args: AgentChatSendArgs & PersonalChatAssistantClaim }
+  | { action: "steer"; args: AgentChatSteerArgs & PersonalChatAssistantClaim }
   | { action: "cancelSteer"; args: AgentChatCancelSteerArgs }
   | { action: "editSteer"; args: AgentChatEditSteerArgs }
+  | { action: "moveSteer"; args: AgentChatMoveSteerArgs }
   | { action: "dispatchSteer"; args: AgentChatDispatchSteerArgs }
   | { action: "cancelDispatchedSteer"; args: AgentChatCancelDispatchedSteerArgs }
   | { action: "interrupt"; args: AgentChatInterruptArgs }
@@ -143,9 +169,13 @@ export type PersonalChatCallArgs =
   | { action: "resumeUsageLimitNow"; args: AgentChatResumeUsageLimitNowArgs }
   | { action: "continueUsageLimitOnAlternate"; args: AgentChatContinueUsageLimitOnAlternateArgs }
   | { action: "updateSession"; args: AgentChatUpdateSessionArgs }
+  /** Pin or unpin a chat in the rail. `list` rows carry `pinned: true` when pinned. */
+  | { action: "setPinned"; args: { sessionId: string; pinned: boolean } }
   | { action: "archive" | "unarchive" | "delete"; args: { sessionId: string } }
   | { action: "models"; args?: { provider?: string } }
   | { action: "modelCatalog"; args?: AgentChatModelCatalogArgs }
+  /** The composer's slash commands for one chat, or for a provider before a chat exists. */
+  | { action: "slashCommands"; args: { sessionId?: string; provider?: AgentChatProvider | null } }
   | { action: "getEventHistory"; args: { sessionId: string; maxEvents?: number; maxBytes?: number } }
   | { action: "getEventHistoryPage"; args: { sessionId: string; beforeOffset: number; maxBytes?: number } }
   | { action: "terminalCreate"; args?: { chatSessionId?: string | null; cols?: number; rows?: number } }
@@ -163,7 +193,11 @@ export type PersonalChatCallArgs =
         mimeType?: string;
       };
     }
-  | { action: "getImageDataUrl"; args: { path: string } };
+  | { action: "getImageDataUrl"; args: { path: string } }
+  /** Activity value (`SESSION_ACTIVITY_VALUES`), or null to clear. */
+  | { action: "setSessionActivity"; args: { sessionId: string; value: string | null } }
+  | { action: "setSessionStatusNote"; args: { sessionId: string; note: string } }
+  | { action: "requestSessionAttention"; args: { sessionId: string; message: string } };
 
 /** Result of the `pendingInputs` action: every request still awaiting an answer. */
 export type PersonalChatPendingInputsResult = {
@@ -182,6 +216,7 @@ export type PersonalChatCallResult =
   | AgentChatRecoverTurnResult
   | AgentChatResolveUnprocessedMessageResult
   | AgentChatModelCatalog
+  | AgentChatSlashCommand[]
   | PersonalChatPendingInputsResult
   | PtyCreateResult
   | PtyDisposeResult
@@ -207,6 +242,12 @@ export type PersonalChatCapabilities = {
    * silently ignore them.
    */
   mcpServers?: boolean;
+  /**
+   * `updateSession` accepts `mcpServers` for a personal chat and replaces the
+   * caller servers wholesale (restarting the provider on the next turn). Absent
+   * on runtimes before 1.2.81, which ignore the field.
+   */
+  updateMcpServers?: boolean;
 };
 
 export type PersonalChatStreamEventsArgs = {

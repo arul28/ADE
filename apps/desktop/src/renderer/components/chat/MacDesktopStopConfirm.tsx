@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 
 import type { OpenProjectBinding } from "../../../shared/types";
+import { desktopSeatKind, type DesktopSeatKind } from "../../../shared/types/macDesktop";
 import { getFocusableElements } from "../ui/dialogFocus";
 import { macDesktopStatusKey, publishMacDesktopStatus, withMacDesktopTimeout } from "./macDesktopStatusStore";
 
@@ -27,6 +28,8 @@ export type MacDesktopCloseAnswer = "stop" | "keep" | "cancel";
 
 export type MacDesktopStopConfirmRequest = {
   resolve: (answer: MacDesktopCloseAnswer) => void;
+  /** Which screen the question is about; the Windows seats sign out rather than quit. */
+  kind: DesktopSeatKind;
 };
 
 let pending: MacDesktopStopConfirmRequest | null = null;
@@ -51,10 +54,10 @@ export function getMacDesktopStopConfirmRequest(): MacDesktopStopConfirmRequest 
  * Ask, and resolve with the answer. A second ask while one is on screen
  * resolves "cancel": the safe reading of "I could not ask" is "change nothing".
  */
-export function askMacDesktopStopConfirm(): Promise<MacDesktopCloseAnswer> {
+export function askMacDesktopStopConfirm(kind: DesktopSeatKind = "mac"): Promise<MacDesktopCloseAnswer> {
   if (pending) return Promise.resolve("cancel");
   return new Promise<MacDesktopCloseAnswer>((resolve) => {
-    pending = { resolve };
+    pending = { resolve, kind };
     emit();
   });
 }
@@ -83,7 +86,7 @@ export async function confirmMacDesktopToolClose(args: {
   if (!status) return "stop";
   publishMacDesktopStatus(macDesktopStatusKey(laneId, pin), { status, confirmed: true });
   if (!status.display) return "stop";
-  return askMacDesktopStopConfirm();
+  return askMacDesktopStopConfirm(desktopSeatKind(status));
 }
 
 function subscribe(listener: () => void): () => void {
@@ -101,10 +104,34 @@ export function resetMacDesktopStopConfirmForTests(): void {
 export function MacDesktopStopConfirmHost() {
   const request = useSyncExternalStore(subscribe, getMacDesktopStopConfirmRequest, getMacDesktopStopConfirmRequest);
   if (!request) return null;
-  return <MacDesktopStopConfirmDialog />;
+  return <MacDesktopStopConfirmDialog kind={request.kind} />;
 }
 
-function MacDesktopStopConfirmDialog() {
+/**
+ * What stopping each kind of lane screen does, in the user's words: the action
+ * as a button would name it, and what it costs. The question asks
+ * `${action}?`, and the pane's own Stop reads the same two strings, so the two
+ * places that stop a screen cannot describe it differently.
+ */
+export const STOP_CONFIRM_COPY: Record<DesktopSeatKind, { action: string; consequence: string }> = {
+  mac: {
+    action: "Stop Mac Desktop",
+    consequence: "Apps this lane opened quit, even with unsaved work. Windows you moved here go back to your main screen.",
+  },
+  "windows-private": {
+    action: "Stop the private Windows screen",
+    consequence: "The private screen signs out, and apps this lane opened there close, even with unsaved work.",
+  },
+  "windows-shared": {
+    action: "Stop using your main Windows desktop",
+    consequence: "The agent stops working on your desktop, and windows it moved off-screen come back.",
+  },
+};
+
+const KEEP_RUNNING_HINT = "Keep it running if the agent still needs it.";
+
+function MacDesktopStopConfirmDialog({ kind }: { kind: DesktopSeatKind }) {
+  const copy = STOP_CONFIRM_COPY[kind];
   const panelRef = useRef<HTMLElement | null>(null);
   const stopRef = useRef<HTMLButtonElement | null>(null);
   const cancel = useCallback(() => settle("cancel"), []);
@@ -160,10 +187,10 @@ function MacDesktopStopConfirmDialog() {
       >
         <div className="px-5 pb-4 pt-5">
           <h2 id="mac-desktop-stop-confirm-title" className="font-sans text-[14px] font-semibold text-fg/92">
-            Stop Mac Desktop?
+            {copy.action}?
           </h2>
           <p id="mac-desktop-stop-confirm-body" className="mt-2 text-[12px] leading-5 text-muted-fg">
-            Apps this lane opened quit, even with unsaved work. Windows you moved here go back to your main screen. Keep it running if the agent still needs it.
+            {copy.consequence} {KEEP_RUNNING_HINT}
           </p>
         </div>
         <footer className="flex items-center justify-end gap-2 border-t border-border/60 px-5 py-3.5">

@@ -1,24 +1,32 @@
-import fs from "node:fs";
 import path from "node:path";
 import {
+  attachmentIsReferenceOnly,
   getImageAttachmentMediaType,
+  attachmentPathHint,
   type AgentChatFileRef,
 } from "../../../shared/types/chat";
 import {
   readAgentAccessibleFileBytes,
-  readFileWithinRootSecure,
   type DirtyFileTextLookup,
 } from "../shared/utils";
-import {
-  exceedsProviderInlineLimit,
-  inlineAttachmentHintPart,
-} from "./attachmentInlineGuard";
+import { imageNotInlinedHintPart } from "./attachmentInlineGuard";
+import { fitImageForProviderInline } from "./providerInlineImage";
 import { labelAttachments } from "../../../shared/attachmentLabels";
+import type { Logger } from "../logging/logger";
 
 type ResolvedAgentChatFileRef = AgentChatFileRef & {
   _resolvedPath?: string;
   _rootPath?: string;
 };
+
+/**
+ * Whether this attachment goes to Claude as image bytes. Everything else —
+ * a file, or an image the caller marked reference-only with `hydrate: false`
+ * — goes as a `[File attached: …]` hint, and its bytes are never read.
+ */
+function sendsImageBytes(attachment: AgentChatFileRef): boolean {
+  return attachment.type === "image" && !attachmentIsReferenceOnly(attachment);
+}
 
 /** MIME types the Anthropic API accepts for inline image content blocks. */
 export const ANTHROPIC_IMAGE_MEDIA_TYPES = new Set([
@@ -80,15 +88,7 @@ export type SDKUserMessagePartial = {
   };
 };
 
-/**
- * A non-inlined attachment as prompt text: its label, then the path the agent
- * can read. `[File #1: notes.txt] (notes.txt)` — the label is what the user's
- * own `[File #1: …]` chip in the prompt refers to.
- */
-function attachmentPathHint(token: string | undefined, attachmentPath: string): string {
-  return token ? `${token} (${attachmentPath})` : `[File attached: ${attachmentPath}]`;
-}
-
+/** The label of the attachment a block is about, with its trailing space. */
 function labelPrefix(token: string | undefined): string {
   return token ? `${token} ` : "";
 }
@@ -98,6 +98,7 @@ type BuildClaudeV2MessageOptions = {
   sessionId?: string | null;
   forceUserMessage?: boolean;
   getDirtyFileTextForPath?: DirtyFileTextLookup;
+  logger?: Pick<Logger, "info" | "warn">;
 };
 
 export async function buildClaudeV2MessageAsync(
@@ -112,11 +113,11 @@ export async function buildClaudeV2MessageAsync(
     message: { role: "user", content: [{ type: "text", text }] },
   });
 
-  const imageAttachments = attachments.filter((a) => a.type === "image");
+  const imageAttachments = attachments.filter(sendsImageBytes);
   const labels = labelAttachments(attachments);
   if (!imageAttachments.length) {
     const text = attachments.length
-      ? `${promptText}\n\n${attachments.map((a, index) => attachmentPathHint(labels[index]?.token, a.path)).join("\n")}`
+      ? `${promptText}\n\n${attachments.map((a, index) => `${labelPrefix(labels[index]?.token)}${attachmentPathHint(a)}`).join("\n")}`
       : promptText;
     return options.forceUserMessage ? wrapAsUserMessage(text) : text;
   }
@@ -127,8 +128,8 @@ export async function buildClaudeV2MessageAsync(
 
   for (const [index, attachment] of attachments.entries()) {
     const token = labels[index]?.token;
-    if (attachment.type !== "image") {
-      content.push({ type: "text", text: `\n${attachmentPathHint(token, attachment.path)}` });
+    if (!sendsImageBytes(attachment)) {
+      content.push({ type: "text", text: `\n${labelPrefix(token)}${attachmentPathHint(attachment)}` });
       continue;
     }
 
@@ -149,12 +150,17 @@ export async function buildClaudeV2MessageAsync(
         resolvedPath,
         getDirtyFileTextForPath: options.getDirtyFileTextForPath,
       });
-      // Base64 inflates by a third and Anthropic rejects an oversized image
-      // request outright, so an attachment past the inline ceiling becomes the
-      // same path hint a non-image attachment gets. The turn still runs.
-      if (exceedsProviderInlineLimit(data.byteLength)) {
+      // Claude Code ends the whole turn (`terminal_reason: "image_error"`) on
+      // an image over 5 MB of base64 or past the pixel limits, so every image
+      // is fitted first. One that cannot be fitted becomes a path hint and the
+      // turn still runs. Normal sends and mid-turn steers both land here.
+      const fitted = await fitImageForProviderInline(data, mediaType, {
+        provider: "claude",
+        logger: options.logger,
+      });
+      if (fitted.kind === "omit") {
         if (token) content.push({ type: "text", text: `\n${token}` });
-        content.push(inlineAttachmentHintPart(attachment.path, data.byteLength));
+        content.push(imageNotInlinedHintPart(attachment.path, fitted.reason));
         continue;
       }
       // The label goes right before the image block, so `[Image #2]` in the
@@ -162,7 +168,7 @@ export async function buildClaudeV2MessageAsync(
       if (token) content.push({ type: "text", text: `\n${token}` });
       content.push({
         type: "image",
-        source: { type: "base64", media_type: mediaType, data: data.toString("base64") },
+        source: { type: "base64", media_type: fitted.mediaType, data: fitted.data.toString("base64") },
       });
     } catch (error) {
       content.push({
@@ -172,92 +178,6 @@ export async function buildClaudeV2MessageAsync(
     }
   }
 
-  return {
-    type: "user",
-    session_id: options.sessionId?.trim() ?? "",
-    parent_tool_use_id: null,
-    message: { role: "user", content },
-  };
-}
-
-/**
- * Build the message payload for a Claude SDK session turn.
- * When image attachments are present, returns a streaming-input-format
- * SDKUserMessage with image content blocks (per Agent SDK docs).
- * Otherwise returns a plain string.
- */
-export function buildClaudeV2Message(
-  promptText: string,
-  attachments: ResolvedAgentChatFileRef[],
-  options: { baseDir?: string; sessionId?: string | null; forceUserMessage: true },
-): SDKUserMessagePartial;
-export function buildClaudeV2Message(
-  promptText: string,
-  attachments: ResolvedAgentChatFileRef[],
-  options?: BuildClaudeV2MessageOptions,
-): string | SDKUserMessagePartial;
-export function buildClaudeV2Message(
-  promptText: string,
-  attachments: ResolvedAgentChatFileRef[],
-  options: BuildClaudeV2MessageOptions = {},
-): string | SDKUserMessagePartial {
-  const wrapAsUserMessage = (text: string): SDKUserMessagePartial => ({
-    type: "user",
-    session_id: options.sessionId?.trim() ?? "",
-    parent_tool_use_id: null,
-    message: { role: "user", content: [{ type: "text", text }] },
-  });
-
-  const imageAttachments = attachments.filter((a) => a.type === "image");
-  const labels = labelAttachments(attachments);
-  if (!imageAttachments.length) {
-    // No images -- include file paths as text hints, return plain string
-    const text = attachments.length
-      ? `${promptText}\n\n${attachments.map((a, index) => attachmentPathHint(labels[index]?.token, a.path)).join("\n")}`
-      : promptText;
-    return options.forceUserMessage ? wrapAsUserMessage(text) : text;
-  }
-
-  // Build content blocks following the Agent SDK streaming input format:
-  // https://platform.claude.com/docs/en/agent-sdk/streaming-vs-single-mode
-  const content: Array<Record<string, unknown>> = [
-    { type: "text", text: promptText },
-  ];
-
-  for (const [index, attachment] of attachments.entries()) {
-    const token = labels[index]?.token;
-    if (attachment.type !== "image") {
-      content.push({ type: "text", text: `\n${attachmentPathHint(token, attachment.path)}` });
-      continue;
-    }
-
-    try {
-      const mediaType = inferAttachmentMediaType(attachment);
-      if (!ANTHROPIC_IMAGE_MEDIA_TYPES.has(mediaType)) {
-        content.push({ type: "text", text: `\n${labelPrefix(token)}[Image attached (${mediaType}): ${attachment.path}]` });
-        continue;
-      }
-      const secureRoot = attachment._rootPath ?? options.baseDir;
-      const resolvedPath = attachment._resolvedPath ?? attachment.path;
-      const data = secureRoot
-        ? readFileWithinRootSecure(secureRoot, resolvedPath)
-        : fs.readFileSync(resolvedPath);
-      if (token) content.push({ type: "text", text: `\n${token}` });
-      content.push({
-        type: "image",
-        source: { type: "base64", media_type: mediaType, data: data.toString("base64") },
-      });
-    } catch (error) {
-      content.push({
-        type: "text",
-        text: `\n${labelPrefix(token)}[Image unavailable: ${attachment.path}${error instanceof Error ? ` (${error.message})` : ""}]`,
-      });
-    }
-  }
-
-  // Match the SDKUserMessage shape that session.send() accepts in V2.
-  // An empty session_id mirrors the SDK's own string-to-message conversion
-  // before the first init event establishes the concrete session ID.
   return {
     type: "user",
     session_id: options.sessionId?.trim() ?? "",

@@ -15,6 +15,7 @@ import type {
 } from "../../../shared/types";
 import { AdeDiffViewer } from "../shared/AdeDiffViewer";
 import { cn } from "../ui/cn";
+import { useAgentChatApi } from "./agentChatApi";
 import { BottomDrawerSection } from "./BottomDrawerSection";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import {
@@ -151,7 +152,7 @@ function renderDiffPane({
   if (activeDiff) {
     return (
       <div className="h-full min-h-[200px]" style={{ maxHeight: 400 }}>
-        <AdeDiffViewer diff={activeDiff} editable={false} theme="dark" compact showToolbar={false} className="h-full rounded-none border-0" />
+        <AdeDiffViewer diff={activeDiff} editable={false} theme="dark" compact persistKey="chat-turn-diff" className="h-full rounded-none border-0" />
       </div>
     );
   }
@@ -198,6 +199,11 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
   maxHeight = 400,
 }: FileChangesBrowserProps) {
   const scope = useChatRuntimeScope();
+  // The pane's chat API. A scope without turn diffs (a personal chat) lists
+  // the changed files but offers no diff.
+  const agentChatApi = useAgentChatApi();
+  const getTurnFileDiff = agentChatApi?.getTurnFileDiff;
+  const diffAvailable = typeof getTurnFileDiff === "function";
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
   const diffCache = useRef<Map<string, FileDiff>>(new Map());
@@ -208,6 +214,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
   const files = useMemo(() => aggregateFiles(summaries), [summaries]);
   const handleSelectFile = useCallback(
     async (filePath: string) => {
+      if (typeof getTurnFileDiff !== "function") return;
       setSelectedPath(filePath);
 
       const file = files.find((f) => f.path === filePath);
@@ -237,7 +244,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
       setActiveDiffLoadState("loading");
 
       try {
-        const diff = await window.ade.agentChat.getTurnFileDiff(args, scope.pin);
+        const diff = await getTurnFileDiff(args, scope.pin);
         if (latestDiffRequestKey.current !== cacheKey) return;
         if (!diff) {
           setActiveDiff(null);
@@ -257,7 +264,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
         }
       }
     },
-    [files, scope.pin, sessionId],
+    [files, getTurnFileDiff, scope.pin, sessionId],
   );
 
   if (!files.length) return null;
@@ -265,16 +272,17 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
   return (
     <div className={cn("flex min-h-[220px] overflow-hidden", className)} style={{ maxHeight }}>
       {/* File list (left pane) */}
-      <div className="w-[220px] shrink-0 overflow-y-auto border-r border-white/[0.04] max-sm:w-[150px]">
+      <div className="w-[220px] shrink-0 overflow-y-auto border-r border-fg/[0.04] max-sm:w-[150px]">
         {files.map((file) => {
           const isSelected = selectedPath === file.path;
           return (
             <button
               key={file.path}
               type="button"
+              disabled={!diffAvailable}
               className={cn(
                 "flex w-full items-center gap-2 px-3 py-2 text-left transition-colors",
-                isSelected ? "bg-white/[0.05]" : "hover:bg-white/[0.03]",
+                isSelected ? "bg-fg/[0.05]" : diffAvailable ? "hover:bg-fg/[0.03]" : "cursor-default",
               )}
               onClick={() => void handleSelectFile(file.path)}
             >
@@ -301,9 +309,11 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
       </div>
 
       {/* Diff viewer (right pane) */}
-      <div className="min-w-0 flex-1">
-        {renderDiffPane({ selectedPath, loadingPath, activeDiff, loadState: activeDiffLoadState })}
-      </div>
+      {diffAvailable ? (
+        <div className="min-w-0 flex-1">
+          {renderDiffPane({ selectedPath, loadingPath, activeDiff, loadState: activeDiffLoadState })}
+        </div>
+      ) : null}
     </div>
   );
 });
@@ -349,8 +359,8 @@ function NestedFileChangesSection({
   const files = useMemo(() => aggregateFiles(summaries), [summaries]);
   if (!files.length) return null;
   return (
-    <details className="group/changes overflow-hidden rounded-lg border border-white/[0.06] bg-black/[0.16]">
-      <summary className="flex min-h-9 cursor-pointer list-none items-center gap-2 px-3 py-2 outline-none transition-colors hover:bg-white/[0.03]">
+    <details className="group/changes overflow-hidden rounded-lg border border-fg/[0.06] bg-black/[0.16]">
+      <summary className="flex min-h-9 cursor-pointer list-none items-center gap-2 px-3 py-2 outline-none transition-colors hover:bg-fg/[0.03]">
         <CaretDown
           size={12}
           weight="bold"
@@ -361,7 +371,7 @@ function NestedFileChangesSection({
           <FileChangesSummary files={files} muted />
         </span>
       </summary>
-      <div className="border-t border-white/[0.05]">
+      <div className="border-t border-fg/[0.05]">
         <FileChangesBrowser
           summaries={summaries}
           sessionId={sessionId}
@@ -409,7 +419,7 @@ export const ChatTurnFileChangesPanel = React.memo(function ChatTurnFileChangesP
 
   return (
     <details className={cn("group", CHAT_CARD_WIDTH_CLASS)}>
-      <summary className="cursor-pointer list-none border-b border-white/[0.06] px-0.5 py-2 outline-none">
+      <summary className="cursor-pointer list-none border-b border-fg/[0.06] px-0.5 py-2 outline-none">
         <ChatCardRow
           icon={GitDiff}
           tone="neutral"

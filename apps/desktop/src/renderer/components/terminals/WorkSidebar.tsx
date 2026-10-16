@@ -7,6 +7,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
+import type { LaneDiffMode } from "../../../shared/types";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type {
   GitCommitSummary,
@@ -15,6 +16,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
+import { laneCloudProvider } from "../../../shared/cloudLanes";
 import {
   useWorkToolContextInsertion,
   type WorkSidebarContextTarget,
@@ -22,7 +24,8 @@ import {
 import { useLanesForPin } from "../../state/crossMachineLanes";
 import { machineNameForBinding } from "../../../shared/machineIdentity";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
-import { isChatToolType, isPtyContextInsertableToolType } from "../../lib/sessions";
+import { isChatToolType, isPtyContextInsertableToolType, primarySessionLabel } from "../../lib/sessions";
+import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
 import { revealTransition } from "../../lib/motion";
 import { showToast } from "../app/toast/toastStore";
 import { WorkToolHeader, workToolPanelId } from "./WorkToolHeader";
@@ -33,7 +36,15 @@ import { useWorkToolStatuses } from "./useWorkToolStatuses";
 import { AppleToolCardMenu } from "../apple/AppleToolCardMenu";
 import { appleLaneDeviceForLane } from "../apple/useAppleLaneDeviceCard";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
-import { isAvailableWorkSidebarTab, workToolContextLabel, workToolLabel } from "./workTools";
+import {
+  hostDesktopTool,
+  isAvailableWorkSidebarTab,
+  isDesktopWorkTool,
+  isHostMismatchWorkTool,
+  workToolContextLabel,
+  workToolLabel,
+  type WorkToolContext,
+} from "./workTools";
 import { WORK_TOOL_COMPONENTS, type WorkToolPanelProps } from "./workToolPanels";
 
 /** Escape returns to the picker, but only from inside the pane — see `work.tools.picker`. */
@@ -88,26 +99,6 @@ function escapeIsClaimedInside(target: Element): boolean {
  */
 export type { WorkSidebarContextTarget };
 
-function shortLaneId(laneId: string): string {
-  return laneId.length <= 8 ? laneId : `${laneId.slice(0, 4)}...${laneId.slice(-3)}`;
-}
-
-function laneDisplayName(lanes: LaneSummary[], laneId: string | null): string {
-  if (!laneId) return "another lane";
-  return lanes.find((lane) => lane.id === laneId)?.name ?? shortLaneId(laneId);
-}
-
-function laneMismatchMessage(
-  toolName: string,
-  ownerLaneId: string | null,
-  activeLaneId: string | null,
-  lanes: LaneSummary[],
-): string {
-  const ownerLane = laneDisplayName(lanes, ownerLaneId);
-  const activeLane = laneDisplayName(lanes, activeLaneId);
-  return `This ${toolName} view is claimed by ${ownerLane}, not ${activeLane}. You can still view, inspect, and attach context here. Claim it from ${activeLane} to move ownership.`;
-}
-
 function hideBuiltInBrowserView(projectRoot: string | null): void {
   const browser = window.ade?.builtInBrowser;
   if (!browser) return;
@@ -121,6 +112,15 @@ function hideBuiltInBrowserView(projectRoot: string | null): void {
     height: 0,
     visible: false,
   }).catch(() => {});
+}
+
+/** The desktop tool this host offers in place of `tool`, or null. */
+function desktopToolTwin(tool: WorkSidebarTab, context: WorkToolContext): WorkSidebarTab | null {
+  if (!isDesktopWorkTool(tool) || !context.hostPlatform) return null;
+  const hostTool = hostDesktopTool(context);
+  return hostTool !== tool && !isHostMismatchWorkTool(hostTool, context) && isAvailableWorkSidebarTab(hostTool, context)
+    ? hostTool
+    : null;
 }
 
 export function WorkSidebar({
@@ -138,6 +138,7 @@ export function WorkSidebar({
   runtimePin = null,
   maximized = false,
   onMaximizedChange,
+  showOwner = false,
 }: {
   active?: boolean;
   laneId: string | null;
@@ -162,9 +163,15 @@ export function WorkSidebar({
   /** The pane fills the Work page, tabs and all. Owned by the page. */
   maximized?: boolean;
   onMaximizedChange?: (next: boolean) => void;
+  /**
+   * Name the chat and lane the pane serves. A grid shows several chats at once
+   * and the pane belongs to the focused one; without this line nothing says
+   * which.
+   */
+  showOwner?: boolean;
 }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [selectedMode, setSelectedMode] = useState<"staged" | "unstaged" | null>(null);
+  const [selectedMode, setSelectedMode] = useState<LaneDiffMode | null>(null);
   const [selectedCommit, setSelectedCommit] = useState<GitCommitSummary | null>(null);
   const keybindings = useAppStore((state) => state.keybindings);
   const reduceMotion = useReducedMotion() ?? false;
@@ -180,10 +187,16 @@ export function WorkSidebar({
   // follow the pin. A pin on another machine never opens a view here — the
   // panel explains that instead of driving a browser nobody can see.
   const {
-    context: toolContext,
+    context: feedsToolContext,
     browserViewRoot,
     offline: pinnedMachineOffline,
   } = useNativeToolFeeds();
+  // A cloud lane's machine is its cloud; tools that run on a real machine say so.
+  const laneCloud = useAppStore((state) => laneCloudProvider(state.lanes.find((lane) => lane.id === laneId)));
+  const toolContext = useMemo(
+    () => (laneCloud ? { ...feedsToolContext, cloudLane: laneCloud } : feedsToolContext),
+    [feedsToolContext, laneCloud],
+  );
   // An unavailable tool falls back to the PICKER, not to some other tool: being
   // dropped into Git because the simulator is unavailable on this machine is a
   // non-sequitur, and the picker says why the card is dimmed.
@@ -222,9 +235,14 @@ export function WorkSidebar({
   }, [laneId, runtimePin?.key]);
 
   useEffect(() => {
-    if (tool && !isAvailableWorkSidebarTab(tool, toolContext)) {
-      onToolChange(null);
-    }
+    if (!tool || isAvailableWorkSidebarTab(tool, toolContext)) return;
+    // The lane's screen has one name per host. A request for the other host's
+    // desktop tool (an agent's `ade screen show`, held until this chat was in
+    // front, asks for `mac-desktop` everywhere) opens this host's one instead
+    // of dropping to the picker, which then read "Windows Desktop is off"
+    // about a screen that was live.
+    const twin = desktopToolTwin(tool, toolContext);
+    onToolChange(twin);
   }, [onToolChange, tool, toolContext]);
 
   // Hiding the native browser view is the pane's one non-React obligation: the
@@ -278,7 +296,6 @@ export function WorkSidebar({
   const {
     statuses,
     loading: statusesLoading,
-    appControlSession,
     appleDevice,
   } = useWorkToolStatuses({
     enabled: active,
@@ -291,21 +308,8 @@ export function WorkSidebar({
     appleDeviceRefreshKey,
   });
 
-  function resolveToolAttributionReason(): string | null {
-    if (!laneId) return null;
-    // The catalogue's names, not literals: the banner is the one place the pane
-    // used to call the simulator something the header and the picker do not.
-    if (effectiveTool === "app-control" && appControlSession?.laneId && appControlSession.laneId !== laneId) {
-      return laneMismatchMessage(workToolLabel("app-control"), appControlSession.laneId, laneId, scopedLanes);
-    }
-    // Apple has no pane-level claim: per-device ownership lives in the picker.
-    return null;
-  }
-  // Lane attribution only. "This session cannot receive inserted context" is
-  // not a warning — it is a capability the panels simply do not offer here, so
-  // they drop the controls that depend on it rather than narrating the absence
-  // in a banner above controls you can still see.
-  const warningReason = resolveToolAttributionReason();
+  // No lane warning: every tool here is this lane's own. Another lane's App
+  // Control session is never shown, so there is nothing to warn about.
   const contextDisabledReason = targetDisabledReason;
   const canInsertContext = Boolean(contextTarget && !contextDisabledReason);
   const shouldPersistPanelAttachment = canInsertContext && contextTarget?.kind === "pty";
@@ -328,6 +332,8 @@ export function WorkSidebar({
     addIosContext,
     addAppControlContext,
     addBuiltInBrowserContext,
+    addContextAttachment,
+    attachBrowserTab,
     insertDraft,
   } = useWorkToolContextInsertion({ contextTarget, contextDisabledReason, runtimePin });
 
@@ -353,7 +359,7 @@ export function WorkSidebar({
       .finally(() => setResumingSession(false));
   }, [activeSession, resumingSession, runtimePin]);
 
-  const selectFile = useCallback((path: string, mode: "staged" | "unstaged") => {
+  const selectFile = useCallback((path: string, mode: LaneDiffMode) => {
     setSelectedPath(path);
     setSelectedMode(mode);
     setSelectedCommit(null);
@@ -385,7 +391,6 @@ export function WorkSidebar({
     toolContext,
     pinnedMachineOffline,
     pinnedMachineName,
-    warningReason,
     canInsertContext,
     shouldPersistPanelAttachment,
     resumingSession,
@@ -397,8 +402,10 @@ export function WorkSidebar({
     onClearDiffSelection: clearDiffSelection,
     onAddAttachment: addAttachment,
     onAddBuiltInBrowserContext: addBuiltInBrowserContext,
+    onAttachBrowserTab: attachBrowserTab,
     onAddAppControlContext: addAppControlContext,
     onAddIosContext: addIosContext,
+    onAddContextAttachment: addContextAttachment,
     onInsertDraft: insertDraft,
     onResumeEndedSession: resumeEndedSession,
     onToolChange,
@@ -409,7 +416,9 @@ export function WorkSidebar({
     addAppControlContext,
     addAttachment,
     addBuiltInBrowserContext,
+    addContextAttachment,
     addIosContext,
+    attachBrowserTab,
     canInsertContext,
     clearDiffSelection,
     insertDraft,
@@ -431,7 +440,6 @@ export function WorkSidebar({
     paneOwnerSessionId,
     shouldPersistPanelAttachment,
     toolContext,
-    warningReason,
   ]);
 
   // `active &&` must keep UNMOUNTING the tool, never hide it with CSS.
@@ -686,7 +694,7 @@ export function WorkSidebar({
         "flex h-full min-h-0 min-w-0 flex-col overflow-hidden outline-none",
         // Opaque when it is the whole page: the columns it covers are hidden,
         // and a translucent pane over nothing reads as a broken overlay.
-        maximized ? "bg-bg" : "border-l border-white/[0.08] bg-surface/85",
+        maximized ? "bg-bg" : "border-l border-fg/[0.08] bg-surface/85",
       )}
     >
       {/* One bar for both states. The strip does not disappear when the picker
@@ -706,6 +714,26 @@ export function WorkSidebar({
         onCloseTool={closeTool}
         onClose={closePane}
       />
+      {showOwner && activeSession ? (
+        <div
+          className="flex h-7 shrink-0 items-center gap-1.5 border-b border-fg/[0.06] px-3 text-[11px]"
+          data-testid="work-tools-owner"
+        >
+          <span className="shrink-0 text-muted-fg/70">For</span>
+          {activeLane ? (
+            <>
+              <span
+                aria-hidden
+                className="h-1.5 w-1.5 shrink-0 rounded-full"
+                style={{ background: resolveLaneAccentColor(activeLane) ?? "var(--color-muted-fg)" }}
+              />
+              <span className="min-w-0 max-w-[45%] shrink truncate text-muted-fg">{activeLane.name}</span>
+              <span aria-hidden className="shrink-0 text-muted-fg/50">·</span>
+            </>
+          ) : null}
+          <span className="min-w-0 flex-1 truncate font-medium text-fg/85">{primarySessionLabel(activeSession)}</span>
+        </div>
+      ) : null}
       {/* A true crossfade, so the two surfaces overlap rather than the pane
           blanking between them: both children are absolutely positioned and
           the outgoing one stops taking pointer events the moment it starts to

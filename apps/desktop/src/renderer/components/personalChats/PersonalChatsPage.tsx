@@ -1,83 +1,76 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Globe, SpinnerGap, TerminalWindow } from "@phosphor-icons/react";
-import { useNavigate } from "react-router-dom";
+import { formatBrowserTabMentionToken } from "../../../shared/browserTabMention";
+import {
+  AppWindow,
+  Archive,
+  ArrowCounterClockwise,
+  ArrowLeft,
+  Copy,
+  Globe,
+  PencilSimple,
+  PushPin,
+  PushPinSlash,
+  SpinnerGap,
+  Stop,
+  TerminalWindow,
+  Trash,
+  X,
+} from "@phosphor-icons/react";
+import { useLocation, useNavigate } from "react-router-dom";
 import type {
-  AgentChatApprovalDecision,
-  AgentChatEventEnvelope,
-  AgentChatEventHistoryPage,
-  AgentChatEventHistorySnapshot,
-  AgentChatModelCatalog,
-  AgentChatPermissionMode,
+  AgentChatFileRef,
+  AgentChatSession,
   AgentChatSessionSummary,
   OpenProjectBinding,
-  PersonalChatAction,
-  PersonalChatCallArgs,
-  PersonalChatCallResponse,
 } from "../../../shared/types";
-import {
-  getModelById,
-  getRuntimeModelRefForDescriptor,
-  resolveProviderGroupForModel,
-  type ModelDescriptor,
-} from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
-import { AgentChatMessageList } from "../chat/AgentChatMessageList";
-import {
-  CHAT_HISTORY_PAGE_MAX_BYTES,
-  chatEventDedupKey,
-  INITIAL_SELECTED_CHAT_HISTORY_EVENTS,
-  MAX_BACKGROUND_CHAT_SESSION_EVENTS,
-  MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES,
-  MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES,
-  MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS,
-  mergeOlderChatHistoryPageWithCap,
-  readOlderHistoryBatch,
-  resolveMergedSnapshotHistoryCursor,
-  resolveSnapshotHistoryCursor,
-  trimChatEventHistory,
-} from "../chat/chatHistoryWindow";
+import { Banner } from "../ui/notice";
+import { ContextMenu, type ContextMenuEntry } from "../ui/ContextMenu";
+import { confirmDialog } from "../ui/dialog/confirm";
+import { showToast } from "../app/toast/toastStore";
+import { AgentChatPane, type AgentChatPaneComposerHandle } from "../chat/AgentChatPane";
+import { AgentChatApiProvider } from "../chat/agentChatApi";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
-import { ChatSurfaceShell } from "../chat/ChatSurfaceShell";
+import { DraftMachinePicker } from "../chat/DraftMachinePicker";
 import { PersonalTerminalPanel } from "./PersonalTerminalPanel";
-import { ProjectlessComposer } from "./ProjectlessComposer";
-import { ProjectlessHero } from "./ProjectlessHero";
 import { ProjectlessSidebar } from "./ProjectlessSidebar";
-import { sessionPreview, sessionTitle } from "./sessionHelpers";
-import { buildChatAppearanceRootStyle } from "../chat/chatAppearance";
-import { switchToThisMachineProject } from "../chat/thisMachineProjectRoot";
-import { effectiveChatAccent } from "../chat/chatSurfaceTheme";
+import { CHAT_HEADER_BUTTON, sessionPreview, sessionTitle } from "./sessionHelpers";
+import { SuggestionChips } from "./SuggestionChips";
 import {
-  agentChatModelCatalogHasAvailableModels,
-  descriptorsFromAgentChatModelCatalog,
-  personalChatCatalogScopeKey,
-} from "../shared/ModelPicker/modelCatalog";
-import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
+  callPersonal,
+  resolvePersonalChatsCatalogTargetKey,
+  usePersonalChatPaneScope,
+} from "./usePersonalChatPaneScope";
+import { projectOnOtherMachine, switchToThisMachineProject } from "../chat/thisMachineProjectRoot";
 import { isWebClientMode } from "../../lib/webClientMode";
-import { useWebChatsMachines, type WebChatsMachinePicker } from "../../webclient/workspace/useWebChatsMachines";
+import { useWebChatsMachines } from "../../webclient/workspace/useWebChatsMachines";
 import {
   ADE_OPEN_BUILT_IN_BROWSER_EVENT,
   navigateUrlInAdeBrowser,
   type OpenBuiltInBrowserDetail,
 } from "../../lib/openExternal";
 import { useAppStore } from "../../state/appStore";
-
-type ToolPanel = "browser" | "terminal" | null;
-
-type PersonalChatsBridge = {
-  call(request: PersonalChatCallArgs): Promise<PersonalChatCallResponse>;
-  streamEvents(request?: { cursor?: number; limit?: number }): Promise<{
-    events: Array<{ id: number; payload: Record<string, unknown> }>;
-    nextCursor: number;
-    hasMore: boolean;
-  }>;
-};
-
-const EMPTY_EVENTS: AgentChatEventEnvelope[] = [];
-const DEFAULT_MODEL_ID = "";
+import { readLastOpenChat, rememberLastOpenChat } from "../../state/lastOpenChat";
+import { openChatInBrowserTab, openUrlInBrowserTab } from "../browser/browserTab";
+import { useAgentBrowserPresenceSince } from "../terminals/agentBrowserPresence";
+import { ChatSceneBackdrop } from "./ChatSceneBackdrop";
+import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
+import { rememberExplicitRemotePick } from "../app/usePreferLocalCheckout";
+import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import {
   THIS_MACHINE_ID as LOCAL_MACHINE_ID,
   THIS_MACHINE_NAME as LOCAL_MACHINE_NAME,
 } from "../../../shared/machineIdentity";
+
+type ToolPanel = "browser" | "terminal" | null;
+
+/** Ways to start a new chat. A chip fills the composer; the user finishes the sentence. */
+const CHAT_SUGGESTIONS: ReadonlyArray<{ label: string; prefill: string }> = [
+  { label: "Think through a decision", prefill: "Help me think through a decision I'm facing: " },
+  { label: "Draft from a rough idea", prefill: "Help me draft this from a rough idea: " },
+  { label: "Research a topic", prefill: "Research this topic with me: " },
+  { label: "Plan from my notes", prefill: "Turn these notes into an action plan:\n" },
+];
 
 export type PersonalChatsMachineOption = { id: string; name: string };
 
@@ -85,23 +78,27 @@ export type PersonalChatsMachineOption = { id: string; name: string };
 // the projectless standalone shell) must not crash the machine picker.
 const EMPTY_REMOTE_TABS: Extract<OpenProjectBinding, { kind: "remote" }>[] = [];
 const EMPTY_TAB_ROOTS: string[] = [];
+/** Rail refreshes coalesce: a streaming turn emits many events a second. */
+const SESSIONS_REFRESH_DEBOUNCE_MS = 400;
+const EMPTY_SELECTION: ReadonlySet<string> = new Set();
+/** Same look as the Work sidebar's selection toolbar. */
+const BULK_ACTION_BUTTON_CLASS =
+  "inline-flex h-6 items-center gap-1 rounded-md px-1.5 font-sans text-[10px] font-medium text-muted-fg transition-colors hover:bg-fg/[0.04] hover:text-fg";
+const BULK_DESTRUCTIVE_BUTTON_CLASS =
+  "inline-flex h-6 items-center gap-1 rounded-md px-1.5 font-sans text-[10px] font-medium text-red-300/75 transition-colors hover:bg-red-500/10 hover:text-red-200";
 
-function bridge(): PersonalChatsBridge {
-  const candidate = (window.ade as typeof window.ade & { personalChats?: PersonalChatsBridge }).personalChats;
-  if (!candidate) throw new Error("Personal chats are not available in this ADE runtime.");
-  return candidate;
+/** A row's menu: the rows it acts on (one, or the whole multi-selection) and where it opened. */
+type RowMenuState = { x: number; y: number; anchorId: string; targetIds: string[] } | null;
+
+function errorDetail(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason);
 }
 
-function resultOf<T>(response: PersonalChatCallResponse | T): T {
-  if (response && typeof response === "object" && "result" in response) {
-    return (response as PersonalChatCallResponse).result as T;
-  }
-  return response as T;
-}
-
-async function callPersonal<T>(action: PersonalChatAction, args?: Record<string, unknown>): Promise<T> {
-  const request = (args === undefined ? { action } : { action, args }) as PersonalChatCallArgs;
-  return resultOf<T>(await bridge().call(request));
+/** Copy from a menu that has already closed, so a refused write still says so. */
+function copyToClipboard(text: string, what: string): void {
+  void navigator.clipboard.writeText(text).catch(() => {
+    showToast({ title: `Could not copy ${what}`, tone: "error" });
+  });
 }
 
 function groupLabel(value: string | null | undefined): string {
@@ -114,176 +111,173 @@ function groupLabel(value: string | null | undefined): string {
   return "Older";
 }
 
-function envelopeFromPayload(payload: Record<string, unknown>): AgentChatEventEnvelope | null {
-  const candidates = [payload.envelope, payload.chatEvent, payload.event, payload];
-  for (const candidate of candidates) {
-    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
-    const record = candidate as Record<string, unknown>;
-    if (
-      typeof record.sessionId === "string"
-      && typeof record.timestamp === "string"
-      && record.event
-      && typeof record.event === "object"
-    ) {
-      return record as unknown as AgentChatEventEnvelope;
-    }
-  }
-  return null;
-}
-
-function mergeEvents(current: AgentChatEventEnvelope[], incoming: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] {
-  if (!incoming.length) return current;
-  const seen = new Set(current.map(chatEventDedupKey));
-  const next = [...current];
-  for (const event of incoming) {
-    const key = chatEventDedupKey(event);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    next.push(event);
-  }
-  next.sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp));
-  return next;
-}
-
-/** Machine identity for personal Chats catalog scope and target-scoped reload effects. */
-export function resolvePersonalChatsCatalogTargetKey(
-  projectBinding: OpenProjectBinding | null | undefined,
-  webMachines: WebChatsMachinePicker | null,
-): string {
-  if (webMachines) {
-    const webKey = webMachines.machineId?.trim();
-    return webKey ? `web:${webKey}` : "web:pending";
-  }
-  return projectBinding?.kind === "remote" ? projectBinding.key : "local-machine";
-}
+// Kept importable from here: the Chats page is where this key is read.
+export { resolvePersonalChatsCatalogTargetKey };
 
 export function PersonalChatsPage({ standalone = false }: { standalone?: boolean }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const projectBinding = useAppStore((state) => state.projectBinding);
   const openRemoteProjectTabs = useAppStore((state) => state.openRemoteProjectTabs) ?? EMPTY_REMOTE_TABS;
   const openProjectTabRoots = useAppStore((state) => state.openProjectTabRoots) ?? EMPTY_TAB_ROOTS;
   const localProjectRootPath = useAppStore((state) => state.project?.rootPath ?? null);
   const switchProjectToPath = useAppStore((state) => state.switchProjectToPath);
   const switchRemoteProject = useAppStore((state) => state.switchRemoteProject);
-  const chatFontSizePx = useAppStore((state) => state.chatFontSizePx);
-  const chatTranscriptDensity = useAppStore((state) => state.chatTranscriptDensity);
-  const chatChromeTint = useAppStore((state) => state.chatChromeTint);
-  const chatShellGeometry = useAppStore((state) => state.chatShellGeometry);
+  const browserTabOpen = useAppStore((state) => state.browserTabOpen) ?? false;
   const webMachines = useWebChatsMachines();
   const targetKey = useMemo(
     () => resolvePersonalChatsCatalogTargetKey(projectBinding, webMachines),
     [projectBinding, webMachines, webMachines?.machineId],
   );
-  const personalCatalogScopeKey = personalChatCatalogScopeKey(targetKey);
-  const personalCatalogScopeKeyRef = useRef(personalCatalogScopeKey);
-  personalCatalogScopeKeyRef.current = personalCatalogScopeKey;
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
-  const [olderHistoryCursorBySession, setOlderHistoryCursorBySession] = useState<Record<string, number>>({});
-  const [olderHistoryLoadingBySession, setOlderHistoryLoadingBySession] = useState<Record<string, boolean>>({});
-  const [olderHistoryErrorBySession, setOlderHistoryErrorBySession] = useState<Record<string, string | null>>({});
-  const [catalog, setCatalog] = useState<AgentChatModelCatalog | null>(null);
-  const [modelId, setModelId] = useState(DEFAULT_MODEL_ID);
-  const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
-  const [permissionMode, setPermissionMode] = useState<AgentChatPermissionMode>("default");
-  const [fastMode, setFastMode] = useState(false);
-  const [draft, setDraft] = useState("");
+  // The chat open in the pane. Leaving the page (or the window) and coming
+  // back reopens the one you were in; only New chat starts a draft.
+  const [selectedId, setSelectedId] = useState<string | null>(() => readLastOpenChat(targetKey));
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+  const targetKeyRef = useRef(targetKey);
+  targetKeyRef.current = targetKey;
+  // Bumped only when the user navigates (picks a chat, starts a new one), so a
+  // chat created by the pane's own first send keeps the same pane mounted.
+  const [paneGeneration, setPaneGeneration] = useState(0);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
-  const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [menuId, setMenuId] = useState<string | null>(null);
+  const [rowMenu, setRowMenu] = useState<RowMenuState>(null);
+  // Rows picked with shift / cmd / ctrl-click. Separate from `selectedId`
+  // (the chat open in the pane), as in the Work sidebar.
+  const [multiSelectedIds, setMultiSelectedIds] = useState<ReadonlySet<string>>(EMPTY_SELECTION);
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  // The rail lists archived chats instead of live ones, so they can come back.
+  const [showArchived, setShowArchived] = useState(false);
+  const showArchivedRef = useRef(showArchived);
+  showArchivedRef.current = showArchived;
   const [toolPanel, setToolPanel] = useState<ToolPanel>(null);
   const [mobileListOpen, setMobileListOpen] = useState(true);
-  const cursorRef = useRef(0);
   const targetGenerationRef = useRef(0);
-  const selectedIdRef = useRef<string | null>(null);
-  const eventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
-  const olderHistoryCursorBySessionRef = useRef<Record<string, number>>({});
-  const historyHydrationTokenRef = useRef(0);
-  const olderHistoryRequestRef = useRef(new Map<string, number>());
-  const olderHistoryRequestSequenceRef = useRef(0);
-  const detachedHistorySessionsRef = useRef(new Set<string>());
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  selectedIdRef.current = selectedId;
-  eventsBySessionRef.current = eventsBySession;
-  olderHistoryCursorBySessionRef.current = olderHistoryCursorBySession;
+  // The pane owns the draft; chips and the browser panel write to it through
+  // the pane's composer handle.
+  const composerRef = useRef<AgentChatPaneComposerHandle | null>(null);
+  const setComposerDraft = useCallback((text: string) => composerRef.current?.setDraft(text), []);
+  const insertIntoComposer = useCallback((text: string) => composerRef.current?.insertDraft(text), []);
+  const attachToComposer = useCallback(
+    (attachment: AgentChatFileRef) => composerRef.current?.addAttachment(attachment),
+    [],
+  );
+  const addBrowserContextToComposer = useCallback(
+    (item: unknown) => composerRef.current?.addBuiltInBrowserContext(item),
+    [],
+  );
 
-  const catalogRequestSeqRef = useRef(0);
+  // The pane's personal API scope and model catalog for this machine; both
+  // reset when the window moves to another machine.
+  const { chatScope, catalog, availableModelIds, providerUnavailable } = usePersonalChatPaneScope(targetKey, {
+    onError: setError,
+  });
+
   const refreshSessions = useCallback(async (generation = targetGenerationRef.current) => {
-    const rows = await callPersonal<AgentChatSessionSummary[]>("list", { includeArchived: false });
-    if (generation !== targetGenerationRef.current) return;
-    const ordered = [...(Array.isArray(rows) ? rows : [])].sort(
+    const archived = showArchivedRef.current;
+    const rows = await callPersonal<AgentChatSessionSummary[]>("list", { includeArchived: archived });
+    // A reply for the other view (the toggle moved mid-flight) is dropped too.
+    if (generation !== targetGenerationRef.current || archived !== showArchivedRef.current) return null;
+    // Not a list (a peer on another version, a malformed reply) is not "no
+    // chats": keep what is shown, and keep the remembered chat.
+    if (!Array.isArray(rows)) throw new Error("The chat list could not be read. Try again.");
+    // `includeArchived` returns live chats as well; the archived view shows only the archived ones.
+    const inView = rows.filter((session) => Boolean(session.archivedAt) === archived);
+    const ordered = [...inView].sort(
       (left, right) => Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt),
     );
     setSessions(ordered);
-    setSelectedId((current) => current && ordered.some((row) => row.sessionId === current) ? current : null);
-  }, []);
-
-  const loadModelCatalog = useCallback(async (
-    mode: "cached" | "refresh-stale" | "force" = "refresh-stale",
-    generation = targetGenerationRef.current,
-  ) => {
-    const requestId = ++catalogRequestSeqRef.current;
-    const scopeKey = personalCatalogScopeKeyRef.current;
-    const publish = (next: AgentChatModelCatalog) => {
-      if (generation !== targetGenerationRef.current) return;
-      if (requestId !== catalogRequestSeqRef.current) return;
-      if (scopeKey !== personalCatalogScopeKeyRef.current) return;
-      setCatalog(next);
-    };
-    let next = await callPersonal<AgentChatModelCatalog>("modelCatalog", { mode });
-    publish(next);
-    if (generation !== targetGenerationRef.current || requestId !== catalogRequestSeqRef.current) return;
-    if (
-      mode === "refresh-stale"
-      && (next.stale === true || !agentChatModelCatalogHasAvailableModels(next))
-    ) {
-      next = await callPersonal<AgentChatModelCatalog>("modelCatalog", { mode: "force" });
-      publish(next);
-    }
+    return ordered;
   }, []);
 
   useEffect(() => {
     const generation = ++targetGenerationRef.current;
-    catalogRequestSeqRef.current += 1;
-    cursorRef.current = 0;
+    const restoredId = readLastOpenChat(targetKey);
     setSessions([]);
-    setSelectedId(null);
-    setEventsBySession({});
-    setOlderHistoryCursorBySession({});
-    setOlderHistoryLoadingBySession({});
-    setOlderHistoryErrorBySession({});
-    historyHydrationTokenRef.current += 1;
-    olderHistoryRequestRef.current.clear();
-    detachedHistorySessionsRef.current.clear();
-    eventsBySessionRef.current = {};
-    olderHistoryCursorBySessionRef.current = {};
+    setSelectedId(restoredId);
+    setMultiSelectedIds(EMPTY_SELECTION);
+    setSelectionAnchorId(null);
+    setRowMenu(null);
+    setRenamingId(null);
+    setPaneGeneration((value) => value + 1);
     setToolPanel(null);
-    setCatalog(null);
-    setModelId(DEFAULT_MODEL_ID);
     setLoading(true);
     setError(null);
-    void refreshSessions(generation).catch((reason) => {
+    void refreshSessions(generation).then((rows) => {
+      // The chat to reopen was deleted or archived since: open the most
+      // recent one instead, or a draft when there is none.
+      if (!rows || !restoredId || selectedIdRef.current !== restoredId) return;
+      if (rows.some((session) => session.sessionId === restoredId)) return;
+      const fallbackId = rows[0]?.sessionId ?? null;
+      rememberLastOpenChat(targetKey, fallbackId);
+      setSelectedId(fallbackId);
+      setPaneGeneration((value) => value + 1);
+    }, (reason) => {
       if (generation === targetGenerationRef.current) {
         setError(reason instanceof Error ? reason.message : String(reason));
       }
     }).finally(() => {
       if (generation === targetGenerationRef.current) setLoading(false);
     });
-    void loadModelCatalog("refresh-stale", generation).catch((reason) => {
-      if (generation === targetGenerationRef.current) {
-        setError(reason instanceof Error ? reason.message : String(reason));
-      }
-    });
-  }, [loadModelCatalog, refreshSessions, targetKey]);
+  }, [refreshSessions, targetKey]);
 
+  // Switching between live and archived chats reloads the rail; the open chat stays open.
+  const archivedViewInitializedRef = useRef(false);
+  useEffect(() => {
+    if (!archivedViewInitializedRef.current) {
+      archivedViewInitializedRef.current = true;
+      return;
+    }
+    const generation = targetGenerationRef.current;
+    setSessions([]);
+    setMultiSelectedIds(EMPTY_SELECTION);
+    setSelectionAnchorId(null);
+    setRowMenu(null);
+    setRenamingId(null);
+    setLoading(true);
+    void refreshSessions(generation).catch((reason) => {
+      if (generation === targetGenerationRef.current) setError(errorDetail(reason));
+    }).finally(() => {
+      if (generation === targetGenerationRef.current) setLoading(false);
+    });
+  }, [refreshSessions, showArchived]);
+
+  // The rail follows the same event stream the pane reads: titles, activity
+  // and new chats appear without a manual refresh.
+  useEffect(() => {
+    let timer: number | null = null;
+    const unsubscribe = chatScope.agentChat.onEvent(() => {
+      if (timer != null) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        void refreshSessions().catch(() => undefined);
+      }, SESSIONS_REFRESH_DEBOUNCE_MS);
+    });
+    return () => {
+      unsubscribe();
+      if (timer != null) window.clearTimeout(timer);
+    };
+  }, [chatScope, refreshSessions]);
+
+  // A link opens beside the chat when the Browser panel is already showing
+  // there. Otherwise, with the Browser tab open, it opens in that tab: the
+  // same personal tabs, full size. With neither, the panel opens here.
+  const toolPanelRef = useRef(toolPanel);
+  toolPanelRef.current = toolPanel;
+  const browserTabOpenRef = useRef(browserTabOpen);
+  browserTabOpenRef.current = browserTabOpen;
   useEffect(() => {
     const openPersonalBrowser = (rawEvent: Event) => {
       const event = rawEvent as CustomEvent<OpenBuiltInBrowserDetail>;
       if (!event.detail?.url || isWebClientMode()) return;
       event.preventDefault();
+      if (toolPanelRef.current !== "browser" && browserTabOpenRef.current) {
+        openUrlInBrowserTab(event.detail.url, navigate, () => setError("ADE Browser couldn't open that link. Try again."));
+        return;
+      }
       setToolPanel("browser");
       navigateUrlInAdeBrowser(event.detail.url, {
         newTab: true,
@@ -291,391 +285,46 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       }, {
         fallbackToExternal: false,
         onFailure: () => setError("ADE Browser couldn't open that link. Try again."),
-      });
+      }, event.detail.runtimePin ?? null);
     };
     window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openPersonalBrowser);
     return () => window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openPersonalBrowser);
-  }, []);
+  }, [navigate]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const generation = targetGenerationRef.current;
-    let timer: number | null = null;
-    const poll = async () => {
-      if (cancelled || generation !== targetGenerationRef.current) return;
-      try {
-        const result = await bridge().streamEvents({ cursor: cursorRef.current, limit: 200 });
-        if (cancelled || generation !== targetGenerationRef.current) return;
-        cursorRef.current = result.nextCursor ?? cursorRef.current;
-        const envelopes = (result.events ?? [])
-          .map((entry) => envelopeFromPayload(entry.payload ?? {}))
-          .filter((event): event is AgentChatEventEnvelope => event != null);
-        if (envelopes.length) {
-          setEventsBySession((current) => {
-            const next = { ...current };
-            const incomingBySession = new Map<string, AgentChatEventEnvelope[]>();
-            for (const event of envelopes) {
-              if (detachedHistorySessionsRef.current.has(event.sessionId)) continue;
-              const incoming = incomingBySession.get(event.sessionId);
-              if (incoming) incoming.push(event);
-              else incomingBySession.set(event.sessionId, [event]);
-            }
-            for (const [sessionId, incoming] of incomingBySession) {
-              const selected = sessionId === selectedIdRef.current;
-              next[sessionId] = trimChatEventHistory(
-                mergeEvents(next[sessionId] ?? [], incoming),
-                selected ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS : MAX_BACKGROUND_CHAT_SESSION_EVENTS,
-                selected ? MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES : MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES,
-              );
-            }
-            eventsBySessionRef.current = next;
-            return next;
-          });
-          void refreshSessions(generation).catch(() => undefined);
-        }
-      } catch (reason) {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
-      } finally {
-        if (!cancelled) timer = window.setTimeout(poll, 700);
-      }
-    };
-    void poll();
-    return () => {
-      cancelled = true;
-      if (timer != null) window.clearTimeout(timer);
-    };
-  }, [refreshSessions, targetKey]);
+  // The open chat keeps its summary while the rail shows the other view
+  // (archived chats), where its row is not listed.
+  const lastSelectedSessionRef = useRef<AgentChatSessionSummary | null>(null);
+  const listedSelectedSession = sessions.find((session) => session.sessionId === selectedId) ?? null;
+  if (listedSelectedSession) lastSelectedSessionRef.current = listedSelectedSession;
+  const selectedSession = listedSelectedSession
+    ?? (lastSelectedSessionRef.current?.sessionId === selectedId ? lastSelectedSessionRef.current : null);
 
-  const hydratePersonalHistory = useCallback(async (sessionId: string) => {
-    const generation = targetGenerationRef.current;
-    const hydrationToken = ++historyHydrationTokenRef.current;
-    try {
-      const snapshot = await callPersonal<AgentChatEventHistorySnapshot>("getEventHistory", {
-        sessionId,
-        maxEvents: INITIAL_SELECTED_CHAT_HISTORY_EVENTS,
-        maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
-      });
-      if (
-        generation !== targetGenerationRef.current
-        || hydrationToken !== historyHydrationTokenRef.current
-        || selectedIdRef.current !== sessionId
-      ) {
-        return;
-      }
-      if (snapshot?.unavailable === true) {
-        throw new Error("Chat runtime is temporarily unavailable.");
-      }
-      if (snapshot?.sessionId !== sessionId) {
-        throw new Error("Couldn’t load this chat’s transcript.");
-      }
-      const snapshotEvents = (snapshot.events ?? []).filter((event) => event.sessionId === sessionId);
-      const currentEvents = eventsBySessionRef.current;
-      const existingEvents = currentEvents[sessionId] ?? [];
-      const nextEvents = {
-        ...Object.fromEntries(
-          Object.entries(currentEvents).map(([currentSessionId, events]) => [
-            currentSessionId,
-            currentSessionId === sessionId
-              ? events
-              : trimChatEventHistory(
-                events,
-                MAX_BACKGROUND_CHAT_SESSION_EVENTS,
-                MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES,
-              ),
-          ]),
-        ),
-        [sessionId]: trimChatEventHistory(
-          mergeEvents(snapshotEvents, existingEvents),
-          MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS,
-          MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES,
-        ),
-      };
-      eventsBySessionRef.current = nextEvents;
-      setEventsBySession(nextEvents);
-      const snapshotCursor = snapshot.sessionFound === false ? 0 : resolveSnapshotHistoryCursor(snapshot);
-      const nextCursor = resolveMergedSnapshotHistoryCursor({
-        snapshotCursor,
-        currentCursor: olderHistoryCursorBySessionRef.current[sessionId],
-        snapshotEvents,
-        existingEvents,
-        mergedEvents: nextEvents[sessionId] ?? [],
-        detached: detachedHistorySessionsRef.current.has(sessionId),
-      });
-      const nextCursors = { ...olderHistoryCursorBySessionRef.current, [sessionId]: nextCursor };
-      olderHistoryCursorBySessionRef.current = nextCursors;
-      setOlderHistoryCursorBySession(nextCursors);
-      setOlderHistoryErrorBySession((current) => (
-        current[sessionId] ? { ...current, [sessionId]: null } : current
-      ));
-      detachedHistorySessionsRef.current.delete(sessionId);
-    } catch (reason) {
-      if (
-        generation === targetGenerationRef.current
-        && hydrationToken === historyHydrationTokenRef.current
-        && selectedIdRef.current === sessionId
-      ) {
-        setError(reason instanceof Error ? reason.message : String(reason));
-      }
-    }
-  }, []);
 
-  useEffect(() => {
-    if (!selectedId) {
-      historyHydrationTokenRef.current += 1;
-      return;
-    }
+  const selectSession = useCallback((sessionId: string | null) => {
+    rememberLastOpenChat(targetKeyRef.current, sessionId);
+    setSelectedId(sessionId);
+    setPaneGeneration((value) => value + 1);
+    setRowMenu(null);
     setMobileListOpen(false);
-    void hydratePersonalHistory(selectedId);
-  }, [hydratePersonalHistory, selectedId, targetKey]);
-
-  const selectedSession = sessions.find((session) => session.sessionId === selectedId) ?? null;
-  const selectedEvents = selectedId ? eventsBySession[selectedId] ?? EMPTY_EVENTS : EMPTY_EVENTS;
-  const selectedOlderHistoryCursor = selectedId ? olderHistoryCursorBySession[selectedId] ?? 0 : 0;
-  const loadOlderPersonalHistory = useCallback(async (interactive = false) => {
-    const sessionId = selectedIdRef.current;
-    if (!sessionId) return;
-    const beforeOffset = olderHistoryCursorBySessionRef.current[sessionId] ?? 0;
-    if (beforeOffset <= 0 || olderHistoryRequestRef.current.has(sessionId)) return;
-
-    const generation = targetGenerationRef.current;
-    const requestId = ++olderHistoryRequestSequenceRef.current;
-    olderHistoryRequestRef.current.set(sessionId, requestId);
-    const isCurrentRequest = () => (
-      generation === targetGenerationRef.current
-      && selectedIdRef.current === sessionId
-      && olderHistoryRequestRef.current.get(sessionId) === requestId
-      && olderHistoryCursorBySessionRef.current[sessionId] === beforeOffset
-    );
-    setOlderHistoryLoadingBySession((current) => ({ ...current, [sessionId]: true }));
-    if (!interactive) {
-      setOlderHistoryErrorBySession((current) => (
-        current[sessionId] ? { ...current, [sessionId]: null } : current
-      ));
-    }
-
-    try {
-      const batch = await readOlderHistoryBatch({
-        sessionId,
-        beforeOffset,
-        isCurrent: isCurrentRequest,
-        readPage: (currentOffset) => callPersonal<AgentChatEventHistoryPage>("getEventHistoryPage", {
-          sessionId,
-          beforeOffset: currentOffset,
-          maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
-        }),
-      });
-      if (!batch || !isCurrentRequest()) return;
-      const { events: olderEvents, nextCursor } = batch;
-      if (olderEvents.length) {
-        setEventsBySession((current) => {
-          const existing = current[sessionId] ?? [];
-          const { events, hitResidentCap } = mergeOlderChatHistoryPageWithCap({
-            older: olderEvents,
-            existing,
-            maxEvents: MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS,
-            maxBytes: MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES,
-          });
-          if (hitResidentCap) detachedHistorySessionsRef.current.add(sessionId);
-          if (events === existing) return current;
-          const next = { ...current, [sessionId]: events };
-          eventsBySessionRef.current = next;
-          return next;
-        });
-      }
-      setOlderHistoryCursorBySession((current) => {
-        const next = { ...current, [sessionId]: nextCursor };
-        olderHistoryCursorBySessionRef.current = next;
-        return next;
-      });
-      setOlderHistoryErrorBySession((current) => (
-        current[sessionId] ? { ...current, [sessionId]: null } : current
-      ));
-    } catch (reason) {
-      if (isCurrentRequest()) {
-        setOlderHistoryErrorBySession((current) => ({
-          ...current,
-          [sessionId]: reason instanceof Error && reason.message.trim()
-            ? reason.message
-            : "Couldn’t load earlier messages.",
-        }));
-      }
-    } finally {
-      if (olderHistoryRequestRef.current.get(sessionId) === requestId) {
-        const requestBecameStale = !isCurrentRequest();
-        olderHistoryRequestRef.current.delete(sessionId);
-        if (requestBecameStale) {
-          setOlderHistoryErrorBySession((current) => (
-            current[sessionId] ? { ...current, [sessionId]: null } : current
-          ));
-        }
-        setOlderHistoryLoadingBySession((current) => ({ ...current, [sessionId]: false }));
-      }
-    }
   }, []);
-  const retryOlderPersonalHistory = useCallback(() => {
-    void loadOlderPersonalHistory(true);
-  }, [loadOlderPersonalHistory]);
-  const returnPersonalHistoryToLatest = useCallback(() => {
-    const sessionId = selectedIdRef.current;
-    if (!sessionId || !detachedHistorySessionsRef.current.has(sessionId)) return;
-    void hydratePersonalHistory(sessionId);
-  }, [hydratePersonalHistory]);
-  // Stable row-facing handlers so a draft-only keystroke (which rerenders this
-  // page) does not defeat the memoized AgentChatMessageList boundary.
-  const handleListApproval = useCallback(
-    (
-      itemId: string,
-      decision: AgentChatApprovalDecision,
-      responseText?: string | null,
-      answers?: Record<string, string | string[]>,
-    ) => {
-      if (!selectedId) return;
-      void callPersonal<void>("respondToInput", { sessionId: selectedId, itemId, decision, responseText, answers });
-    },
-    [selectedId],
-  );
-  const appendDraft = useCallback(
-    (text: string) => setDraft((current) => (current ? `${current}\n${text}` : text)),
-    [],
-  );
-  const dynamicCatalog = useMemo(
-    () => catalog ? descriptorsFromAgentChatModelCatalog(catalog, undefined, personalCatalogScopeKey) : null,
-    [catalog, personalCatalogScopeKey],
-  );
-  const models = useMemo<readonly ModelDescriptor[]>(
-    () => dynamicCatalog?.models ?? [],
-    [dynamicCatalog],
-  );
-  const availableModelIds = useMemo(
-    () => dynamicCatalog?.availableModelIds ?? [],
-    [dynamicCatalog],
-  );
-  const hasValidNewSessionModel = availableModelIds.includes(modelId)
-    && models.some((model) => model.id === modelId);
 
+  // `/chats?chat=<id>` opens that chat: the Browser tab's dock sends its chat
+  // here to be read full size.
+  const requestedChatId = new URLSearchParams(location.search).get("chat");
   useEffect(() => {
-    if (!selectedSession) return;
-    setModelId(selectedSession.modelId ?? modelId);
-    setReasoningEffort(selectedSession.reasoningEffort ?? null);
-    setPermissionMode(selectedSession.permissionMode ?? "default");
-    setFastMode(selectedSession.fastMode === true);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedSession?.sessionId]);
+    if (!requestedChatId) return;
+    selectSession(requestedChatId);
+    navigate("/chats", { replace: true });
+    // selectSession is stable; only a new request should re-run this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedChatId]);
 
-  useEffect(() => {
-    if (modelId.trim().length > 0) return;
-    const fallback = availableModelIds[0];
-    if (fallback) setModelId(fallback);
-  }, [availableModelIds, modelId]);
-
-  const updateSelected = useCallback(async (patch: Record<string, unknown>) => {
-    if (!selectedId) return;
-    await callPersonal<AgentChatSessionSummary>("updateSession", { sessionId: selectedId, ...patch });
-    await refreshSessions();
-  }, [refreshSessions, selectedId]);
-
-  const handleModelChange = useCallback((nextModelId: string) => {
-    if (!availableModelIds.includes(nextModelId)) return;
-    setModelId(nextModelId);
-    const descriptor = models.find((model) => model.id === nextModelId) ?? getModelById(nextModelId);
-    if (selectedId && descriptor) {
-      void updateSelected({
-        modelId: descriptor.id,
-        model: getRuntimeModelRefForDescriptor(descriptor),
-        provider: resolveProviderGroupForModel(descriptor),
-      }).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
-    }
-  }, [availableModelIds, models, selectedId, updateSelected]);
-
-  const createSession = useCallback(async (): Promise<AgentChatSessionSummary> => {
-    const descriptor = models.find((model) => model.id === modelId);
-    if (!descriptor || !availableModelIds.includes(descriptor.id)) {
-      throw new Error("Choose an available model before starting a chat.");
-    }
-    const created = await callPersonal<AgentChatSessionSummary>("create", {
-      provider: resolveProviderGroupForModel(descriptor),
-      model: getRuntimeModelRefForDescriptor(descriptor),
-      modelId: descriptor.id,
-      reasoningEffort,
-      permissionMode,
-      fastMode,
-      title: null,
-    });
-    await refreshSessions();
-    setSelectedId(created.sessionId);
-    return created;
-  }, [availableModelIds, fastMode, modelId, models, permissionMode, reasoningEffort, refreshSessions]);
-
-  const submit = useCallback(async () => {
-    const text = draft.trim();
-    if (!text || sending || (!selectedSession && !hasValidNewSessionModel)) return;
-    setSending(true);
-    setError(null);
-    try {
-      const session = selectedSession ?? await createSession();
-      await callPersonal<void>("send", {
-        sessionId: session.sessionId,
-        text,
-        reasoningEffort,
-      });
-      setDraft("");
-      setSelectedId(session.sessionId);
-      await refreshSessions();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setSending(false);
-    }
-  }, [createSession, draft, hasValidNewSessionModel, reasoningEffort, refreshSessions, selectedSession, sending]);
-
-  const removeSession = useCallback(async (sessionId: string, action: "archive" | "delete") => {
-    setMenuId(null);
-    setError(null);
-    try {
-      await callPersonal<void>(action, { sessionId });
-    } catch (reason) {
-      const detail = reason instanceof Error ? reason.message : String(reason);
-      setError(`Could not ${action} this chat${detail ? `: ${detail}` : "."}`);
-      await refreshSessions().catch(() => undefined);
-      return;
-    }
-
-    setEventsBySession((current) => {
-      const next = { ...current };
-      delete next[sessionId];
-      eventsBySessionRef.current = next;
-      return next;
-    });
-    setOlderHistoryCursorBySession((current) => {
-      if (!(sessionId in current)) return current;
-      const next = { ...current };
-      delete next[sessionId];
-      olderHistoryCursorBySessionRef.current = next;
-      return next;
-    });
-    setOlderHistoryLoadingBySession((current) => {
-      if (!(sessionId in current)) return current;
-      const next = { ...current };
-      delete next[sessionId];
-      return next;
-    });
-    setOlderHistoryErrorBySession((current) => {
-      if (!(sessionId in current)) return current;
-      const next = { ...current };
-      delete next[sessionId];
-      return next;
-    });
-    olderHistoryRequestRef.current.delete(sessionId);
-    detachedHistorySessionsRef.current.delete(sessionId);
-    if (selectedId === sessionId) setSelectedId(null);
-    try {
-      await refreshSessions();
-    } catch (reason) {
-      const detail = reason instanceof Error ? reason.message : String(reason);
-      const completedAction = action === "archive" ? "archived" : "deleted";
-      setError(`The chat was ${completedAction}, but the chat list could not refresh${detail ? `: ${detail}` : "."}`);
-    }
-  }, [refreshSessions, selectedId]);
+  const handleSessionCreated = useCallback((session: AgentChatSession) => {
+    // Same pane, now locked to the chat its first message created.
+    rememberLastOpenChat(targetKeyRef.current, session.id);
+    setSelectedId(session.id);
+    void refreshSessions().catch(() => undefined);
+  }, [refreshSessions]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -686,20 +335,416 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const grouped = useMemo(() => {
     const groups = new Map<string, AgentChatSessionSummary[]>();
     for (const session of filtered) {
-      const label = groupLabel(session.lastActivityAt);
+      const label = session.pinned ? "Pinned" : groupLabel(session.lastActivityAt);
       groups.set(label, [...(groups.get(label) ?? []), session]);
     }
-    return [...groups.entries()];
+    // Pinned chats lead the rail; the recency groups follow in their order.
+    return [...groups.entries()].sort(([left], [right]) => (left === "Pinned" ? -1 : right === "Pinned" ? 1 : 0));
   }, [filtered]);
 
-  const appearanceStyle = useMemo(
-    () => buildChatAppearanceRootStyle({ chatFontSizePx, transcriptDensity: chatTranscriptDensity }),
-    [chatFontSizePx, chatTranscriptDensity],
+  // The rail's rows in the order they are drawn: what a shift-click range and
+  // the arrow keys walk.
+  const orderedIds = useMemo(
+    () => grouped.flatMap(([, rows]) => rows.map((session) => session.sessionId)),
+    [grouped],
   );
+  const sessionsById = useMemo(
+    () => new Map(sessions.map((session) => [session.sessionId, session] as const)),
+    [sessions],
+  );
+
+  // A selected row that leaves the rail (deleted, archived elsewhere, filtered
+  // out by search) leaves the selection with it.
+  useEffect(() => {
+    const visible = new Set(orderedIds);
+    setMultiSelectedIds((current) => {
+      if (current.size === 0) return current;
+      const next = new Set([...current].filter((id) => visible.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [orderedIds]);
+
+  const clearSelection = useCallback(() => {
+    setMultiSelectedIds(EMPTY_SELECTION);
+    setSelectionAnchorId(null);
+  }, []);
+
+  /**
+   * Runs one action over every chat it names, each on its own: one chat that
+   * refuses does not stop the rest. Failures are reported with a count.
+   */
+  const runChatAction = useCallback(async (
+    verb: string,
+    ids: string[],
+    action: (sessionId: string) => Promise<unknown>,
+  ): Promise<string[]> => {
+    setRowMenu(null);
+    setError(null);
+    const succeeded: string[] = [];
+    let firstFailure: unknown = null;
+    for (const sessionId of ids) {
+      try {
+        await action(sessionId);
+        succeeded.push(sessionId);
+      } catch (reason) {
+        firstFailure ??= reason;
+      }
+    }
+    if (firstFailure != null) {
+      const detail = errorDetail(firstFailure);
+      setError(ids.length === 1
+        ? `Could not ${verb} this chat${detail ? `: ${detail}` : "."}`
+        : `Could not ${verb} ${ids.length - succeeded.length} of ${ids.length} chats${detail ? `: ${detail}` : "."}`);
+    }
+    await refreshSessions().catch(() => undefined);
+    return succeeded;
+  }, [refreshSessions]);
+
+  const removeChats = useCallback(async (ids: string[], action: "archive" | "unarchive" | "delete") => {
+    if (ids.length === 0) return;
+    if (action === "delete") {
+      const only = ids.length === 1 ? sessionsById.get(ids[0]!) : undefined;
+      const confirmed = await confirmDialog({
+        title: ids.length === 1
+          ? `Delete "${only ? sessionTitle(only) : "this chat"}"?`
+          : `Delete ${ids.length} chats?`,
+        message: ids.length === 1
+          ? "This permanently removes the chat and its history."
+          : "This permanently removes the selected chats and their history.",
+        confirmLabel: "Delete",
+        destructive: true,
+      });
+      if (!confirmed) return;
+    }
+    const done = await runChatAction(action, ids, (sessionId) => callPersonal<void>(action, { sessionId }));
+    // An archived or deleted chat leaves the pane; an unarchived one stays open.
+    if (selectedId && done.includes(selectedId) && action !== "unarchive") selectSession(null);
+    setMultiSelectedIds((current) => {
+      if (!done.some((id) => current.has(id))) return current;
+      return new Set([...current].filter((id) => !done.includes(id)));
+    });
+  }, [runChatAction, selectSession, selectedId, sessionsById]);
+
+  const renameSession = useCallback((sessionId: string, title: string) => {
+    setRenamingId(null);
+    void runChatAction("rename", [sessionId], () => callPersonal("updateSession", { sessionId, title, manuallyNamed: true }));
+  }, [runChatAction]);
+
+  // An older host has no `setPinned` (personal-chat capabilities are not
+  // exposed to this page): its refusal hides Pin for that machine instead of
+  // surfacing as an error.
+  const [pinUnsupportedTarget, setPinUnsupportedTarget] = useState<string | null>(null);
+  const pinSupported = pinUnsupportedTarget !== targetKey;
+  const setPinned = useCallback((ids: string[], pinned: boolean) => {
+    let unsupported = false;
+    void runChatAction(pinned ? "pin" : "unpin", ids, async (sessionId) => {
+      if (unsupported) return;
+      try {
+        await callPersonal("setPinned", { sessionId, pinned });
+      } catch (reason) {
+        if (!errorDetail(reason).includes("Unsupported personal chat action")) throw reason;
+        unsupported = true;
+        setPinUnsupportedTarget(targetKey);
+      }
+    });
+  }, [runChatAction, targetKey]);
+
+  const stopChats = useCallback((ids: string[]) => {
+    void runChatAction("stop", ids, (sessionId) => callPersonal("interrupt", { sessionId }));
+  }, [runChatAction]);
+
+  /** Selected rows, in rail order. */
+  const selectedRowIds = useMemo(
+    () => orderedIds.filter((id) => multiSelectedIds.has(id)),
+    [multiSelectedIds, orderedIds],
+  );
+
+  /**
+   * Plain click opens the chat. Shift-click selects the range from the anchor;
+   * cmd-click (ctrl-click on Windows and Linux) adds or removes one row. The
+   * chat already open counts as the first pick, so cmd-clicking a second row
+   * selects both.
+   */
+  const handleRowClick = useCallback((id: string, event: React.MouseEvent) => {
+    const useRange = event.shiftKey;
+    const useToggle = event.metaKey || event.ctrlKey;
+    if (useRange) {
+      const anchorId = [selectionAnchorId, selectedId, id]
+        .find((candidate) => candidate != null && orderedIds.includes(candidate)) ?? id;
+      const from = orderedIds.indexOf(anchorId);
+      const to = orderedIds.indexOf(id);
+      if (from >= 0 && to >= 0) {
+        const [start, end] = from <= to ? [from, to] : [to, from];
+        setMultiSelectedIds(new Set(orderedIds.slice(start, end + 1)));
+        setSelectionAnchorId(anchorId);
+        return;
+      }
+    }
+    if (useToggle || useRange) {
+      setMultiSelectedIds((current) => {
+        const next = new Set(current);
+        if (next.size === 0 && selectedId && selectedId !== id && orderedIds.includes(selectedId)) next.add(selectedId);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+      setSelectionAnchorId(id);
+      return;
+    }
+    clearSelection();
+    setSelectionAnchorId(id);
+    selectSession(id);
+  }, [clearSelection, orderedIds, selectSession, selectedId, selectionAnchorId]);
+
+  // Right-clicking a row inside a multi-selection acts on the selection, the
+  // way the Work sidebar (and Finder) does; any other row gets its own menu.
+  const openRowMenu = useCallback((id: string, position: { x: number; y: number }) => {
+    const targetIds = multiSelectedIds.size > 1 && multiSelectedIds.has(id) ? selectedRowIds : [id];
+    setRowMenu({ ...position, anchorId: id, targetIds });
+  }, [multiSelectedIds, selectedRowIds]);
+
   const browserAvailable = !isWebClientMode() && Boolean(window.ade?.builtInBrowser);
-  const turnActive = selectedSession?.status === "active";
-  const selectedDescriptor = models.find((model) => model.id === modelId) ?? getModelById(modelId);
-  const accentColor = selectedDescriptor?.color ?? "#A78BFA";
+
+  const rowMenuEntries = useMemo((): ContextMenuEntry[] => {
+    if (!rowMenu) return [];
+    const targets = rowMenu.targetIds
+      .map((id) => sessionsById.get(id))
+      .filter((session): session is AgentChatSessionSummary => session != null);
+    if (targets.length === 0) return [];
+    const ids = targets.map((session) => session.sessionId);
+    const total = targets.length;
+    const hint = (count: number) => (total > 1 && count < total ? `${count} of ${total}` : undefined);
+    const unpinned = targets.filter((session) => !session.pinned).map((session) => session.sessionId);
+    const running = targets.filter((session) => session.status === "active").map((session) => session.sessionId);
+    const archived = targets.filter((session) => session.archivedAt).map((session) => session.sessionId);
+    const live = targets.filter((session) => !session.archivedAt).map((session) => session.sessionId);
+    const plural = total > 1 ? ` ${total}` : "";
+    const single = total === 1 ? targets[0]! : null;
+
+    return [
+      ...(total > 1 ? [{ kind: "label" as const, key: "count", label: `${total} selected` }] : []),
+      ...(single
+        ? [{
+            kind: "item" as const,
+            key: "rename",
+            label: "Rename",
+            icon: PencilSimple,
+            onSelect: () => setRenamingId(single.sessionId),
+          }]
+        : []),
+      ...(pinSupported
+        ? [unpinned.length
+            ? {
+                kind: "item" as const,
+                key: "pin",
+                label: "Pin",
+                icon: PushPin,
+                hint: hint(unpinned.length),
+                onSelect: () => setPinned(unpinned, true),
+              }
+            : {
+                kind: "item" as const,
+                key: "unpin",
+                label: "Unpin",
+                icon: PushPinSlash,
+                onSelect: () => setPinned(ids, false),
+              }]
+        : []),
+      ...(running.length
+        ? [{
+            kind: "item" as const,
+            key: "stop",
+            label: "Stop",
+            icon: Stop,
+            hint: hint(running.length),
+            title: "Stop the turn in progress",
+            onSelect: () => stopChats(running),
+          }]
+        : []),
+      ...(single && browserAvailable
+        ? [{
+            kind: "item" as const,
+            key: "browser-tab",
+            label: "Open in the Browser tab",
+            icon: AppWindow,
+            onSelect: () => {
+              void openChatInBrowserTab(single.sessionId, targetKey, navigate)
+                .catch((reason) => setError(errorDetail(reason)));
+            },
+          }]
+        : []),
+      { kind: "separator", key: "copy-sep" },
+      {
+        kind: "item",
+        key: "copy-id",
+        label: total > 1 ? "Copy chat IDs" : "Copy chat ID",
+        icon: Copy,
+        onSelect: () => copyToClipboard(ids.join("\n"), total > 1 ? "chat IDs" : "chat ID"),
+      },
+      ...(total > 1
+        ? [{ kind: "item" as const, key: "clear", label: "Clear selection", icon: X, onSelect: clearSelection }]
+        : []),
+      { kind: "separator", key: "remove-sep" },
+      ...(live.length
+        ? [{
+            kind: "item" as const,
+            key: "archive",
+            label: `Archive${plural}`,
+            icon: Archive,
+            hint: hint(live.length),
+            onSelect: () => void removeChats(live, "archive"),
+          }]
+        : []),
+      ...(archived.length
+        ? [{
+            kind: "item" as const,
+            key: "unarchive",
+            label: `Unarchive${plural}`,
+            icon: ArrowCounterClockwise,
+            hint: hint(archived.length),
+            onSelect: () => void removeChats(archived, "unarchive"),
+          }]
+        : []),
+      {
+        kind: "item",
+        key: "delete",
+        label: total > 1 ? `Delete ${total}…` : "Delete…",
+        icon: Trash,
+        danger: true,
+        onSelect: () => void removeChats(ids, "delete"),
+      },
+    ];
+  }, [
+    browserAvailable,
+    clearSelection,
+    navigate,
+    pinSupported,
+    removeChats,
+    rowMenu,
+    sessionsById,
+    setPinned,
+    stopChats,
+    targetKey,
+  ]);
+
+  const focusRow = useCallback((id: string) => {
+    const row = Array.from(document.querySelectorAll<HTMLElement>("[data-chat-row-id]"))
+      .find((element) => element.dataset.chatRowId === id);
+    const button = row?.querySelector<HTMLButtonElement>("button");
+    button?.focus();
+    button?.scrollIntoView({ block: "nearest" });
+  }, []);
+
+  /**
+   * Keys on a focused row: arrows move focus (shift extends the selection),
+   * Enter opens (the row is a button), Delete or Backspace deletes the
+   * selection or the focused row after a confirm, Escape clears the selection,
+   * cmd/ctrl+A selects every listed chat. Typing in the rename field is left alone.
+   */
+  const handleListKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    if (target.closest("input, textarea, [contenteditable='true']")) return;
+    const rowId = target.closest<HTMLElement>("[data-chat-row-id]")?.dataset.chatRowId ?? null;
+    const mod = event.metaKey || event.ctrlKey;
+    switch (event.key) {
+      case "Escape": {
+        if (multiSelectedIds.size === 0) return;
+        event.preventDefault();
+        clearSelection();
+        return;
+      }
+      case "Delete":
+      case "Backspace": {
+        const ids = selectedRowIds.length ? selectedRowIds : rowId ? [rowId] : [];
+        if (ids.length === 0) return;
+        event.preventDefault();
+        void removeChats(ids, "delete");
+        return;
+      }
+      case "ArrowDown":
+      case "ArrowUp": {
+        if (orderedIds.length === 0) return;
+        event.preventDefault();
+        const from = rowId ?? selectedId;
+        const index = from ? orderedIds.indexOf(from) : -1;
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        const nextIndex = index < 0
+          ? (step > 0 ? 0 : orderedIds.length - 1)
+          : Math.min(orderedIds.length - 1, Math.max(0, index + step));
+        const nextId = orderedIds[nextIndex]!;
+        if (event.shiftKey) {
+          const anchorId = [selectionAnchorId, from]
+            .find((candidate) => candidate != null && orderedIds.includes(candidate)) ?? nextId;
+          const anchorIndex = orderedIds.indexOf(anchorId);
+          const [start, end] = anchorIndex <= nextIndex ? [anchorIndex, nextIndex] : [nextIndex, anchorIndex];
+          setMultiSelectedIds(new Set(orderedIds.slice(start, end + 1)));
+          setSelectionAnchorId(anchorId);
+        }
+        focusRow(nextId);
+        return;
+      }
+      case "a":
+      case "A": {
+        if (!mod || orderedIds.length === 0) return;
+        event.preventDefault();
+        setMultiSelectedIds(new Set(orderedIds));
+        setSelectionAnchorId(orderedIds[0]!);
+        return;
+      }
+      default:
+    }
+  }, [clearSelection, focusRow, multiSelectedIds.size, orderedIds, removeChats, selectedId, selectedRowIds, selectionAnchorId]);
+
+  const selectedRows = selectedRowIds
+    .map((id) => sessionsById.get(id))
+    .filter((session): session is AgentChatSessionSummary => session != null);
+  const selectionToolbar = selectedRows.length > 0 ? (
+    <div
+      className="mx-3 mb-2 flex min-h-8 flex-wrap items-center gap-0.5 border-t border-fg/[0.06] px-1 pt-1"
+      data-testid="personal-chats-selection-toolbar"
+    >
+      <span className="min-w-0 flex-1 truncate px-1 font-sans text-[10px] font-medium tabular-nums text-muted-fg/70">
+        {selectedRows.length} selected
+      </span>
+      {pinSupported && selectedRows.some((session) => !session.pinned) ? (
+        <button
+          type="button"
+          className={BULK_ACTION_BUTTON_CLASS}
+          onClick={() => setPinned(selectedRows.filter((session) => !session.pinned).map((session) => session.sessionId), true)}
+        >
+          <PushPin size={10} /> Pin
+        </button>
+      ) : null}
+      {showArchived ? (
+        <button type="button" className={BULK_ACTION_BUTTON_CLASS} onClick={() => void removeChats(selectedRowIds, "unarchive")}>
+          <ArrowCounterClockwise size={10} /> Unarchive
+        </button>
+      ) : (
+        <button type="button" className={BULK_ACTION_BUTTON_CLASS} onClick={() => void removeChats(selectedRowIds, "archive")}>
+          <Archive size={10} /> Archive
+        </button>
+      )}
+      <button type="button" className={BULK_DESTRUCTIVE_BUTTON_CLASS} onClick={() => void removeChats(selectedRowIds, "delete")}>
+        <Trash size={10} /> Delete {selectedRows.length}
+      </button>
+      <button
+        type="button"
+        className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-fg/50 transition-colors hover:bg-fg/[0.04] hover:text-fg"
+        onClick={clearSelection}
+        aria-label="Clear selected chats"
+        title="Clear selection"
+      >
+        <X size={10} />
+      </button>
+    </div>
+  ) : null;
+
+  // A chat that is browsing, or the one docked in the Browser tab, is one
+  // click from its page there.
+  const selectedBrowsingSince = useAgentBrowserPresenceSince(selectedId);
+  const browserDockChatId = useAppStore((state) => state.browserDock?.chat?.sessionId ?? null);
+  const showInBrowserTab = browserAvailable && selectedId != null
+    && (selectedBrowsingSince != null || browserDockChatId === selectedId);
   const isRemote = projectBinding?.kind === "remote";
   // Machines are named absolutely — the Chats tab runs on whichever machine this
   // window is bound to, so the name is the fact and the picker is the control.
@@ -712,16 +757,33 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const machineId = webMachines
     ? webMachines.machineId ?? ""
     : isRemote ? projectBinding.targetId : LOCAL_MACHINE_ID;
+  // Every connected machine with a project the picker can bind to, whether or
+  // not it has an open project tab.
+  const { snapshot: remoteSnapshot } = useRemoteConnectionSnapshot(!webMachines);
+  const remoteProjectFor = useCallback(
+    (targetId: string) =>
+      projectOnOtherMachine({
+        currentOrigin: projectBinding?.gitOriginUrl,
+        openTabProjectId: openRemoteProjectTabs.find((entry) => entry.targetId === targetId)?.projectId,
+        machineProjects: remoteSnapshot?.connections
+          .find((connection) => connection.target.id === targetId)?.projects ?? [],
+      }),
+    [openRemoteProjectTabs, projectBinding?.gitOriginUrl, remoteSnapshot],
+  );
   const desktopMachineOptions = useMemo<PersonalChatsMachineOption[]>(() => {
     const options: PersonalChatsMachineOption[] = [
       { id: LOCAL_MACHINE_ID, name: LOCAL_MACHINE_NAME },
     ];
-    for (const tab of openRemoteProjectTabs) {
-      if (options.some((option) => option.id === tab.targetId)) continue;
-      options.push({ id: tab.targetId, name: tab.runtimeName });
+    const add = (id: string, name: string) => {
+      if (!options.some((option) => option.id === id)) options.push({ id, name });
+    };
+    for (const tab of openRemoteProjectTabs) add(tab.targetId, tab.runtimeName);
+    for (const connection of remoteSnapshot?.connections ?? []) {
+      if (connection.state !== "connected" || !remoteProjectFor(connection.target.id)) continue;
+      add(connection.target.id, connection.target.name || connection.target.hostname);
     }
     return options;
-  }, [openRemoteProjectTabs]);
+  }, [openRemoteProjectTabs, remoteProjectFor, remoteSnapshot]);
   const machineOptions = webMachines ? webMachines.options : desktopMachineOptions;
   const selectMachine = useCallback(
     (nextMachineId: string) => {
@@ -743,9 +805,12 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
         }).then(setError);
         return;
       }
-      const tab = openRemoteProjectTabs.find((entry) => entry.targetId === nextMachineId);
-      if (!tab) return;
-      void switchRemoteProject(tab.targetId, tab.projectId).catch((reason) => {
+      const projectId = remoteProjectFor(nextMachineId);
+      if (!projectId) return;
+      // A machine picked here is a choice, so the tab keeps it rather than
+      // moving back to this computer's checkout.
+      rememberExplicitRemotePick(remoteProjectBindingKey(nextMachineId, projectId));
+      void switchRemoteProject(nextMachineId, projectId).catch((reason) => {
         setError(reason instanceof Error ? reason.message : String(reason));
       });
     },
@@ -753,83 +818,19 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       localProjectRootPath,
       machineId,
       openProjectTabRoots,
-      openRemoteProjectTabs,
       projectBinding,
+      remoteProjectFor,
       switchProjectToPath,
       switchRemoteProject,
       webMachines,
     ],
   );
-  // Only declare the provider unavailable once the catalog has actually
-  // loaded — an in-flight fetch is not "no provider".
-  const providerUnavailable = catalog !== null && availableModelIds.length === 0;
-  const canStartSend = Boolean(selectedSession) || hasValidNewSessionModel;
-  // Hero only for a brand-new chat: a selected session docks immediately even
-  // while its event history is still loading, so the greeting never flashes.
-  const heroMode = selectedId == null && selectedEvents.length === 0;
-  // The eventsBySession key appears when the history fetch completes, so a
-  // selected session with no key is still loading; a present-but-empty list is
-  // a real (possibly failed-first-send) empty chat, not a pending fetch.
-  const historySettled = selectedId != null && (eventsBySession[selectedId] !== undefined || Boolean(error));
   const showReconnecting = Boolean(error) && isRemote;
-
-  const applyPrompt = useCallback((prefill: string) => {
-    setDraft(prefill);
-    requestAnimationFrame(() => {
-      const el = textareaRef.current;
-      if (!el) return;
-      el.focus();
-      el.setSelectionRange(el.value.length, el.value.length);
-    });
-  }, []);
-
-  const composer = (
-    <ProjectlessComposer
-      variant={heroMode ? "hero" : "docked"}
-      appearanceStyle={appearanceStyle}
-      accentColor={effectiveChatAccent(accentColor, chatChromeTint)}
-      draft={draft}
-      onDraftChange={setDraft}
-      onSubmit={() => void submit()}
-      sending={sending}
-      turnActive={turnActive}
-      models={models}
-      availableModelIds={availableModelIds}
-      modelId={modelId}
-      onModelChange={handleModelChange}
-      catalogReady={catalog !== null}
-      catalogScopeKey={personalCatalogScopeKey}
-      reasoningEffort={reasoningEffort}
-      onReasoningChange={(next) => { setReasoningEffort(next); void updateSelected({ reasoningEffort: next }); }}
-      permissionMode={permissionMode}
-      onPermissionChange={(next) => { setPermissionMode(next); void updateSelected({ permissionMode: next }); }}
-      fastMode={fastMode}
-      onFastModeToggle={(next) => { setFastMode(next); void updateSelected({ fastMode: next }); }}
-      selectedDescriptor={selectedDescriptor}
-      canStartSend={canStartSend}
-      showInterrupt={turnActive && Boolean(selectedId)}
-      onInterrupt={() => { if (selectedId) void callPersonal<void>("interrupt", { sessionId: selectedId }); }}
-      onRuntimeCatalogRefreshed={(_provider, refreshedScopeKey) => {
-        const generation = targetGenerationRef.current;
-        const scopeKey = refreshedScopeKey ?? personalCatalogScopeKeyRef.current;
-        if (scopeKey !== personalCatalogScopeKeyRef.current) return;
-        if (generation !== targetGenerationRef.current) return;
-        const cached = getSharedRuntimeCatalog(scopeKey);
-        if (!cached) return;
-        // Invoked only after a successful picker fetch. Bump the page request
-        // id so an in-flight loadModelCatalog cannot publish afterwards and
-        // replace this catalog.
-        catalogRequestSeqRef.current += 1;
-        setCatalog(cached);
-      }}
-      error={error}
-      onDismissError={() => setError(null)}
-      textareaRef={textareaRef}
-    />
-  );
+  const title = selectedSession ? sessionTitle(selectedSession) : "New chat";
 
   return (
-    <div className="flex h-full min-h-0 bg-bg text-fg" data-testid="personal-chats-page" data-target={targetKey}>
+    <div className="ade-chat-scene relative flex h-full min-h-0 text-fg" data-testid="personal-chats-page" data-target={targetKey}>
+      <ChatSceneBackdrop />
       <ProjectlessSidebar
         standalone={standalone}
         machineLabel={machineLabel}
@@ -841,92 +842,138 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
         query={query}
         onQueryChange={setQuery}
         selectedId={selectedId}
-        onSelect={setSelectedId}
-        onNewChat={() => { setSelectedId(null); setDraft(""); setMobileListOpen(false); setMenuId(null); }}
+        multiSelectedIds={multiSelectedIds}
+        onRowClick={handleRowClick}
+        onRowContextMenu={openRowMenu}
+        menuOpenId={rowMenu?.anchorId ?? null}
+        renamingId={renamingId}
+        onRenameCommit={renameSession}
+        onRenameCancel={() => setRenamingId(null)}
+        showArchived={showArchived}
+        onToggleArchived={() => setShowArchived((current) => !current)}
+        selectionToolbar={selectionToolbar}
+        onListKeyDown={handleListKeyDown}
+        onNewChat={() => { clearSelection(); selectSession(null); }}
         onBack={() => navigate("/work")}
         mobileListOpen={mobileListOpen}
-        menuId={menuId}
-        onToggleMenu={setMenuId}
-        onRemove={(id, action) => void removeSession(id, action)}
+      />
+      {/* Portaled: the rail's frosted plane is a containing block for fixed
+          children, which would pin the menu to the rail instead of the pointer. */}
+      <ContextMenu
+        menu={rowMenu && rowMenuEntries.length ? rowMenu : null}
+        entries={rowMenuEntries}
+        onClose={() => setRowMenu(null)}
+        label={rowMenu && rowMenu.targetIds.length > 1 ? `${rowMenu.targetIds.length} selected chats` : "Chat actions"}
+        testId="personal-chats-row-menu"
+        portal
       />
 
-      <main className="relative min-w-0 flex-1">
-        <ChatSurfaceShell
-          mode="standard"
-          accentColor={accentColor}
-          chromeTint={chatChromeTint}
-          shellGeometry={chatShellGeometry}
-          header={(
-            <div className="flex h-11 items-center gap-2 border-b border-white/[0.055] px-3">
-              <button type="button" className="hidden h-7 w-7 items-center justify-center rounded-md text-muted-fg/55 hover:bg-white/[0.06] max-md:flex" onClick={() => setMobileListOpen(true)} aria-label="Show chats"><ArrowLeft size={15} /></button>
-              <div className="min-w-0 flex-1 truncate font-sans text-[12px] font-medium text-fg/75">{selectedSession ? sessionTitle(selectedSession) : "New chat"}</div>
-              {showReconnecting ? (
-                <span className="flex shrink-0 items-center gap-1.5 rounded-full border border-amber-400/20 bg-amber-500/10 px-2 py-0.5 font-sans text-[10px] text-amber-200/80">
-                  <SpinnerGap size={11} className="animate-spin" /> Reconnecting…
-                </span>
-              ) : null}
-              {browserAvailable ? (
-                <button type="button" onClick={() => setToolPanel((current) => current === "browser" ? null : "browser")} className={cn("flex h-7 w-7 items-center justify-center rounded-md border transition-colors", toolPanel === "browser" ? "border-sky-300/25 bg-sky-500/10 text-sky-200" : "border-white/[0.06] bg-white/[0.025] text-muted-fg/45 hover:text-fg")} title="Browser" aria-label="Toggle browser"><Globe size={14} /></button>
-              ) : null}
-              <button type="button" onClick={() => setToolPanel((current) => current === "terminal" ? null : "terminal")} className={cn("flex h-7 w-7 items-center justify-center rounded-md border transition-colors", toolPanel === "terminal" ? "border-violet-300/25 bg-violet-500/10 text-violet-200" : "border-white/[0.06] bg-white/[0.025] text-muted-fg/45 hover:text-fg")} title="Terminal" aria-label="Toggle terminal"><TerminalWindow size={14} /></button>
-            </div>
-          )}
-          footer={heroMode ? undefined : composer}
-        >
-          <div data-chat-appearance-root style={appearanceStyle} className="relative flex h-full min-h-0">
-            <div className="min-w-0 flex-1">
-              {/* The hero (with its composer) paints immediately during the
-                  initial fetch — the sidebar spinner already signals loading. */}
-              {loading && !heroMode ? (
-                <div className="flex h-full items-center justify-center"><SpinnerGap size={22} className="animate-spin text-muted-fg/35" /></div>
-              ) : selectedEvents.length || selectedOlderHistoryCursor > 0 ? (
-                <div className="h-full motion-safe:animate-[ade-chat-dock-in_0.28s_ease-out]">
-                  <AgentChatMessageList
-                    key={selectedId}
-                    events={selectedEvents}
-                    showStreamingIndicator={turnActive}
-                    // Same derivation as AgentChatPane. Rows that tick a live
-                    // clock (a background job stuck `running` after a restart)
-                    // must freeze on an ended chat here too, or an archived
-                    // personal chat counts up forever.
-                    sessionEnded={selectedSession?.status === "ended"}
-                    laneId={null}
-                    sessionId={selectedId}
-                    assistantLabel={selectedSession ? sessionTitle(selectedSession) : "ADE"}
-                    hasOlderHistory={selectedOlderHistoryCursor > 0}
-                    loadingOlderHistory={selectedId ? olderHistoryLoadingBySession[selectedId] === true : false}
-                    olderHistoryError={selectedId ? olderHistoryErrorBySession[selectedId] ?? null : null}
-                    onLoadOlderHistory={() => void loadOlderPersonalHistory()}
-                    onRetryOlderHistory={retryOlderPersonalHistory}
-                    onReturnToLatest={returnPersonalHistoryToLatest}
-                    onApproval={handleListApproval}
-                    onInsertDraft={appendDraft}
-                  />
-                </div>
-              ) : heroMode ? (
-                <ProjectlessHero composer={composer} onSelectPrompt={applyPrompt} providerUnavailable={providerUnavailable} />
-              ) : historySettled ? (
-                <div className="flex h-full items-center justify-center px-6">
-                  <p className="text-center font-sans text-[12px] leading-5 text-muted-fg/40">No messages in this chat yet.</p>
-                </div>
-              ) : (
-                <div className="flex h-full items-center justify-center">
-                  <SpinnerGap size={18} className="animate-spin text-muted-fg/25" />
-                </div>
-              )}
-            </div>
+      <main className="ade-chat-scene-plane relative flex min-w-0 flex-1 flex-col">
+        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-fg/[0.055] px-3">
+          <button type="button" className="hidden h-7 w-7 items-center justify-center rounded-md text-muted-fg/55 hover:bg-fg/[0.06] max-md:flex" onClick={() => setMobileListOpen(true)} aria-label="Show chats"><ArrowLeft size={15} /></button>
+          <div className="min-w-0 flex-1 truncate font-sans text-[12px] font-medium text-fg/75">{title}</div>
+          {showReconnecting ? (
+            <span className="flex shrink-0 items-center gap-1.5 rounded-full border border-amber-400/20 bg-amber-500/10 px-2 py-0.5 font-sans text-[10px] text-amber-200/80">
+              <SpinnerGap size={11} className="animate-spin" /> Reconnecting…
+            </span>
+          ) : null}
+          {showInBrowserTab && selectedId ? (
+            <button type="button" onClick={() => void openChatInBrowserTab(selectedId, targetKey, navigate).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))} className={CHAT_HEADER_BUTTON} title="Show beside its page in the Browser tab" aria-label="Show in the Browser tab"><AppWindow size={14} /></button>
+          ) : null}
+          {browserAvailable ? (
+            <button type="button" onClick={() => setToolPanel((current) => current === "browser" ? null : "browser")} className={cn("flex h-7 w-7 items-center justify-center rounded-md border transition-colors", toolPanel === "browser" ? "border-sky-300/25 bg-sky-500/10 text-sky-200" : "border-fg/[0.06] bg-fg/[0.025] text-muted-fg/45 hover:text-fg")} title="Browser" aria-label="Toggle browser"><Globe size={14} /></button>
+          ) : null}
+          <button type="button" onClick={() => setToolPanel((current) => current === "terminal" ? null : "terminal")} className={cn("flex h-7 w-7 items-center justify-center rounded-md border transition-colors", toolPanel === "terminal" ? "border-violet-300/25 bg-violet-500/10 text-violet-200" : "border-fg/[0.06] bg-fg/[0.025] text-muted-fg/45 hover:text-fg")} title="Terminal" aria-label="Toggle terminal"><TerminalWindow size={14} /></button>
+        </div>
+        {error || (providerUnavailable && !selectedSession) ? (
+          <div className="flex shrink-0 flex-col gap-1.5 px-3 pt-2">
+            {error ? (
+              <Banner
+                layout="inline"
+                model={{ id: "personal-chats-error", tone: "error", title: error, dismiss: { onDismiss: () => setError(null) } }}
+              />
+            ) : null}
+            {providerUnavailable && !selectedSession ? (
+              <Banner
+                layout="inline"
+                model={{
+                  id: "personal-chats-no-provider",
+                  tone: "warning",
+                  title: "No connected agent is available right now. Sign in to a provider from Settings to start a chat.",
+                }}
+              />
+            ) : null}
+          </div>
+        ) : null}
+        <div className="relative flex min-h-0 flex-1">
+          <div className="min-w-0 flex-1">
+            {loading && selectedId == null && catalog == null ? (
+              <div className="flex h-full items-center justify-center"><SpinnerGap size={22} className="animate-spin text-muted-fg/35" /></div>
+            ) : (
+              <AgentChatPane
+                key={`${targetKey}:${paneGeneration}`}
+                laneId={null}
+                chatScope={chatScope}
+                lockSessionId={selectedId}
+                lockSessionProvider={selectedSession?.provider ?? null}
+                initialSessionSummary={selectedSession}
+                availableModelIdsOverride={availableModelIds}
+                onSessionCreated={handleSessionCreated}
+                composerHandleRef={composerRef}
+                emptyStateAccessory={(
+                  <div className="flex flex-col items-center gap-2">
+                    {/* Where a new chat runs, chosen beside the prompt like a
+                        project chat's launch shelf. Shown even with no provider
+                        here: another machine may have one. Renders nothing with
+                        a single machine. */}
+                    <DraftMachinePicker
+                      machines={machineOptions}
+                      selectedMachineId={machineId}
+                      onChange={selectMachine}
+                      tooltipLabel="Where it runs"
+                      showWhenSingle
+                    />
+                    {providerUnavailable ? null : <SuggestionChips prompts={CHAT_SUGGESTIONS} onSelect={setComposerDraft} />}
+                  </div>
+                )}
+                canvasFill="var(--ade-chat-scene-canvas)"
+                hideSessionTabs
+                hideWorkspaceChrome
+                hideSurfaceHeader
+                hideLaneToolDrawers
+                shouldAutofocusComposer
+                presentation={{
+                  mode: "standard",
+                  title,
+                  assistantLabel: selectedSession ? sessionTitle(selectedSession) : "ADE",
+                  messagePlaceholder: "Ask anything, or have the agent do it…",
+                }}
+              />
+            )}
+          </div>
+          {/* The panels sit outside the pane, so they get the same API scope:
+              a screenshot inserted from the browser lands in this chat's
+              attachment store, not the active project's. */}
+          <AgentChatApiProvider scope={chatScope}>
             {toolPanel === "browser" ? (
-              <div className="w-[min(44%,560px)] min-w-[340px] border-l border-white/[0.07] bg-bg max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-30 max-lg:w-[min(92%,560px)] max-lg:shadow-2xl">
-                <ChatBuiltInBrowserPanel sessionId={selectedId} projectRootOverride={null} onInsertDraft={appendDraft} />
+              <div className="w-[min(44%,560px)] min-w-[340px] border-l border-fg/[0.07] bg-bg max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-30 max-lg:w-[min(92%,560px)] max-lg:shadow-2xl">
+                <ChatBuiltInBrowserPanel
+                  sessionId={selectedId}
+                  projectRootOverride={null}
+                  onInsertDraft={insertIntoComposer}
+                  onAddContext={addBrowserContextToComposer}
+                  onAddAttachment={attachToComposer}
+                  onAttachTab={(tab) => insertIntoComposer(formatBrowserTabMentionToken(tab))}
+                />
               </div>
             ) : null}
             {toolPanel === "terminal" ? (
-              <div className="w-[min(44%,560px)] min-w-[340px] border-l border-white/[0.07] bg-bg max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-30 max-lg:w-[min(92%,560px)] max-lg:shadow-2xl">
+              <div className="w-[min(44%,560px)] min-w-[340px] border-l border-fg/[0.07] bg-bg max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-30 max-lg:w-[min(92%,560px)] max-lg:shadow-2xl">
                 <PersonalTerminalPanel chatSessionId={selectedId} onClose={() => setToolPanel(null)} />
               </div>
             ) : null}
-          </div>
-        </ChatSurfaceShell>
+          </AgentChatApiProvider>
+        </div>
       </main>
     </div>
   );

@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComputerUseArtifactView, ComputerUseOwnerSnapshot } from "../../../shared/types";
 import {
@@ -106,6 +106,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   scopeOverride.current = null;
+  vi.restoreAllMocks();
   delete (window as unknown as { ade?: unknown }).ade;
 });
 
@@ -148,10 +149,10 @@ describe("proof rendering", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Enlarge Proof 2" }));
 
-    const dialog = screen.getByRole("dialog", { name: "Preview Proof 2" });
+    const dialog = screen.getByRole("dialog", { name: "Description 2" });
     expect(dialog.querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,AAAA");
     expect(dialog.querySelector("video")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Close proof preview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
@@ -233,7 +234,7 @@ describe("proof rendering", () => {
 
     await waitFor(() => {
       expect(view.container.querySelector('[data-chat-proof-artifact="artifact-21"] video')?.getAttribute("src"))
-        .toBe(`${MEDIA_BASE}/project/.ade/artifacts/inside.mp4`);
+        .toBe(`${MEDIA_BASE}/project/.ade/artifacts/inside.mp4?root=${encodeURIComponent("/Users/me/repo")}`);
     });
     expect(window.ade.computerUse.readArtifactPreview).toHaveBeenCalledTimes(1);
     expect(window.ade.computerUse.readArtifactPreview)
@@ -353,7 +354,7 @@ describe("proof rendering", () => {
     expect(view.container.querySelector("video[controls]")).toBeNull();
 
     fireEvent.click(poster);
-    const dialog = screen.getByRole("dialog", { name: "Preview Sim recording" });
+    const dialog = screen.getByRole("dialog", { name: "Description 10" });
     const player = dialog.querySelector("video");
     expect(player?.hasAttribute("controls")).toBe(true);
     expect(player?.getAttribute("src")).toBe("data:video/mp4;base64,AAAA");
@@ -362,7 +363,7 @@ describe("proof rendering", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
     fireEvent.click(screen.getByRole("button", { name: "Play Sim recording" }));
-    fireEvent.click(screen.getByRole("button", { name: "Close proof preview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
@@ -384,7 +385,7 @@ describe("proof rendering", () => {
     expect(poster.tagName).toBe("BUTTON");
     expect(poster.querySelector("video")?.hasAttribute("controls")).toBe(false);
     fireEvent.click(poster);
-    expect(screen.getByRole("dialog", { name: "Preview Proof 11" }).querySelector("video[controls]")
+    expect(screen.getByRole("dialog", { name: "Description 11" }).querySelector("video[controls]")
       ?.getAttribute("src")).toBe("data:video/mp4;base64,BBBB");
   });
 
@@ -403,7 +404,7 @@ describe("proof rendering", () => {
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "Play Proof 12" }));
-    const dialog = screen.getByRole("dialog", { name: "Preview Proof 12" });
+    const dialog = screen.getByRole("dialog", { name: "Description 12" });
     fireEvent.error(dialog.querySelector("video")!);
 
     await waitFor(() => expect(dialog.querySelector("video")).toBeNull());
@@ -445,6 +446,30 @@ describe("proof rendering", () => {
     expect(screen.getByText("Proof 7")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "View 2 earlier proof items" }));
     expect(onOpenDrawer).toHaveBeenCalledTimes(1);
+  });
+
+  it("narrows to the records a thread link counted, says so, and clears on its chip", async () => {
+    const onClearFocus = vi.fn();
+    const snapshot = snapshotOf([artifact(1), artifact(2), artifact(3)]);
+    const view = render(
+      <ChatComputerUsePanel
+        snapshot={snapshot}
+        onRefresh={vi.fn()}
+        focus={{ label: "This turn", artifactIds: ["artifact-2"] }}
+        onClearFocus={onClearFocus}
+      />,
+    );
+
+    expect(await screen.findByText("Proof 2")).toBeTruthy();
+    expect(screen.queryByText("Proof 1")).toBeNull();
+    expect(screen.queryByText("Proof 3")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Filtered to this turn/ }));
+    expect(onClearFocus).toHaveBeenCalledTimes(1);
+
+    view.rerender(<ChatComputerUsePanel snapshot={snapshot} onRefresh={vi.fn()} focus={null} onClearFocus={onClearFocus} />);
+    expect(await screen.findByText("Proof 1")).toBeTruthy();
+    expect(screen.getByText("Proof 3")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Filtered to/ })).toBeNull();
   });
 
   it("deletes a drawer item and refreshes, instead of leaving the user no way to remove it", async () => {
@@ -569,43 +594,14 @@ describe("proof rendering", () => {
 });
 
 describe("proof provenance lines", () => {
-  // Local wall-clock times, so the clock text is the same in every time zone.
+  // The one provenance fact a proof surface still prints: proof that was
+  // recorded before the request it is attached to. Where the bytes came from
+  // is still in the record but no longer drawn. `proofSourceLine` itself is
+  // covered in shared/proofProvenance.test.ts.
   const at = (hour: number, minute: number) => new Date(2026, 8, 23, hour, minute).toISOString();
-  const clock = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 
-  it("says an ADE recording was recorded by ADE, with its times, in the drawer and the timeline", () => {
-    const recorded = artifact(1, {
-      kind: "video_recording",
-      mimeType: "video/mp4",
-      metadata: { proofSource: "ade-recorder", recordedFrom: at(10, 24), recordedTo: at(10, 25) },
-    });
-    render(<ChatComputerUsePanel snapshot={snapshotOf([recorded])} onRefresh={vi.fn()} />);
-    const drawerLine = document.querySelector("[data-proof-source]")!;
-    expect(drawerLine.textContent).toMatch(/^Recorded by ADE · 10:24/);
-    expect(drawerLine.textContent).toContain(clock(at(10, 25)));
-    cleanup();
-
-    render(<ChatProofTimeline artifacts={[recorded]} />);
-    expect(document.querySelector("[data-proof-source]")!.textContent).toMatch(/^Recorded by ADE · 10:24/);
-  });
-
-  it("says captured by ADE, or attached by the agent", () => {
-    render(
-      <ChatComputerUsePanel
-        snapshot={snapshotOf([
-          artifact(1, { metadata: { proofSource: "ade-capture" } }),
-          artifact(2, { metadata: { proofSource: "attached" } }),
-        ])}
-        onRefresh={vi.fn()}
-      />,
-    );
-    const lines = [...document.querySelectorAll("[data-proof-source]")].map((node) => node.textContent);
-    expect(lines).toEqual(["Captured by ADE", "Attached by the agent"]);
-  });
-
-  it("shows nothing for a row filed before provenance existed", () => {
+  it("shows no warning for a row that predates the provenance fields", () => {
     render(<ChatComputerUsePanel snapshot={snapshotOf([artifact(1)])} onRefresh={vi.fn()} />);
-    expect(document.querySelector("[data-proof-source]")).toBeNull();
     expect(document.querySelector("[data-proof-recorded-before-request]")).toBeNull();
   });
 
@@ -618,6 +614,68 @@ describe("proof provenance lines", () => {
     render(<ChatProofTimeline artifacts={[older]} />);
     const line = document.querySelector("[data-proof-recorded-before-request]")!;
     expect(line.textContent).toMatch(/before this request/);
-    expect(document.querySelector("[data-proof-source]")!.textContent).toBe("Attached by the agent");
+  });
+});
+
+describe("MediaLightbox demo chapters", () => {
+  // The chapters ride on the video's metadata; the lightbox draws them and a
+  // click seeks to the step and plays. Fewer than two steps are not chapters.
+  const chaptered = artifact(13, {
+    title: "Chaptered demo",
+    kind: "video_recording",
+    originalType: "video",
+    mimeType: "video/mp4",
+    uri: ".ade/artifacts/demo.mp4",
+    metadata: { demo: { steps: [{ t: 3, text: "Opened settings" }, { t: 9, text: "Saved" }] } },
+  });
+
+  async function openChapteredVideo(item: ComputerUseArtifactView, title: string) {
+    vi.mocked(window.ade.computerUse.readArtifactPreview).mockResolvedValue("data:video/mp4;base64,AAAA");
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    render(<ChatProofTimeline artifacts={[item]} />);
+    fireEvent.click(await screen.findByRole("button", { name: `Play ${title}` }));
+  }
+
+  it("seeks the video to a chapter's time and plays it when the chapter is clicked", async () => {
+    await openChapteredVideo(chaptered, "Chaptered demo");
+
+    const dialog = screen.getByRole("dialog", { name: "Description 13" });
+    const buttons = within(within(dialog).getByTestId("media-lightbox-chapters")).getAllByRole("button");
+    expect(buttons).toHaveLength(2);
+
+    fireEvent.click(buttons[1]!);
+    const video = dialog.querySelector("video")!;
+    expect(video.currentTime).toBe(9);
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["one chapter", [{ t: 3, text: "Only step" }]],
+    ["no chapters", []],
+  ])("renders no chapter controls with %s", async (_name, steps) => {
+    const item = artifact(14, {
+      title: "Unchaptered demo",
+      kind: "video_recording",
+      originalType: "video",
+      mimeType: "video/mp4",
+      uri: ".ade/artifacts/demo.mp4",
+      metadata: { demo: { steps } },
+    });
+    await openChapteredVideo(item, "Unchaptered demo");
+
+    const dialog = screen.getByRole("dialog", { name: "Description 14" });
+    expect(dialog.querySelector("video")).toBeTruthy();
+    expect(within(dialog).queryByTestId("media-lightbox-chapters")).toBeNull();
+    expect(within(dialog).queryByText("Only step")).toBeNull();
+  });
+
+  it("hides the chapters once the video fails, so a dead player lists no steps", async () => {
+    await openChapteredVideo(chaptered, "Chaptered demo");
+
+    const dialog = screen.getByRole("dialog", { name: "Description 13" });
+    expect(within(dialog).getByTestId("media-lightbox-chapters")).toBeTruthy();
+    fireEvent.error(dialog.querySelector("video")!);
+    await waitFor(() => expect(dialog.querySelector("video")).toBeNull());
+    expect(within(dialog).queryByTestId("media-lightbox-chapters")).toBeNull();
   });
 });

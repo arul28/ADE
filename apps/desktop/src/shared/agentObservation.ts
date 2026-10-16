@@ -6,6 +6,8 @@
  * `ade` daemon) can import it.
  */
 
+import type { ComputerUseActionEffect } from "./types/agentObservation";
+
 /** Every observation id starts with this prefix, which handles encode. */
 export const AGENT_OBSERVATION_ID_PREFIX = "obs-";
 
@@ -53,36 +55,129 @@ export function clampObservationInteger(
   return Math.max(min, Math.min(max, raw));
 }
 
+const SHIFT_MODIFIER_BIT = 8;
+
+const KEY_MODIFIER_BITS: Record<string, number> = {
+  alt: 1,
+  option: 1,
+  opt: 1,
+  control: 2,
+  ctrl: 2,
+  meta: 4,
+  cmd: 4,
+  command: 4,
+  super: 4,
+  shift: SHIFT_MODIFIER_BIT,
+};
+
+type NamedKey = { key: string; code: string; windowsVirtualKeyCode: number; text?: string };
+
+const NAMED_KEYS: Record<string, NamedKey> = {
+  // Enter carries `text: "\r"`: Chromium turns a keyDown into the keypress
+  // that submits a `<form>` only when the event has text. Without it, Enter
+  // into a focused input did nothing.
+  enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" },
+  return: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" },
+  tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
+  escape: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
+  esc: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
+  backspace: { key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
+  delete: { key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 },
+  space: { key: " ", code: "Space", windowsVirtualKeyCode: 32, text: " " },
+  arrowleft: { key: "ArrowLeft", code: "ArrowLeft", windowsVirtualKeyCode: 37 },
+  arrowup: { key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 },
+  arrowright: { key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 },
+  arrowdown: { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 },
+  home: { key: "Home", code: "Home", windowsVirtualKeyCode: 36 },
+  end: { key: "End", code: "End", windowsVirtualKeyCode: 35 },
+  pageup: { key: "PageUp", code: "PageUp", windowsVirtualKeyCode: 33 },
+  pagedown: { key: "PageDown", code: "PageDown", windowsVirtualKeyCode: 34 },
+  insert: { key: "Insert", code: "Insert", windowsVirtualKeyCode: 45 },
+  // A modifier pressed on its own (a page that reacts to a bare Shift press).
+  shift: { key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16 },
+  control: { key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17 },
+  alt: { key: "Alt", code: "AltLeft", windowsVirtualKeyCode: 18 },
+  meta: { key: "Meta", code: "MetaLeft", windowsVirtualKeyCode: 91 },
+  ...Object.fromEntries(
+    Array.from({ length: 12 }, (_, index) => {
+      const name = `F${index + 1}`;
+      return [name.toLowerCase(), { key: name, code: name, windowsVirtualKeyCode: 112 + index }];
+    }),
+  ),
+};
+
 /**
- * CDP `Input.dispatchKeyEvent` payload for a key name or single character.
- * Mirrors the built-in browser's key mapping so `press Enter` behaves the same
- * in an app as it does on a page.
+ * The CDP `Input.dispatchKeyEvent` payloads (down, then up) for a key name, a
+ * single character, or a combination such as `Meta+n`, `Control+Shift+K` or
+ * `Cmd+Enter`.
+ *
+ * Mirrors what a real key press sends, the way Puppeteer does: the down event
+ * is `keyDown` with `text` when the key types a character (Enter types `"\r"`)
+ * and `rawKeyDown` otherwise, and `modifiers` carries the held keys (Alt 1,
+ * Control 2, Meta 4, Shift 8). A modifier other than Shift suppresses the
+ * text, so `Meta+n` fires the page's shortcut handler instead of typing "n".
+ * Shared by the built-in browser and App Control, so `press Enter` behaves the
+ * same in an app as it does on a page.
+ *
+ * A key inside a native menu accelerator (an Electron `Menu` item's ⌘N) is
+ * handled by the OS menu, not the page, and CDP key events do not reach it.
+ *
+ * Shift changes only a letter's case. For a shifted symbol, pass the symbol
+ * itself (`"?"`, `"!"`), not `Shift+/` or `Shift+1`: the helper does not know
+ * the keyboard layout. A multi-character name it does not know (for example
+ * `PrintScreen`) throws rather than typing its first letter.
  */
-export function keyEventForAgentInput(input: string): Record<string, unknown> {
-  const normalized = input.length === 1 ? input : input.trim();
-  const named: Record<string, { key: string; code: string; windowsVirtualKeyCode: number }> = {
-    Enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
-    Return: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
-    Tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
-    Escape: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
-    Esc: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
-    Backspace: { key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
-    Delete: { key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 },
-    ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", windowsVirtualKeyCode: 37 },
-    ArrowUp: { key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 },
-    ArrowRight: { key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 },
-    ArrowDown: { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 },
+export function keyEventsForAgentInput(input: string): {
+  down: Record<string, unknown>;
+  up: Record<string, unknown>;
+} {
+  // A single code point (an emoji is two UTF-16 units) is one key, as is.
+  const raw = [...input].length === 1 ? input : input.trim();
+  // `+` alone, or a trailing `+` ("Shift++"), names the plus key itself.
+  const parts = raw.length > 1 ? raw.split(/\+(?!$)/) : [raw];
+  let modifiers = 0;
+  const keyPart = parts.length > 1 ? parts[parts.length - 1]! : raw;
+  for (const part of parts.slice(0, -1)) {
+    const bit = KEY_MODIFIER_BITS[part.trim().toLowerCase()];
+    if (bit === undefined) throw new Error(`Unknown modifier "${part}" in key "${input}". Use Alt, Control, Meta or Shift.`);
+    modifiers |= bit;
+  }
+  const shift = (modifiers & SHIFT_MODIFIER_BIT) !== 0;
+  const typesText = (modifiers & ~SHIFT_MODIFIER_BIT) === 0;
+
+  let base: NamedKey;
+  const single = [...keyPart].length === 1;
+  const named = keyPart === " " ? NAMED_KEYS.space : single ? undefined : NAMED_KEYS[keyPart.toLowerCase()];
+  if (named) {
+    base = named;
+  } else if (!single) {
+    throw new Error(`Unknown key "${keyPart}" in "${input}". Use a single character or a key name such as Enter, Tab, Escape, ArrowUp or F5.`);
+  } else {
+    const char = keyPart;
+    const upper = char.toUpperCase();
+    const typed = shift && /^[a-z]$/.test(char) ? upper : char;
+    base = {
+      key: typed,
+      // A symbol's physical key depends on the layout, so it gets no `code`.
+      code: /^[a-z]$/i.test(char) ? `Key${upper}` : /^[0-9]$/.test(char) ? `Digit${char}` : "",
+      windowsVirtualKeyCode: upper.charCodeAt(0),
+      text: typed,
+    };
+  }
+  const common: Record<string, unknown> = {
+    key: base.key,
+    code: base.code,
+    windowsVirtualKeyCode: base.windowsVirtualKeyCode,
+    ...(modifiers ? { modifiers } : {}),
   };
-  const special = named[normalized];
-  if (special) return special;
-  const char = normalized.slice(0, 1);
-  const upper = char.toUpperCase();
+  const text = typesText ? base.text : undefined;
   return {
-    key: char,
-    code: /^[a-z]$/i.test(char) ? `Key${upper}` : char,
-    windowsVirtualKeyCode: upper.charCodeAt(0),
-    text: char,
-    unmodifiedText: char,
+    down: {
+      type: text ? "keyDown" : "rawKeyDown",
+      ...common,
+      ...(text ? { text, unmodifiedText: text } : {}),
+    },
+    up: { type: "keyUp", ...common },
   };
 }
 
@@ -267,6 +362,42 @@ function(inputArg) {
     if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
     return node.matches(interactiveSelector) ? node : node.closest(interactiveSelector) || node;
   };
+  // The deepest focused element, through open shadow roots and same-origin
+  // frames, as a short key. The action-effect check only asks whether focus
+  // moved, so this names the element; it does not describe it.
+  const focusKeyNow = () => {
+    let node = document.activeElement;
+    for (let depth = 0; node && depth < 8; depth += 1) {
+      if (node.shadowRoot && node.shadowRoot.activeElement) {
+        node = node.shadowRoot.activeElement;
+        continue;
+      }
+      const tag = node.tagName ? node.tagName.toLowerCase() : "";
+      if (tag === "iframe" || tag === "frame") {
+        let inner = null;
+        try {
+          inner = node.contentDocument ? node.contentDocument.activeElement : null;
+        } catch {
+          inner = null;
+        }
+        if (inner && inner !== node.contentDocument.body) {
+          node = inner;
+          continue;
+        }
+      }
+      break;
+    }
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
+    const doc = node.ownerDocument || document;
+    if (node === doc.body || node === doc.documentElement) return null;
+    return [
+      node.tagName.toLowerCase(),
+      node.getAttribute("role") || "",
+      node.getAttribute("name") || "",
+      normalizeText(node.getAttribute("aria-label")).slice(0, 80),
+      selectorFor(node)
+    ].join("|");
+  };
   const contexts = [];
   const collectContexts = (root, doc, win, offsetX, offsetY, framePath, shadowPath, depth) => {
     if (!root || typeof root.querySelectorAll !== "function" || depth > 4) return;
@@ -333,6 +464,19 @@ function(inputArg) {
     .slice(0, maxElements)
     .map((entry, index) => describe(entry.node, index + 1, entry.ctx))
     .filter(Boolean);
+  // The page's visible text, hashed. The element list holds only interactive
+  // elements, so a click that changes a heading or a status line ("Count: 1")
+  // would otherwise read as no effect. Capped so a huge page stays cheap.
+  const textKeyNow = () => {
+    const body = document.body;
+    const text = body ? String(body.innerText || "").replace(/\s+/g, " ").trim().slice(0, 20000) : "";
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return (hash >>> 0).toString(16) + ":" + text.length;
+  };
   const snapshot = {
     url: location.href,
     title: document.title,
@@ -340,7 +484,9 @@ function(inputArg) {
     viewport: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
     scroll: { x: window.scrollX, y: window.scrollY },
     elementCount: stable.length,
-    elements
+    elements,
+    focusKey: focusKeyNow(),
+    textKey: textKeyNow()
   };
 
   const findBySelector = (selector) => {
@@ -376,6 +522,53 @@ function(inputArg) {
     node.textContent,
     valueFor(node)
   ].filter(Boolean).join(" "));
+  // Interactive controls plus the clickable roles a text match must reach when
+  // the text sits inside a row rather than a form control. A listbox option is
+  // clickable but is not in interactiveSelector (its tabindex is -1), so
+  // without these a --text-match "lane name" resolved to the list container
+  // whose combined text merely included the string, and the click landed on
+  // whatever row sat under the container's center.
+  const clickableSelector = interactiveSelector
+    + ",[role='option'],[role='row'],[role='treeitem'],[role='gridcell'],[role='menuitemcheckbox'],[role='menuitemradio']";
+  const ownText = (node) => lowerText(node.innerText || node.textContent || "");
+  const elementDepth = (node) => {
+    let depth = 0;
+    let current = node;
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      depth += 1;
+      current = current.parentElement;
+    }
+    return depth;
+  };
+  const elementArea = (node, ctx) => {
+    const rect = rectFor(node, ctx);
+    return rect ? Math.max(1, rect.width * rect.height) : Number.MAX_SAFE_INTEGER;
+  };
+  // The closest ancestor a pointer could actually click: an interactive control
+  // or clickable role, else the outermost element the app styles as a pointer
+  // target. Cursor is inherited, so every span inside a clickable row reports
+  // pointer; the outermost such ancestor is the row that set it, and the
+  // semantic selector is preferred over it.
+  const closestClickable = (node, ctx) => {
+    let current = node;
+    let cursorMatch = null;
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      if (current.matches(clickableSelector)) return current;
+      const style = (ctx.win || window).getComputedStyle(current);
+      if (style && style.cursor === "pointer") cursorMatch = current;
+      if (current === ctx.root || current === document.body || current === document.documentElement) break;
+      current = current.parentElement;
+    }
+    return cursorMatch;
+  };
+  // Exact match wins; then the smaller own text (a row beats the list holding
+  // it); then the smaller box; then the deeper element.
+  const betterTextMatch = (candidate, incumbent) => {
+    if (candidate.exact !== incumbent.exact) return candidate.exact;
+    if (candidate.length !== incumbent.length) return candidate.length < incumbent.length;
+    if (candidate.area !== incumbent.area) return candidate.area < incumbent.area;
+    return candidate.depth > incumbent.depth;
+  };
   const findByText = (text) => {
     const needle = lowerText(text);
     if (!needle) return null;
@@ -383,15 +576,65 @@ function(inputArg) {
     const seen = new Set();
     for (const ctx of contexts) {
       if (!contextMatches(ctx)) continue;
-      for (const raw of Array.from(ctx.root.querySelectorAll(interactiveSelector))) {
-        const node = actionableElement(raw);
-        if (!node || seen.has(node) || !isDisplayed(node, ctx)) continue;
-        seen.add(node);
-        candidates.push({ node, ctx });
+      for (const raw of Array.from(ctx.root.querySelectorAll(clickableSelector))) {
+        if (!raw || seen.has(raw) || !isDisplayed(raw, ctx)) continue;
+        seen.add(raw);
+        candidates.push({ node: raw, ctx });
       }
     }
-    const exact = candidates.find((entry) => searchableText(entry.node) === needle);
-    return exact || candidates.find((entry) => searchableText(entry.node).includes(needle)) || null;
+    // One pass over the controls: the most specific exact match wins, and the
+    // smallest control whose combined text merely includes the needle is the
+    // bound for the text search below.
+    let exactBest = null;
+    let includesBest = null;
+    for (const entry of candidates) {
+      const hay = searchableText(entry.node);
+      if (!hay.includes(needle)) continue;
+      const score = {
+        exact: hay === needle,
+        length: ownText(entry.node).length,
+        depth: elementDepth(entry.node),
+        area: elementArea(entry.node, entry.ctx),
+      };
+      if (score.exact) {
+        if (!exactBest || betterTextMatch(score, exactBest.score)) exactBest = { entry, score };
+      } else if (!includesBest || betterTextMatch(score, includesBest.score)) {
+        includesBest = { entry, score };
+      }
+    }
+    if (exactBest) return exactBest.entry;
+    // The smallest visible element whose own text carries the needle, then the
+    // closest clickable ancestor of that text. When a control already includes
+    // the needle, scan only that control's subtree: a wait loop polls this
+    // every 250 ms and must not re-walk the whole document each time. The row
+    // case lands here — the lane name sits in a span inside a clickable
+    // role=option row within the list container.
+    let textBest = null;
+    const roots = includesBest
+      ? [{ node: includesBest.entry.node, ctx: includesBest.entry.ctx }]
+      : contexts.map((ctx) => ({ node: ctx.root, ctx }));
+    for (const root of roots) {
+      const scoped = root.node instanceof Document
+        ? root.node.querySelectorAll("body *")
+        : root.node.querySelectorAll("*");
+      const nodes = [root.node, ...Array.from(scoped)];
+      for (const node of nodes) {
+        if (!(node instanceof Element) || !isDisplayed(node, root.ctx)) continue;
+        const value = ownText(node);
+        if (!value.includes(needle)) continue;
+        const depth = elementDepth(node);
+        if (!textBest || value.length < textBest.length || (value.length === textBest.length && depth > textBest.depth)) {
+          textBest = { node, ctx: root.ctx, length: value.length, depth };
+        }
+      }
+    }
+    if (textBest) {
+      const clickable = closestClickable(textBest.node, textBest.ctx);
+      if (clickable) return { node: clickable, ctx: textBest.ctx };
+    }
+    if (includesBest) return includesBest.entry;
+    // A heading or status line ("Count: 3") that a wait or an assert must find.
+    return textBest ? { node: textBest.node, ctx: textBest.ctx } : null;
   };
   const targetFromLocate = () => {
     if (!locate) return null;
@@ -410,8 +653,10 @@ function(inputArg) {
   if (rawTarget && rawTarget.error) return { snapshot, target: null, error: rawTarget.error };
   let target = rawTarget && rawTarget.node && rawTarget.node.nodeType === Node.ELEMENT_NODE ? rawTarget.node : null;
   const targetContext = rawTarget && rawTarget.ctx ? rawTarget.ctx : contexts[0];
+  let scrolledIntoView = false;
   if (target && typeof target.scrollIntoView === "function" && !intersectsViewport(target, targetContext)) {
     target.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
+    scrolledIntoView = true;
   }
   if (target && !isDisplayed(target, targetContext)) target = null;
   if (target && shouldFocus) {
@@ -443,6 +688,11 @@ function(inputArg) {
     readyState: document.readyState,
     snapshot,
     target: describedTarget,
+    // What the locate itself did before any input was sent: it may have
+    // focused the target and scrolled it into view. The action-effect check
+    // reads these so neither counts as the action's effect.
+    focusKeyAfterLocate: locate ? focusKeyNow() : undefined,
+    scrolledIntoView,
     error: locate && !describedTarget ? "No matching element was found." : null
   };
 }
@@ -532,3 +782,212 @@ function(inputArg) {
   return { ok: true, count };
 }
 `;
+
+/* ── Action effect ─────────────────────────────────────────────────────── */
+
+/**
+ * One side of an action, reduced to what "did anything change" needs.
+ *
+ * Built from state a surface already holds — a DOM snapshot, an accessibility
+ * observation, a frame hash — so taking one costs a string join, never a
+ * screenshot. A field left `undefined` means "this surface cannot see it", and
+ * the comparison skips it instead of calling a missing value a change.
+ */
+export type AgentEffectFingerprint = {
+  url?: string | null;
+  title?: string | null;
+  /** The window list as one string, e.g. "12:Notes — Draft|14:Safari". */
+  windows?: string | null;
+  focus?: string | null;
+  scroll?: string | null;
+  /** A hash of the page's visible text (DOM surfaces). */
+  text?: string | null;
+  /** Elements found before any cap trimmed the list. */
+  elementCount?: number | null;
+  /** One key per listed element, in walk order. */
+  elements?: AgentEffectElementKey[] | null;
+  /** True when `elements` is only the start of a longer list. */
+  truncated?: boolean;
+  /** Pixel-only surfaces: a hash of the frame bytes. */
+  frameHash?: string | null;
+};
+
+/**
+ * What an element says (`content`) and where it sits (`layout`), each hashed,
+ * plus a short readable `name` (role and label) that the effect reason quotes.
+ */
+export type AgentEffectElementKey = { content: string; layout: string; name?: string };
+
+/** Frames compare on a 4-point grid: sub-pixel layout jitter is not a change. */
+const EFFECT_FRAME_GRID = 4;
+
+/**
+ * Roles whose value moves on its own (a spinner, a progress bar, a clock).
+ * Their value is left out of the key so a busy indicator does not read as the
+ * action's effect.
+ */
+const VOLATILE_VALUE_ROLES = new Set([
+  "progressbar",
+  "meter",
+  "timer",
+  "marquee",
+  "axprogressindicator",
+  "axbusyindicator",
+  "axlevelindicator",
+]);
+
+/** FNV-1a, 32-bit, as hex. Deterministic and dependency-free; not a security hash. */
+export function hashEffectString(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+const effectText = (value: string | null | undefined): string =>
+  typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 300) : "";
+
+const onEffectGrid = (value: number): number =>
+  Number.isFinite(value) ? Math.round(value / EFFECT_FRAME_GRID) * EFFECT_FRAME_GRID : 0;
+
+/** The stable key for one element: role, label, value, text, and a rounded frame. */
+export function agentEffectElementKey(element: {
+  role?: string | null;
+  label?: string | null;
+  value?: string | null;
+  text?: string | null;
+  disabled?: boolean | null;
+  frame?: { x: number; y: number; width: number; height: number } | null;
+}): AgentEffectElementKey {
+  const role = effectText(element.role);
+  const value = VOLATILE_VALUE_ROLES.has(role.toLowerCase()) ? "" : effectText(element.value);
+  const frame = element.frame;
+  const label = effectText(element.label) || effectText(element.text).slice(0, 40);
+  return {
+    name: label ? `${role} "${label.slice(0, 40)}"` : role,
+    content: hashEffectString(
+      [role, effectText(element.label), value, effectText(element.text), element.disabled === true ? "d" : ""].join("\u0000"),
+    ),
+    layout: frame
+      ? hashEffectString([frame.x, frame.y, frame.width, frame.height].map(onEffectGrid).join(","))
+      : "",
+  };
+}
+
+/**
+ * Which elements differ between two lists, as a multiset: a list that only
+ * reordered is unchanged, and one that swapped an element counts it once.
+ * When either list was capped, only the shared prefix is compared; the totals
+ * are compared separately through `elementCount`.
+ */
+function diffEffectElements(
+  before: AgentEffectFingerprint,
+  after: AgentEffectFingerprint,
+  ignoreLayout: boolean,
+): { added: AgentEffectElementKey[]; removed: AgentEffectElementKey[] } {
+  if (!before.elements || !after.elements) return { added: [], removed: [] };
+  const capped = before.truncated === true || after.truncated === true;
+  const length = Math.min(before.elements.length, after.elements.length);
+  const left = capped ? before.elements.slice(0, length) : before.elements;
+  const right = capped ? after.elements.slice(0, length) : after.elements;
+  const keyOf = (entry: AgentEffectElementKey): string =>
+    ignoreLayout ? entry.content : `${entry.content}@${entry.layout}`;
+  const remaining = new Map<string, AgentEffectElementKey[]>();
+  for (const entry of left) {
+    const key = keyOf(entry);
+    remaining.set(key, [...(remaining.get(key) ?? []), entry]);
+  }
+  const added: AgentEffectElementKey[] = [];
+  for (const entry of right) {
+    const key = keyOf(entry);
+    const pool = remaining.get(key);
+    if (pool && pool.length > 0) pool.pop();
+    else added.push(entry);
+  }
+  const removed = [...remaining.values()].flat();
+  return { added, removed };
+}
+
+/** Up to three quoted names, then "and N more". */
+function nameSome(names: string[]): string {
+  const unique = [...new Set(names.filter(Boolean))];
+  const shown = unique.slice(0, 3).join(", ");
+  return unique.length > 3 ? `${shown} and ${unique.length - 3} more` : shown;
+}
+
+/**
+ * One readable sentence for an element diff. An element whose name is on both
+ * sides changed in place (its value, state or position); the rest appeared or
+ * went away. The sentence names them, so an agent can tell a menu that opened
+ * from the text it typed.
+ */
+function describeElementDiff(added: AgentEffectElementKey[], removed: AgentEffectElementKey[]): string {
+  const removedNames = removed.map((entry) => entry.name ?? "");
+  const changed: string[] = [];
+  const appeared: string[] = [];
+  for (const entry of added) {
+    const name = entry.name ?? "";
+    const match = name ? removedNames.indexOf(name) : -1;
+    if (match >= 0) {
+      changed.push(name);
+      removedNames.splice(match, 1);
+    } else {
+      appeared.push(name);
+    }
+  }
+  const gone = removedNames;
+  const parts: string[] = [];
+  const count = (list: string[], one: string, many: string): string =>
+    list.length === 1 ? one : `${list.length} ${many}`;
+  if (changed.length) parts.push(`${count(changed, "1 element", "elements")} changed (${nameSome(changed)})`);
+  if (appeared.length) parts.push(`${count(appeared, "1 element", "elements")} appeared (${nameSome(appeared)})`);
+  if (gone.length) parts.push(`${count(gone, "1 element", "elements")} went away (${nameSome(gone)})`);
+  return parts.join("; ").replace(/ \(\)/g, "");
+}
+
+/**
+ * Compare the state before an action with the state after it.
+ *
+ * Returns the first difference in a fixed order — URL, title, windows, scroll,
+ * elements, element count, focus, frame — as one plain sentence, so the answer
+ * is deterministic for the same pair. `ignoreLayout` drops scroll and frames:
+ * set it when ADE itself scrolled the target into view before acting.
+ */
+export function compareAgentEffectFingerprints(
+  before: AgentEffectFingerprint | null | undefined,
+  after: AgentEffectFingerprint | null | undefined,
+  options: { ignoreLayout?: boolean; missingReason?: string } = {},
+): ComputerUseActionEffect {
+  if (!before || !after) {
+    return {
+      status: "not_checked",
+      reason: options.missingReason ?? "ADE had no earlier state to compare with",
+    };
+  }
+  const ignoreLayout = options.ignoreLayout === true;
+  const differs = (left: unknown, right: unknown): boolean =>
+    left !== undefined && right !== undefined && (left ?? null) !== (right ?? null);
+  const observed = (reason: string): ComputerUseActionEffect => ({ status: "observed", reason });
+  if (differs(before.url, after.url)) return observed("the URL changed");
+  if (differs(before.title, after.title)) return observed("the title changed");
+  if (differs(before.windows, after.windows)) return observed("a window opened, closed or changed title");
+  if (!ignoreLayout && differs(before.scroll, after.scroll)) return observed("the view scrolled");
+  const diff = diffEffectElements(before, after, ignoreLayout);
+  if (diff.added.length > 0 || diff.removed.length > 0) {
+    return observed(describeElementDiff(diff.added, diff.removed));
+  }
+  if (differs(before.elementCount, after.elementCount)) {
+    return observed(`the element count changed from ${before.elementCount ?? 0} to ${after.elementCount ?? 0}`);
+  }
+  if (differs(before.text, after.text)) return observed("the page text changed");
+  if (differs(before.focus, after.focus)) return observed("the focused element changed");
+  if (differs(before.frameHash, after.frameHash)) return observed("the screen image changed");
+  return { status: "unconfirmed", reason: "nothing on screen changed" };
+}
+
+/** The answer for an action that compared nothing, with the reason. */
+export function notCheckedEffect(reason: string): ComputerUseActionEffect {
+  return { status: "not_checked", reason };
+}

@@ -5,7 +5,8 @@ import {
   sortCursorCliDescriptorsForPicker,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
-import { spawnAsync } from "../shared/utils";
+import { spawnAsync, type SpawnAsyncResult } from "../shared/utils";
+import { getMachineMainLogger } from "../logging/machineLogger";
 import type { SDKModel } from "@cursor/sdk";
 import { createHash } from "node:crypto";
 import {
@@ -14,6 +15,8 @@ import {
   reportProviderRuntimeReady,
 } from "../ai/providerRuntimeHealth";
 import { isCursorSdkResolutionError, loadCursorSdk } from "../ai/cursorSdkLoader";
+import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../ai/cliExecutableResolver";
+import { stripVTControlCharacters } from "node:util";
 
 export type CursorModelParameterValue = { id: string; value: string };
 export type CursorModelParameterDefinition = {
@@ -75,8 +78,34 @@ class CursorModelDiscoveryError extends Error {
   }
 }
 
+const CURSOR_CLI_MODELS_MAX_OUTPUT_BYTES = 1024 * 1024;
+
+/**
+ * Discovery failures were only ever visible as provider-health state and an
+ * empty picker. These go to the machine log (`~/.ade/runtime/desktop-main.jsonl`,
+ * collected by `ade report-issue`). Never includes the API key.
+ */
+function logCursorDiscoveryWarning(event: string, fields: Record<string, unknown>): void {
+  try {
+    getMachineMainLogger().warn(event, fields);
+  } catch {
+    // Logging must never break discovery.
+  }
+}
+
+function describeCursorCliProbeFailure(args: string[], result: SpawnAsyncResult): Record<string, unknown> {
+  return {
+    args,
+    status: result.status,
+    ...(result.notFound ? { notFound: true } : {}),
+    ...(result.timedOut ? { timedOut: true } : {}),
+    ...(result.error ? { error: result.error.slice(0, 300) } : {}),
+    ...(result.stderr?.trim() ? { stderr: result.stderr.trim().slice(0, 300) } : {}),
+  };
+}
+
 function stripAnsi(text: string): string {
-  return text.replace(/\u001b\[[0-9;]*m/g, "");
+  return stripVTControlCharacters(text);
 }
 
 function cursorModelDisplayName(id: string): string {
@@ -439,6 +468,47 @@ export function normalizeCursorServiceTierValue(value: unknown): string | null {
   return null;
 }
 
+function cursorBooleanParameterValue(value: unknown): boolean | null {
+  const normalized = normalizeCursorMetadataText(value);
+  if (["true", "on", "yes", "1"].includes(normalized)) return true;
+  if (["false", "off", "no", "0"].includes(normalized)) return false;
+  return null;
+}
+
+/**
+ * Whether a parameter is Cursor's on/off Fast toggle: a parameter named for
+ * "fast" (`fast`, `fast_mode`) whose values are true/false. Cursor declares
+ * Fast this way for models such as grok-4.7, rather than as a speed tier with
+ * `fast`/`standard` values, so the toggle is the model's service tier.
+ */
+function isCursorFastToggleParameterName(
+  parameter: Pick<CursorModelParameterDefinition, "id" | "displayName">,
+): boolean {
+  return /\bfast\b/.test(cursorParameterClassifierHaystack(parameter));
+}
+
+function isCursorFastToggleParameter(parameter: CursorModelParameterDefinition): boolean {
+  return isCursorFastToggleParameterName(parameter)
+    && parameter.values.length > 0
+    && parameter.values.every((entry) => cursorBooleanParameterValue(entry.value) != null);
+}
+
+/**
+ * The service tier one value of a parameter selects, or null when it selects
+ * none. A tier value (`fast`, `standard`, ...) names itself; on the Fast
+ * toggle, `true` is Fast and `false` is standard.
+ */
+export function cursorServiceTierOfParameterValue(
+  parameter: Pick<CursorModelParameterDefinition, "id" | "displayName">,
+  value: unknown,
+): "fast" | "standard" | null {
+  const direct = normalizeCursorServiceTierValue(value);
+  if (direct === "fast" || direct === "standard") return direct;
+  if (!isCursorFastToggleParameterName(parameter)) return null;
+  const toggle = cursorBooleanParameterValue(value);
+  return toggle == null ? null : toggle ? "fast" : "standard";
+}
+
 function normalizeCursorParameterDefinitions(value: unknown): CursorModelParameterDefinition[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const out: CursorModelParameterDefinition[] = [];
@@ -509,13 +579,15 @@ export function cursorControlParameterIds(row: Pick<CursorCliModelRow, "paramete
     (row.parameters ?? []).filter(isReasoningParameterLike).map((entry) => entry.id),
   );
   const serviceTierParameterIds = new Set(
-    (row.parameters ?? []).filter(isServiceTierParameterLike).map((entry) => entry.id),
+    (row.parameters ?? [])
+      .filter((entry) => isServiceTierParameterLike(entry) || isCursorFastToggleParameter(entry))
+      .map((entry) => entry.id),
   );
   for (const variant of row.variants ?? []) {
     for (const param of variant.params) {
       if (
         isServiceTierParameterLike({ id: param.id, displayName: variant.displayName })
-        || normalizeCursorServiceTierValue(param.value) != null
+        || cursorServiceTierOfParameterValue({ id: param.id }, param.value) != null
       ) {
         serviceTierParameterIds.add(param.id);
       }
@@ -538,8 +610,18 @@ function deriveCursorRuntimeTiers(row: Pick<CursorCliModelRow, "parameters" | "v
       }
     }
     if (serviceTierParameterIds.has(parameter.id)) {
+      if (isCursorFastToggleParameter(parameter)) {
+        // An on/off toggle offers both tiers, whichever order it lists them in.
+        addUnique(serviceTiers, "fast");
+        addUnique(serviceTiers, "standard");
+        continue;
+      }
       for (const value of parameter.values) {
-        addUnique(serviceTiers, normalizeCursorServiceTierValue(value.value) ?? normalizeCursorServiceTierValue(value.displayName));
+        addUnique(
+          serviceTiers,
+          cursorServiceTierOfParameterValue(parameter, value.value)
+            ?? cursorServiceTierOfParameterValue(parameter, value.displayName),
+        );
       }
     }
   }
@@ -552,10 +634,13 @@ function deriveCursorRuntimeTiers(row: Pick<CursorCliModelRow, "parameters" | "v
       }
       if (
         serviceTierParameterIds.has(param.id)
-        || normalizeCursorServiceTierValue(param.value) != null
+        || cursorServiceTierOfParameterValue({ id: param.id }, param.value) != null
         || /\b(fast|standard|default|regular|base|normal|slow)\b/i.test(label)
       ) {
-        addUnique(serviceTiers, normalizeCursorServiceTierValue(param.value) ?? normalizeCursorServiceTierValue(label));
+        addUnique(
+          serviceTiers,
+          cursorServiceTierOfParameterValue({ id: param.id }, param.value) ?? normalizeCursorServiceTierValue(label),
+        );
       }
     }
   }
@@ -606,6 +691,10 @@ function recordCursorModelDiscoverySuccess(rows: CursorCliModelRow[]): void {
 
 function recordCursorModelDiscoveryFailure(error: unknown): CursorModelDiscoveryError {
   const discoveryError = toCursorModelDiscoveryError(error);
+  logCursorDiscoveryWarning("cursor.models.sdk_discovery_failed", {
+    kind: discoveryError.kind,
+    error: discoveryError.message.slice(0, 300),
+  });
   if (discoveryError.kind === "auth") {
     reportProviderRuntimeAuthFailure("cursor", CURSOR_AGENT_AUTH_BLOCKER);
   } else if (discoveryError.kind === "unavailable") {
@@ -966,7 +1055,10 @@ function warmCursorModelsFromCli(agentPath: string): void {
   // broken or missing CLI gets re-spawned on every passive discovery call.
   if (cliWarmInFlight || now - cliLastWarmAttemptAt < TTL_MS) return;
   cliLastWarmAttemptAt = now;
-  const promise = listCursorModelsFromCli(agentPath).catch(() => [] as CursorCliModelRow[]);
+  const promise = listCursorModelsFromCli(agentPath).catch((error) => {
+    logCursorDiscoveryWarning("cursor.models.cli_warm_failed", { command: agentPath, error: readErrorMessage(error).slice(0, 300) });
+    return [] as CursorCliModelRow[];
+  });
   cliWarmInFlight = promise;
   void promise.finally(() => {
     if (cliWarmInFlight === promise) cliWarmInFlight = null;
@@ -1129,12 +1221,37 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
   ];
 
   let cliReportedNoModels = false;
+  const failures: Array<Record<string, unknown>> = [];
+  const env = { ...process.env };
+  if (process.platform === "win32") {
+    // Discovery can find the shim in a newly installed directory even while
+    // the brain's inherited PATH is stale. Its node/agent children need the
+    // same expanded PATH, with Windows' original Path/PATH casing preserved.
+    setPathEnvValue(env, augmentProcessPathWithShellAndKnownCliDirs({ env }));
+  }
   for (const args of probes) {
     try {
-      const result = await spawnAsync(agentPath, args, { timeout: 12_000 });
-      if (result.status !== 0) continue;
-      const stdout = (result.stdout ?? "").trim();
-      if (!stdout) continue;
+      // `agent models` lists every model and variant: ~13 KB on a current
+      // account, past spawnAsync's 10 KB default, which silently cut the list
+      // (and could leave a half-written last id that parsed as a model).
+      const result = await spawnAsync(agentPath, args, {
+        timeout: 12_000,
+        maxOutputBytes: CURSOR_CLI_MODELS_MAX_OUTPUT_BYTES,
+        env,
+      });
+      if (result.notFound) {
+        failures.push(describeCursorCliProbeFailure(args, result));
+        break;
+      }
+      if (result.status !== 0) {
+        failures.push(describeCursorCliProbeFailure(args, result));
+        continue;
+      }
+      const stdout = stripAnsi(result.stdout ?? "").trim();
+      if (!stdout) {
+        failures.push(describeCursorCliProbeFailure(args, result));
+        continue;
+      }
       if (/no models available/i.test(stripAnsi(stdout))) {
         cliReportedNoModels = true;
         continue;
@@ -1142,8 +1259,10 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
 
       try {
         const parsed = JSON.parse(stdout) as unknown;
-        if (Array.isArray(parsed)) {
-          const models = normalizeCursorModelRows(parsed, { foldCliVariants: true });
+        const rows = Array.isArray(parsed) ? parsed : parsed && typeof parsed === "object"
+          ? (parsed as { models?: unknown }).models : null;
+        if (Array.isArray(rows)) {
+          const models = normalizeCursorModelRows(rows, { foldCliVariants: true });
           if (models.length) {
             cached = { at: now, models };
             return models;
@@ -1159,9 +1278,18 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
         cached = { at: now, models };
         return models;
       }
-    } catch {
-      // try next probe
+      failures.push({ ...describeCursorCliProbeFailure(args, result), reason: "unparsed_output", stdout: stdout.slice(0, 300) });
+    } catch (error) {
+      failures.push({ args, error: readErrorMessage(error) });
     }
+  }
+
+  if (failures.length) {
+    logCursorDiscoveryWarning("cursor.models.cli_probe_failed", {
+      command: agentPath,
+      cliReportedNoModels,
+      probes: failures,
+    });
   }
 
   if (cliReportedNoModels) {

@@ -1,5 +1,6 @@
 import type { ModelId, OnboardingDetectionResult } from "./core";
 import type {
+  LinearCatalogLabel,
   LinearCatalogState,
   LinearCatalogUser,
   LinearConnectionStatus,
@@ -60,15 +61,14 @@ export type CtoIdentity = {
    */
   modelPreferences: CtoModelPreferences | null;
   /**
-   * How a call sounds, and whether it makes listening noises.
+   * "Let the CTO reach my other machines" (Settings › CTO). Absent means on.
+   * Off, every cross-machine tool answers that it is turned off, nothing is
+   * paired, and the live-state roster is left out.
    *
-   * Optional and additive: an identity written before voice existed has
-   * neither, and both fall back to the defaults in `shared/types/ctoVoice`.
-   * Stored on the identity rather than in machine settings because it is a
-   * property of THIS CTO — a different project may want a different voice.
+   * The user's switch alone: the runtime refuses an `updateIdentity` patch
+   * that names it from any caller but the desktop.
    */
-  voiceName?: string | null;
-  voiceBackchannels?: boolean | null;
+  crossMachineEnabled?: boolean | null;
   updatedAt: string;
 };
 
@@ -101,9 +101,20 @@ export type CtoSessionLogEntry = {
   createdAt: string;
 };
 
+/**
+ * What the runtime hosting this CTO can do. Absent on runtimes built before the
+ * field existed, and a missing key means "no": a renderer reads
+ * `capabilities?.crossMachine === true`, never the inverse.
+ */
+export type CtoRuntimeCapabilities = {
+  /** The CTO's tools can reach the account's other machines (`listMachines`, `machine` args, `runMachineAction`). */
+  crossMachine?: boolean;
+};
+
 export type CtoSnapshot = {
   identity: CtoIdentity;
   recentSessions: CtoSessionLogEntry[];
+  capabilities?: CtoRuntimeCapabilities;
 };
 
 export type CtoGetStateArgs = {
@@ -211,8 +222,17 @@ export type CtoSearchLinearIssuesArgs = {
   projectSlug?: string | null;
   teamKey?: string | null;
   stateTypes?: string[];
+  /** Workflow state ids; used for per-state group counts. */
+  stateIds?: string[];
   assigneeId?: string | null;
+  /** Only issues assigned to the connected Linear user ("My issues"). */
+  assignedToViewer?: boolean;
+  /** Only issues in their team's active cycle ("Current cycle"). */
+  activeCycle?: boolean;
+  /** Apply a Linear custom view's saved filter (ANDed with the other filters). */
+  customViewId?: string | null;
   priority?: number | null;
+  /** Full-text search term (Linear `searchIssues`), plus an identifier/number match. */
   query?: string | null;
   first?: number;
   after?: string | null;
@@ -225,6 +245,175 @@ export type CtoSearchLinearIssuesResult = {
     hasNextPage: boolean;
     endCursor: string | null;
   };
+  /** Server-side total for a full-text search; absent for plain filter reads. */
+  totalCount?: number | null;
+};
+
+export type CtoCountLinearIssuesArgs = {
+  /** One count per key. Each value is the same filter shape the search takes. */
+  queries: Record<string, CtoSearchLinearIssuesArgs>;
+  /** Stop counting a key past this many issues and report `capped`. */
+  cap?: number;
+};
+
+export type CtoLinearIssueCount = {
+  count: number;
+  /** True when the count stopped at the cap; show it as `${count}+`. */
+  capped: boolean;
+};
+
+export type CtoCountLinearIssuesResult = {
+  /** `null` for a key whose filter Linear rejected. */
+  counts: Record<string, CtoLinearIssueCount | null>;
+};
+
+export type CtoLinearCustomView = {
+  id: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  color: string | null;
+  teamKey: string | null;
+  shared: boolean;
+};
+
+export type LinearIssueRelationKind = "blocks" | "blocked_by" | "related" | "duplicate";
+
+export type LinearIssueCreateInput = {
+  /** Team key ("VER") or team id. */
+  teamKey: string;
+  title: string;
+  description?: string | null;
+  projectId?: string | null;
+  parentId?: string | null;
+  stateId?: string | null;
+  assigneeId?: string | null;
+  priority?: number | null;
+  labelIds?: string[];
+  projectMilestoneId?: string | null;
+  cycleId?: string | null;
+  /** In the team's estimate scale. */
+  estimate?: number | null;
+  /** `YYYY-MM-DD`. */
+  dueDate?: string | null;
+  /** A Linear issue template; it fills what the input leaves empty. */
+  templateId?: string | null;
+};
+
+/** What a team offers the create form beyond the picker catalog. */
+export type LinearIssueCreateOptions = {
+  teamId: string;
+  teamKey: string;
+  cyclesEnabled: boolean;
+  /** `notUsed`, `exponential`, `fibonacci`, `linear` or `tShirt`. */
+  estimationType: string;
+  estimationAllowZero: boolean;
+  estimationExtended: boolean;
+  /** The active cycle and the upcoming ones. */
+  cycles: Array<{ id: string; number: number; name: string | null; startsAt: string; endsAt: string; active: boolean }>;
+  templates: Array<{ id: string; name: string; description: string | null; title: string | null; priority: number | null; labelIds: string[] }>;
+};
+
+export type LinearProjectMilestone = { id: string; name: string; targetDate: string | null };
+
+/** One file put on Linear's storage; `assetUrl` goes into markdown. */
+export type LinearUploadResult = { assetUrl: string; filename: string; contentType: string };
+
+/** One entry of the viewer's Linear inbox. */
+export type LinearInboxNotification = {
+  id: string;
+  /** Linear's notification type, e.g. "issueMention", "issueNewComment", "issueAssignedToYou". */
+  type: string;
+  createdAt: string;
+  readAt: string | null;
+  snoozedUntilAt: string | null;
+  actorName: string | null;
+  actorAvatarUrl: string | null;
+  actorInitials?: string | null;
+  /** Linear's own one-line headline and the "who did what" line under it. */
+  title?: string | null;
+  subtitle?: string | null;
+  /** Opens the item in Linear (issues, pull requests, projects). */
+  url?: string | null;
+  issueId: string | null;
+  issueIdentifier: string | null;
+  issueTitle: string | null;
+  issueUrl: string | null;
+  issueStateName: string | null;
+  issueStateType: string | null;
+  commentId: string | null;
+  commentBody: string | null;
+};
+
+/** The ADE Linear agent in the connected workspace (from the relay). */
+export type LinearAgentStatus = {
+  ok: true;
+  orgId: string;
+  orgName: string | null;
+  installed: boolean;
+  appUserId: string | null;
+  installedAt: string | null;
+  installedByMe: boolean;
+  fallbackMode: "reply" | "runner";
+  runnerIsMe: boolean;
+  runnerConfigured: boolean;
+  me: {
+    linearUserId: string | null;
+    registered: boolean;
+    /** This Linear user's delegations go to a different ADE account. */
+    routedToOtherAccount?: boolean;
+  };
+  members: Array<{
+    linearUserId: string;
+    displayName: string | null;
+    isMe: boolean;
+    registeredAt: string | null;
+    lastSeenAt: string | null;
+  }>;
+};
+
+/** The ADE agent panel in Settings: relay status plus this machine's rule state. */
+export type LinearAgentOverview = {
+  /** False when the relay could not be reached or ADE is not signed in. */
+  available: boolean;
+  message: string | null;
+  status: LinearAgentStatus | null;
+  /** Enabled rules on this machine with a `linear.agent_*` trigger. */
+  rules: Array<{ id: string; name: string; enabled: boolean; triggerTypes: string[]; modelId: string | null; laneMode: string | null }>;
+  /** Linear agent sessions this machine is running now. */
+  activeSessions: Array<{ agentSessionId: string; chatSessionId: string; laneId: string | null; issueIdentifier: string | null; startedAt: string }>;
+};
+
+export type CtoGetLinearIssueArgs = {
+  issueId: string;
+};
+
+export type CtoUpdateLinearIssueArgs = {
+  issueId: string;
+  stateId?: string;
+  /** `null` unassigns. */
+  assigneeId?: string | null;
+  /** 0 none, 1 urgent, 2 high, 3 normal, 4 low. */
+  priority?: number;
+  addedLabelIds?: string[];
+  removedLabelIds?: string[];
+  /** A non-blank title replaces the issue's title. */
+  title?: string;
+  /** Markdown; an empty string clears the description. */
+  description?: string;
+  /** `null` clears each of these. */
+  projectId?: string | null;
+  projectMilestoneId?: string | null;
+  cycleId?: string | null;
+  estimate?: number | null;
+  /** `YYYY-MM-DD`. */
+  dueDate?: string | null;
+  parentId?: string | null;
+};
+
+export type CtoCreateLinearIssueCommentArgs = {
+  issueId: string;
+  body: string;
 };
 
 export type CtoGetLinearIssueCommentsArgs = {
@@ -237,12 +426,16 @@ export type CtoLinearIssueComment = {
   createdAt: string;
   userName: string;
   userDisplayName: string;
+  /** Absent from older brains. */
+  userAvatarUrl?: string | null;
 };
 
 export type CtoGetLinearIssuePickerDataResult = {
   projects: CtoLinearProject[];
   users: LinearCatalogUser[];
   states: LinearCatalogState[];
+  /** Workspace and team labels. Optional: older brains do not send it. */
+  labels?: LinearCatalogLabel[];
 };
 
 export type CtoLinearQuickViewProject = CtoLinearProject & {

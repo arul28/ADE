@@ -46,4 +46,27 @@ describe("copytruncateLogIfOversized", () => {
     expect(copytruncateLogIfOversized(logPath)).toBe(true);
     expect(fs.statSync(`${logPath}.1`).size).toBe(128);
   });
+
+  it("stays silent for a log file that is not there, but still reports a real failure", () => {
+    // An embedded runtime (the ADE SDK's sidecar) is not started by launchd, so
+    // its launchd log files never exist. Reporting that put two lines of noise,
+    // carrying the full home path, in front of every embedder's log.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-log-bound-missing-"));
+    roots.push(root);
+    const written: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
+      written.push(String(chunk));
+      return true;
+    }) as never);
+
+    expect(copytruncateLogIfOversized(path.join(root, "launchd.err.log"))).toBe(false);
+    expect(written).toEqual([]);
+
+    // A directory in the way is a real failure, and must stay visible.
+    const blocker = path.join(root, "blocker");
+    fs.writeFileSync(blocker, "not a directory");
+    expect(copytruncateLogIfOversized(path.join(blocker, "launchd.out.log"))).toBe(false);
+    expect(written).toHaveLength(1);
+    expect(written[0]).toContain("could not bound runtime log");
+  });
 });

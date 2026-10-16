@@ -1,5 +1,5 @@
 import { IPC } from "../../../shared/ipc";
-import { isRetryableRemoteAction } from "../remoteRuntime/retryableRemoteActions";
+import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import {
   localRuntimeActionIpcTimeoutMs,
   LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS,
@@ -9,10 +9,16 @@ import {
   CURSOR_LOGIN_IPC_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS,
   USAGE_REFRESH_HISTORY_TIMEOUT_MS,
+  ACP_PROVIDER_UPDATE_TIMEOUT_MS,
   IOS_SIMULATOR_LAUNCH_TIMEOUT_MS,
   IOS_SIMULATOR_PREVIEW_TIMEOUT_MS,
   IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS,
+  IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS,
+  WINDOWS_DESKTOP_INTERACTIVE_IPC_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
+import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
+import { builtInBrowserRemoteCallDoneTimeoutMs } from "../../../shared/types/builtInBrowserRemote";
+import { PROJECT_REPAIR_IPC_TIMEOUT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -44,6 +50,9 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   ai: {
     piLoginStart: IPC.aiPiLoginStart,
     cursorAuthLogin: IPC.aiCursorAuthLogin,
+    // A provider CLI update on a paired machine runs the same install as a
+    // local one; see ACP_PROVIDER_UPDATE_TIMEOUT_MS.
+    acpProviderUpdate: IPC.aiAcpProviderUpdate,
   },
   lane: {
     create: IPC.lanesCreate,
@@ -68,6 +77,7 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     deviceCreate: IPC.iosSimulatorDeviceCreate,
     deviceDelete: IPC.iosSimulatorDeviceDelete,
     deviceDetach: IPC.iosSimulatorDeviceDetach,
+    deviceCleanup: IPC.iosSimulatorDeviceCleanup,
     resolvePreviewMatch: IPC.iosSimulatorResolvePreviewMatch,
     ensurePreviewWorkspace: IPC.iosSimulatorEnsurePreviewWorkspace,
     renderCurrentPreview: IPC.iosSimulatorRenderCurrentPreview,
@@ -77,10 +87,23 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     handoffSession: IPC.agentChatHandoff,
     prepareCrossMachineHandoff: IPC.agentChatPrepareCrossMachineHandoff,
   },
+  // A GitHub Stack merge polls GitHub, then cleans up each merged PR,
+  // whichever runtime answers it.
+  pr: {
+    land: IPC.prsLand,
+  },
   // A remote runtime runs the same ledger worker as a local one, so the Usage
   // page's Refresh needs the same budget whichever runtime answers it.
   usage: {
     refreshHistory: IPC.usageRefreshHistory,
+  },
+  // Windows Desktop actions that wait on a person at the Windows PC; see
+  // WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS.
+  mac_desktop: {
+    start: IPC.macDesktopStart,
+    setupWindows: IPC.macDesktopSetupWindows,
+    takeoverWindows: IPC.macDesktopTakeoverWindows,
+    useSharedDesktop: IPC.macDesktopUseSharedDesktop,
   },
 };
 
@@ -97,7 +120,7 @@ function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
 function retryableRemoteActionTimeoutMs(args: readonly unknown[]): number | null {
   const request = readRuntimeActionRequest(args);
   if (!request?.action) return null;
-  return isRetryableRemoteAction(request.domain, request.action)
+  return isReplaySafeAdeAction(request.domain, request.action)
     ? REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS
     : null;
 }
@@ -117,6 +140,12 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
   if (channel === IPC.accountRepairMachinePairing) return LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS;
   if (channel === IPC.localRuntimeListActionRegistry) return LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS;
   if (channel === IPC.localRuntimeStreamEvents) return LOCAL_RUNTIME_IPC_EVENT_POLL_TIMEOUT_MS;
+  // A command from an agent on another machine: a `wait` or a sign-in handoff
+  // runs for minutes, and the daemon that sent it waits the same budget.
+  if (channel === IPC.builtInBrowserRunRemoteAgentCall) {
+    const request = args[0] && typeof args[0] === "object" ? args[0] as { method?: unknown; input?: unknown } : {};
+    return builtInBrowserRemoteCallDoneTimeoutMs(typeof request.method === "string" ? request.method : "", request.input);
+  }
   if (channel === IPC.remoteRuntimeCallAction) {
     const actionTimeoutMs = runtimeActionTimeoutMs(args);
     if (actionTimeoutMs != null) return actionTimeoutMs;
@@ -139,6 +168,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.remoteRuntimeAddProject:
     case IPC.remoteRuntimeBrowseDirectories:
     case IPC.remoteRuntimeGetProjectDetail:
+    // Includes the time the user spends in the native file dialog.
+    case IPC.remoteRuntimeChooseProjectIcon:
+    case IPC.remoteRuntimeRemoveProjectIcon:
     case IPC.remoteRuntimeGetDefaultParentDir:
     case IPC.remoteRuntimeCreateProject:
     case IPC.remoteRuntimeCloneProject:
@@ -176,11 +208,31 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // restart case above exists to prevent.
     case IPC.accountRepairSession:
       return 4 * 60_000;
+    // A project move copies the whole project before it answers; a few hundred
+    // GB to a USB drive takes far more than the 30s default. Progress arrives
+    // on its own channel meanwhile.
+    case IPC.projectMoveStart:
+      return 24 * 60 * 60_000;
+    // On the 30s default the renderer showed a raw IPC timeout mid-repair.
+    case IPC.recoveryRepair:
+    // Start fresh closes the project and waits for the background service to
+    // drop it; restoring may copy a folder back from another disk's Trash.
+    case IPC.recoveryStartFresh:
+    case IPC.recoveryRestoreProjectData:
+      return PROJECT_REPAIR_IPC_TIMEOUT_MS;
+    // A GitHub Stack merge polls GitHub for up to 20s, then cleans up each
+    // merged PR. The 30s default reported a failure while the merge went on.
+    case IPC.prsLand:
+      return 120_000;
     // The Usage page's Refresh runs the isolated ledger worker end to end. On
     // the 30s default the renderer rejected with a raw IPC timeout — and blanked
     // the page — while the daemon kept scanning for another nine minutes.
     case IPC.usageRefreshHistory:
       return USAGE_REFRESH_HISTORY_TIMEOUT_MS;
+    // An unpinned provider CLI update runs on this machine's main process; see
+    // ACP_PROVIDER_UPDATE_TIMEOUT_MS.
+    case IPC.aiAcpProviderUpdate:
+      return ACP_PROVIDER_UPDATE_TIMEOUT_MS;
     // A cold iOS launch is a full xcodebuild plus boot, install and launch. The
     // service's own inner budgets sum to roughly 930s in the worst case, so the
     // IPC timer has to sit above that or the renderer reports a failure for a
@@ -198,8 +250,74 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.iosSimulatorDeviceDelete:
     case IPC.iosSimulatorDeviceDetach:
       return IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS;
+    // Mapped from the remote `ios_simulator.deviceCleanup` above, but with no
+    // case of its own it fell to 30s against a 15 minute cleanup pass.
+    case IPC.iosSimulatorDeviceCleanup:
+      return IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS;
+    // UAC, the Windows password dialog, or Windows' sign-in window may be
+    // waiting on a person; see WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS.
+    case IPC.macDesktopStart:
+    case IPC.macDesktopSetupWindows:
+    case IPC.macDesktopTakeoverWindows:
+    case IPC.macDesktopUseSharedDesktop:
+      return WINDOWS_DESKTOP_INTERACTIVE_IPC_TIMEOUT_MS;
     case IPC.transcriptionTranscribe:
       return 6 * 60_000;
+    // The ~464 MB speech model download. On the 30s default the renderer showed
+    // a raw IPC timeout while the main process kept downloading; a minute-long
+    // download on a fast connection was enough to trip it. The download itself
+    // is bounded by its own per-attempt socket timeout and retries.
+    case IPC.transcriptionDownloadModel:
+      return 60 * 60_000;
+    // The agent CLI tools cache is a ~300 MB download; same story as above.
+    case IPC.aiEnsureToolsCache:
+      return 60 * 60_000;
+    // An update check settles only once any download it started is over.
+    case IPC.updateCheckForUpdates:
+      return 30 * 60_000;
+    // `git clone` carries its own 5 minute timeout; sit above it so a slow
+    // clone reports its own outcome instead of an IPC timeout mid-clone.
+    case IPC.projectClone:
+      return 6 * 60_000;
+    // Runs the CLI installer, which can wait on a permission prompt.
+    case IPC.adeCliInstallForUser:
+      return 5 * 60_000;
+    // These wait on a native dialog a person may leave open. On the 30s
+    // default the renderer reported a failure while the dialog was still up.
+    case IPC.projectChooseDirectory:
+    case IPC.projectChooseIcon:
+    case IPC.projectSecretsChooseEnvFile:
+    case IPC.machineResetChooseRescueDir:
+    case IPC.historyExportOperations:
+      return 10 * 60_000;
+    // Dialog, then the same project switch projectSwitchToPath budgets for.
+    case IPC.projectOpenRepo:
+      return LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS + 10 * 60_000;
+    // The reset confirmation is a native dialog. Timing out left it up, and
+    // answering it later still reset ADE after the window reported a failure.
+    case IPC.machineResetStart:
+      return 30 * 60_000;
+    // Stopping renders the demo video; see DEMO_RECORDING_STOP_TIMEOUT_MS,
+    // which promises every transport carrying a stop waits at least this long.
+    // The runtime-action path already does; these are the direct channels.
+    case IPC.appControlStopRecording:
+    case IPC.builtInBrowserStopRecording:
+    case IPC.macDesktopStopRecording:
+    case IPC.iosSimulatorRecordStop:
+      return DEMO_RECORDING_STOP_TIMEOUT_MS + 30_000;
+    // Direct-channel twins of actions the local runtime map already gives a
+    // longer budget; without these the same work timed out at 30s whenever a
+    // project was not runtime-backed.
+    case IPC.lanesUnarchive:
+    case IPC.agentChatSuggestLaneName:
+    case IPC.agentChatGenerateAutoLaneIdentity:
+      return 150_000;
+    case IPC.githubCreateIssue:
+      return 180_000;
+    case IPC.archiveRestore:
+      return 10 * 60_000;
+    case IPC.archiveDelete:
+      return 15 * 60_000;
     // Streams up to 50 MB to a paired host over HTTP. The upload client's own
     // budget is 5 minutes, so on the 30s default the renderer reported a
     // failure — and dropped the pending attachment chip — for an upload that

@@ -42,6 +42,37 @@ describe("workToolShowRequests", () => {
     });
   });
 
+  it("names the surface a desktop really showed, not the one that was asked for", async () => {
+    // A Mac Desktop show with the person's tools pane closed is answered by the
+    // lane's floating card. The agent is told what is on screen, not the pane
+    // it asked for and can check.
+    const { service, emitted } = setup();
+    const pending = service.show({ surface: "mac-desktop", chatSessionId: "chat-1", laneId: "lane-1" });
+    service.acknowledgeShow({
+      requestId: emitted[0]!.requestId,
+      status: "shown",
+      desktopLabel: "Studio",
+      shownAs: "floating-mac-desktop",
+    });
+    await expect(pending).resolves.toMatchObject({
+      status: "shown",
+      surface: "floating-mac-desktop",
+      message: "Showing the floating Mac Desktop on Studio.",
+    });
+  });
+
+  it("ignores a shownAs that names no surface", async () => {
+    const { service, emitted } = setup();
+    const pending = service.show({ surface: "mac-desktop", chatSessionId: "chat-1", laneId: "lane-1" });
+    service.acknowledgeShow({
+      requestId: emitted[0]!.requestId,
+      status: "shown",
+      shownAs: "not-a-surface",
+    });
+    await expect(pending).resolves.toMatchObject({ surface: "mac-desktop" });
+    await expect(pending).resolves.toMatchObject({ message: "Showing the Mac Desktop in the tools pane." });
+  });
+
   it("answers no_desktop when nobody takes it, never shown", async () => {
     const { service } = setup();
     const pending = service.show({ surface: "proof", chatSessionId: "chat-1" });
@@ -65,6 +96,36 @@ describe("workToolShowRequests", () => {
     await expect(thenShown).resolves.toMatchObject({ status: "shown", desktopLabel: "Studio" });
     // A late answer to a settled request changes nothing.
     expect(service.acknowledgeShow({ requestId, status: "shown" })).toEqual({ ok: false });
+  });
+
+  it.each([
+    ["does not answer", "silent"],
+    ["can only hold it", "held"],
+  ] as const)("goes to the desktop the user talks from, then to every desktop when that one %s", async (_label, targetAnswer) => {
+    const { service, emitted } = setup({
+      resolveTargetClientId: () => "macbook",
+      retargetMs: 300,
+    });
+    const pending = service.show({ surface: "browser", chatSessionId: "chat-1" });
+    expect(emitted.map((request) => request.targetClientId)).toEqual(["macbook"]);
+    const requestId = emitted[0]!.requestId;
+
+    if (targetAnswer === "held") {
+      // No waiting for the retarget: the desktop said it cannot show it now.
+      service.acknowledgeShow({ requestId, status: "held", desktopLabel: "MacBook" });
+      expect(emitted.map((request) => request.targetClientId)).toEqual(["macbook", null]);
+      // The held answer must not settle before another desktop could answer.
+      await vi.advanceTimersByTimeAsync(200);
+    } else {
+      await vi.advanceTimersByTimeAsync(299);
+      expect(emitted).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(emitted.map((request) => request.targetClientId)).toEqual(["macbook", null]);
+    }
+    // The same request: a slow target that already saw it ignores the repeat.
+    expect(emitted[1]!.requestId).toBe(requestId);
+    service.acknowledgeShow({ requestId, status: "shown", desktopLabel: "Studio" });
+    await expect(pending).resolves.toMatchObject({ status: "shown", desktopLabel: "Studio" });
   });
 
   it("says the surface was opened when the desktop acted but could not confirm it is on screen", async () => {

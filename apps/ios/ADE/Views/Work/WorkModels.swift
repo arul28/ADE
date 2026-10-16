@@ -17,6 +17,11 @@ enum WorkComposerPreferences {
     var runtimeMode: String
     var reasoningEffort: String
     var codexFastMode: Bool
+    /// The saved Custom harness the last send ran under, when there was one.
+    /// Optional so a record written before presets existed still decodes; the
+    /// screen re-resolves it against the connected machine's list and drops it
+    /// when the preset is gone or unbound.
+    var presetId: String? = nil
   }
 
   /// Versioned so a future field change can migrate rather than mis-decode.
@@ -44,7 +49,13 @@ enum WorkComposerPreferences {
   }
 
   /// Convenience for call sites that have the fields loose rather than as a
-  /// `Selection` value.
+  /// `Selection` value — an in-session reasoning/fast/access tweak.
+  ///
+  /// An in-session change that leaves the model alone must not erase the Custom
+  /// harness the chat launched under: those call sites never knew the preset,
+  /// and dropping it would silently move the next New Chat send onto the
+  /// machine's default sign-in. A different provider or model is a different
+  /// brain, so the preset is dropped there.
   static func save(
     provider: String,
     modelId: String,
@@ -52,15 +63,19 @@ enum WorkComposerPreferences {
     reasoningEffort: String,
     codexFastMode: Bool
   ) {
-    save(
-      Selection(
-        provider: provider,
-        modelId: modelId,
-        runtimeMode: runtimeMode,
-        reasoningEffort: reasoningEffort,
-        codexFastMode: codexFastMode
-      )
+    var selection = Selection(
+      provider: provider,
+      modelId: modelId,
+      runtimeMode: runtimeMode,
+      reasoningEffort: reasoningEffort,
+      codexFastMode: codexFastMode
     )
+    if let current = load(),
+       current.provider == selection.provider.trimmingCharacters(in: .whitespacesAndNewlines),
+       current.modelId == selection.modelId.trimmingCharacters(in: .whitespacesAndNewlines) {
+      selection.presetId = current.presetId
+    }
+    save(selection)
   }
 }
 
@@ -159,6 +174,8 @@ struct WorkChatMessage: Identifiable, Equatable {
   var steerId: String? = nil
   var deliveryState: String? = nil
   var processed: Bool? = nil
+  /// True for a user message that ADE wrote for the user (a wake, a relay).
+  var writtenByAde = false
   var attachments: [AgentChatFileRef]? = nil
   var unprocessedResolution: WorkUserMessageResolution? = nil
   /// Monotonic content revision for the incremental streaming path. The
@@ -349,6 +366,7 @@ func workChatSurfaceProviderName(_ source: String?) -> String {
   case "droid", "factory": return "Droid"
   case "opencode": return "OpenCode"
   case "pi": return "Pi"
+  case "muse": return "Muse"
   case "qwen": return "Qwen"
   case "kimi", "moonshot": return "Kimi"
   case "grok", "xai": return "Grok"
@@ -522,6 +540,8 @@ struct WorkPendingModelSelectionModel: Identifiable, Hashable {
 }
 
 struct WorkUsageSummary: Hashable {
+  var compactAtTokens: Int? = nil
+  var compactAtSource: String? = nil
   var turnCount: Int
   var inputTokens: Int
   var outputTokens: Int
@@ -543,6 +563,8 @@ struct WorkUsageSummary: Hashable {
 }
 
 struct WorkContextUsageViewModel: Equatable {
+  var compactAtTokens: Int? = nil
+  var compactAtSource: String? = nil
   var provider: String
   var state: WorkContextUsageState = .measured
   var contextWindow: Int?
@@ -579,34 +601,72 @@ enum WorkActiveSendMode: String, Equatable {
 /// during turn" — but no cancel-and-resend, so it stops there. Cursor has all
 /// three too since `@cursor/sdk` 1.0.31 added `Run.steer()`, but its interrupt
 /// keeps its own meaning — it cancels the run and resends on the same agent
-/// thread — so its button still says "continue". OpenCode's v2 session prompt
-/// admits `delivery: "steer"` into the live agent loop, so it also has "send
-/// during turn" and no interrupt. Everything else is queue-only,
+/// thread — so its button still says "continue". OpenCode 2.0 admits
+/// `delivery: "steer"` into the live agent loop, so it also has "send during
+/// turn" and no interrupt. Everything else is queue-only,
 /// which leaves nothing to pick between, so the picker stays hidden.
 struct WorkActiveSendCapability: Equatable {
   let modes: [WorkActiveSendMode]
   let agentLabel: String
   let interruptContinues: Bool
+  /// Hand mirror of desktop `activeTurnInlineCarriesAttachments`: false when the
+  /// provider's "send during turn" channel takes text only. Cursor's
+  /// `Run.steer(text)` does, so a Cursor message with attachments can only wait
+  /// for the turn or interrupt it.
+  var inlineCarriesAttachments: Bool = true
 
   var defaultMode: WorkActiveSendMode { modes.first ?? .queue }
+
+  /// Why a message with these attachments cannot be sent during the turn, or
+  /// nil when it can. `attachmentTypes` are the attachments' kinds ("image",
+  /// "file", ...), used only to word the reason.
+  func inlineAttachmentBlockReason(attachmentTypes: [String]) -> String? {
+    guard !inlineCarriesAttachments, !attachmentTypes.isEmpty else { return nil }
+    let imagesOnly = attachmentTypes.allSatisfy { $0.hasPrefix("image") }
+    return "\(imagesOnly ? "Images" : "Attachments") can't join a running \(agentLabel) turn."
+  }
+
+  /// Drops `.inline` for a message whose attachments the inline channel cannot
+  /// carry, so the default falls to "Send after turn" with interrupt still on
+  /// offer. The desktop composer applies the same rule to its draft.
+  func withholdingInline(forAttachmentTypes attachmentTypes: [String]) -> WorkActiveSendCapability {
+    guard modes.contains(.inline), inlineAttachmentBlockReason(attachmentTypes: attachmentTypes) != nil else {
+      return self
+    }
+    return WorkActiveSendCapability(
+      modes: modes.filter { $0 != .inline },
+      agentLabel: agentLabel,
+      interruptContinues: interruptContinues,
+      inlineCarriesAttachments: inlineCarriesAttachments
+    )
+  }
 
   /// The atomic active-turn dispatch modes — everything except plain staging.
   /// These are the ones `chat.dispatchSteer` accepts, so they are also the set
   /// the staged-message strip can offer as buttons.
   var atomicDispatchModes: [WorkActiveSendMode] { modes.filter { $0 != .queue } }
 
-  /// Drops `.inline` for a Cursor run that executes in cloud.
-  ///
-  /// `Run.steer()` is a local-run API: a cloud run implements it and refuses
-  /// every call, so offering "Send during turn" there names an action the host
-  /// will not perform. The desktop pane withholds the same handler for the same
-  /// reason; this is the mobile half of that rule.
-  func withholdingInlineIfNeeded(runsInCloud: Bool, provider: String) -> WorkActiveSendCapability {
-    guard runsInCloud, providerFamilyKey(provider) == "cursor", modes.contains(.inline) else { return self }
+  /// The provider's modes, minus `.inline` where this session or host cannot
+  /// take it:
+  /// - A Cursor run in cloud: `Run.steer()` is a local-run API, and a cloud
+  ///   run refuses every call. The desktop pane withholds the same handler.
+  /// - OpenCode on a host without the `openCodeInboxSteer` feature: an older
+  ///   host only queues, and an inline send would fail.
+  static func forSession(
+    provider: String,
+    runsInCloud: Bool,
+    hostSupportsOpenCodeSteer: Bool
+  ) -> WorkActiveSendCapability {
+    let capability = forProvider(provider)
+    let family = providerFamilyKey(provider)
+    let withholdInline = (runsInCloud && family == "cursor")
+      || (!hostSupportsOpenCodeSteer && family == "opencode")
+    guard withholdInline, capability.modes.contains(.inline) else { return capability }
     return WorkActiveSendCapability(
-      modes: modes.filter { $0 != .inline },
-      agentLabel: agentLabel,
-      interruptContinues: interruptContinues
+      modes: capability.modes.filter { $0 != .inline },
+      agentLabel: capability.agentLabel,
+      interruptContinues: capability.interruptContinues,
+      inlineCarriesAttachments: capability.inlineCarriesAttachments
     )
   }
 
@@ -619,19 +679,30 @@ struct WorkActiveSendCapability: Equatable {
       return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Claude", interruptContinues: false)
     case "codex":
       return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "Codex", interruptContinues: false)
+    case "muse":
+      // `turn/steer` joins the live turn, `turn/start` with `ifBusy: queue`
+      // stages it, and interrupt is `turn/interrupt` then a fresh turn, so it
+      // continues the way Cursor's does.
+      return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Muse", interruptContinues: true)
     case "cursor":
       // Cursor gained `.inline` when `@cursor/sdk` 1.0.31 added `Run.steer()`.
       // `interruptContinues` stays true: its interrupt still cancels the run and
       // resends on the same thread, which Claude's does not.
       //
       // This arm is provider-keyed, matching desktop's table. The cloud
-      // carve-out is a SESSION fact, so it lives in
-      // `withholdingInlineIfNeeded` and is applied by the caller that knows the
-      // session.
-      return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Cursor", interruptContinues: true)
+      // carve-out is a SESSION fact, so it lives in `forSession` and is
+      // applied by the caller that knows the session.
+      return WorkActiveSendCapability(
+        modes: [.inline, .queue, .interrupt],
+        agentLabel: "Cursor",
+        interruptContinues: true,
+        inlineCarriesAttachments: false
+      )
     case "opencode":
-      // OpenCode's v2 session prompt admits `delivery: "steer"` into the live
-      // agent loop. No interrupt: like Codex there is no cancel-and-resend.
+      // Matches desktop's `ACTIVE_TURN_DISPATCH_MODES`: OpenCode 2.0 admits a
+      // mid-turn message to its session inbox, delivered at the next step
+      // boundary ("send during turn") or after the current reply (queue). No
+      // interrupt: like Codex there is no cancel-and-resend.
       return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "OpenCode", interruptContinues: false)
     // The four ACP providers are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
     // which is what the default arm already gives them. They are listed anyway
@@ -661,12 +732,19 @@ struct WorkQueuedSteerDisposition: Equatable {
 /// a provider gains or loses inline steering.
 func workQueuedSteerDisposition(
   capability: WorkActiveSendCapability,
-  turnActive: Bool
+  turnActive: Bool,
+  inlineBlockedReason: String? = nil
 ) -> WorkQueuedSteerDisposition {
   guard turnActive else {
     return WorkQueuedSteerDisposition(
       shortText: "after turn",
       detailText: "It sends as soon as \(capability.agentLabel) is ready."
+    )
+  }
+  if let inlineBlockedReason {
+    return WorkQueuedSteerDisposition(
+      shortText: "sends when turn ends",
+      detailText: "\(inlineBlockedReason) It sends when this turn ends."
     )
   }
   if capability.modes.contains(.inline) {
@@ -722,16 +800,86 @@ func providerSupportsLiveRedirect(_ provider: String) -> Bool {
 /// Hand mirror of desktop `chatStopModes.ts`. iOS cannot import the TS table,
 /// so the two stay in step by this struct plus `testWorkChatStopCapabilityMirrorsDesktopStopMatrix`.
 struct WorkChatStopCapability: Equatable {
+  /// Table order, matching desktop `AGENT_CHAT_STOP_MODES`. The two child-chat
+  /// modes are only offered while the chat has a child chat working.
   static let modes: [AgentChatStopMode] = [
     .stopOnly,
     .stopAndClear,
     .stopAndBackground,
     .stopAndClearAndBackground,
+    .stopAndClearAndChildren,
+    .stopEverythingAndChildren,
   ]
   static let defaultMode: AgentChatStopMode = .stopAndClear
 
-  static func copy(mode: AgentChatStopMode, jobCount: Int) -> (title: String, detail: String) {
+  static func clearsQueue(_ mode: AgentChatStopMode) -> Bool {
+    switch mode {
+    case .stopAndClear, .stopAndClearAndBackground, .stopAndClearAndChildren, .stopEverythingAndChildren: return true
+    case .stopOnly, .stopAndBackground: return false
+    }
+  }
+
+  static func stopsBackground(_ mode: AgentChatStopMode) -> Bool {
+    switch mode {
+    case .stopAndBackground, .stopAndClearAndBackground, .stopEverythingAndChildren: return true
+    case .stopOnly, .stopAndClear, .stopAndClearAndChildren: return false
+    }
+  }
+
+  static func stopsChildren(_ mode: AgentChatStopMode) -> Bool {
+    mode == .stopAndClearAndChildren || mode == .stopEverythingAndChildren
+  }
+
+  private static func providerLabel(_ provider: String?) -> String {
+    let key = (provider ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    switch key {
+    case "claude": return "Claude"
+    case "codex": return "Codex"
+    case "opencode": return "OpenCode"
+    case "cursor": return "Cursor"
+    case "droid": return "Droid"
+    case "pi": return "Pi"
+    case "muse": return "Muse"
+    case "": return "This provider"
+    default: return key.prefix(1).uppercased() + key.dropFirst()
+    }
+  }
+
+  /// Mirrors desktop `providerStopModeSupport`. Background work: Claude,
+  /// OpenCode and Codex can stop it. Keeping the queue: Pi and ACP agents drop
+  /// queued messages on interrupt. Child chats are ADE chats, so every provider
+  /// can stop them. Nil reason means supported.
+  static func unsupportedReason(provider: String?, mode: AgentChatStopMode) -> String? {
+    let key = (provider ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let name = providerLabel(provider)
+    let canStopBackground = ["claude", "opencode", "codex", "muse"].contains(key)
+    let keepsQueue = ["claude", "opencode", "codex", "muse", "cursor", "droid"].contains(key)
+    if stopsBackground(mode) && !canStopBackground {
+      return "\(name) can't stop background work its agent started."
+    }
+    if !clearsQueue(mode) && !keepsQueue {
+      return "\(name) drops queued messages when stopped."
+    }
+    return nil
+  }
+
+  /// The modes the Stop menu lists: every mode, minus the child-chat ones while
+  /// there is no child chat to stop. Unsupported modes stay listed, disabled.
+  static func visibleModes(childChatCount: Int) -> [AgentChatStopMode] {
+    modes.filter { childChatCount > 0 || !stopsChildren($0) }
+  }
+
+  /// A remembered choice this chat cannot honour right now stops the default way.
+  static func effectiveMode(_ mode: AgentChatStopMode, provider: String?, childChatCount: Int) -> AgentChatStopMode {
+    if unsupportedReason(provider: provider, mode: mode) != nil { return defaultMode }
+    if stopsChildren(mode) && childChatCount <= 0 { return defaultMode }
+    return mode
+  }
+
+  static func copy(mode: AgentChatStopMode, jobCount: Int, childChatCount: Int = 0) -> (title: String, detail: String) {
     let jobs = jobCount == 1 ? "1 job" : "\(max(0, jobCount)) jobs"
+    let n = max(0, childChatCount)
+    let children = n == 1 ? "1 child chat" : "\(n) child chats"
     switch mode {
     case .stopOnly:
       return (
@@ -753,6 +901,16 @@ struct WorkChatStopCapability: Equatable {
         "Turn + queue + background (\(jobs))",
         "Stop the active turn, cancel queued messages, and stop \(jobs)."
       )
+    case .stopAndClearAndChildren:
+      return (
+        "Turn + queue + child chats (\(n))",
+        "Stop the active turn, cancel queued messages, and stop \(children) this chat started. Background jobs keep running."
+      )
+    case .stopEverythingAndChildren:
+      return (
+        "Everything + child chats (\(n))",
+        "Stop the turn, queued messages, \(jobs), and \(children) this chat started."
+      )
     }
   }
 
@@ -762,6 +920,8 @@ struct WorkChatStopCapability: Equatable {
     case .stopAndClear: return "trash"
     case .stopAndBackground: return "square.fill"
     case .stopAndClearAndBackground: return "xmark.square.fill"
+    case .stopAndClearAndChildren: return "person.2.slash"
+    case .stopEverythingAndChildren: return "xmark.octagon.fill"
     }
   }
 }
@@ -982,8 +1142,10 @@ struct WorkAdeCardModel: Identifiable, Hashable {
     "pr_merged",
     "pr_merge_ready",
     "pr_conflict",
+    "pr_stack_land",
     "claude_session_quota",
     "lane_setup",
+    "pr_watch_wake",
   ]
 
   let id: String
@@ -1010,6 +1172,10 @@ struct WorkAdeCardModel: Identifiable, Hashable {
   /// bottom on every progress emit. Stamped by `buildWorkAdeCards` from the
   /// envelope, so the decoders that have no envelope context can leave it.
   var timestamp: String = ""
+  /// PR Watch / Ship wake: the exact message ADE sent the agent. The wake is a
+  /// `user_message` the user did not write, so it renders as this card with the
+  /// text folded underneath. Nil for every ordinary card.
+  var wakeText: String? = nil
 
   var isKnownVariant: Bool {
     Self.knownVariants.contains(variant.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -1057,12 +1223,16 @@ struct WorkAdeCardModel: Identifiable, Hashable {
       rowsTruncated: incoming.rowsTruncated ?? rowsTruncated,
       fallbackText: incoming.fallbackText.isEmpty ? fallbackText : incoming.fallbackText,
       turnId: incoming.turnId ?? turnId,
-      timestamp: timestamp
+      timestamp: timestamp,
+      wakeText: incoming.wakeText ?? wakeText
     )
   }
 }
 
-enum WorkTimelinePayload: Equatable {
+/// `indirect`: each payload lives in one heap box, so copying an entry (the
+/// timeline sort, dedupe, collapse passes and presentation all copy every
+/// entry) is one retain instead of one per field of the model inside.
+indirect enum WorkTimelinePayload: Equatable {
   case message(WorkChatMessage)
   case toolCard(WorkToolCardModel)
   case commandCard(WorkCommandCardModel)
@@ -1091,16 +1261,17 @@ enum WorkTimelinePayload: Equatable {
   /// Generic host/agent-emitted `ade_card`. One row per `cardId`, merged in
   /// place as the card progresses.
   case adeCard(WorkAdeCardModel)
-  case usageSummary(WorkUsageSummary)
-  case artifact(ComputerUseArtifactSummary)
-  /// Centered time + model pill rendered between turns, matching the desktop
-  /// transcript's turn separators.
-  case turnSeparator(WorkTurnSeparator)
-  /// Centered end-of-turn completion row rendered after a terminal `done`
-  /// event. Completed turns say "Ran for"; interrupted/failed turns say
-  /// "Elapsed" so wall time is never presented as continuous agent work.
+  /// Proof filed mid-turn: one quiet "N proof filed ›" line for a run of
+  /// consecutive records (desktop's inline `ChatProofCount`). Records a
+  /// "Filed proof" action row already pictures are left out.
+  case proof([ComputerUseArtifactSummary])
+  /// The turn-end line after a terminal `done` event (desktop
+  /// `DoneTurnDivider`): `ran 4m 30s · 2:15 AM · ↑in/↓out/~cache · tools ›
+  /// files ›` on one line. The turn's usage rides on it; there is no separate
+  /// usage row and no divider before the next user message.
   case turnEndMarker(WorkTurnEndMarker)
-  /// Completed turn history folded to a single mobile-sized disclosure row.
+  /// A finished turn's intermediate work folded into one
+  /// `Worked for 4m 12s · 18 tools · 3 files` caption (desktop `TurnFoldRow`).
   case turnFold(WorkTurnFoldModel)
   /// One background shell job, anchored at its first lifecycle update.
   case backgroundJob(WorkBackgroundJobModel)
@@ -1168,14 +1339,8 @@ extension WorkTimelinePayload: Hashable {
     case .adeCard(let model):
       hasher.combine(9)
       hasher.combine(model)
-    case .usageSummary(let model):
-      hasher.combine(10)
-      hasher.combine(model)
-    case .artifact(let model):
+    case .proof(let model):
       hasher.combine(11)
-      hasher.combine(model)
-    case .turnSeparator(let model):
-      hasher.combine(12)
       hasher.combine(model)
     case .turnEndMarker(let model):
       hasher.combine(13)
@@ -1254,6 +1419,24 @@ enum WorkTimelineRenderPayload: Equatable {
   case entry(WorkTimelineEntry)
   case assistantMarkdownBlock(WorkAssistantMarkdownBlockRenderModel)
   case assistantMonospaced(WorkAssistantMonospacedRenderModel)
+  case userSegment(WorkUserSegmentRenderModel)
+}
+
+/// One piece of a long user message (see `workUserMessageSegments`).
+struct WorkUserBubbleSegment: Equatable {
+  let index: Int
+  let count: Int
+  let text: String
+  var isFirst: Bool { index == 0 }
+  var isLast: Bool { index == count - 1 }
+}
+
+/// A row that draws one piece of a user message bubble. `message` is the whole
+/// message: copy, attachments and delivery state come from it.
+struct WorkUserSegmentRenderModel: Equatable {
+  let entry: WorkTimelineEntry
+  let message: WorkChatMessage
+  let segment: WorkUserBubbleSegment
 }
 
 struct WorkTimelineRenderEntry: Identifiable, Equatable {
@@ -1300,6 +1483,13 @@ struct WorkToolGroupModel: Identifiable, Hashable {
   let id: String
   let members: [WorkToolGroupMember]
   var turnId: String? = nil
+  /// Set only when the transcript draws this cluster as computer-use action
+  /// rows (`workPresentedTimelineEntries`): the cluster's other tools stay on
+  /// the turn's tools toggle, like every other tool cluster.
+  var computerUseActions: [WorkComputerUseAction] = []
+  /// Not the turn's newest computer-use run, so its newest action draws
+  /// compact too (desktop `computerUseCompact`, `arrangeComputerUseRuns`).
+  var computerUseCompact = false
 
   var count: Int { members.count }
 }
@@ -1326,17 +1516,13 @@ struct WorkChangedFilesGroupModel: Identifiable, Hashable {
   var count: Int { files.count }
 }
 
-struct WorkTurnSeparator: Hashable {
-  let time: String
-  let provider: String
-  let modelLabel: String
-  let modelId: String?
-}
-
 struct WorkTurnEndMarker: Hashable {
   let turnId: String
   let time: String
-  let workedDurationLabel: String
+  /// Desktop `formatTurnDuration` of the turn's measured run: from its user
+  /// message, else its `status: started`. Nil when the turn has neither, so
+  /// the line and the fold omit it rather than measure from an arbitrary row.
+  let workedDurationLabel: String?
   let status: String
   let terminalReasonLabel: String?
   let provider: String
@@ -1352,9 +1538,17 @@ struct WorkTurnEndMarker: Hashable {
   /// Later completion updates never change this snapshot, so a fold cannot
   /// hide work that was still running at the turn boundary.
   var liveEntryIds: Set<String> = []
-  /// Usage for a usage-limit turn, folded in from the standalone USAGE row so it
-  /// moves behind the footer's details toggle instead of shouting beside it.
+  /// The turn's token usage from its `done`. Drawn on the turn-end line; a
+  /// usage-limit turn moves it behind the footer's details toggle instead.
   var usage: WorkUsageSummary? = nil
+  /// Proof artifacts captured while the turn ran: its "N proof filed" link,
+  /// which opens the proof drawer narrowed to them (desktop `DoneTurnDivider`
+  /// + `ChatProofCount`).
+  var proofArtifacts: [ComputerUseArtifactSummary] = []
+  var proofCount: Int { proofArtifacts.count }
+  /// The turn folded: its tool and file counts moved up to the fold row, so
+  /// the line keeps only time, usage, proof and sources. Set by presentation.
+  var workSummaryInFold: Bool = false
 }
 
 struct WorkBackgroundJobModel: Identifiable, Hashable {
@@ -1386,9 +1580,50 @@ struct WorkBackgroundJobRunModel: Identifiable, Hashable {
 struct WorkTurnFoldModel: Identifiable, Hashable {
   let id: String
   let turnId: String
-  let label: String
+  /// The turn-end marker's key: the per-turn tool and file lists are filed
+  /// under it (it differs from `turnId` only for a `done` with no turn id).
+  var turnEndTurnId: String? = nil
   let isExpanded: Bool
+  /// `completed`, `interrupted` or `failed` (desktop `TurnEndStatus`).
   let status: String
+  let durationLabel: String?
+  var toolCount: Int = 0
+  var fileCount: Int = 0
+  var subagentCount: Int = 0
+  var jobCount: Int = 0
+  var failedJobCount: Int = 0
+  var sourceCount: Int = 0
+  /// The proof the turn filed (the same records its turn-end line counts).
+  var proofArtifactIds: [String] = []
+
+  /// `Worked for 4m 12s`, or `Stopped after …` for an interrupted turn
+  /// (desktop `formatTurnFoldHead`).
+  var head: String {
+    if status == "interrupted" { return durationLabel.map { "Stopped after \($0)" } ?? "Stopped" }
+    return durationLabel.map { "Worked for \($0)" } ?? "Worked"
+  }
+
+  /// `5 jobs`, or `5 jobs (1 failed)` (desktop `formatTurnFoldJobCount`).
+  var jobLabel: String {
+    let base = workPluralCount(jobCount, "job")
+    return failedJobCount > 0 ? "\(base) (\(failedJobCount) failed)" : base
+  }
+
+  /// Desktop `formatTurnFoldLabel`: zero counts are omitted.
+  var label: String {
+    var parts = [head]
+    if toolCount > 0 { parts.append(workPluralCount(toolCount, "tool")) }
+    if fileCount > 0 { parts.append(workPluralCount(fileCount, "file")) }
+    if subagentCount > 0 { parts.append(workPluralCount(subagentCount, "subagent")) }
+    if jobCount > 0 { parts.append(jobLabel) }
+    if sourceCount > 0 { parts.append(workPluralCount(sourceCount, "source")) }
+    return parts.joined(separator: " · ")
+  }
+}
+
+/// `1 tool`, `3 tools` (desktop `pluralCount`).
+func workPluralCount(_ count: Int, _ noun: String) -> String {
+  "\(count) \(noun)\(count == 1 ? "" : "s")"
 }
 
 func workLatestTurnEndTurnId(in timeline: [WorkTimelineEntry]) -> String? {
@@ -1482,8 +1717,12 @@ struct WorkSubagentTimelineRow: Identifiable, Hashable {
   let commandLabel: String?
   let exitLabel: String?
 
+  /// One id for the running card and the result that replaces it (desktop
+  /// keeps the card's row key), so the card's row and height stay put.
   var id: String {
-    "subagent-\(kind.rawValue)-\(snapshot.agentId ?? snapshot.taskId)"
+    kind == .backgroundCommand
+      ? "subagent-\(kind.rawValue)-\(snapshot.agentId ?? snapshot.taskId)"
+      : "subagent-\(snapshot.agentId ?? snapshot.taskId)"
   }
 }
 
@@ -1492,19 +1731,7 @@ struct WorkSubagentTimelineGrid: Identifiable, Hashable {
   let rows: [WorkSubagentTimelineRow]
 }
 
-enum WorkSubagentTimelineItem: Identifiable, Hashable {
-  case row(WorkSubagentTimelineRow)
-  case grid(WorkSubagentTimelineGrid)
-
-  var id: String {
-    switch self {
-    case .row(let row): return row.id
-    case .grid(let grid): return grid.id
-    }
-  }
-}
-
-/// Folded run of 2+ same-cause, same-source subagent result rows (desktop
+/// Folded run of more than three same-cause, same-source subagent result rows (desktop
 /// parity: `SubagentStoppedGroupEvent`). Carries the original result rows so
 /// the card can list each agent's title, last activity, and outcome.
 struct WorkSubagentStoppedGroupModel: Identifiable, Hashable {
@@ -1740,6 +1967,15 @@ struct WorkChatTaskListSnapshot: Hashable {
   }
 }
 
+/// One routine warning absorbed by the mobile diagnostics fold — the notice's
+/// own title ("Warning", "Hook notice") plus the host's full sentence, which is
+/// what the expanded disclosure shows in place of the truncated collapsed line.
+struct WorkTurnDiagnosticWarning: Hashable {
+  let title: String
+  let message: String
+  let icon: String
+}
+
 struct WorkEventCardModel: Identifiable, Hashable {
   let id: String
   let kind: String
@@ -1783,18 +2019,37 @@ struct WorkEventCardModel: Identifiable, Hashable {
   /// of rendering each routine moderation or optional integration event.
   let diagnosticModerationChecks: Int
   let diagnosticIntegrationFailures: [AgentChatOptionalIntegrationFailure]
+  /// Routine warning notices (a Codex config warning, a hook notice, a
+  /// rate-limit warning) absorbed by the mobile diagnostics fold, in the order
+  /// they were seen. Empty for every other card.
+  let diagnosticWarnings: [WorkTurnDiagnosticWarning]
+  /// The host's `noticeKind` for a `notice` card ("warning", "config", "hook",
+  /// …). The fold reads it so a routine kind whose tint is not amber — a Codex
+  /// config notice — still folds with the diagnostics beside it.
+  let noticeKind: String?
   /// Child chat a `spawn_completed` peer notice reports on, resolved once at
-  /// card-build time out of the notice's `detail` JSON. Only the adjacency fold
-  /// in `collapseConsecutiveSpawnCompletionEntries` reads it — a parent that
-  /// spawned a peer gets one notice per sibling turn, and this is the key that
-  /// tells two runs apart. `nil` for every other card, including a completion
+  /// card-build time out of the notice's `detail` JSON. The spawn-completion
+  /// folds read it (`collapseConsecutiveSpawnCompletionEntries`, then
+  /// `workFoldStaleSpawnCompletionEntries`) — a parent that spawned a peer gets
+  /// one notice per sibling turn, and this is the key that tells the child's
+  /// notices apart from another child's. `nil` for every other card, including a completion
   /// notice whose detail lost its `spawnCompletion` (old or truncated
   /// transcript): an unidentified completion folds into nothing and keeps its
   /// own row rather than silently absorbing a different child's.
   let spawnCompletionChildId: String?
+  /// Child turns a `spawn_completed` row stands for. The adjacency fold sets it
+  /// to its run length; `workFoldStaleSpawnCompletionEntries` sums a child's
+  /// whole transcript into its newest row and stamps the `×N` from it. `1` for
+  /// every other card.
+  let spawnCompletionTurns: Int
   let technicalDetail: String?
   let nextAction: String?
   let taskList: WorkChatTaskListSnapshot?
+  /// `kind == "reasoning"`: measured thinking time in whole seconds, the
+  /// desktop `Thought for 12s`. Nil when unknown (one chunk, a sub-second
+  /// span, or a merged activity phase), which draws plain `Thought`. Stamped
+  /// after the cards are built (`workStampReasoningDurations`).
+  var thoughtSeconds: Int? = nil
 
   init(
     id: String,
@@ -1819,7 +2074,10 @@ struct WorkEventCardModel: Identifiable, Hashable {
     recoveryReceipt: WorkCodexRecoveryReceipt? = nil,
     diagnosticModerationChecks: Int = 0,
     diagnosticIntegrationFailures: [AgentChatOptionalIntegrationFailure] = [],
+    diagnosticWarnings: [WorkTurnDiagnosticWarning] = [],
+    noticeKind: String? = nil,
     spawnCompletionChildId: String? = nil,
+    spawnCompletionTurns: Int = 1,
     technicalDetail: String? = nil,
     nextAction: String? = nil,
     taskList: WorkChatTaskListSnapshot? = nil
@@ -1846,7 +2104,10 @@ struct WorkEventCardModel: Identifiable, Hashable {
     self.recoveryReceipt = recoveryReceipt
     self.diagnosticModerationChecks = diagnosticModerationChecks
     self.diagnosticIntegrationFailures = diagnosticIntegrationFailures
+    self.diagnosticWarnings = diagnosticWarnings
+    self.noticeKind = noticeKind
     self.spawnCompletionChildId = spawnCompletionChildId
+    self.spawnCompletionTurns = spawnCompletionTurns
     self.technicalDetail = technicalDetail
     self.nextAction = nextAction
     self.taskList = taskList
@@ -2006,6 +2267,8 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   let event: WorkChatEvent
   /// Provider text phase retained beside the normalized event.
   var textPhase: String? = nil
+  /// True for a user message that ADE wrote for the user, not the reader.
+  var userMessageWrittenByAde = false
   /// Raw fields intentionally kept beside the normalized event so the broad
   /// WorkChatEvent associated-value surface does not need to grow just for
   /// subagent classification.
@@ -2164,6 +2427,8 @@ enum WorkChatEvent: Equatable {
   /// carried by `WorkAdeCardModel` so this union member never has to grow when
   /// the wire contract adds a field.
   case adeCard(WorkAdeCardModel)
+  /// Staged-queue order only; draws nothing in the timeline.
+  case queueReordered(steerIds: [String])
   case unknown(type: String)
 
   var typeKey: String {
@@ -2209,6 +2474,7 @@ enum WorkChatEvent: Equatable {
     case .command: return "command"
     case .fileChange: return "file_change"
     case .adeCard: return "ade_card"
+    case .queueReordered: return "queue_reordered"
     case .unknown(let type): return type
     }
   }

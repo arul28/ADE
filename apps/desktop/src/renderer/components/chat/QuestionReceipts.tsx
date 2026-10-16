@@ -23,8 +23,8 @@ import {
  * line: the header verb and what was sent, with the per-question detail
  * (header · answer · note) behind a click.
  *
- * A declined request records as declined rather than vanishing: the model
- * proceeded on its own assumption and the transcript should say so.
+ * A declined request records as declined rather than vanishing. The model is
+ * told to stop and ask in plain text, not to choose for the user.
  *
  * The answers come off the `pending_input_resolved` event, which is durable,
  * so this survives a reload. An `isSecret` question's answer never reaches
@@ -81,7 +81,7 @@ export function AnsweredQuestionReceipt({
         aria-expanded={open}
         data-testid="answered-question-receipt-toggle"
         onClick={() => setOpen((prev) => !prev)}
-        className="w-full rounded-md py-0.5 text-left transition-colors hover:bg-white/[0.03]"
+        className="w-full rounded-md py-0.5 text-left transition-colors hover:bg-fg/[0.03]"
       >
         <ChatCardRow
           tone={resolution === "accepted" ? "ok" : "idle"}
@@ -96,7 +96,7 @@ export function AnsweredQuestionReceipt({
           ) : (
             <ChatCardSub>
               {resolution === "declined"
-                ? `${provider} asked — you declined, it proceeded on its own assumption`
+                ? `${provider} asked — you declined to answer`
                 : `${provider} asked — the request closed before it was answered`}
             </ChatCardSub>
           )}
@@ -105,7 +105,7 @@ export function AnsweredQuestionReceipt({
       {open ? (
         <div
           data-testid="answered-question-receipt-detail"
-          className="ml-[26px] mt-1 border-l border-white/[0.06] pl-3"
+          className="ml-[26px] mt-1 border-l border-fg/[0.06] pl-3"
         >
           {questions.map((question, questionIndex) => {
             const { pickLabels, note } = question.isSecret

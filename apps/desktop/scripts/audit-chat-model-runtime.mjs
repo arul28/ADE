@@ -10,7 +10,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import WebSocket from "ws";
 import { resolveNpmInvocation } from "../../../scripts/dev-shared.mjs";
 
-const VALID_PROVIDERS = ["claude", "codex", "opencode", "cursor", "droid"];
+const VALID_PROVIDERS = ["claude", "codex", "muse", "opencode", "cursor", "droid"];
 const DEFAULT_CODEX_REASONING_EFFORT = "medium";
 
 const __filename = fileURLToPath(import.meta.url);

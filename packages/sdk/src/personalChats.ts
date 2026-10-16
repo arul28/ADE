@@ -1,14 +1,50 @@
+import { AdeError } from "./errors.js";
 import type { JsonRpcConnection } from "./jsonRpc.js";
 import type { EngineApprovalDecision } from "./approvals.js";
 import type {
+  AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatFileRef,
   AgentChatModelCatalog,
   AgentChatSessionSummary,
   PendingInputRequest,
   PendingInputsResult,
-  PersonalChatCallResponse,
 } from "./types.js";
+import type { ThreadRerunResult } from "./thread.js";
+import type { PersonalChatCallResponse } from "./wireTypes.js";
+
+/**
+ * Whether a summary says a turn is running: the runtime's `active` status, or a
+ * turn start it has not cleared. The one check every "refuse mid-turn" and
+ * "interrupt before a lifecycle action" decision reads.
+ */
+export function summaryTurnActive(summary: AgentChatSessionSummary | null | undefined): boolean {
+  return summary?.status === "active" || typeof summary?.currentTurnStartedAt === "string";
+}
+
+/** Error codes the runtime names itself, which the SDK passes through as `AdeError` codes. */
+const RUNTIME_ERROR_CODES = ["turn_in_flight", "unsupported"] as const;
+type RuntimeErrorCode = (typeof RUNTIME_ERROR_CODES)[number];
+const RUNTIME_ERROR_PREFIX = new RegExp(`(?:^|: )(${RUNTIME_ERROR_CODES.join("|")}):`);
+
+function isRuntimeErrorCode(value: unknown): value is RuntimeErrorCode {
+  return typeof value === "string" && (RUNTIME_ERROR_CODES as readonly string[]).includes(value);
+}
+
+/**
+ * The SDK code for a runtime refusal that names its own reason, or null.
+ *
+ * The runtime puts the reason in the JSON-RPC `error.data.code`, and also at
+ * the start of the message (`turn_in_flight: …`) for a transport that drops
+ * `data`. `turn_in_flight`: the refusal exists only because a turn is running.
+ * `unsupported`: the provider cannot do what was asked (for example `retry`).
+ */
+function runtimeErrorCode(error: AdeError): RuntimeErrorCode | null {
+  const code = (error.cause as { data?: { code?: unknown } } | undefined)?.data?.code;
+  if (isRuntimeErrorCode(code)) return code;
+  const prefix = RUNTIME_ERROR_PREFIX.exec(error.message)?.[1];
+  return isRuntimeErrorCode(prefix) ? prefix : null;
+}
 
 /**
  * Thin typed wrapper over the machine-scoped chat RPC.
@@ -20,14 +56,51 @@ import type {
  * leaking into the public API.
  */
 export class PersonalChatsApi {
-  constructor(private readonly connection: JsonRpcConnection) {}
+  private readonly connectionOf: () => JsonRpcConnection;
 
+  /**
+   * Takes the connection, or a function returning the current one.
+   *
+   * The function form is what lets a client respawn its runtime without
+   * handing every thread a new API object: each call reads the connection
+   * that is live NOW, so a thread opened before a restart keeps working after
+   * it.
+   */
+  constructor(connection: JsonRpcConnection | (() => JsonRpcConnection)) {
+    this.connectionOf = typeof connection === "function" ? connection : () => connection;
+  }
+
+  /**
+   * One `personalChats.call`, unwrapped.
+   *
+   * The engine refuses a bad argument (a `requestedCwd` outside the home, a
+   * malformed policy, a title of the wrong type) with a message that starts
+   * `invalid_argument:`, which the RPC layer delivers as a generic `rpc_error`.
+   * A caller cannot branch on prose, and the two cases are genuinely different
+   * — `rpc_error` says the runtime failed, `invalid_option` says the arguments
+   * were wrong — so that one refusal is translated here, for every action.
+   * Everything else passes through untouched.
+   */
   async call<T>(action: string, args?: unknown, timeoutMs?: number): Promise<T> {
-    const response = await this.connection.request<PersonalChatCallResponse<T>>(
-      "personalChats.call",
-      { action, ...(args !== undefined ? { args } : {}) },
-      timeoutMs ? { timeoutMs } : {},
-    );
+    let response: PersonalChatCallResponse<T>;
+    try {
+      response = await this.connectionOf().request<PersonalChatCallResponse<T>>(
+        "personalChats.call",
+        { action, ...(args !== undefined ? { args } : {}) },
+        timeoutMs ? { timeoutMs } : {},
+      );
+    } catch (error) {
+      if (error instanceof AdeError && error.code === "rpc_error") {
+        // A stable code from the runtime (1.2.82+) wins over the prose rule
+        // below: a mid-turn refusal can also carry `invalid_argument:` text.
+        const runtimeCode = runtimeErrorCode(error);
+        if (runtimeCode) throw new AdeError(runtimeCode, error.message, { cause: error });
+        if (/invalid_argument:/.test(error.message)) {
+          throw new AdeError("invalid_option", error.message, { cause: error });
+        }
+      }
+      throw error;
+    }
     // Older/simpler handlers may answer with the bare result. Accept both
     // rather than crashing on a runtime that has not adopted the envelope.
     if (response && typeof response === "object" && "action" in response && "result" in response) {
@@ -86,12 +159,63 @@ export class PersonalChatsApi {
     return this.call<AgentChatEventHistorySnapshot>("getEventHistory", args, 120_000);
   }
 
+  /**
+   * One older page of the durable transcript, by sequence cursor.
+   *
+   * `beforeOffset` is sent as 0 because the runtime requires the field and
+   * ignores it whenever `beforeSequence` is set; the SDK pages by sequence
+   * only, since a byte offset means nothing to a caller.
+   */
+  getEventHistoryPage(args: {
+    sessionId: string;
+    beforeSequence: number;
+    maxBytes?: number;
+  }): Promise<AgentChatEventHistoryPage> {
+    return this.call<AgentChatEventHistoryPage>(
+      "getEventHistoryPage",
+      { beforeOffset: 0, ...args },
+      120_000,
+    );
+  }
+
+  archive(sessionId: string): Promise<unknown> {
+    return this.call("archive", { sessionId }, 60_000);
+  }
+
+  unarchive(sessionId: string): Promise<unknown> {
+    return this.call("unarchive", { sessionId }, 60_000);
+  }
+
+  /** Idempotent on the runtime side: an unknown session is a delete with nothing to do. */
+  delete(sessionId: string): Promise<unknown> {
+    return this.call("delete", { sessionId }, 120_000);
+  }
+
   modelCatalog(args: { mode?: "cached" | "refresh-stale" | "force" } = {}): Promise<AgentChatModelCatalog> {
     return this.call<AgentChatModelCatalog>("modelCatalog", args, 120_000);
   }
 
-  updateSession(args: Record<string, unknown>): Promise<unknown> {
-    return this.call("updateSession", args);
+  /**
+   * Change a live session: title, model, reasoning, fast mode, MCP servers.
+   * The runtime answers with the session's summary after the change, or null
+   * when it has no summary to give.
+   */
+  updateSession(args: Record<string, unknown>): Promise<AgentChatSessionSummary | null> {
+    return this.call<AgentChatSessionSummary | null>("updateSession", args);
+  }
+
+  /**
+   * Rolls the last user turn back and sends it again, or `text` in its place.
+   * The runtime cuts the turn out of the history before it sends, so the
+   * timeout covers a provider rollback as well as the dispatch.
+   */
+  rerunLastTurn(args: {
+    sessionId: string;
+    text?: string;
+    displayText?: string;
+    attachments?: AgentChatFileRef[];
+  }): Promise<ThreadRerunResult | null> {
+    return this.call("rerunLastTurn", args, 300_000);
   }
 
   /**

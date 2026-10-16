@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { imageDimensions, jpegDimensions, pngDimensions } from "./imageDimensions";
+import { base64ImageDimensions, imageDimensions, jpegDimensions, pngDimensions } from "./imageDimensions";
 
 function makePng(width: number, height: number): Buffer {
   const buffer = Buffer.alloc(24);
@@ -47,4 +47,26 @@ describe("imageDimensions", () => {
   it("returns null for unknown image data", () => {
     expect(imageDimensions(Buffer.from("not an image"))).toBeNull();
   });
+
+  /** A JPEG whose frame header sits after an APP1 segment of `appBytes` bytes. */
+  function jpegAfterAppSegment(width: number, height: number, appBytes: number): Buffer {
+    const app = Buffer.alloc(4 + appBytes);
+    app[0] = 0xff;
+    app[1] = 0xe1;
+    app.writeUInt16BE(appBytes + 2, 2);
+    const jpeg = makeJpeg(width, height);
+    return Buffer.concat([jpeg.subarray(0, 2), app, jpeg.subarray(2)]);
+  }
+
+  it.each([
+    ["a JPEG with a large body", Buffer.concat([makeJpeg(1600, 913), Buffer.alloc(200_000, 7)]), { width: 1600, height: 913 }],
+    ["a JPEG whose header lies past the first few kilobytes", jpegAfterAppSegment(1280, 720, 8_000), { width: 1280, height: 720 }],
+    ["a PNG", Buffer.concat([makePng(390, 844), Buffer.alloc(50_000, 1)]), { width: 390, height: 844 }],
+  ])("reads base64 dimensions of %s the same as a full decode", (_label, image, expected) => {
+    const encoded = image.toString("base64");
+    expect(base64ImageDimensions(encoded)).toEqual(expected);
+    expect(base64ImageDimensions(encoded)).toEqual(imageDimensions(image));
+    expect(encoded.length).toBeGreaterThan(4096);
+  });
 });
+

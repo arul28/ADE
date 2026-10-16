@@ -14,7 +14,15 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type {
+  AdeUsageCostBreakdown,
+  AdeUsageCostBreakdownBy,
+  AdeUsageCostSplit,
   AdeUsageDailyPoint,
+  GetAdeUsageCostBreakdownArgs,
+  GetAdeUsageModelDetailArgs,
+  AdeUsageModelDetail,
+  AdeUsagePriceOverrides,
+  SetAdeUsageModelPriceArgs,
   AdeUsageEstimationKind,
   AdeUsagePricingSource,
   AdeUsageModelSummary,
@@ -36,6 +44,8 @@ import type {
   UsageProviderStatus,
   UsageProviderStatusMap,
   UsageAccount,
+  UsageAccountLogin,
+  AccountBalanceIssue,
   CostSnapshot,
   CostTokenBreakdown,
   ExtraUsage,
@@ -44,6 +54,7 @@ import type {
   UsageSnapshot,
 } from "../../../shared/types";
 import {
+  isAdeUsageCostBreakdownBy,
   ADE_USAGE_RANGE_PRESETS,
   isAdeUsageRangePreset,
   isAdeUsageScope,
@@ -71,37 +82,46 @@ import {
 } from "../shared/providerConfigHomes";
 import {
   PROVIDER_INSTANCE_ENV_KEY,
+  PROVIDER_INSTANCE_PROVIDERS,
   defaultProviderInstanceId,
   isBaseProviderInstance,
+  providerInstanceHasAccount,
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
-import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
-import { pickInstanceForNewChat } from "./accountBalance";
+import { getMachineProviderInstanceStore, sameLoginOwner } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { machineProviderUsageHomes } from "./providerUsageHomes";
+import {
+  pickInstanceForNewChat,
+  type AccountBalanceResult,
+  type AccountBalanceRotationState,
+} from "./accountBalance";
 import { createWindowAutoStartScheduler } from "./windowAutoStart";
 import {
-  cacheClaudeCredentials,
   invalidateCachedClaudeCredentials,
   isClaudeTokenExpiredOrExpiring,
   isCodexTokenStale,
-  readClaudeCredentialsWithRefresh,
+  readClaudeLogin,
   readCodexCredentials,
-  refreshClaudeCredentials,
+  type ClaudeLoginRead,
 } from "../ai/providerCredentialSources";
+import { listLinkedLaneWorktreeRoots } from "../projects/worktreeParent";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 import { stripAnsi } from "../../utils/ansiStrip";
 import {
   dynamicTokenPricingUpdatedAt,
-  priceTokenSplit,
+  isZeroTokenPrice,
+  priceTokenSplitDetailed,
   refreshDynamicTokenPricing,
   resetDynamicTokenPricingForTest,
-  ratesForRequest,
   resolveTokenPrice,
   setDynamicTokenPricingForTest,
   tokenPriceSource,
   WEB_SEARCH_COST_USD,
 } from "./usagePricing";
+import { applyUsageModelAlias, readUsagePriceOverrides, updateUsagePriceOverrides } from "./usagePriceOverrides";
+import { buildModelDetail, type ModelDetailDayRow } from "./usageModelDetail";
 import {
   type TokenEntry,
   discoverClaudeProjectDirs,
@@ -130,11 +150,15 @@ import {
 import { listCursorBilledUsage } from "./cursorBilledUsageStore";
 import { isPathInside, pathComparisonKey, pathKey } from "../shared/pathCompare";
 import {
+  MAX_LIVE_QUOTA_ACCOUNTS,
+  MAX_LIVE_QUOTA_WINDOWS,
   buildRollupRows,
   mergeAccountUsageStats,
   type AccountUsageContribution,
 } from "./accountUsageRollup";
 import { buildTranscriptSource, type UsageSourceFsApi } from "./accountUsageSource";
+import { addCostSplit, emptyCostSplit, finalizeCostSplit, parseCostSplit } from "../../../shared/usageCostSplit";
+import { buildCostBreakdown } from "./usageCostBreakdown";
 import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
 import {
   resetCreditOutcomeKey,
@@ -142,6 +166,7 @@ import {
 } from "../../../shared/usageResetCredit";
 import { usageScopeSelectedCapture } from "../analytics/usageScopeAnalytics";
 import {
+  captureModelPriceAnalytics,
   captureResetCreditAnalytics,
   type ResetCreditAnalyticsOutcome,
 } from "../analytics/featureProductAnalytics";
@@ -173,8 +198,11 @@ import {
   pollKimiQuota,
   pollOpenCodeQuota,
 } from "./extraProviderQuota";
+import { createMuseQuotaStore, type MuseQuotaStore } from "./museLiveQuota";
+import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { localDayKey, localDayOffset, localDayStart } from "./localDay";
-import { buildTurnUsageLedgerSummary, type TurnUsageLedger } from "./turnUsageLedger";
+import { buildTurnUsageLedgerSummary, repriceTurnForUserPrices, type TurnUsageLedger } from "./turnUsageLedger";
+import type { ModelRouterService, RouterPreviewArgs, RouterRoutesArgs } from "../router/modelRouterService";
 import { usageAccountId } from "./usageAccountId";
 import {
   EMPTY_GITHUB_STATS,
@@ -192,6 +220,12 @@ import {
   type ClaudeUsageResponse,
   type CodexResetCredits,
 } from "./providerQuotaParsers";
+import {
+  consumeClaudeResetCredit,
+  isClaudeResetCreditsSupported,
+  readClaudeResetCredits,
+  type ClaudeResetCredits,
+} from "./claudeResetCredits";
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -224,8 +258,16 @@ const QUOTA_REFRESH_RESPONSE_TIMEOUT_MS = 20_000;
  * v4: Codex token accounting was corrected (lifetime Codex tokens moved from
  * 251.3B to ~91.7B, cross-checked against an independent counter), so every v3
  * snapshot on disk carries obsolete totals and must be discarded.
+ *
+ * v5: Claude fast-mode requests now price at the fast multiple, which the
+ * transcript scan reads from `usage.speed`. A v4 snapshot's costs were computed
+ * without the flag, so they must be re-derived once.
+ *
+ * v6: Codex Fast/Ultrafast requests price at their published tier rates (the
+ * scan reads `service_tier`), Claude fast mode at models.dev's fast rate, and
+ * costs carry their split by token type and speed.
  */
-const USAGE_SNAPSHOT_CACHE_VERSION = 4;
+const USAGE_SNAPSHOT_CACHE_VERSION = 6;
 const USAGE_SNAPSHOT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const USAGE_SNAPSHOT_CACHE_PATH = path.join(os.homedir(), ".ade", "cache", "usage-snapshot.json");
 const GITHUB_STATS_CACHE_TTL_MS = 10 * 60_000;
@@ -407,6 +449,23 @@ function errorKindForHttpStatus(status: number): UsageProviderErrorKind {
   if (status === 429) return "rate_limited";
   if (status === 0) return "network";
   return "unknown";
+}
+
+/**
+ * Whether the Claude CLI fallback can help after a non-OK usage response.
+ *
+ * A 429 or 403 is the provider answering about the ACCOUNT: `claude /usage`
+ * reads the same endpoint with the same token, so spawning it adds a second
+ * request to an account that just asked us to back off — the exact way a
+ * transient throttle becomes a sustained one. Every other status is worth the
+ * bounded pty attempt the fallback exists for (401 repairs, 5xx/network are
+ * transport, an unrecognized body is a schema question). Codex refuses its CLI
+ * fallback for 403/409/429; Claude's usage endpoint has no 409 path, so this
+ * covers its two.
+ */
+function claudeCliFallbackFitsStatus(status: number): boolean {
+  const kind = errorKindForHttpStatus(status);
+  return kind !== "rate_limited" && kind !== "forbidden";
 }
 
 function errorKindForThrown(error: unknown): UsageProviderErrorKind {
@@ -759,13 +818,207 @@ export function claudePollAllowsKeychain(
 }
 
 /**
+ * Per-account rate-limit memory for multi-account providers.
+ *
+ * The scheduler's failure and backoff state is per provider, and a healthy
+ * account used to erase it for a throttled sibling: the merged poll had windows
+ * to show, so nothing backed off, and the account that had just answered 429
+ * was asked again on the next cadence tick. That is how a transient throttle
+ * becomes a sustained one — and the throttled account, having no earlier
+ * reading to carry, is the one the user sees stuck at "No usage yet".
+ *
+ * So each account remembers when it may be asked again. A `Retry-After` from
+ * the provider wins; otherwise the wait doubles from two minutes up to fifteen,
+ * and a read that produced windows clears it (an empty-but-OK response keeps
+ * the ladder step, so the next failure does not restart at the base). Process-
+ * local by design: a restart is a fresh, policed attempt.
+ *
+ * A skipped account returns `null` from its instance poll exactly like an
+ * unreadable login, which is what carries its previous windows forward in
+ * `mergeInstancePollResults`.
+ */
+const ACCOUNT_RATE_LIMIT_BASE_COOLDOWN_MS = 2 * 60_000;
+const ACCOUNT_RATE_LIMIT_MAX_COOLDOWN_MS = 15 * 60_000;
+type AccountRateLimitEntry = { nextAttemptAtMs: number; failureCount: number };
+const accountRateLimits = new Map<string, AccountRateLimitEntry>();
+
+function accountRateLimitNextAttemptAtMs(accountId: string, nowMs: number = Date.now()): number {
+  const entry = accountRateLimits.get(accountId);
+  // An elapsed entry is returned as "free" but deliberately NOT deleted: its
+  // `failureCount` is the ladder step the next failure doubles from. An entry
+  // leaves the map only on a read that produced windows, so a long-lived
+  // process holds one small record per account id ever polled *without* a
+  // windows-producing read — bounded in practice by the number of accounts the
+  // machine has had, and the price of escalating instead of pinning every
+  // failure at the base wait.
+  if (!entry || entry.nextAttemptAtMs <= nowMs) return 0;
+  return entry.nextAttemptAtMs;
+}
+
+const CLAUDE_BACKGROUND_REFRESH_INTERVAL_MS = 30 * 60_000;
+
+/**
+ * When each account last had its stale Claude login refreshed by a background
+ * poll, by usage account id.
+ *
+ * ADE never refreshes a Claude token itself (see `readClaudeLogin`), and smart
+ * balance does not send a chat to an account it has no reading for, so an
+ * idle account's login has no chat coming to refresh it. A background poll
+ * runs the Claude CLI for it instead, which refreshes and saves its own token,
+ * at most once per {@link CLAUDE_BACKGROUND_REFRESH_INTERVAL_MS} per account so
+ * a CLI that keeps failing is not spawned on every cadence tick.
+ */
+const claudeBackgroundRefreshAt = new Map<string, number>();
+
+/**
+ * The access token the usage API last rejected with a 401, by usage account id.
+ * Re-reading the login returns that same token until the CLI replaces it, so a
+ * background poll answers the 401 again without sending the token; the
+ * refresh allowance decides when the CLI tries again.
+ */
+const rejectedClaudeTokens = new Map<string, string>();
+
+function claimClaudeBackgroundRefresh(accountId: string, nowMs: number = Date.now()): boolean {
+  const last = claudeBackgroundRefreshAt.get(accountId);
+  if (last !== undefined && nowMs - last < CLAUDE_BACKGROUND_REFRESH_INTERVAL_MS) return false;
+  claudeBackgroundRefreshAt.set(accountId, nowMs);
+  return true;
+}
+
+/** Drops the per-account cooldowns so a test starts from a clean cadence. */
+function resetAccountRateLimitsForTest(): void {
+  accountRateLimits.clear();
+  accountLogins.clear();
+  claudeBackgroundRefreshAt.clear();
+  rejectedClaudeTokens.clear();
+}
+
+/**
+ * The last login state each account's poll saw, by usage account id.
+ *
+ * Smart balance reads this through `UsageAccount.login`: an account whose
+ * login is gone keeps its old windows on screen until they reset, and those
+ * windows must not make it look like the account with the most room.
+ */
+const accountLogins = new Map<string, UsageAccountLogin>();
+
+function noteAccountLogin(accountId: string, instanceId: string, login: UsageAccountLogin): void {
+  accountLogins.set(accountId, login);
+  // The registry reports `signedIn` from the email in the config home, which
+  // outlives a cleared login. Every account list (model picker, Settings, the
+  // AI status) reads the registry, so it learns the real state here.
+  try {
+    getMachineProviderInstanceStore().setLoginBroken(instanceId, login === "signed_out");
+  } catch {
+    // An unreadable registry already degrades every reader to its defaults.
+  }
+}
+
+/**
+ * Reads the saved login of Claude accounts marked signed out, now, for a
+ * refresh the user asked for. Returns the ids whose login works again.
+ *
+ * Only a usage poll clears the signed-out mark, and a background poll serves
+ * the credential miss cache, so a fresh sign-in stayed "signed out" for one
+ * idle poll cycle (up to five minutes). The add-account sheet refreshes once
+ * when its login shell exits, so it reported a successful sign-in as failed.
+ * `instanceId` re-reads that one account even when it is not marked.
+ */
+export async function recheckSignedOutLogins(
+  args: { provider?: ProviderInstanceProvider; instanceId?: string } = {},
+): Promise<string[]> {
+  if (args.provider && args.provider !== "claude") return [];
+  const wanted = args.instanceId?.trim();
+  const targets = getMachineProviderInstanceStore().list("claude").filter((instance) => (
+    wanted ? instance.id === wanted : instance.loginBroken === true
+  ));
+  const restored: string[] = [];
+  await Promise.all(targets.map(async (instance) => {
+    const configHome = isBaseProviderInstance(instance) ? undefined : instance.configHome;
+    invalidateCachedClaudeCredentials(configHome);
+    const login = await readClaudeLogin({
+      allowKeychain: true,
+      skipMissCache: true,
+      ...(configHome ? { configHome } : {}),
+    }).catch((): ClaudeLoginRead => ({ state: "unreadable" }));
+    if (login.state === "unreadable") return;
+    noteAccountLogin(usageAccountId({ provider: "claude", instanceId: instance.id }), instance.id, login.state);
+    if (login.state !== "signed_out" && instance.loginBroken === true) restored.push(instance.id);
+  }));
+  return restored;
+}
+
+function attachAccountLogins(accounts: UsageAccount[]): void {
+  for (const account of accounts) {
+    const login = accountLogins.get(account.id);
+    if (login) account.login = login;
+  }
+}
+
+/**
+ * Mark accounts the provider is throttling and that have nothing to show.
+ *
+ * Without it the row's only words are "No usage yet" — the same sentence a
+ * brand-new account gets — which is what made a throttle read as a broken
+ * account. Only accounts with no unexpired window are marked: a carried
+ * reading still answers the question the row exists to answer, and the host's
+ * own status already says it is stale.
+ *
+ * `message` is the STATE, not the sentence: "Rate-limited". The retry phrase
+ * and its countdown belong to the client, which is the only side that knows
+ * "now" — a host-rendered clock would be stale between polls.
+ *
+ * The `notice` is deliberately local: it describes THIS machine's last attempt,
+ * so `boundPeerAccount` drops it when accounts travel in a rollup.
+ */
+function attachAccountRateLimitNotices(
+  accounts: UsageAccount[],
+  windows: readonly UsageWindow[],
+  nowMs: number = Date.now(),
+): void {
+  for (const account of accounts) {
+    const nextAttemptAtMs = accountRateLimitNextAttemptAtMs(account.id, nowMs);
+    if (nextAttemptAtMs <= 0) continue;
+    if (windows.some((window) => window.provider === account.provider && window.accountId === account.id)) continue;
+    account.notice = {
+      message: "Rate-limited",
+      nextRetryAt: new Date(nextAttemptAtMs).toISOString(),
+    };
+  }
+}
+
+function noteAccountPollOutcome(
+  accountId: string,
+  result: UsageProviderPollResult | null,
+  nowMs: number = Date.now(),
+): void {
+  // `null` is "not asked" or "no login either way", never a verdict on the
+  // account's quota, so it must not move the cooldown in either direction.
+  if (!result) return;
+  if (result.errorKind !== "rate_limited") {
+    if (result.windows.length > 0) accountRateLimits.delete(accountId);
+    return;
+  }
+  const failureCount = (accountRateLimits.get(accountId)?.failureCount ?? 0) + 1;
+  const exponential = Math.min(
+    ACCOUNT_RATE_LIMIT_MAX_COOLDOWN_MS,
+    ACCOUNT_RATE_LIMIT_BASE_COOLDOWN_MS * 2 ** Math.min(3, failureCount - 1),
+  );
+  // Mirrors `providerBackoffMs`: the provider's own `Retry-After` is honoured
+  // however long it is, and the exponential only sets the floor.
+  const cooldownMs = Math.max(result.retryAfterMs ?? 0, exponential);
+  accountRateLimits.set(accountId, { nextAttemptAtMs: nowMs + cooldownMs, failureCount });
+}
+
+/**
  * Fold one provider's per-account results into the single result the scheduler
  * consumes.
  *
- * `null` means the account holds no login ADE can read in this pass: it
- * contributes no windows and no error, because a second account the user has
- * not signed into yet must not raise a failure a single-account machine would
- * never have seen. It is not a sign-out, though — a scoped macOS login can
+ * `null` means the account has nothing to report this pass — no readable
+ * login, or a poll skipped inside the account's own rate-limit cooldown (see
+ * `pollQuotaInstances`). It contributes no windows and no error, because a
+ * second account the user has not signed into yet must not raise a failure a
+ * single-account machine would never have seen. It is not a sign-out, though — a scoped macOS login can
  * live only in the Keychain, and a miss still happens — so the account's last
  * windows are carried forward (bounded by their own reset times) instead of
  * vanishing on every restart.
@@ -789,7 +1042,11 @@ function mergeInstancePollResults(
   let preserved = false;
   for (const entry of entries) {
     if (!entry.result) {
-      if (!entry.instance.isDefault) unreadableAccounts.push(entry.instance);
+      // Every `null` result — a login this pass could not read, and a
+      // rate-limited account the poll deliberately skipped — carries its
+      // previous windows below. The default used to be excluded here, which
+      // blanked exactly the account the skip path was written to protect.
+      unreadableAccounts.push(entry.instance);
       continue;
     }
     if (entry.result.disposition === "preserve_previous") {
@@ -835,16 +1092,24 @@ function mergeInstancePollResults(
     const accountId = usageAccountId({ provider, instanceId: instance.id });
     if (result.windows.length > 0) {
       for (const window of result.windows) windows.push({ ...window, accountId });
-    } else if (!instance.isDefault) {
-      // A secondary account's empty/error response must not erase its last
-      // usable windows while the provider is transiently unavailable. The
-      // error remains below so the UI can show the degraded poll honestly.
+    } else {
+      // An account that answered with no windows must not erase its last usable
+      // reading while the provider is transiently unavailable. That applies to
+      // the DEFAULT account too: the provider-level reconciliation only carries
+      // previous windows when nothing read fresh at all, so one healthy sibling
+      // used to be enough to blank it. Windows that predate account
+      // attribution belong to the default and are adopted here, exactly as the
+      // preserved-default path above does.
       windows.push(...filterUnexpiredCarriedWindows(
-        previousSnapshot?.windows.filter((window) => (
-          window.provider === provider && window.accountId === accountId
-        )) ?? [],
+        previousSnapshot?.windows
+          .filter((window) => (
+            window.provider === provider
+            && (window.accountId ? window.accountId === accountId : instance.isDefault)
+          ))
+          .map((window) => (window.accountId ? window : { ...window, accountId })) ?? [],
         polledAt,
       ));
+      // The error stays below so the UI can show the degraded poll honestly.
     }
     errors.push(...result.errors);
   }
@@ -887,6 +1152,10 @@ function mergeInstancePollResults(
   return {
     windows,
     errors,
+    // How many of `windows` a live read produced this pass. `windows` also
+    // carries previous readings for accounts that failed or could not be read,
+    // so it is not a success signal on its own.
+    freshWindowCount,
     ...(source ? { source } : {}),
     ...(base.errorKind ? { errorKind: base.errorKind } : {}),
     ...(base.retryAfterMs != null ? { retryAfterMs: base.retryAfterMs } : {}),
@@ -908,6 +1177,83 @@ function mergeInstancePollResults(
 }
 
 /**
+ * Poll every local account once, skipping any account inside its own
+ * rate-limit cooldown.
+ *
+ * The skip is the whole point: an account whose provider just said "slow down"
+ * is not asked again until its own `Retry-After` elapses, while its siblings
+ * keep polling. A skipped account returns `null`, exactly like a login this
+ * pass could not read, which is what carries its previous windows forward in
+ * `mergeInstancePollResults`. When every account is cooling down, the provider
+ * reports a preserved state rather than a fresh empty one, so the scheduler's
+ * failure count does not grow over attempts deliberately not taken.
+ */
+async function pollQuotaInstances(
+  logger: Logger,
+  provider: QuotaInstanceProvider,
+  context: UsageProviderPollContext,
+  instances: readonly QuotaInstance[],
+  preservedSource: UsageProviderSource,
+  pollInstance: (
+    logger: Logger,
+    context: UsageProviderPollContext,
+    instance: QuotaInstance,
+  ) => Promise<UsageProviderPollResult | null>,
+): Promise<UsageProviderPollResult> {
+  let skippedForRateLimit = 0;
+  const entries = await Promise.all(instances.map(async (instance) => {
+    const accountId = usageAccountId({ provider, instanceId: instance.id });
+    if (accountRateLimitNextAttemptAtMs(accountId) > 0) {
+      skippedForRateLimit += 1;
+      return { instance, result: null };
+    }
+    const result = await pollInstance(logger, context, instance);
+    noteAccountPollOutcome(accountId, result);
+    return { instance, result };
+  }));
+  if (skippedForRateLimit > 0 && entries.every((entry) => entry.result === null)) {
+    return { disposition: "preserve_previous", windows: [], errors: [], source: preservedSource };
+  }
+  return mergeInstancePollResults(provider, entries, context.previousSnapshot);
+}
+
+/**
+ * Has the Claude CLI refresh an account's stale login from a background poll,
+ * and returns its reading; `null` when the poll may not or the CLI did not
+ * produce one.
+ *
+ * The next background poll reads the refreshed login: a scoped account's own
+ * Keychain item, or the credentials file the CLI rewrites off macOS. The base
+ * account on macOS is left out: its background poll skips the Keychain, so a
+ * refresh there would respawn the CLI on every allowance without being read.
+ */
+async function refreshClaudeLoginInBackground(
+  logger: Logger,
+  context: UsageProviderPollContext,
+  instanceId: string,
+  accountId: string,
+  configHome: string | undefined,
+): Promise<FreshUsageProviderPollResult | null> {
+  if (context.reason === "user") return null;
+  if (configHome === undefined && process.platform === "darwin") return null;
+  if (!claimClaudeBackgroundRefresh(accountId)) return null;
+  const refreshed = await measureUsagePhase(
+    logger,
+    { provider: "claude", phase: "cli_fallback", reason: context.reason },
+    () => pollClaudeViaCli(logger, configHome),
+  );
+  if (refreshed.windows.length === 0) {
+    logger.warn("usage.poll.claude_background_refresh_failed", {
+      instanceId,
+      errorKind: refreshed.errorKind ?? null,
+    });
+    return null;
+  }
+  noteAccountLogin(accountId, instanceId, "ok");
+  return refreshed;
+}
+
+/**
  * Quota for ONE Claude account. `null` = this account's config home holds no
  * login, so it has nothing to report.
  */
@@ -923,11 +1269,13 @@ async function pollClaudeInstance(
   // A successful read is cached per account, and later polls reuse the cache.
   const allowInteractiveSources = context.reason === "user";
   const configHome = scopedConfigHome("claude", instance);
-  const creds = await measureUsagePhase(
+  const accountId = usageAccountId({ provider: "claude", instanceId: instance.id });
+  const allowKeychain = claudePollAllowsKeychain(context.reason, configHome);
+  const login = await measureUsagePhase(
     logger,
     { provider: "claude", phase: "credentials", reason: context.reason },
-    () => readClaudeCredentialsWithRefresh(logger, {
-      allowKeychain: claudePollAllowsKeychain(context.reason, configHome),
+    () => readClaudeLogin({
+      allowKeychain,
       // A scoped background poll may open the Keychain once, then has to
       // honor the miss cache. Treating allowKeychain as "user initiated"
       // made every automatic poll of a missing login run `security` again.
@@ -935,7 +1283,32 @@ async function pollClaudeInstance(
       ...(configHome ? { configHome } : {}),
     }),
   );
-  if (!creds) {
+  // On macOS the login lives in the Keychain. A read that skipped it saw only
+  // the credentials file, so its miss says nothing about the account.
+  if (login.state !== "unreadable" && (allowKeychain || process.platform !== "darwin" || login.state === "ok")) {
+    noteAccountLogin(accountId, instance.id, login.state);
+  }
+  if (login.state === "expired") {
+    // The CLI refreshes and saves its own token. A user poll runs it every
+    // time; a background poll on a per-account allowance.
+    if (allowInteractiveSources) {
+      return await measureUsagePhase(
+        logger,
+        { provider: "claude", phase: "cli_fallback", reason: context.reason },
+        () => pollClaudeViaCli(logger, configHome),
+      );
+    }
+    const refreshed = await refreshClaudeLoginInBackground(logger, context, instance.id, accountId, configHome);
+    if (refreshed) return refreshed;
+    if (!instance.isDefault) return null;
+    return {
+      disposition: "preserve_previous",
+      windows: [],
+      errors: [],
+      source: "oauth",
+    };
+  }
+  if (login.state === "signed_out" || login.state === "unreadable") {
     // A secondary account with no credentials file is simply unsigned-in.
     // Spawning the Claude CLI for it holds a pty until the sign-in timeout.
     if (allowInteractiveSources && instance.isDefault) {
@@ -953,6 +1326,20 @@ async function pollClaudeInstance(
       source: "oauth",
     };
   }
+  const creds = login.credentials;
+  const rejected = (): FreshUsageProviderPollResult => ({
+    windows: [],
+    source: "oauth",
+    extraUsage: null,
+    errors: ["claude: API returned 401"],
+    errorKind: errorKindForHttpStatus(401),
+  });
+  if (!allowInteractiveSources && rejectedClaudeTokens.get(accountId) === creds.accessToken) {
+    // Not cached either, so the next poll re-reads the login and sees the
+    // token the CLI writes when it replaces this one.
+    invalidateCachedClaudeCredentials(configHome);
+    return await refreshClaudeLoginInBackground(logger, context, instance.id, accountId, configHome) ?? rejected();
+  }
 
   try {
     const result = await measureUsagePhase(
@@ -965,47 +1352,40 @@ async function pollClaudeInstance(
     );
 
     if (!result.ok) {
-      if (result.status === 401 && creds.refreshToken) {
-        logger.info("usage.token_refresh.401_retry");
+      if (result.status === 401) {
+        // The token was rejected before its expiry. ADE does not spend the
+        // refresh token (see `readClaudeLogin`); the CLI fallback below, or the
+        // next chat on this account, refreshes it.
         invalidateCachedClaudeCredentials(configHome);
-        const refreshed = await measureUsagePhase(
-          logger,
-          { provider: "claude", phase: "token_refresh", reason: context.reason },
-          () => refreshClaudeCredentials(creds.refreshToken!),
-        );
-        if (refreshed) {
-          cacheClaudeCredentials(refreshed, configHome);
-          const retry = await measureUsagePhase(
-            logger,
-            { provider: "claude", phase: "oauth_http_retry", reason: context.reason },
-            () => fetchJsonWithRetry(CLAUDE_USAGE_URL, {
-              Authorization: `Bearer ${refreshed.accessToken}`,
-              "anthropic-beta": "oauth-2025-04-20",
-            }),
-          );
-          if (retry.ok) {
-            const parsed = parseClaudeWindows(retry.data as ClaudeUsageResponse);
-            if (parsed.windows.length > 0) {
-              return { windows: parsed.windows, source: "oauth", extraUsage: parsed.extraUsage, errors: [] };
-            }
-          }
-        }
+        noteAccountLogin(accountId, instance.id, "expired");
+        rejectedClaudeTokens.set(accountId, creds.accessToken);
       }
 
-      if (allowInteractiveSources) {
+      // A throttled or forbidden endpoint is the one status the CLI cannot fix:
+      // `claude /usage` reads the same endpoint with the same account, so
+      // spawning it doubles the pressure on a token that just asked us to back
+      // off — which is exactly how a transient 429 becomes a sustained one.
+      // Codex already refuses its CLI fallback for 403/409/429; same rule here.
+      const httpErrorKind = errorKindForHttpStatus(result.status);
+      if (allowInteractiveSources && claudeCliFallbackFitsStatus(result.status)) {
         const fallback = await measureUsagePhase(
           logger,
           { provider: "claude", phase: "cli_fallback", reason: context.reason },
           () => pollClaudeViaCli(logger, configHome),
         );
         if (fallback.windows.length > 0) return fallback;
+      } else if (result.status === 401) {
+        // Re-reading the login returns the same rejected token, so it never
+        // reaches the `expired` branch; the CLI has to refresh it.
+        const refreshed = await refreshClaudeLoginInBackground(logger, context, instance.id, accountId, configHome);
+        if (refreshed) return refreshed;
       }
       return {
         windows: [],
         source: "oauth",
         extraUsage: null,
         errors: [`claude: API returned ${result.status}`],
-        errorKind: errorKindForHttpStatus(result.status),
+        errorKind: httpErrorKind,
         ...(result.retryAfterMs != null ? { retryAfterMs: result.retryAfterMs } : {}),
       };
     }
@@ -1031,6 +1411,7 @@ async function pollClaudeInstance(
         errorKind: "invalid_response",
       };
     }
+    rejectedClaudeTokens.delete(accountId);
     return { windows: parsed.windows, source: "oauth", extraUsage: parsed.extraUsage, errors: [] };
   } catch (error) {
     if (allowInteractiveSources) {
@@ -1057,11 +1438,7 @@ async function pollClaudeUsage(
   context: UsageProviderPollContext = { reason: "user" },
   instances: readonly QuotaInstance[] = listQuotaInstances("claude"),
 ): Promise<UsageProviderPollResult> {
-  const entries = await Promise.all(instances.map(async (instance) => ({
-    instance,
-    result: await pollClaudeInstance(logger, context, instance),
-  })));
-  return mergeInstancePollResults("claude", entries, context.previousSnapshot);
+  return await pollQuotaInstances(logger, "claude", context, instances, "oauth", pollClaudeInstance);
 }
 
 // ── Codex Usage Polling ──────────────────────────────────────────
@@ -1159,11 +1536,7 @@ async function pollCodexUsage(
   context: UsageProviderPollContext = { reason: "user" },
   instances: readonly QuotaInstance[] = listQuotaInstances("codex"),
 ): Promise<UsageProviderPollResult> {
-  const entries = await Promise.all(instances.map(async (instance) => ({
-    instance,
-    result: await pollCodexInstance(logger, context, instance),
-  })));
-  return mergeInstancePollResults("codex", entries, context.previousSnapshot);
+  return await pollQuotaInstances(logger, "codex", context, instances, "http", pollCodexInstance);
 }
 
 /**
@@ -1206,6 +1579,12 @@ type CodexAppServerRpcRequest = {
  * Throws on a missing binary, a spawn failure, a non-zero exit, or the timeout.
  * Callers decide what an unavailable app-server means for them — a poll
  * degrades, a credit spend fails loudly.
+ *
+ * stdin stays open until every requested response id has arrived (or the
+ * timeout kills the tree). The app-server aborts an in-flight request the
+ * instant it sees stdin EOF, and a rate-limit read is a network round-trip —
+ * closing stdin right after the write returned only the `initialize` reply and
+ * silently dropped the read.
  */
 async function runCodexAppServerJsonRpc(args: {
   logger: Logger;
@@ -1278,10 +1657,41 @@ async function runCodexAppServerJsonRpc(args: {
       let stderr = "";
       const maxStdout = 50_000;
       const maxStderr = 10_000;
+
+      // Every requested response id must arrive before stdin closes. The
+      // app-server interleaves notifications (configWarning,
+      // remoteControl/status/changed, account/updated) between replies; they
+      // carry no numeric id and are ignored here. The result parse after close
+      // still filters to lines that carry a `result`.
+      const pendingResponseIds = new Set<number>(requests.map((request) => request.id));
+      let stdinClosed = false;
+      let stdoutCarry = "";
+      const closeStdinOnceRepliesArrive = () => {
+        if (stdinClosed || pendingResponseIds.size > 0) return;
+        stdinClosed = true;
+        try {
+          child.stdin?.end();
+        } catch (err) {
+          if (isBenignStdinCloseError(err)) return;
+          logger.warn("usage.poll.codex_cli_rpc_stdin_failed", {
+            error: getErrorMessage(err),
+          });
+        }
+      };
       child.stdout?.on("data", (chunk: Buffer) => {
         if (stdout.length >= maxStdout) return;
         const s = chunk.toString("utf8");
         stdout += s.slice(0, maxStdout - stdout.length);
+        stdoutCarry += s;
+        const lines = stdoutCarry.split("\n");
+        stdoutCarry = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.length) continue;
+          const parsed = safeJsonParse<Record<string, unknown>>(trimmed, {});
+          if (typeof parsed.id === "number") pendingResponseIds.delete(parsed.id);
+        }
+        closeStdinOnceRepliesArrive();
       });
       child.stderr?.on("data", (chunk: Buffer) => {
         if (stderr.length >= maxStderr) return;
@@ -1319,14 +1729,17 @@ async function runCodexAppServerJsonRpc(args: {
 
       try {
         child.stdin?.write(combined);
-        child.stdin?.end();
       } catch (err) {
         if (isBenignStdinCloseError(err)) return;
         logger.warn("usage.poll.codex_cli_rpc_stdin_failed", {
           error: getErrorMessage(err),
         });
         finish(() => reject(err));
+        return;
       }
+      // With no requests there is nothing to wait for; otherwise the stdout
+      // handler closes stdin once every reply is in.
+      closeStdinOnceRepliesArrive();
     },
   );
 
@@ -1608,6 +2021,203 @@ const CODEX_RESET_CREDIT_OUTCOME_MESSAGE: Record<
   alreadyRedeemed: "That reset credit was already redeemed.",
 };
 
+// ── Claude reset credits ─────────────────────────────────────────────────
+//
+// Claude Code's `cedar_ember` program grants banked resets the way Codex does:
+// the CLI reads the grants from its OAuth usage endpoint and claims one against
+// the account's organization. ADE reads the same endpoint with the CLI's
+// on-disk OAuth token. On macOS that token lives in the Keychain, which ADE
+// deliberately never turns into an unattended HTTP call, so the probe returns
+// "no credits" there without sending anything and the control stays hidden.
+// The read is the fast HTTP path — no subprocess, no Keychain.
+
+/** At most one read per account per this interval; explicit refresh bypasses it. */
+const CLAUDE_RESET_CREDIT_PROBE_INTERVAL_MS = 15 * 60_000;
+
+type ClaudeResetCreditCacheEntry = {
+  credits: ClaudeResetCredits;
+  readAt: number;
+};
+
+/** Keyed by config home; `""` is the machine default account. */
+const claudeResetCreditCache = new Map<string, ClaudeResetCreditCacheEntry>();
+/** Reads in flight, so a burst of snapshot reads sends one request. */
+const claudeResetCreditProbesInFlight = new Map<string, Promise<void>>();
+
+function claudeResetCreditCacheKey(configHome: string | undefined): string {
+  return configHome?.trim() ?? "";
+}
+
+function readCachedClaudeResetCredits(configHome: string | undefined): ClaudeResetCredits | null {
+  return claudeResetCreditCache.get(claudeResetCreditCacheKey(configHome))?.credits ?? null;
+}
+
+/**
+ * The client-facing shape. `nextCreditId` is a redemption handle, not a fact a
+ * client needs, so it stays in the main process — the same `availableCount` /
+ * `nextExpiresAt` contract the generic "Use reset" control already reads.
+ */
+function claudeResetCreditsContract(
+  credits: ClaudeResetCredits | null,
+): UsageAccount["resetCredits"] | null {
+  if (!credits) return null;
+  return {
+    availableCount: credits.availableCount,
+    ...(credits.nextExpiresAt ? { nextExpiresAt: credits.nextExpiresAt } : {}),
+  };
+}
+
+/**
+ * Read one account's banked credits, at most once per
+ * {@link CLAUDE_RESET_CREDIT_PROBE_INTERVAL_MS} unless `force` is set.
+ *
+ * Never throws. On macOS the feature is not offered, so the field is zeroed
+ * without reading anything. On a real read failure the previous reading is kept
+ * — a transient outage must not blank a live control — and only a confirmed
+ * response can replace it, with zero when the account has no redeemable grant.
+ * The token comes from the credential path's cache when it has one (possibly
+ * refreshed), falling back to the file.
+ */
+async function probeClaudeResetCredits(args: {
+  logger: Logger;
+  configHome?: string;
+  force?: boolean;
+}): Promise<void> {
+  const key = claudeResetCreditCacheKey(args.configHome);
+  const cached = claudeResetCreditCache.get(key);
+  if (!args.force && cached && Date.now() - cached.readAt < CLAUDE_RESET_CREDIT_PROBE_INTERVAL_MS) {
+    return;
+  }
+  const inFlight = claudeResetCreditProbesInFlight.get(key);
+  if (inFlight) return inFlight;
+  const probe = (async () => {
+    try {
+      if (!isClaudeResetCreditsSupported()) {
+        claudeResetCreditCache.set(key, { credits: { availableCount: 0 }, readAt: Date.now() });
+        return;
+      }
+      const accessToken = await readClaudeCredentialAccessToken(args.logger, args.configHome);
+      const read = await readClaudeResetCredits({
+        ...(args.configHome ? { configHome: args.configHome } : {}),
+        ...(accessToken ? { accessToken } : {}),
+      });
+      claudeResetCreditCache.set(key, {
+        credits: read.status === "ok"
+          ? read.credits ?? { availableCount: 0 }
+          : cached?.credits ?? { availableCount: 0 },
+        readAt: Date.now(),
+      });
+    } catch (error) {
+      args.logger.warn("usage.claude_reset_credit_probe_failed", {
+        error: getErrorMessage(error),
+      });
+      // Remembered as a failed attempt so a machine without Claude does not
+      // re-send on every snapshot. The previous reading is kept when there was
+      // one; only the clock moves.
+      claudeResetCreditCache.set(key, {
+        credits: cached?.credits ?? { availableCount: 0 },
+        readAt: Date.now(),
+      });
+    } finally {
+      claudeResetCreditProbesInFlight.delete(key);
+    }
+  })();
+  claudeResetCreditProbesInFlight.set(key, probe);
+  return probe;
+}
+
+/**
+ * The cached access token for one Claude account, or null when it expired. `allowKeychain` is false so the reset path never opens the macOS
+ * Keychain; the quota poll that runs earlier in the same pass has usually
+ * already warmed this cache.
+ */
+async function readClaudeCredentialAccessToken(
+  logger: Logger,
+  configHome: string | undefined,
+): Promise<string | null> {
+  const login = await readClaudeLogin({
+    allowKeychain: false,
+    ...(configHome ? { configHome } : {}),
+  });
+  return login.state === "ok" ? login.credentials.accessToken : null;
+}
+
+/** Spends in flight, keyed by config home — one per account at a time. */
+const claudeResetCreditConsumeInFlight = new Map<string, Promise<UsageResetCreditResult>>();
+/**
+ * The request id held for an account until an outcome comes back.
+ *
+ * Held rather than minted per attempt: a claim that timed out or that Claude
+ * could not confirm may already have been applied, and a retry with a fresh id
+ * would ask Claude to treat it as a second claim. It is bound to the grant it
+ * was minted for, so a different grant gets a fresh id; a local "no credit"
+ * never mints one because nothing was sent.
+ */
+const claudeResetCreditRequestIds = new Map<string, { requestId: string; grantId: string }>();
+
+/**
+ * Spend one banked Claude reset credit for `configHome`.
+ *
+ * Single-flight per account, with the pending claim — its grant id and request
+ * id together — held across an unconfirmed claim, so a retry repeats the exact
+ * request that may already have applied instead of spending a second credit on
+ * whatever grant a later probe selected. The windows are re-read afterwards by
+ * the caller because the outcome alone is not the user-visible fact.
+ */
+async function spendClaudeResetCredit(args: {
+  logger: Logger;
+  configHome?: string;
+}): Promise<UsageResetCreditResult> {
+  const key = claudeResetCreditCacheKey(args.configHome);
+  const inFlight = claudeResetCreditConsumeInFlight.get(key);
+  if (inFlight) return inFlight;
+  const attempt = (async (): Promise<UsageResetCreditResult> => {
+    try {
+      const held = claudeResetCreditRequestIds.get(key);
+      // A held claim is retried exactly, even when a newer probe has selected a
+      // different grant; only a fresh claim reads the cache.
+      const grantId = held?.grantId ?? readCachedClaudeResetCredits(args.configHome)?.nextCreditId;
+      if (!grantId) {
+        // Nothing was sent, so no request id is minted or held.
+        return {
+          ok: false,
+          status: "noCredit",
+          message: "No reset credit is banked on this account.",
+        };
+      }
+      const requestId = held?.requestId ?? randomUUID();
+      claudeResetCreditRequestIds.set(key, { requestId, grantId });
+      const accessToken = await readClaudeCredentialAccessToken(args.logger, args.configHome);
+      const { result, retrySameClaim } = await consumeClaudeResetCredit({
+        ...(args.configHome ? { configHome: args.configHome } : {}),
+        ...(accessToken ? { accessToken } : {}),
+        grantId,
+        requestId,
+      });
+      if (!retrySameClaim) claudeResetCreditRequestIds.delete(key);
+      if (result.status === "failure") {
+        args.logger.warn("usage.claude_reset_credit_consume_failed", {
+          error: result.message,
+        });
+      }
+      return result;
+    } catch (error) {
+      args.logger.warn("usage.claude_reset_credit_consume_failed", {
+        error: getErrorMessage(error),
+      });
+      return {
+        ok: false,
+        status: "failure",
+        message: `Could not reach Claude to spend the reset: ${getErrorMessage(error)}`,
+      };
+    } finally {
+      claudeResetCreditConsumeInFlight.delete(key);
+    }
+  })();
+  claudeResetCreditConsumeInFlight.set(key, attempt);
+  return attempt;
+}
+
 // ── Local Cost Scanning ──────────────────────────────────────────
 
 export function bucketDaily7d(entries: TokenEntry[], nowMs: number): number[] {
@@ -1631,16 +2241,18 @@ type TokenBreakdown = Record<string, CostTokenBreakdown & { cacheWrite: number; 
 type DailyTokenBreakdown = Record<string, number>;
 type DailyModelTokenBreakdown = Record<string, TokenBreakdown>;
 
-function addTokenBreakdownEntry(breakdown: TokenBreakdown, entry: TokenEntry): void {
+function addTokenBreakdownEntry(breakdown: TokenBreakdown, entry: TokenEntry, cost: EntryCost = calculateTokenEntryCost(entry)): void {
   const modelKey = entry.model || "unknown";
   if (!breakdown[modelKey]) {
-    breakdown[modelKey] = { input: 0, output: 0, cached: 0, cacheWrite: 0, costUsd: 0 };
+    breakdown[modelKey] = { input: 0, output: 0, cached: 0, cacheWrite: 0, costUsd: 0, costSplit: emptyCostSplit() };
   }
-  breakdown[modelKey].input += entry.inputTokens;
-  breakdown[modelKey].output += entry.outputTokens;
-  breakdown[modelKey].cached += entry.cachedTokens;
-  breakdown[modelKey].cacheWrite += toNonNegativeInt(entry.cacheWriteTokens);
-  breakdown[modelKey].costUsd += calculateTokenEntryCost(entry);
+  const row = breakdown[modelKey];
+  row.input += entry.inputTokens;
+  row.output += entry.outputTokens;
+  row.cached += entry.cachedTokens;
+  row.cacheWrite += toNonNegativeInt(entry.cacheWriteTokens);
+  row.costUsd += cost.costUsd;
+  addCostSplit(row.costSplit ??= emptyCostSplit(), cost.split);
 }
 
 function addDailyTokenEntry(breakdown: DailyTokenBreakdown, entry: TokenEntry): void {
@@ -1650,29 +2262,56 @@ function addDailyTokenEntry(breakdown: DailyTokenBreakdown, entry: TokenEntry): 
   breakdown[date] = (breakdown[date] ?? 0) + tokens;
 }
 
-function addDailyModelTokenEntry(breakdown: DailyModelTokenBreakdown, entry: TokenEntry): void {
+function addDailyModelTokenEntry(breakdown: DailyModelTokenBreakdown, entry: TokenEntry, cost: EntryCost): void {
   const date = localDayKey(entry.timestamp);
   if (!date) return;
   if (!breakdown[date]) breakdown[date] = {};
-  addTokenBreakdownEntry(breakdown[date]!, entry);
+  addTokenBreakdownEntry(breakdown[date]!, entry, cost);
 }
 
-function calculateTokenEntryCost(entry: TokenEntry): number {
-  const override = finiteNumberOrNull(entry.costOverrideUsd);
-  if (override != null && override >= 0) return override;
-  const rates = ratesForRequest(entry.model, resolveTokenPrice(entry.model), {
-    contextTokens: entry.requestContextTokens,
-    timestampMs: entry.timestamp,
-  });
-  const tokensUsd = priceTokenSplit(rates, {
+type EntryCost = { costUsd: number; split: AdeUsageCostSplit };
+
+/**
+ * One ledger entry's dollars and where they went. A provider-reported cost
+ * (`costOverrideUsd`) is the figure; it is split in proportion to what the
+ * list rates would have charged each token type, and lands in `other` when no
+ * list rate prices the model. Web search is a per-request fee: `other`.
+ */
+function calculateTokenEntryCost(entry: TokenEntry): EntryCost {
+  const listed = priceTokenSplitDetailed(entry.model, resolveTokenPrice(entry.model), {
     input: toNonNegativeInt(entry.billableInputTokens ?? entry.inputTokens),
     output: toNonNegativeInt(entry.billableOutputTokens ?? entry.outputTokens),
     cacheRead: toNonNegativeInt(entry.billableCachedTokens ?? entry.cachedTokens),
     cacheWrite: toNonNegativeInt(entry.cacheWriteTokens),
     cacheWrite1h: toNonNegativeInt(entry.oneHourCacheWriteTokens),
+  }, {
+    contextTokens: entry.requestContextTokens,
+    timestampMs: entry.timestamp,
+    speed: entry.speed ?? "standard",
   });
-  // Web search is a per-request fee, not a token rate, so it stays out of the shared split price.
-  return tokensUsd + toNonNegativeInt(entry.webSearchRequests) * WEB_SEARCH_COST_USD;
+  const override = finiteNumberOrNull(entry.costOverrideUsd);
+  if (override != null && override >= 0) {
+    if (listed.totalUsd > 0) return { costUsd: override, split: splitFromListed(listed, entry.speed, override / listed.totalUsd) };
+    return { costUsd: override, split: { ...emptyCostSplit(), other: override } };
+  }
+  const split = splitFromListed(listed, entry.speed, 1);
+  const webSearchUsd = toNonNegativeInt(entry.webSearchRequests) * WEB_SEARCH_COST_USD;
+  split.other += webSearchUsd;
+  return { costUsd: listed.totalUsd + webSearchUsd, split };
+}
+
+/** A listed price's split, scaled (a provider's own figure over the list total), with its speed premium. */
+function splitFromListed(
+  listed: ReturnType<typeof priceTokenSplitDetailed>,
+  speed: TokenEntry["speed"],
+  scale: number,
+): AdeUsageCostSplit {
+  const split = emptyCostSplit();
+  addCostSplit(split, { ...listed.byType, other: 0, fastPremium: 0, ultrafastPremium: 0 }, scale);
+  const premiumUsd = listed.speedPremiumUsd * scale;
+  if (premiumUsd > 0 && speed === "ultrafast") split.ultrafastPremium += premiumUsd;
+  else if (premiumUsd > 0 && speed === "fast") split.fastPremium += premiumUsd;
+  return split;
 }
 
 function aggregateCosts(
@@ -1719,16 +2358,19 @@ function aggregateCosts(
     adeOriginatedDailyTokens: DailyTokenBreakdown;
   }>;
 
-  for (const entry of entries) {
+  for (const rawEntry of entries) {
+    // "Map to": a mapped model's usage is bucketed and priced as its target.
+    const mappedModel = applyUsageModelAlias(rawEntry.model);
+    const entry = mappedModel === rawEntry.model ? rawEntry : { ...rawEntry, model: mappedModel };
     const cost = calculateTokenEntryCost(entry);
     for (const preset of ADE_USAGE_RANGE_PRESETS) {
       const startMs = starts[preset];
       if (startMs != null && entry.timestamp < startMs) continue;
       const accumulator = accumulators[preset];
-      accumulator.costUsd += cost;
-      addTokenBreakdownEntry(accumulator.tokenBreakdown, entry);
+      accumulator.costUsd += cost.costUsd;
+      addTokenBreakdownEntry(accumulator.tokenBreakdown, entry, cost);
       addDailyTokenEntry(accumulator.dailyTokens, entry);
-      addDailyModelTokenEntry(accumulator.dailyModelTokens, entry);
+      addDailyModelTokenEntry(accumulator.dailyModelTokens, entry, cost);
       if (entry.adeOriginated || entry.originator?.trim().toLowerCase().startsWith("ade")) {
         const adeOriginatedTokens = entry.inputTokens
           + entry.outputTokens
@@ -1869,20 +2511,41 @@ function collapsedProjectKey(value: string): string {
   return value.replace(/[^a-zA-Z0-9]+/gu, "-").replace(/^-+|-+$/gu, "").toLowerCase();
 }
 
-function tokenEntryMatchesProject(entry: TokenEntry, projectRoot: string | null | undefined): boolean {
-  if (!projectRoot) return false;
+type ProjectMatchRoot = {
+  root: string;
+  rootKey: string;
+  collapsedRoot: string;
+  /** The project root itself, whose `.ade/worktrees/` lanes match by key prefix. */
+  isProjectRoot: boolean;
+};
+
+/**
+ * The project root plus every git-linked worktree of it. A lane outside
+ * `.ade/worktrees/` (a sibling `repo-worktrees/feature` checkout) is part of
+ * the project, but neither its path nor its key sits under the project root.
+ */
+function projectMatchRoots(projectRoot: string | null | undefined): ProjectMatchRoot[] {
+  if (!projectRoot) return [];
   const root = canonicalProjectRoot(projectRoot);
-  // `root` is already resolved by canonicalProjectRoot; resolve the candidate
-  // to match, since pathCompare normalizes but deliberately does not resolve.
-  if (entry.projectPath && isPathInside(path.resolve(entry.projectPath), root)) return true;
-  if (entry.projectKey) {
-    const rootKey = pathComparisonKey(sanitizeClaudeProjectPath(root));
+  return [root, ...listLinkedLaneWorktreeRoots(root).map((worktree) => path.resolve(worktree))].map((candidate, index) => ({
+    root: candidate,
+    rootKey: pathComparisonKey(sanitizeClaudeProjectPath(candidate)),
+    collapsedRoot: collapsedProjectKey(candidate),
+    isProjectRoot: index === 0,
+  }));
+}
+
+function tokenEntryMatchesProject(entry: TokenEntry, roots: readonly ProjectMatchRoot[]): boolean {
+  for (const { root, rootKey, collapsedRoot, isProjectRoot } of roots) {
+    // `root` is already resolved; resolve the candidate to match, since
+    // pathCompare normalizes but deliberately does not resolve.
+    if (entry.projectPath && isPathInside(path.resolve(entry.projectPath), root)) return true;
+    if (!entry.projectKey) continue;
     const entryKey = pathComparisonKey(entry.projectKey);
-    if (entryKey === rootKey || entryKey.startsWith(`${rootKey}--ade-worktrees-`)) return true;
-    const collapsedRoot = collapsedProjectKey(root);
+    if (entryKey === rootKey || (isProjectRoot && entryKey.startsWith(`${rootKey}--ade-worktrees-`))) return true;
     const collapsedEntry = collapsedProjectKey(entry.projectKey);
     if (collapsedEntry === collapsedRoot) return true;
-    if (collapsedRoot && collapsedEntry.startsWith(`${collapsedRoot}-ade-worktrees-`)) return true;
+    if (isProjectRoot && collapsedRoot && collapsedEntry.startsWith(`${collapsedRoot}-ade-worktrees-`)) return true;
   }
   return false;
 }
@@ -1893,10 +2556,11 @@ export function buildCostSnapshots(
   projectRoot: string | null | undefined,
 ): CostSnapshot[] {
   const costs: CostSnapshot[] = [];
+  const matchRoots = scope === "project" ? projectMatchRoots(projectRoot) : [];
   for (const [provider, machineEntries] of entriesByProvider) {
     const scopeSupported = PROVIDER_SCOPE_SUPPORT[provider] === true;
     const entries = scope === "project"
-      ? scopeSupported ? machineEntries.filter((entry) => tokenEntryMatchesProject(entry, projectRoot)) : []
+      ? scopeSupported ? machineEntries.filter((entry) => tokenEntryMatchesProject(entry, matchRoots)) : []
       : machineEntries;
     if (entries.length === 0) {
       if (scope === "project" && !scopeSupported && machineEntries.length > 0) {
@@ -1922,6 +2586,15 @@ type ResolvedAdeUsageRange = {
   since: string | null;
   until: string;
 };
+
+/** One row from the project database, or null when the read fails (a table missing on an old schema). */
+function safeUsageRow<T extends Record<string, unknown>>(db: AdeDb, sql: string, params: (string | number | null)[]): T | null {
+  try {
+    return db.get<T>(sql, params) ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function toFiniteNumber(value: unknown): number {
   const numberValue = Number(value ?? 0);
@@ -2045,11 +2718,13 @@ function addProviderModelUsage(
     inputTokens?: number;
     outputTokens?: number;
     cachedTokens?: number;
+    cacheWriteTokens?: number;
     calls?: number;
     costUsd?: number;
     rangeCostUsd?: number;
     todayCostUsd?: number;
     last30dCostUsd?: number;
+    costSplit?: AdeUsageCostSplit | null;
   },
 ): void {
   const provider = normalizeUsageLabel(args.provider, "unknown");
@@ -2091,6 +2766,7 @@ function addProviderModelUsage(
   providerSummary.rangeCostUsd += rangeCostUsd;
   providerSummary.todayCostUsd += todayCostUsd;
   providerSummary.last30dCostUsd += last30dCostUsd + costUsd;
+  if (args.costSplit) addCostSplit(providerSummary.costSplit ??= emptyCostSplit(), args.costSplit);
 
   const model = normalizeUsageLabel(args.model, "");
   if (!model) return;
@@ -2116,6 +2792,9 @@ function addProviderModelUsage(
   modelSummary.cachedTokens += cachedTokens;
   modelSummary.totalTokens += totalTokens;
   modelSummary.costUsd += rangeCostUsd;
+  const cacheWriteTokens = toNonNegativeInt(args.cacheWriteTokens);
+  if (cacheWriteTokens > 0) modelSummary.cacheWriteTokens = toNonNegativeInt(modelSummary.cacheWriteTokens) + cacheWriteTokens;
+  if (args.costSplit) addCostSplit(modelSummary.costSplit ??= emptyCostSplit(), args.costSplit);
 }
 
 function roundUsd(value: number): number {
@@ -2134,8 +2813,16 @@ function sortedProviderModelSummaries(aggregation: ProviderModelAggregation): {
     provider.rangeCostUsd = roundUsd(provider.rangeCostUsd);
     provider.todayCostUsd = roundUsd(provider.todayCostUsd);
     provider.last30dCostUsd = roundUsd(provider.last30dCostUsd);
+    const providerSplit = finalizeCostSplit(provider.costSplit);
+    if (providerSplit) provider.costSplit = providerSplit;
+    else delete provider.costSplit;
   }
-  for (const model of models) model.costUsd = roundUsd(model.costUsd);
+  for (const model of models) {
+    model.costUsd = roundUsd(model.costUsd);
+    const modelSplit = finalizeCostSplit(model.costSplit);
+    if (modelSplit) model.costSplit = modelSplit;
+    else delete model.costSplit;
+  }
   return { providers, models };
 }
 
@@ -2211,6 +2898,10 @@ function addCostSnapshotsProviderUsage(
         inputTokens: modelInput,
         outputTokens: modelOutput,
         cachedTokens: modelCached,
+        cacheWriteTokens: toNonNegativeInt(tokens.cacheWrite),
+        // Only a breakdown that carries its own dollars carries a split of
+        // them; a share-of-provider estimate has nothing to split.
+        costSplit: tokens.costUsd != null ? parseCostSplit(tokens.costSplit) : null,
         rangeCostUsd: modelCostUsd,
         todayCostUsd: cost.todayCostUsd * share,
         last30dCostUsd: cost.last30dCostUsd * share,
@@ -2240,6 +2931,8 @@ function tokenBreakdownForExactRange(cost: CostSnapshot, range: ResolvedAdeUsage
       selected[model].cached += toNonNegativeInt(entry.cached);
       selected[model].cacheWrite += toNonNegativeInt(entry.cacheWrite);
       selected[model].costUsd += Math.max(0, toFiniteNumber(entry.costUsd));
+      const daySplit = parseCostSplit(entry.costSplit);
+      if (daySplit) addCostSplit(selected[model].costSplit ??= emptyCostSplit(), daySplit);
     }
   }
   return selected;
@@ -2739,7 +3432,7 @@ function calculatePacingByProvider(windows: UsageWindow[]): UsageSnapshot["pacin
   return out;
 }
 
-const PROVIDER_DISPLAY_NAME: Record<UsageProvider, string> = {
+const USAGE_PROVIDER_LABEL: Record<UsageProvider, string> = {
   claude: "Claude",
   codex: "Codex",
   cursor: "Cursor",
@@ -2747,6 +3440,7 @@ const PROVIDER_DISPLAY_NAME: Record<UsageProvider, string> = {
   grok: "Grok",
   opencode: "OpenCode",
   kimi: "Kimi",
+  muse: PROVIDER_DISPLAY_NAME.muse,
 };
 
 /**
@@ -2850,10 +3544,16 @@ async function stampProviderAccounts(
   machineLabel: string,
   activeAccountIds: ReadonlySet<string>,
   listInstances: (provider: QuotaInstanceProvider) => QuotaInstance[],
-): Promise<{ accounts: UsageAccount[]; defaultAccountIdByProvider: Map<UsageProvider, string> }> {
+): Promise<{
+  accounts: UsageAccount[];
+  defaultAccountIdByProvider: Map<UsageProvider, string>;
+  /** Accounts left out because an earlier one holds the same login. */
+  duplicateAccountIds: Set<string>;
+}> {
   // `resolveProviderAccounts` never rejects — it is total by construction.
   const { identities } = await resolveProviderAccounts();
   const accounts: UsageAccount[] = [];
+  const duplicateAccountIds = new Set<string>();
   const defaultAccountIdByProvider = new Map<UsageProvider, string>();
   for (const key of Object.keys(providerStatus) as UsageProvider[]) {
     const status = providerStatus[key];
@@ -2901,6 +3601,7 @@ async function stampProviderAccounts(
     // The provider line stays singular and describes the DEFAULT account, so it
     // is stamped once the loop below has read whichever account that is.
     let defaultIdentity = baseIdentity;
+    let registryStale = false;
     for (const instance of listInstances(key)) {
       const id = usageAccountId({ provider: key, instanceId: instance.id });
       if (instance.isDefault) defaultAccountIdByProvider.set(key, id);
@@ -2913,14 +3614,20 @@ async function stampProviderAccounts(
         ? baseIdentity
         : await readInstanceAccountIdentity(key, instance);
       if (instance.isDefault) defaultIdentity = identity;
+      if (identity.email && instance.account?.email
+        && identity.email.trim().toLowerCase() !== instance.account.email.trim().toLowerCase()) {
+        registryStale = true;
+      }
       const known = Boolean(identity.email || identity.plan);
       const signedIn = instance.signedIn === true;
       if (!instance.isDefault && !known && !signedIn && !activeAccountIds.has(id)) continue;
-      // Codex-only: Claude grants no reset credits, so the field stays absent
-      // there and every client reads that as "nothing to spend".
+      // Claude and Codex both grant banked resets; every other provider leaves
+      // the field absent, which every client reads as "nothing to spend".
       const resetCredits = key === "codex"
         ? readCachedCodexResetCredits(scopedConfigHome(key, instance))
-        : null;
+        : key === "claude"
+          ? claudeResetCreditsContract(readCachedClaudeResetCredits(scopedConfigHome(key, instance)))
+          : null;
       accounts.push({
         id,
         provider: key,
@@ -2934,15 +3641,75 @@ async function stampProviderAccounts(
         ...(resetCredits ? { resetCredits } : {}),
       });
     }
+    for (const id of sameLoginDuplicates(
+      accounts.filter((account) => account.provider === key),
+      defaultAccountIdByProvider.get(key) ?? "",
+    )) {
+      duplicateAccountIds.add(id);
+    }
+    if (registryStale) {
+      // The registry reads identities once per process. A login that changed
+      // under it (a new sign-in in the same config home) left Settings and the
+      // picker on the old email. Once it matches, this stops firing.
+      void getMachineProviderInstanceStore().refreshAccounts(key).catch(() => undefined);
+    }
     stampStatus(defaultIdentity);
   }
-  return { accounts, defaultAccountIdByProvider };
+  return {
+    accounts: accounts.filter((account) => !duplicateAccountIds.has(account.id)),
+    defaultAccountIdByProvider,
+    duplicateAccountIds,
+  };
+}
+
+/**
+ * The accounts that are copies of another account's login.
+ *
+ * Two config homes can hold one login: signing a second account in while the
+ * browser is still on the first account's claude.ai session does exactly that.
+ * They are one quota, so the snapshot shows the login once and balance never
+ * counts it twice. The owner is the registry's (`sameLoginOwner`), read
+ * against the emails this pass actually read.
+ */
+function sameLoginDuplicates(accounts: readonly UsageAccount[], defaultAccountId: string): string[] {
+  const holdersByEmail = new Map<string, UsageAccount[]>();
+  for (const account of accounts) {
+    const email = account.email?.trim().toLowerCase();
+    if (!email || !account.instanceId) continue;
+    holdersByEmail.set(email, [...(holdersByEmail.get(email) ?? []), account]);
+  }
+  const duplicates: string[] = [];
+  for (const holders of holdersByEmail.values()) {
+    const owner = sameLoginOwner(holders, defaultAccountId, (id) => accountLogins.get(id) === "signed_out");
+    for (const holder of holders) if (holder !== owner) duplicates.push(holder.id);
+  }
+  return duplicates;
 }
 
 function isQuotaInstanceProvider(provider: UsageProvider): provider is QuotaInstanceProvider {
   return provider === "claude" || provider === "codex";
 }
 
+/**
+ * The provider a reset-credit account id belongs to, or null for an id that
+ * names no provider ADE can spend a credit on.
+ *
+ * Account ids are `<provider>:<instanceId>` (see `usageAccountId`), so the
+ * prefix is the only thing to read before touching the account registry.
+ */
+function resetCreditProviderForAccountId(accountId: string): QuotaInstanceProvider | null {
+  const prefix = accountId.split(":")[0];
+  return prefix === "claude" || prefix === "codex" ? prefix : null;
+}
+
+/**
+ * Reconcile one provider's poll into the windows and status the snapshot
+ * carries.
+ *
+ * The optional tail is one object rather than four more positional parameters:
+ * six leading arguments of plain data plus a heterogeneous optional run is a
+ * signature where named fields read, and review, far better than position does.
+ */
 function buildProviderWindows(
   provider: UsageProvider,
   freshWindows: UsageWindow[],
@@ -2950,16 +3717,31 @@ function buildProviderWindows(
   prevWindows: UsageWindow[],
   prevStatus: UsageProviderStatus | string | null,
   polledAt: string,
-  source?: UsageProviderSource,
-  errorKind?: UsageProviderErrorKind,
-  nextRetryAt?: string | null,
+  options: {
+    source?: UsageProviderSource;
+    errorKind?: UsageProviderErrorKind;
+    nextRetryAt?: string | null;
+    /**
+     * How many of `freshWindows` a live read produced this pass.
+     *
+     * Multi-account providers merge carried-forward readings into
+     * `freshWindows`, so a non-empty list is not a success. When no live window
+     * arrived, the provider is degraded and the previous readings are carried
+     * with a stale/error status instead of being relabelled "ok" at poll time.
+     * Absent (an older or injected single-account caller) reads as
+     * `freshWindows.length`, which is what it always meant.
+     */
+    freshWindowCount?: number;
+  } = {},
 ): { windows: UsageWindow[]; status: UsageProviderStatus; lastSuccessAt: string | null } {
+  const { source, errorKind, nextRetryAt, freshWindowCount } = options;
   const normalizedPrevStatus: UsageProviderStatus | null = typeof prevStatus === "string"
     ? { state: "stale", lastSuccessAt: prevStatus, updatedAt: prevStatus }
     : prevStatus;
   const prevLastSuccessAt = normalizedPrevStatus?.lastSuccessAt ?? null;
   const resolvedSource = source ?? normalizedPrevStatus?.source;
-  if (freshWindows.length > 0) {
+  const freshCount = freshWindowCount ?? freshWindows.length;
+  if (freshCount > 0) {
     return {
       windows: freshWindows,
       status: {
@@ -2973,7 +3755,7 @@ function buildProviderWindows(
     };
   }
 
-  const name = PROVIDER_DISPLAY_NAME[provider] ?? provider;
+  const name = USAGE_PROVIDER_LABEL[provider] ?? provider;
   const unauthed = errorKind === "auth" || errors.some((entry) => /no .*credentials/i.test(entry));
   // A 401/403 means we reached the API but auth was rejected (expired token,
   // failed refresh) — that's "reconnect", not "couldn't reach".
@@ -3075,11 +3857,18 @@ type UsageTrackingDependencies = UsageLedgerScannerOverrides & {
   pollGrokUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   pollOpenCodeUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   pollKimiUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
+  pollMuseUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   /**
    * The machine-local per-turn ledger. When present, every published snapshot
    * adds its changed quota readings to it, and `getTurnUsageSummary` reads it.
    */
   turnUsageLedger?: TurnUsageLedger | null;
+  /**
+   * The machine-wide model router (shadow mode). When present, the router
+   * actions read it: `getModelRoutes`, `previewModelRoute`,
+   * `getRouterShadowSummary`, `getRouterEfficiency`, `refreshModelRegistry`.
+   */
+  modelRouter?: ModelRouterService | null;
   scanGitHubStats?: (range: ResolvedAdeUsageRange, projectRoot?: string | null) => Promise<GitHubActivityStats>;
   collectDatabaseStats?: (range: ResolvedAdeUsageRange, db?: AdeDb | null) => AdeDatabaseUsageStats | null;
   scanUsageLedgers?: (
@@ -3326,6 +4115,7 @@ export function createUsageTrackingService({
   dependencies,
   projectRoot,
   db,
+  museQuota = createMuseQuotaStore(),
 }: {
   logger: Logger;
   pollIntervalMs?: number;
@@ -3333,6 +4123,8 @@ export function createUsageTrackingService({
   dependencies?: UsageTrackingDependencies;
   projectRoot?: string | null;
   db?: AdeDb | null;
+  /** The process's Muse quota store (the chat service records into it). Absent gets a private one. */
+  museQuota?: MuseQuotaStore;
 }) {
   const pollIntervalMs = Math.max(
     MIN_POLL_INTERVAL_MS,
@@ -3454,6 +4246,9 @@ export function createUsageTrackingService({
   const runGrokUsagePoll = dependencies?.pollGrokUsage ?? defaultExtraPoll(pollGrokQuota);
   const runOpenCodeUsagePoll = dependencies?.pollOpenCodeUsage ?? defaultExtraPoll(pollOpenCodeQuota);
   const runKimiUsagePoll = dependencies?.pollKimiUsage ?? defaultExtraPoll(pollKimiQuota);
+  // Muse's reading is pushed by its chat runtime (MSP `usage/read` and
+  // `usage/changed`); the poll only publishes the latest one, no I/O.
+  const runMuseUsagePoll = dependencies?.pollMuseUsage ?? (() => museQuota.poll());
   const providerStrategies: UsageProviderStrategy[] = [
     { provider: "claude", poll: (context) => runClaudeUsagePoll(context) },
     { provider: "codex", poll: (context) => runCodexUsagePoll(context) },
@@ -3462,6 +4257,7 @@ export function createUsageTrackingService({
     { provider: "grok", poll: (context) => runGrokUsagePoll(context) },
     { provider: "opencode", poll: (context) => runOpenCodeUsagePoll(context) },
     { provider: "kimi", poll: (context) => runKimiUsagePoll(context) },
+    { provider: "muse", poll: (context) => runMuseUsagePoll(context) },
   ];
   /**
    * A caller that injects any ledger scanner is a harness isolating the
@@ -3613,6 +4409,20 @@ export function createUsageTrackingService({
   >();
 
   /**
+   * Each reachable peer's live quota, keyed by machine key.
+   *
+   * Deliberately in memory and never stored: a quota window moves every poll, so
+   * a stored copy would churn the CRR clock and reopen the self-feeding refresh
+   * loop the rollup store's no-op detection exists to prevent. It only lives
+   * for the session in which the page actually refreshed that machine, which is
+   * exactly what "live" means.
+   */
+  const accountLiveQuota = new Map<
+    string,
+    { windows: UsageWindow[]; accounts: UsageAccount[] }
+  >();
+
+  /**
    * The transcript-source marker, resolved once per ledger scan.
    *
    * `buildTranscriptSource` reads — and on a fresh machine creates — a dot file
@@ -3671,6 +4481,10 @@ export function createUsageTrackingService({
       capturedAt: new Date(costCacheTimestamp || nowMs).toISOString(),
       source: resolveTranscriptSource(),
       rows,
+      // The live side channel a peer pools for its cross-machine limits view.
+      // Bounded here too, so an unbounded snapshot cannot ride the wire.
+      windows: lastSnapshot.windows.slice(0, MAX_LIVE_QUOTA_WINDOWS),
+      accounts: (lastSnapshot.accounts ?? []).slice(0, MAX_LIVE_QUOTA_ACCOUNTS),
     };
   }
 
@@ -3743,14 +4557,26 @@ export function createUsageTrackingService({
     // machine's own `prune` deletes those rows and the next fetch puts them
     // straight back — the CRR delete/insert churn, arriving over the wire.
     const oldestDay = rollupOldestDay(startedAtMs);
+    // Replace wholesale: only machines reached in this round have fresh live
+    // readings. A machine's durable rows stay; its live windows are "live" and
+    // a round that did not reach it has none to show.
+    accountLiveQuota.clear();
     for (const rollup of rollups) {
       try {
         // Unknown identity cannot match anything, and nothing was published
         // under this machine's name either, so there is no self-row to skip.
         if (rollup.machineKey === readLocalMachineIdentity()?.machineKey) continue;
+        const liveWindows = Array.isArray(rollup.windows) ? rollup.windows : [];
+        const liveAccounts = Array.isArray(rollup.accounts) ? rollup.accounts : [];
+        if (liveWindows.length > 0 || liveAccounts.length > 0) {
+          accountLiveQuota.set(rollup.machineKey, { windows: liveWindows, accounts: liveAccounts });
+        }
+        // The live side channel is never stored: it changes every poll, and a
+        // stored copy would churn the CRR clock. Strip it before publish.
+        const { windows: _windows, accounts: _accounts, ...storedRollup } = rollup;
         const bounded = oldestDay
-          ? { ...rollup, rows: rollup.rows.filter((row) => row.date >= oldestDay) }
-          : rollup;
+          ? { ...storedRollup, rows: storedRollup.rows.filter((row) => row.date >= oldestDay) }
+          : storedRollup;
         // Fetched from that machine, not scanned here: this side cannot know
         // which of the peer's providers failed, so it must not delete one
         // that simply did not appear. See `publish`'s `ownerAuthoritative`.
@@ -3873,11 +4699,14 @@ export function createUsageTrackingService({
       // usage. A null rollup lists it honestly as not yet reporting.
       rollup: costCacheTimestamp === 0 ? null : buildLocalRollup(nowMs),
       ...(identity ? {} : { message: "couldn't identify this computer" }),
+      liveWindows: lastSnapshot.windows,
+      liveAccounts: lastSnapshot.accounts ?? [],
     }];
     const seen = new Set<string>([localKey]);
     for (const rollup of accountRollupStore.readAll()) {
       if (rollup.machineKey === localKey) continue;
       seen.add(rollup.machineKey);
+      const live = accountLiveQuota.get(rollup.machineKey);
       contributions.push({
         machineKey: rollup.machineKey,
         label: rollup.label,
@@ -3885,6 +4714,7 @@ export function createUsageTrackingService({
         isLocal: false,
         origin: "rollup",
         rollup,
+        ...(live ? { liveWindows: live.windows, liveAccounts: live.accounts } : {}),
       });
     }
     for (const [machineKey, failure] of accountRollupFailures) {
@@ -3946,8 +4776,161 @@ export function createUsageTrackingService({
    * a fresher snapshot without emitting it gave one window a value no other
    * window could ever receive, which is exactly how two windows drifted.
    */
+  /**
+   * The last new-chat balance decision that could not balance, per provider.
+   * Cleared by the next decision that picks an account on the numbers.
+   */
+  const balancePickIssues = new Map<ProviderInstanceProvider, AccountBalanceIssue>();
+  /** Per-provider Claude rotation; previews read this but only chat creation advances it. */
+  const balanceRotationStates = new Map<ProviderInstanceProvider, AccountBalanceRotationState>();
+
+  function providerTitle(provider: ProviderInstanceProvider): string {
+    return provider === "claude" ? "Claude" : "Codex";
+  }
+
+  /**
+   * What stops smart balance right now, for every provider that has it on.
+   * Recomputed on each publish from the accounts in the snapshot, so a
+   * signed-out login shows while it lasts and goes away with the next poll
+   * after the user signs in again.
+   */
+  function computeBalanceIssues(snapshot: UsageSnapshot): AccountBalanceIssue[] {
+    const issues: AccountBalanceIssue[] = [];
+    for (const provider of PROVIDER_INSTANCE_PROVIDERS) {
+      try {
+        if (!providerInstanceStore.getProviderSettings(provider).smartBalance) continue;
+        // Accounts the user added, signed in or with a broken login: a broken
+        // one is exactly what this warning is for.
+        const known = providerInstanceStore.list(provider).filter(providerInstanceHasAccount);
+        if (known.length < 2) continue;
+        const signedOut = known.filter((instance) => instance.loginBroken || snapshot.accounts?.some((account) => (
+          account.provider === provider && account.instanceId === instance.id && account.login === "signed_out"
+        )));
+        if (signedOut.length > 0) {
+          const names = signedOut.map((instance) => instance.account?.email || instance.label || instance.id);
+          issues.push({
+            provider,
+            kind: "signed_out",
+            title: signedOut.length === 1
+              ? `${providerTitle(provider)} account signed out`
+              : `${signedOut.length} ${providerTitle(provider)} accounts signed out`,
+            detail: `Smart balance skips ${names.join(", ")} because the saved login no longer works. Sign in to it again in Settings > Provider accounts.`,
+            instanceIds: signedOut.map((instance) => instance.id),
+            at: snapshot.lastPolledAt,
+          });
+        }
+        const pickIssue = balancePickIssues.get(provider);
+        if (pickIssue) issues.push(pickIssue);
+      } catch (error) {
+        logger.warn("usage.account_balance_issue_scan_failed", { provider, error: getErrorMessage(error) });
+      }
+    }
+    return issues;
+  }
+
+  function windowsByAccount(windows: readonly UsageWindow[]): Map<string, UsageWindow[]> {
+    const byAccount = new Map<string, UsageWindow[]>();
+    for (const window of windows) {
+      if (!window.accountId) continue;
+      const accountWindows = byAccount.get(window.accountId) ?? [];
+      accountWindows.push(window);
+      byAccount.set(window.accountId, accountWindows);
+    }
+    return byAccount;
+  }
+
+  /**
+   * Smart balance's pick for a provider on one snapshot, or `null` when the
+   * provider has balance off. Chat creation and the Settings preview both use
+   * it, so the account marked "Next chat" is the one a new chat gets.
+   */
+  function balancedPick(provider: ProviderInstanceProvider, snapshot: UsageSnapshot): AccountBalanceResult | null {
+    return balancedPickWithRotation(provider, snapshot, balanceRotationStates.get(provider));
+  }
+
+  /** Preview the next account without consuming a Claude rotation slot. */
+  function peekBalancedInstance(provider: ProviderInstanceProvider): AccountBalanceResult | null {
+    return balancedPick(provider, lastSnapshot);
+  }
+
+  function balancedPickWithRotation(
+    provider: ProviderInstanceProvider,
+    snapshot: UsageSnapshot,
+    rotationState?: AccountBalanceRotationState | null,
+  ): AccountBalanceResult | null {
+    if (!providerInstanceStore.getProviderSettings(provider).smartBalance) return null;
+    return pickInstanceForNewChat({
+      provider,
+      instances: providerInstanceStore.list(provider),
+      accounts: snapshot.accounts ?? [],
+      windowsByAccountId: windowsByAccount(snapshot.windows),
+      nowMs: Date.now(),
+      rotationState,
+    });
+  }
+
+  /** Drop a Claude rotation when its account pair or headroom gap is no longer eligible. */
+  function reconcileBalanceRotationStates(snapshot: UsageSnapshot): void {
+    for (const [provider, state] of balanceRotationStates) {
+      try {
+        const result = balancedPickWithRotation(provider, snapshot, state);
+        if (
+          !result?.rotationState
+          || result.rotationState.primaryInstanceId !== state.primaryInstanceId
+          || result.rotationState.reserveInstanceId !== state.reserveInstanceId
+        ) {
+          balanceRotationStates.delete(provider);
+        }
+      } catch (error) {
+        // A transient preview failure must not disturb the next real selection.
+        logger.warn("usage.account_balance_rotation_reconcile_failed", {
+          provider,
+          error: getErrorMessage(error),
+        });
+      }
+    }
+  }
+
+  /**
+   * The account each balancing provider would give a new chat now, so
+   * Settings can mark it. A pick that skipped balancing is not a decision and
+   * is left out.
+   */
+  function computeBalanceNext(snapshot: UsageSnapshot): NonNullable<UsageSnapshot["balanceNext"]> {
+    const next: NonNullable<UsageSnapshot["balanceNext"]> = [];
+    for (const provider of PROVIDER_INSTANCE_PROVIDERS) {
+      try {
+        const result = balancedPick(provider, snapshot);
+        if (result && !result.skip) next.push({ provider, instanceId: result.instanceId });
+      } catch {
+        // A preview that cannot run leaves the mark off; chat creation reports
+        // its own failure through `balanceIssues`.
+      }
+    }
+    return next;
+  }
+
+  /** The snapshot with this moment's balance issues and next picks in place of any it carried. */
+  function withBalanceIssues(snapshot: UsageSnapshot): UsageSnapshot {
+    const { balanceIssues: _previousIssues, balanceNext: _previousNext, ...rest } = snapshot;
+    const balanceIssues = computeBalanceIssues(rest);
+    const balanceNext = computeBalanceNext(rest);
+    return {
+      ...rest,
+      ...(balanceIssues.length > 0 ? { balanceIssues } : {}),
+      ...(balanceNext.length > 0 ? { balanceNext } : {}),
+    };
+  }
+
+  // Cached `balanceNext` may contain a Claude rotation slot from the previous
+  // process. Rotation state is intentionally in-memory and restarts at the
+  // weekly-first account, so refresh the cached marker before this service can
+  // return its initial snapshot.
+  lastSnapshot = withBalanceIssues(lastSnapshot);
+
   function publishSnapshot(snapshot: UsageSnapshot): UsageSnapshot {
-    const published = stampRevision(snapshot);
+    reconcileBalanceRotationStates(snapshot);
+    const published = stampRevision(withBalanceIssues(snapshot));
     lastSnapshot = published;
     emitUpdate(published);
     autoStartScheduler.onSnapshot(published);
@@ -3969,6 +4952,77 @@ export function createUsageTrackingService({
       projectRoot: forScope.projectRoot,
     });
   }
+
+  /**
+   * Spend by chat, lane, or account, from the per-turn ledger. Chats and lanes
+   * are the calling project's (their names live in its database); accounts
+   * are the machine's, like the quota they draw on. The ledger keeps three
+   * months, so a longer range reports what it still holds.
+   */
+  async function getCostBreakdown(
+    args: GetAdeUsageCostBreakdownArgs,
+    forScope: AttachedScope = defaultScope,
+  ): Promise<AdeUsageCostBreakdown> {
+    const by: AdeUsageCostBreakdownBy = isAdeUsageCostBreakdownBy(args?.by) ? args.by : "chat";
+    const nowMs = Date.now();
+    const range = widenRangeToLocalDays(resolveAdeUsageRange(args, nowMs));
+    const rangeOut = { since: range.since, until: range.until };
+    const ledger = dependencies?.turnUsageLedger ?? null;
+    if (!ledger) {
+      return { by, range: rangeOut, available: false, rows: [], other: null, totals: { turns: 0, totalTokens: 0, costUsd: 0, billedUsd: 0, planValueUsd: 0 } };
+    }
+    const sinceMs = range.since ? Date.parse(range.since) : 0;
+    const untilMs = Date.parse(range.until);
+    const scopeRoot = forScope.projectRoot ? pathKey(path.resolve(forScope.projectRoot)) : null;
+    const rows = (await ledger.store.readTurns({ sinceMs })).filter((row) => {
+      const atMs = Date.parse(row.at);
+      if (!(atMs >= sinceMs && atMs <= untilMs)) return false;
+      if (by === "account" || !scopeRoot) return true;
+      return Boolean(row.projectRoot) && pathKey(path.resolve(row.projectRoot!)) === scopeRoot;
+    }).map(repriceTurnForUserPrices);
+    const db = forScope.db;
+    const chatCache = new Map<string, { title: string | null; laneId: string | null } | null>();
+    const laneCache = new Map<string, string | null>();
+    return buildCostBreakdown({
+      rows,
+      by,
+      range: rangeOut,
+      laneId: args.laneId ?? null,
+      limit: args.limit,
+      rankBy: args.rankBy === "tokens" ? "tokens" : "cost",
+      labels: {
+        chat: (sessionId) => {
+          if (!chatCache.has(sessionId)) {
+            const row = db ? safeUsageRow<{ title: string | null; lane_id: string | null }>(db, "select title, lane_id from terminal_sessions where id = ?", [sessionId]) : null;
+            chatCache.set(sessionId, row ? { title: row.title ?? null, laneId: row.lane_id ?? null } : null);
+          }
+          return chatCache.get(sessionId) ?? null;
+        },
+        lane: (laneId) => {
+          if (!laneCache.has(laneId)) {
+            const row = db ? safeUsageRow<{ name: string | null }>(db, "select name from lanes where id = ?", [laneId]) : null;
+            laneCache.set(laneId, row?.name?.trim() || null);
+          }
+          return laneCache.get(laneId) ?? null;
+        },
+      },
+    });
+  }
+
+  const requireModelRouter = (): ModelRouterService => {
+    const router = dependencies?.modelRouter;
+    if (!router) throw new Error("The model router is not available in this host.");
+    return router;
+  };
+  /** Every route this machine can run, rated from the model registry. */
+  const getModelRoutes = (args: RouterRoutesArgs = {}) => requireModelRouter().routes(args);
+  /** The route the router would pick for one task, without running anything. */
+  const previewModelRoute = (args: RouterPreviewArgs) => requireModelRouter().preview(args);
+  /** What the shadow router would have changed over the last days. */
+  const getRouterShadowSummary = (args: { days?: number } = {}) => requireModelRouter().shadowSummary(args);
+  /** What the router would have saved against what ran: ledger threads replayed, plus shadow-logged subagents. */
+  const getRouterEfficiency = (args: { days?: number } = {}) => requireModelRouter().efficiency(args);
+  const refreshModelRegistry = (args: { force?: boolean } = {}) => requireModelRouter().refreshRegistry(args);
 
   function cachedCostResult(): { costs: CostSnapshot[]; adeCosts: CostSnapshot[] } {
     return { costs: cachedCosts, adeCosts: cachedAdeCosts };
@@ -3999,7 +5053,7 @@ export function createUsageTrackingService({
     if (!hasInjectedLedgerScanners) {
       const roots = scopeProjectRoots();
       scanResult = await (dependencies?.scanUsageLedgers ?? ((root, signal, allRoots) => (
-        scanUsageLedgersInWorker(root, { signal, additionalProjectRoots: allRoots })
+        scanUsageLedgersInWorker(root, { signal, additionalProjectRoots: allRoots, extraProviderHomes: machineProviderUsageHomes() })
       )))(projectRoot ?? null, ledgerAbortController.signal, roots);
     } else {
       // Recorded, not merely logged: a provider whose scan failed produced no
@@ -4243,7 +5297,14 @@ export function createUsageTrackingService({
                 result,
               };
             }
-            if (result.windows.length > 0) {
+            // Carried-forward windows keep the display honest through a
+            // transient failure, so they are not evidence this pass reached the
+            // provider. Only windows a live read produced clear the backoff —
+            // otherwise one healthy account keeps erasing the rate limit of its
+            // throttled sibling. Injected pollers predate the field and keep
+            // their old reading.
+            const freshWindowCount = result.freshWindowCount ?? result.windows.length;
+            if (freshWindowCount > 0) {
               providerFailureCount[strategy.provider] = 0;
               providerNextRetryAtMs[strategy.provider] = 0;
             } else {
@@ -4348,7 +5409,7 @@ export function createUsageTrackingService({
                 updatedAt: previousStatus.updatedAt ?? previousStatus.lastSuccessAt,
                 ...(previousStatus.source ? { source: previousStatus.source } : {}),
                 ...(carriedWindows.length === 0
-                  ? { message: `${PROVIDER_DISPLAY_NAME[provider]} usage window expired` }
+                  ? { message: `${USAGE_PROVIDER_LABEL[provider]} usage window expired` }
                   : {}),
               };
             }
@@ -4364,9 +5425,12 @@ export function createUsageTrackingService({
               ? { state: "stale", lastSuccessAt: providerLastSuccess[provider]! }
               : null),
             polledAt,
-            result.source,
-            result.errorKind,
-            nextRetryMs > Date.now() ? new Date(nextRetryMs).toISOString() : null,
+            {
+              source: result.source,
+              errorKind: result.errorKind,
+              nextRetryAt: nextRetryMs > Date.now() ? new Date(nextRetryMs).toISOString() : null,
+              freshWindowCount: result.freshWindowCount,
+            },
           );
           if (merged.lastSuccessAt) providerLastSuccess[provider] = merged.lastSuccessAt;
           const accountEmail = "accountEmail" in result && typeof result.accountEmail === "string"
@@ -4424,18 +5488,27 @@ export function createUsageTrackingService({
         // arrived without one (a carried-forward window from a host that
         // predates accounts, or an injected poller in a test), and the honest
         // answer there is the provider's default account.
-        // Reset credits live only on the app-server, which the HTTP quota path
-        // never touches — so they are read here rather than inside the provider
-        // poll, which stays spawn-free by design on its fast path. Bounded to
-        // one short-lived app-server per account per 15 minutes; an explicit
-        // user refresh bypasses that, because a Refresh that does not refresh
-        // is a lie. Never throws: a machine without Codex simply has none.
-        await Promise.all(readQuotaInstances("codex").map((instance) => probeCodexResetCredits({
-          logger,
-          ...(scopedConfigHome("codex", instance) ? { configHome: scopedConfigHome("codex", instance)! } : {}),
-          force: reason === "user",
-        })));
-        const { accounts, defaultAccountIdByProvider } = await stampProviderAccounts(
+        // Reset credits are read here rather than inside the provider poll: the
+        // Codex credits live only on the app-server the HTTP quota path never
+        // touches, and the Claude credits come from a separate usage-endpoint
+        // read with `cedar_ember` params. Both stay bounded — one short-lived
+        // app-server per Codex account, one HTTP read per Claude account, at
+        // most once per 15 minutes; an explicit user refresh bypasses that,
+        // because a Refresh that does not refresh is a lie. Neither throws: a
+        // machine without Codex or without a readable Claude login has none.
+        await Promise.all([
+          ...readQuotaInstances("codex").map((instance) => probeCodexResetCredits({
+            logger,
+            ...(scopedConfigHome("codex", instance) ? { configHome: scopedConfigHome("codex", instance)! } : {}),
+            force: reason === "user",
+          })),
+          ...readQuotaInstances("claude").map((instance) => probeClaudeResetCredits({
+            logger,
+            ...(scopedConfigHome("claude", instance) ? { configHome: scopedConfigHome("claude", instance)! } : {}),
+            force: reason === "user",
+          })),
+        ]);
+        const { accounts, defaultAccountIdByProvider, duplicateAccountIds } = await stampProviderAccounts(
           providerStatus,
           readLocalMachineIdentity()?.label ?? os.hostname(),
           new Set(allWindows.map((window) => window.accountId).filter((id): id is string => Boolean(id))),
@@ -4445,7 +5518,11 @@ export function createUsageTrackingService({
           if (window.accountId) return window;
           const accountId = defaultAccountIdByProvider.get(window.provider);
           return accountId ? { ...window, accountId } : window;
-        });
+        }).filter((window) => !window.accountId || !duplicateAccountIds.has(window.accountId));
+        // After attribution, so a legacy window with no accountId counts as the
+        // default account's before the notice decides the account has nothing.
+        attachAccountRateLimitNotices(accounts, allWindows);
+        attachAccountLogins(accounts);
 
         const snapshot: UsageSnapshot = {
           windows: allWindows,
@@ -4574,7 +5651,10 @@ export function createUsageTrackingService({
     }
   }
 
-  function captureResetCreditOutcome(result: UsageResetCreditResult): void {
+  function captureResetCreditOutcome(
+    result: UsageResetCreditResult,
+    provider?: "claude" | "codex",
+  ): void {
     // `resetCreditOutcomeKey` is the one classifier: it already rejects an
     // unrecognized (or inherited, like `toString`) wire status, so the key it
     // returns can index the table directly. Reading the same verdict the user's
@@ -4589,6 +5669,7 @@ export function createUsageTrackingService({
         analytics: { captureInternal: sink },
         surface: "api",
         outcome,
+        ...(provider ? { provider } : {}),
       });
     } catch (error) {
       logger.debug("usage.reset_credit_analytics_failed", { error: getErrorMessage(error) });
@@ -4617,38 +5698,56 @@ export function createUsageTrackingService({
       const failure: UsageResetCreditResult = {
         ok: false,
         status: "failure",
-        message: "Name the Codex account whose reset credit to spend.",
+        message: "Name the account whose reset credit to spend.",
       };
       captureResetCreditOutcome(failure);
       return failure;
     }
+    // The account id is `<provider>:<instanceId>` (see `usageAccountId`), so the
+    // provider prefix names which reset path to use before any registry read.
+    const provider = resetCreditProviderForAccountId(accountId);
     // Use the injected account registry too, so reset spending targets the same
     // selected account that polling and credit probing use.
-    const instance = readQuotaInstances("codex")
-      .find((entry) => usageAccountId({ provider: "codex", instanceId: entry.id }) === accountId);
-    if (!instance) {
+    const instance = provider
+      ? readQuotaInstances(provider)
+        .find((entry) => usageAccountId({ provider, instanceId: entry.id }) === accountId)
+      : undefined;
+    if (!provider || !instance) {
       // Deliberately specific: the caller named an account this machine does
       // not have, which is different from a spend that failed.
       const failure: UsageResetCreditResult = {
         ok: false,
         status: "failure",
-        message: "That Codex account is not signed in on this computer.",
+        message: "That account is not signed in on this computer.",
       };
-      captureResetCreditOutcome(failure);
+      captureResetCreditOutcome(failure, provider ?? undefined);
       return failure;
     }
-    const configHome = scopedConfigHome("codex", instance);
-    const result = await consumeCodexResetCredit({
-      logger,
-      ...(configHome ? { configHome } : {}),
-    });
+    const configHome = scopedConfigHome(provider, instance);
+    const result = provider === "codex"
+      ? await consumeCodexResetCredit({
+        logger,
+        ...(configHome ? { configHome } : {}),
+      })
+      : await spendClaudeResetCredit({
+        logger,
+        ...(configHome ? { configHome } : {}),
+      });
     // Re-read regardless of outcome: `nothingToReset` and `alreadyRedeemed`
     // both mean the displayed numbers may be stale too.
-    await probeCodexResetCredits({
-      logger,
-      ...(configHome ? { configHome } : {}),
-      force: true,
-    });
+    if (provider === "codex") {
+      await probeCodexResetCredits({
+        logger,
+        ...(configHome ? { configHome } : {}),
+        force: true,
+      });
+    } else {
+      await probeClaudeResetCredits({
+        logger,
+        ...(configHome ? { configHome } : {}),
+        force: true,
+      });
+    }
     try {
       await forceRefresh({ allowInteractiveAuth: false });
     } catch (error) {
@@ -4657,11 +5756,12 @@ export function createUsageTrackingService({
       // `resetCreditOutcomeText`, and `workResetCreditOutcomeText` on iOS), so
       // a `message` added here would never be shown; the stale meter is what
       // the log is for.
-      logger.warn("usage.codex_reset_credit_refresh_failed", {
+      logger.warn("usage.reset_credit_refresh_failed", {
+        provider,
         error: getErrorMessage(error),
       });
     }
-    captureResetCreditOutcome(result);
+    captureResetCreditOutcome(result, provider);
     return result;
   }
 
@@ -4737,6 +5837,88 @@ export function createUsageTrackingService({
     } catch (error) {
       scope.logger.debug("usage.scope_analytics_failed", { error: getErrorMessage(error) });
     }
+  }
+
+  /**
+   * One model's cost, tokens, cache hit rate, daily trend, split, and the
+   * price ADE bills it at, read from the same cached history as the stats.
+   * Account scope reads this machine's history: other machines publish only
+   * day totals, not a model's split.
+   */
+  function getModelDetail(args: GetAdeUsageModelDetailArgs, forScope: AttachedScope = defaultScope): AdeUsageModelDetail {
+    const nowMs = Date.now();
+    const range = widenRangeToLocalDays(resolveAdeUsageRange(args, nowMs));
+    const costs = normalizeScope(args.scope) === "project"
+      ? cachedProjectCostsByRoot.get(scopeRootKey(forScope.projectRoot)) ?? []
+      : lastSnapshot.costs;
+    const provider = String(args.provider ?? "");
+    const model = String(args.model ?? "");
+    const rows: ModelDetailDayRow[] = [];
+    for (const cost of costs) {
+      if (cost.provider !== provider) continue;
+      for (const [date, models] of Object.entries(cost.dailyTokenBreakdownByPreset?.all ?? {})) {
+        if (!dateIntersectsRange(date, range)) continue;
+        for (const [modelId, row] of Object.entries(models)) {
+          if (displayModelName(modelId) !== model) continue;
+          rows.push({
+            date,
+            modelId,
+            input: toNonNegativeInt(row.input),
+            output: toNonNegativeInt(row.output),
+            cacheRead: toNonNegativeInt(row.cached),
+            cacheWrite: toNonNegativeInt(row.cacheWrite),
+            costUsd: Math.max(0, toFiniteNumber(row.costUsd)),
+            costSplit: parseCostSplit(row.costSplit),
+          });
+        }
+      }
+    }
+    return buildModelDetail({ provider, model, range: { since: range.since, until: range.until }, rows });
+  }
+
+  function getModelPriceOverrides(): AdeUsagePriceOverrides {
+    const file = readUsagePriceOverrides();
+    return { prices: { ...file.prices }, aliases: { ...file.aliases } };
+  }
+
+  /**
+   * Saves one price or mapping and re-prices history in the background: the
+   * history scan is what applies it, and it can take a minute on a large
+   * machine, so the caller gets the saved overrides now and the page updates
+   * when the scan's snapshot lands. A scan already running read the old
+   * prices when it started, so the re-price runs after it, not joined to it.
+   */
+  function setModelPriceOverride(args: SetAdeUsageModelPriceArgs): AdeUsagePriceOverrides {
+    const models = [args?.model, ...(Array.isArray(args?.models) ? args.models : [])]
+      .filter((model): model is string => typeof model === "string" && model.trim().length > 0);
+    if (models.length === 0) throw new Error("usage.setModelPrice needs a model id.");
+    updateUsagePriceOverrides({
+      models,
+      ...(args.price !== undefined ? { price: args.price } : {}),
+      ...(args.mapTo !== undefined ? { mapTo: args.mapTo } : {}),
+    });
+    const sink = dependencies?.captureInternalAnalytics;
+    // The save already happened; analytics failing must not report it failed
+    // or skip the re-price below.
+    if (sink) {
+      try {
+        const analytics = { captureInternal: sink };
+        if (args.price !== undefined) {
+          captureModelPriceAnalytics({ analytics, surface: "api", action: "model_price_changed", outcome: args.price ? "enabled" : "disabled" });
+        }
+        if (args.mapTo !== undefined) {
+          captureModelPriceAnalytics({ analytics, surface: "api", action: "model_mapping_changed", outcome: args.mapTo?.trim() ? "enabled" : "disabled" });
+        }
+      } catch (error) {
+        logger.debug("usage.price_override_analytics_failed", { error: getErrorMessage(error) });
+      }
+    }
+    const reprice = () => refreshHistory({ reason: "user" });
+    const running = inFlightHistoryRefresh;
+    void (running ? running.then(reprice, reprice) : reprice()).catch((error) => {
+      logger.warn("usage.price_override.reprice_failed", { error: getErrorMessage(error) });
+    });
+    return getModelPriceOverrides();
   }
 
   async function getAdeUsageStats(
@@ -4838,28 +6020,95 @@ export function createUsageTrackingService({
     return buildLocalRollup(Date.now());
   }
 
-  function resolveBalancedInstance(provider: ProviderInstanceProvider) {
+  function publishBalanceIndicators(): boolean {
+    const refreshed = withBalanceIssues(lastSnapshot);
+    const unchanged = JSON.stringify(refreshed.balanceIssues ?? []) === JSON.stringify(lastSnapshot.balanceIssues ?? [])
+      && JSON.stringify(refreshed.balanceNext ?? []) === JSON.stringify(lastSnapshot.balanceNext ?? []);
+    if (unchanged) return false;
+    lastSnapshot = stampRevision(refreshed);
+    emitUpdate(lastSnapshot);
+    return true;
+  }
+
+  function setBalancePickIssue(provider: ProviderInstanceProvider, issue: AccountBalanceIssue | null): boolean {
+    const previous = balancePickIssues.get(provider);
+    if (!issue && !previous) return false;
+    if (issue && previous?.kind === issue.kind) return false;
+    if (issue) balancePickIssues.set(provider, issue);
+    else balancePickIssues.delete(provider);
+    // Balance-only updates do not re-run quota polling, the ledger, or the
+    // auto-start scheduler. They also carry the next deterministic chat slot.
+    publishBalanceIndicators();
+    return true;
+  }
+
+  function setBalanceRotationState(
+    provider: ProviderInstanceProvider,
+    state: AccountBalanceRotationState | undefined,
+  ): boolean {
+    const previous = balanceRotationStates.get(provider);
+    if (
+      previous?.primaryInstanceId === state?.primaryInstanceId
+      && previous?.reserveInstanceId === state?.reserveInstanceId
+      && previous?.nextSlot === state?.nextSlot
+    ) return false;
+    if (state) balanceRotationStates.set(provider, state);
+    else balanceRotationStates.delete(provider);
+    return true;
+  }
+
+  /**
+   * The account a new chat should use when smart balance is on, or `null` when
+   * balance is off or the machine has one signed-in account.
+   *
+   * A result the picker could not base on quota is still returned, with
+   * `skip` set, and it is shown in the top bar through `balanceIssues`. A
+   * silent fallback to the default account is how smart balance stayed off
+   * for weeks without anyone seeing it.
+   */
+  function resolveBalancedInstance(provider: ProviderInstanceProvider): AccountBalanceResult | null {
     try {
-      const settings = providerInstanceStore.getProviderSettings(provider);
-      if (!settings.smartBalance) return null;
-      const instances = providerInstanceStore.list(provider);
-      if (instances.filter((instance) => instance.signedIn).length < 2) return null;
-      const windowsByAccountId = new Map<string, UsageWindow[]>();
-      for (const window of lastSnapshot.windows) {
-        if (!window.accountId) continue;
-        const accountWindows = windowsByAccountId.get(window.accountId) ?? [];
-        accountWindows.push(window);
-        windowsByAccountId.set(window.accountId, accountWindows);
+      const result = balancedPick(provider, lastSnapshot);
+      if (!result) {
+        if (setBalanceRotationState(provider, undefined)) publishBalanceIndicators();
+        return null;
       }
-      return pickInstanceForNewChat({
-        provider,
-        instances,
-        accounts: lastSnapshot.accounts ?? [],
-        windowsByAccountId,
-        nowMs: Date.now(),
-      });
+      const { rotationState, ...pick } = result;
+      const rotationChanged = setBalanceRotationState(provider, rotationState);
+      if (result.skip === "one_account") {
+        // Nothing to balance; an issue from an earlier pick no longer applies.
+        const issueChanged = setBalancePickIssue(provider, null);
+        if (rotationChanged && !issueChanged) publishBalanceIndicators();
+        return null;
+      }
+      if (result.skip === "no_usage_data") {
+        logger.warn("usage.account_balance_skipped", { provider, ...result });
+        const issueChanged = setBalancePickIssue(provider, {
+          provider,
+          kind: "no_usage_data",
+          title: `${providerTitle(provider)} balance has no usage data`,
+          detail: `The last new ${providerTitle(provider)} chat stayed on the default account because ADE has no quota readings for your accounts. Open the Usage panel and refresh it.`,
+          at: nowIso(),
+        });
+        if (rotationChanged && !issueChanged) publishBalanceIndicators();
+      } else {
+        if (result.skip) logger.info("usage.account_balance_skipped", { provider, ...result });
+        const issueChanged = setBalancePickIssue(provider, null);
+        if (rotationChanged && !issueChanged) publishBalanceIndicators();
+      }
+      return pick;
     } catch (error) {
-      logger.warn("usage.account_balance_resolve_failed", { error: getErrorMessage(error), provider });
+      const rotationChanged = setBalanceRotationState(provider, undefined);
+      const message = getErrorMessage(error);
+      logger.error("usage.account_balance_resolve_failed", { error: message, provider });
+      const issueChanged = setBalancePickIssue(provider, {
+        provider,
+        kind: "error",
+        title: `${providerTitle(provider)} balance failed`,
+        detail: `Smart balance could not choose an account for the last new chat: ${message}`,
+        at: nowIso(),
+      });
+      if (rotationChanged && !issueChanged) publishBalanceIndicators();
       return null;
     }
   }
@@ -4979,8 +6228,18 @@ export function createUsageTrackingService({
       refreshHistory,
       getAdeUsageStats: (args: GetAdeUsageStatsArgs = {}) => getAdeUsageStats(args, scope),
       getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args, scope),
+      getCostBreakdown: (args: GetAdeUsageCostBreakdownArgs) => getCostBreakdown(args, scope),
+      getModelDetail: (args: GetAdeUsageModelDetailArgs) => getModelDetail(args, scope),
+      getModelPriceOverrides,
+      setModelPriceOverride,
+      getModelRoutes,
+      previewModelRoute,
+      getRouterShadowSummary,
+      getRouterEfficiency,
+      refreshModelRegistry,
       getUsageRollup,
       resolveBalancedInstance,
+      peekBalancedInstance,
       getAutoStartState: autoStartScheduler.getAutoStartState,
       setAccountRollupFetcher,
       applyAccountRollups,
@@ -5013,8 +6272,18 @@ export function createUsageTrackingService({
     refreshHistory,
     getAdeUsageStats,
     getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args),
+    getCostBreakdown: (args: GetAdeUsageCostBreakdownArgs) => getCostBreakdown(args),
+    getModelDetail: (args: GetAdeUsageModelDetailArgs) => getModelDetail(args),
+    getModelPriceOverrides,
+    setModelPriceOverride,
+    getModelRoutes,
+    previewModelRoute,
+    getRouterShadowSummary,
+    getRouterEfficiency,
+    refreshModelRegistry,
     getUsageRollup,
     resolveBalancedInstance,
+    peekBalancedInstance,
     getAutoStartState: autoStartScheduler.getAutoStartState,
     setAccountRollupFetcher,
     applyAccountRollups,
@@ -5050,7 +6319,6 @@ export const _testing = {
   isCodexTokenStale,
   isTokenExpiredOrExpiring: isClaudeTokenExpiredOrExpiring,
   isClaudeTokenExpiredOrExpiring,
-  refreshClaudeCredentials,
   parseClaudeWindows,
   parseClaudeCliUsage,
   parseCodexRateLimitSnapshot,
@@ -5058,9 +6326,16 @@ export const _testing = {
   isUsageSnapshot,
   pollClaudeUsage,
   pollCodexUsage,
+  resetAccountRateLimitsForTest,
+  accountRateLimitNextAttemptAtMs,
+  noteAccountPollOutcome,
+  claudeCliFallbackFitsStatus,
   consumeCodexResetCredit,
   probeCodexResetCredits,
   readCachedCodexResetCredits,
+  spendClaudeResetCredit,
+  probeClaudeResetCredits,
+  readCachedClaudeResetCredits,
   listQuotaInstances,
   mergeInstancePollResults,
   defaultTranscriptRoots,

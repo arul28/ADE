@@ -31,7 +31,7 @@ import {
   isCursorSdkFeatureUnavailableText,
   isCursorSdkTransportErrorText,
 } from "./cursorSdkProtocol";
-import { materializeWorkerImages } from "./workerAttachmentImages";
+import { materializeWorkerImages, withOmittedImageHints } from "./workerAttachmentImages";
 import {
   cursorSdkResultWithStreamFailure,
   readCursorSdkRunFailureDetail,
@@ -60,6 +60,7 @@ import {
   CURSOR_SDK_OWNER_POLL_MS,
   createCursorSdkWorkerExit,
   cursorSdkOwnerStillOwns,
+  ensureCursorSdkWorkerCommandsAreWindowless,
   ignoreCursorSdkWorkerPipeErrors,
   readCursorSdkOwnerPid,
   sendToCursorSdkParent,
@@ -68,6 +69,8 @@ import {
   processIsAlive,
   startParentDeathWatchdog,
 } from "../../../../../ade-cli/src/services/runtime/parentDeathWatchdog";
+
+ensureCursorSdkWorkerCommandsAreWindowless();
 
 type CursorSdkModule = typeof CursorSdkModuleTypes;
 type SdkAgent = Awaited<ReturnType<CursorSdkModule["Agent"]["create"]>>;
@@ -470,8 +473,8 @@ async function handleHookSocketLine(init: CursorSdkWorkerInit, socket: net.Socke
     return;
   }
 
-  const decision = await requestHookDecision(request);
-  socket.end(`${JSON.stringify(decision)}\n`);
+  const decision = await requestHookDecision(request, socket);
+  if (!socket.destroyed) socket.end(`${JSON.stringify(decision)}\n`);
 }
 
 function handlePreCompactHook(init: CursorSdkWorkerInit, raw: unknown): void {
@@ -507,9 +510,23 @@ function startAccountEmailLookup(): void {
     });
 }
 
-function requestHookDecision(request: CursorSdkHookRequest): Promise<CursorSdkHookDecision> {
+function requestHookDecision(request: CursorSdkHookRequest, socket: net.Socket): Promise<CursorSdkHookDecision> {
   return new Promise((resolve) => {
-    hookWaiters.set(request.id, resolve);
+    const waiter = (decision: CursorSdkHookDecision) => {
+      socket.off("close", onClose);
+      resolve(decision);
+    };
+    // The gate script gives up on its own deadline, and Cursor kills a hook
+    // that outlives `hooks.json`'s timeout. Either way the decision has no one
+    // to go to, so tell ADE to retire the card rather than wait on it forever.
+    const onClose = () => {
+      if (hookWaiters.get(request.id) !== waiter) return;
+      hookWaiters.delete(request.id);
+      post({ type: "hook_abandoned", requestId: request.id });
+      resolve(denyCursorHook("The Cursor tool hook stopped waiting for ADE's approval."));
+    };
+    hookWaiters.set(request.id, waiter);
+    socket.once("close", onClose);
     post({ type: "hook_request", requestId: request.id, request });
   });
 }
@@ -667,8 +684,11 @@ async function cursorSdkSendMessage(
   promptText: string,
   images: CursorSdkUserImage[] | undefined,
 ) {
-  const materialized = await materializeWorkerImages(images, { label: "Cursor SDK" });
-  return materialized.length ? { text: promptText, images: materialized } : promptText;
+  const { images: materialized, omittedHints } = await materializeWorkerImages(images, {
+    label: "Cursor SDK",
+  });
+  const text = withOmittedImageHints(promptText, omittedHints);
+  return materialized.length ? { text, images: materialized } : text;
 }
 
 async function sendPrompt(payload: CursorSdkSendPrompt): Promise<unknown> {

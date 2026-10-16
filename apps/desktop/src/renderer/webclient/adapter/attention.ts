@@ -67,7 +67,7 @@ function optionalString(value: unknown): value is string | null | undefined {
   return value === undefined || value === null || typeof value === "string";
 }
 
-/** Matches the notch snapshot parser's bound on the same field. */
+/** Matches the Activity item parser's bound on the same field. */
 const MAX_ALERT_FINGERPRINT_LENGTH = 1_024;
 
 /** One chunk's slice of a per-item map. Sent whole, it would name outside ids. */

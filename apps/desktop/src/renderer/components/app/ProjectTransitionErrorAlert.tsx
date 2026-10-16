@@ -1,6 +1,8 @@
 import { FolderSimpleDashed } from "@phosphor-icons/react";
-import { useAppStore } from "../../state/appStore";
+import { isRuntimeUpdateInProgressError } from "../../../shared/runtimeErrors";
+import { isRecoveryScreenError, useAppStore } from "../../state/appStore";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
+import { useBrainDownNoticeShowing } from "./BrainDownNotice";
 import { TechnicalDetailsFold } from "./errorSurfaceKit";
 
 /**
@@ -22,10 +24,17 @@ export function ProjectTransitionErrorAlert(): null {
   );
   const switchProjectToPath = useAppStore((state) => state.switchProjectToPath);
 
+  // One problem, one notice. A failed open caused by an update replacing the
+  // background service, or made while that service is down, is a symptom: the
+  // update's brain-down notice speaks for it (and reopens the project once the
+  // service is back), so this banner stands down.
+  const brainDownShowing = useBrainDownNoticeShowing();
   const visible = Boolean(
     !projectTransition
       && projectTransitionError
-      && !(projectTransitionError.code && projectTransitionError.rootPath),
+      && !isRecoveryScreenError(projectTransitionError)
+      && !isRuntimeUpdateInProgressError(projectTransitionError.message)
+      && !brainDownShowing,
   );
   const retryRootPath = projectTransitionError?.retryRootPath ?? null;
 

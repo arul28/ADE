@@ -22,7 +22,7 @@ private struct WorkPersistedProjectionLoad {
   let pullRequests: [PullRequestListItem]
 }
 
-extension WorkRootScreen {
+extension WorkRootListScreen {
   @MainActor
   func scheduleSessionPresentationRebuild() {
     sessionPresentationRebuildTask?.cancel()
@@ -58,12 +58,21 @@ extension WorkRootScreen {
     // while missing roster rows make Work live immediately without adding a
     // second database or per-lane network fan-out.
     let activeRoster = syncService.activeProject.flatMap { syncService.rosterProject(for: $0) }
-    let rosterProjection = overlayActiveProjectRoster(
+    let activeRosterProjection = overlayActiveProjectRoster(
       localSessions: localSessions,
       localLanes: localLanes,
       roster: activeRoster,
       identitySessionIds: identitySessionIds
     )
+    // The same repository's chats on the other paired machines (the desktop
+    // Work board's union). Their row actions route to their own machine.
+    let remoteMerge = workMergeRemoteMachineRows(
+      sessions: activeRosterProjection.sessions,
+      lanes: activeRosterProjection.lanes,
+      remote: localProjectionIsCurrent ? inputs.remoteMachineRepos : []
+    )
+    syncService.setWorkListRemoteChats(remoteMerge.remoteChats)
+    let rosterProjection = (sessions: remoteMerge.sessions, lanes: remoteMerge.lanes)
     // Chats launched into a lane that is still being set up: a row under the
     // launch's lane until the real session row lands, then only the status line.
     let launchProjection = workOverlayChatLaunches(
@@ -88,6 +97,7 @@ extension WorkRootScreen {
     )
     let selectedStatusSnapshot = selectedStatus
     let selectedLaneIdSnapshot = selectedLaneId
+    let machineFilterSnapshot = workParseMachineFilter(machineFilterStorage)
     let searchTextSnapshot = searchText
     let outputSearchBySessionId = workSessionOutputSearchIndexBySessionId(
       buffers: searchTextSnapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [:] : syncService.terminalBuffers
@@ -100,6 +110,9 @@ extension WorkRootScreen {
     // the top tier and keeps its header, singleton or not. Same store the Lanes
     // tab writes, so one pin means one thing across both surfaces.
     let pinnedLaneIdsSnapshot = workPinnedLaneIds
+    let foldBusyLanesSnapshot = foldBusyLanes
+    let seenAtSnapshot = WorkSeenStore.load()
+    let laneReturnStateSnapshot = bookkeeping.laneReturnState
 
     sessionPresentationRebuildTask = Task.detached(priority: .utility) {
       try? await Task.sleep(for: .milliseconds(40))
@@ -111,6 +124,7 @@ extension WorkRootScreen {
         archivedSessionIds: archivedSessionIdsSnapshot,
         selectedStatus: selectedStatusSnapshot,
         selectedLaneId: selectedLaneIdSnapshot,
+        machineFilter: machineFilterSnapshot,
         searchText: searchTextSnapshot,
         outputSearchBySessionId: outputSearchBySessionId,
         organization: organization,
@@ -118,21 +132,56 @@ extension WorkRootScreen {
         pullRequests: pullRequestsSnapshot,
         githubPrs: githubPrsSnapshot,
         deletingLaneIds: deletingLaneIds,
-        pinnedLaneIds: pinnedLaneIdsSnapshot
+        pinnedLaneIds: pinnedLaneIdsSnapshot,
+        foldBusyLanes: foldBusyLanesSnapshot,
+        seenAtBySessionId: seenAtSnapshot,
+        laneReturnState: laneReturnStateSnapshot
       )
       await MainActor.run {
         guard generation == sessionPresentationRebuildGeneration, !Task.isCancelled else { return }
+        bookkeeping.laneReturnState = nextPresentation.laneReturnState
         if sessionPresentation != nextPresentation {
           sessionPresentation = nextPresentation
         }
+        pruneSelection(toVisible: nextPresentation.mergedSessions)
+        prefetchChatThreads(for: nextPresentation.displaySessions)
         pruneStaleQuietOpenMarkers(sessions: nextPresentation.mergedSessions)
         sessionPresentationRebuildTask = nil
         // Re-arm unconditionally, even when the presentation was unchanged: the
         // deadline this rebuild just crossed is gone, and the next one has to be
         // scheduled off the rows that are actually on screen.
-        armSnoozeRegroupRefresh(sessions: nextPresentation.mergedSessions)
+        armSnoozeRegroupRefresh(
+          sessions: nextPresentation.mergedSessions,
+          chatSummaries: chatSummariesSnapshot
+        )
       }
     }
+  }
+
+  /// Drops selected rows that are no longer in the list. Runs where the
+  /// presentation is replaced, instead of an `.onChange` over every session id
+  /// that the body had to map and compare on each evaluation.
+  @MainActor
+  func pruneSelection(toVisible sessions: [TerminalSessionSummary]) {
+    guard !selectedSessionIds.isEmpty else { return }
+    let pruned = selectedSessionIds.intersection(sessions.map(\.id))
+    guard pruned.count != selectedSessionIds.count else { return }
+    selectedSessionIds = pruned
+    if pruned.isEmpty && isSelecting {
+      withAnimation(.snappy) { isSelecting = false }
+    }
+  }
+
+  /// Work list prefetch (thread engine I6): warm the engines for the chats the
+  /// list shows first and every chat with a live turn, at utility priority, so a
+  /// tap paints from a folded frame. Fires only when that set changes.
+  @MainActor
+  func prefetchChatThreads(for displaySessions: [TerminalSessionSummary]) {
+    let ids = workChatPrefetchSessionIds(displaySessions)
+    guard ids != bookkeeping.lastPrefetchSessionIds else { return }
+    bookkeeping.lastPrefetchSessionIds = ids
+    guard !ids.isEmpty else { return }
+    syncService.warmChatThreads(sessionIds: ids)
   }
 
   /// Snooze expiry is DERIVED from the clock (`isSessionSnoozed`) — there is no
@@ -144,10 +193,13 @@ extension WorkRootScreen {
   /// fired at the NEAREST deadline, clamped so the ~100-year "Until I'm asked"
   /// preset can't be scheduled literally. Not a fixed-interval poll.
   @MainActor
-  func armSnoozeRegroupRefresh(sessions: [TerminalSessionSummary]) {
+  func armSnoozeRegroupRefresh(
+    sessions: [TerminalSessionSummary],
+    chatSummaries: [String: AgentChatSessionSummary]
+  ) {
     snoozeRegroupTask?.cancel()
     snoozeRegroupTask = nil
-    guard let delay = workSnoozeRegroupDelay(sessions: sessions) else { return }
+    guard let delay = workSnoozeRegroupDelay(sessions: sessions, chatSummaries: chatSummaries) else { return }
     snoozeRegroupTask = Task { @MainActor in
       try? await Task.sleep(for: .seconds(delay))
       guard !Task.isCancelled else { return }
@@ -190,6 +242,8 @@ extension WorkRootScreen {
     lastWorkProjectionReloadRevision = nil
     lastWorkLocalProjectionReload = .distantPast
     lastCoalescedChatSummaryRefresh = .distantPast
+    bookkeeping.summaryLaneSignatures = [:]
+    bookkeeping.lastFullChatSummarySweep = .distantPast
   }
 
   @MainActor
@@ -221,8 +275,34 @@ extension WorkRootScreen {
     }
   }
 
+  #if DEBUG
+  /// `-adePreviewScreen work-list`: installs the fixture rows in place of the
+  /// replicated database, which is empty on a simulator with no machine. Returns
+  /// true when a fixture is active so the caller skips its database read.
+  @MainActor
+  func installPreviewFixtureIfActive() -> Bool {
+    guard let fixture = WorkRootPreviewFixture.active else { return false }
+    loadedProjectionProjectId = syncService.activeProjectId
+    if sessions != fixture.sessions { sessions = fixture.sessions }
+    if lanes != fixture.lanes { lanes = fixture.lanes }
+    if pullRequests != fixture.pullRequests { pullRequests = fixture.pullRequests }
+    if chatSummaries != fixture.chatSummaries { chatSummaries = fixture.chatSummaries }
+    if let sessionId = fixture.pushChatSessionId, let delay = fixture.pushChatAfter {
+      fixture.pushChatSessionId = nil
+      Task { @MainActor in
+        try? await Task.sleep(for: .seconds(delay))
+        path.append(WorkSessionRoute(sessionId: sessionId))
+      }
+    }
+    return true
+  }
+  #endif
+
   @MainActor
   func reload(refreshRemote: Bool = false) async {
+    #if DEBUG
+    if installPreviewFixtureIfActive() { return }
+    #endif
     guard let requestedProjectId = syncService.activeProjectId else {
       resetWorkProjectionForProjectChange(nil)
       return
@@ -245,6 +325,8 @@ extension WorkRootScreen {
       Task { await syncService.refreshLaneGithubPrItems(force: refreshRemote) }
       if isLive {
         lastCoalescedChatSummaryRefresh = Date()
+        bookkeeping.lastFullChatSummarySweep = Date()
+        bookkeeping.summaryLaneSignatures = workLaneSessionSignatures(projection.sessions)
         await refreshChatSummaries(for: projection.lanes, projectId: requestedProjectId)
       }
       if errorMessage != nil {
@@ -263,16 +345,15 @@ extension WorkRootScreen {
   private func loadPersistedWorkProjection(
     for projectId: String
   ) async throws -> WorkPersistedProjectionLoad? {
-    async let sessionsTask = syncService.fetchSessions()
-    async let lanesTask = syncService.fetchLanes()
-    async let pullRequestsTask = syncService.fetchPullRequestListItems()
-    let projection = try await WorkPersistedProjectionLoad(
-      sessions: sessionsTask,
-      lanes: lanesTask,
-      pullRequests: pullRequestsTask
-    )
+    // Read off the main actor (see `fetchWorkListProjection`); the result
+    // lands in one install below.
+    let rows = await syncService.fetchWorkListProjection()
     guard projectId == syncService.activeProjectId else { return nil }
-    return projection
+    return WorkPersistedProjectionLoad(
+      sessions: rows.sessions,
+      lanes: rows.lanes,
+      pullRequests: rows.pullRequests
+    )
   }
 
   @MainActor
@@ -309,21 +390,50 @@ extension WorkRootScreen {
   /// Applies replicated SQLite rows to the Work list without fanning out per-lane host `listChatSessions` on every CRDT tick.
   @MainActor
   func reloadFromPersistedProjection() async {
+    #if DEBUG
+    if installPreviewFixtureIfActive() { return }
+    #endif
     guard let requestedProjectId = syncService.activeProjectId else {
       resetWorkProjectionForProjectChange(nil)
       return
     }
     do {
-      guard let projection = try await loadPersistedWorkProjection(for: requestedProjectId),
-            installPersistedWorkProjection(projection, for: requestedProjectId)
-      else { return }
+      guard let projection = try await loadPersistedWorkProjection(for: requestedProjectId) else { return }
+      // Main-thread time only: the reads above no longer run here, and the
+      // chat-summary refresh below awaits the network.
+      let installStart = CACurrentMediaTime()
+      let installed = installPersistedWorkProjection(projection, for: requestedProjectId)
+      ScrollDiagnostics.shared.record(.workListReload, since: installStart)
+      guard installed else { return }
       Task { await syncService.refreshLaneGithubPrItems() }
       if isLive {
         let now = Date()
         let minimumSummaryRefreshInterval = syncService.prefersReducedSyncLoad ? 8.0 : 2.6
         if now.timeIntervalSince(lastCoalescedChatSummaryRefresh) >= minimumSummaryRefreshInterval {
           lastCoalescedChatSummaryRefresh = now
-          await refreshChatSummaries(for: projection.lanes, projectId: requestedProjectId)
+          // A CRDT tick only needs the lanes whose chats changed. Most ticks
+          // are other tables (lanes, PRs, state snapshots): asking every lane
+          // for its chat list on each of them was ~1 request every 4 s idle.
+          let fullSweep = now.timeIntervalSince(bookkeeping.lastFullChatSummarySweep) >= workChatSummaryFullSweepInterval
+          let signatures = workLaneSessionSignatures(projection.sessions)
+          let changed = workLanesNeedingSummaryRefresh(
+            signatures: signatures,
+            previous: bookkeeping.summaryLaneSignatures,
+            sessions: projection.sessions,
+            summaries: chatSummaries
+          )
+          if fullSweep || !changed.isEmpty {
+            if fullSweep { bookkeeping.lastFullChatSummarySweep = now }
+            bookkeeping.summaryLaneSignatures = signatures
+            ScrollDiagnostics.shared.event("work.summaryRefresh", [
+              "lanes": fullSweep ? projection.lanes.count : changed.count,
+              "full": fullSweep,
+            ])
+            await refreshChatSummaries(
+              for: fullSweep ? projection.lanes : projection.lanes.filter { changed.contains($0.id) },
+              projectId: requestedProjectId
+            )
+          }
         }
       }
       if errorMessage != nil {
@@ -661,11 +771,26 @@ extension WorkRootScreen {
     guard !navigationMutationPending else { return }
     navigationMutationPending = true
     clearWokeMarkerOnVisit(session)
+    ChatOpenCloseTiming.openTapped(sessionId: session.id)
     selectedSessionTransitionId = session.id
+    // A row from another machine opens through that machine; it is not
+    // restored at launch (the restore path opens focused-machine chats).
+    let remoteChat: WorkChatCrossProjectContext? = isWorkRemoteLaneId(session.laneId)
+      ? syncService.remoteMachineChat(sessionId: session.id).map { remote in
+        WorkChatCrossProjectContext(
+          projectId: remote.projectId,
+          projectRootPath: remote.rootPath.isEmpty ? nil : remote.rootPath,
+          displayName: "",
+          machineKey: remote.machineKey
+        )
+      }
+      : nil
     Task { @MainActor in
       await Task.yield()
-      path.append(WorkSessionRoute(sessionId: session.id))
-      syncService.persistOpenWorkSessionRoute(sessionId: session.id)
+      path.append(WorkSessionRoute(sessionId: session.id, remoteChat: remoteChat))
+      if remoteChat == nil {
+        syncService.persistOpenWorkSessionRoute(sessionId: session.id)
+      }
       navigationMutationPending = false
     }
   }
@@ -694,10 +819,16 @@ extension WorkRootScreen {
     fresh.append(WorkSessionRoute(sessionId: request.sessionId))
     path = fresh
     syncService.persistOpenWorkSessionRoute(sessionId: request.sessionId)
+    // The chat is open: clear the request now, which also stops the outside-tap
+    // watchdog. The acknowledgement below can take as long as the relay's
+    // timeout, and holding the request across it let the watchdog close a chat
+    // that had already opened.
+    if syncService.requestedWorkSessionNavigation?.id == request.id {
+      syncService.requestedWorkSessionNavigation = nil
+    }
     await AccountService.shared.acknowledgeAttentionNavigation(
       request.attentionItemId
     )
-    syncService.requestedWorkSessionNavigation = nil
   }
 
   @MainActor
@@ -717,6 +848,7 @@ extension WorkRootScreen {
     searchText = ""
     selectedLaneId = "all"
     selectedStatus = .all
+    machineFilterStorage = ""
     sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
 
     collapsedSectionIdsStorage = workSerializeCollapsedSectionIds(
@@ -791,22 +923,6 @@ extension WorkRootScreen {
     }
   }
 
-  /// Opens this session in the hosted web client. No host command is involved:
-  /// the URL is the same https deeplink the copy action produces, re-homed on
-  /// the web client's origin exactly like desktop's `buildWebClientUrl`.
-  func openSessionInWeb(_ session: TerminalSessionSummary) {
-    let laneId = resolvedWorkNavigationLaneId(for: session, lanes: lanes)
-    let lane = lanes.first(where: { $0.id == laneId })
-    let pullRequest = pullRequests.first(where: { $0.laneId == laneId })
-    let link = workSessionDeepLink(
-      sessionId: session.id,
-      laneId: laneId,
-      envelope: LaneDeeplinkHelpers.envelope(lane: lane, pullRequest: pullRequest)
-    )
-    guard let url = workWebClientURL(for: link) else { return }
-    UIApplication.shared.open(url)
-  }
-
   // MARK: - Lane submenu actions
   //
   // The lane half of a session row's long-press menu. Every command here is one
@@ -830,7 +946,10 @@ extension WorkRootScreen {
   func generateSessionNames(_ session: TerminalSessionSummary, fields: [String]) {
     Task {
       do {
-        try await syncService.regenerateChatSessionMetadata(sessionId: session.id, fields: fields)
+        if let reason = try await syncService.regenerateChatSessionMetadata(sessionId: session.id, fields: fields) {
+          ADEHaptics.error()
+          actionErrorMessage = "Generate name failed: \(reason)"
+        }
       } catch {
         ADEHaptics.error()
         actionErrorMessage = error.localizedDescription
@@ -969,6 +1088,7 @@ private func cliProviderForTerminalSession(_ session: TerminalSessionSummary) ->
   if toolType.hasPrefix("codex") { return "codex" }
   if toolType.hasPrefix("cursor") { return "cursor" }
   if toolType.hasPrefix("droid") { return "droid" }
+  if toolType.hasPrefix("muse") { return "muse" }
   if toolType.hasPrefix("opencode") { return "opencode" }
   if toolType.hasPrefix("qwen") { return "qwen" }
   if toolType.hasPrefix("kimi") { return "kimi" }
@@ -988,4 +1108,234 @@ fileprivate func laneRefreshPriorityRank(
   if selectedLaneId != "all" && laneId == selectedLaneId { return 0 }
   if priorityLaneIds.contains(laneId) { return 1 }
   return 2
+}
+
+/// How often the Work list refreshes every lane's chat summaries even when no
+/// session row changed (summary-only changes: model, mode, identity).
+let workChatSummaryFullSweepInterval: TimeInterval = 60
+
+/// Fingerprint of each lane's session rows, over the fields a chat summary
+/// reflects. Streaming output changes `lastOutputPreview`, so a live lane
+/// still refreshes on the normal cadence.
+func workLaneSessionSignatures(_ sessions: [TerminalSessionSummary]) -> [String: Int] {
+  var hashers: [String: Hasher] = [:]
+  for session in sessions.sorted(by: { $0.id < $1.id }) {
+    var hasher = hashers[session.laneId] ?? Hasher()
+    hasher.combine(session.id)
+    hasher.combine(session.title)
+    hasher.combine(session.status)
+    hasher.combine(session.lastActivityAt)
+    hasher.combine(session.endedAt)
+    hasher.combine(session.archivedAt)
+    hasher.combine(session.settledAt)
+    hasher.combine(session.settleOverride)
+    hasher.combine(session.attentionRequestedAt)
+    hasher.combine(session.activityStatusChangedAt)
+    hasher.combine(session.lastTurnFailedAt)
+    hasher.combine(session.snoozedUntil)
+    hasher.combine(session.wokeAt)
+    hasher.combine(session.pinned)
+    hasher.combine(session.lastOutputPreview)
+    hashers[session.laneId] = hasher
+  }
+  return hashers.mapValues { $0.finalize() }
+}
+
+/// Lanes to refresh on a CRDT tick: rows changed, lane is new, or a chat
+/// session in it has no summary yet.
+func workLanesNeedingSummaryRefresh(
+  signatures: [String: Int],
+  previous: [String: Int],
+  sessions: [TerminalSessionSummary],
+  summaries: [String: AgentChatSessionSummary]
+) -> Set<String> {
+  var lanes = Set(signatures.compactMap { laneId, signature in
+    previous[laneId] == signature ? nil : laneId
+  })
+  for session in sessions where session.archivedAt == nil && summaries[session.id] == nil
+    && isChatSession(session) {
+    lanes.insert(session.laneId)
+  }
+  return lanes
+}
+
+// MARK: - Session menu: tag, restart, hand off
+
+extension WorkRootListScreen {
+  /// Desktop "Set tag…": prefill with the current tag.
+  func beginSetTag(_ session: TerminalSessionSummary) {
+    tagText = session.claudeTag ?? ""
+    tagTarget = session
+  }
+
+  func submitTag(_ session: TerminalSessionSummary, tag: String) {
+    Task {
+      do {
+        try await syncService.setChatSessionTag(sessionId: session.id, tag: tag)
+        ADEHaptics.success()
+      } catch {
+        ADEHaptics.error()
+        actionErrorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  /// Desktop `restartAgentSession`: try without stopping, and only after the
+  /// host says a turn is running ask before retrying with `stopFirst`.
+  func restartAgentSession(_ session: TerminalSessionSummary, stopFirst: Bool) {
+    Task {
+      do {
+        _ = try await syncService.restartChatSession(sessionId: session.id, stopFirst: stopFirst)
+        ADEHaptics.success()
+      } catch {
+        if !stopFirst, error.localizedDescription.range(of: "turn is running", options: .caseInsensitive) != nil {
+          restartStopTurnTarget = session
+          return
+        }
+        ADEHaptics.error()
+        actionErrorMessage = "Couldn’t restart the agent session. \(error.localizedDescription)"
+      }
+    }
+  }
+
+  func handoffSubject(for session: TerminalSessionSummary) -> WorkSessionHandoffSubject {
+    let summary = chatSummaries[session.id]
+    let provider = summary?.provider
+      ?? workChatProviderFamilyFromToolType(session.toolType)
+      ?? "claude"
+    return WorkSessionHandoffSubject(
+      sessionId: session.id,
+      laneId: session.laneId,
+      title: (summary?.title ?? session.title).trimmingCharacters(in: .whitespacesAndNewlines),
+      provider: provider,
+      modelId: summary?.modelId ?? summary?.model ?? "",
+      reasoningEffort: summary?.reasoningEffort ?? "",
+      fastMode: summary?.fastMode == true
+    )
+  }
+
+  func handleSessionHandoff(_ session: TerminalSessionSummary, intent: WorkSessionHandoffIntent) {
+    switch intent {
+    case .local:
+      localHandoffSubject = handoffSubject(for: session)
+    case .auto:
+      autoHandoffSubject = handoffSubject(for: session)
+    case .remote:
+      let subject = handoffSubject(for: session)
+      let summary = chatSummaries[session.id]
+      let canonical = workCanonicalSessionState(session: session, summary: summary).phase
+      crossMachineHandoffTarget = WorkCrossMachineHandoffTarget(
+        sessionId: subject.sessionId,
+        laneId: subject.laneId,
+        title: subject.title,
+        provider: subject.provider,
+        modelId: subject.modelId,
+        reasoningEffort: subject.reasoningEffort,
+        runtimeMode: summary.map(workInitialRuntimeMode) ?? "",
+        busy: canonical == .running || canonical == .starting,
+        fastMode: summary?.fastMode == true
+      )
+    case .removeAuto:
+      let ids = autoHandoffRuleIdsBySession[session.id] ?? []
+      Task {
+        var remaining = ids
+        do {
+          for id in ids {
+            try await syncService.deleteAutomationRule(id: id, forSessionId: session.id)
+            remaining.removeAll { $0 == id }
+          }
+          autoHandoffRuleIdsBySession[session.id] = []
+          ADEHaptics.success()
+        } catch {
+          // Keep only what is actually left, so a retry doesn't re-delete
+          // rules that are already gone.
+          autoHandoffRuleIdsBySession[session.id] = remaining
+          ADEHaptics.error()
+          actionErrorMessage = error.localizedDescription
+        }
+      }
+    case .keepHere:
+      runCrossMachineHandoffMenuAction(session, failure: "Couldn't keep the chat here") {
+        try await syncService.cancelCrossMachineHandoff(sourceSessionId: session.id)
+      }
+    case .retryMove:
+      // The same move again (same handoff id): the brain reconciles it through
+      // the destination's record and never starts a second chat.
+      runCrossMachineHandoffMenuAction(session, failure: "Couldn't retry the move") {
+        try await syncService.retryCrossMachineHandoff(sourceSessionId: session.id)
+      }
+    case .dismissMove:
+      runCrossMachineHandoffMenuAction(session, failure: "Couldn't dismiss the move") {
+        try await syncService.cancelCrossMachineHandoff(sourceSessionId: session.id)
+      }
+    case .openDestination:
+      if let record = chatSummaries[session.id]?.crossMachineHandoff ?? session.crossMachineHandoff {
+        syncService.openCrossMachineHandoffDestination(record)
+      }
+    }
+  }
+
+  /// Runs one move command from the row menu, folds the record it answered
+  /// with into the row at once, then re-reads the chat's summary so the row
+  /// and an open chat agree with the brain.
+  private func runCrossMachineHandoffMenuAction(
+    _ session: TerminalSessionSummary,
+    failure: String,
+    _ operation: @escaping @MainActor () async throws -> AgentChatCrossMachineHandoffRecord?
+  ) {
+    Task { @MainActor in
+      do {
+        let record = try await operation()
+        ADEHaptics.success()
+        if let record, !record.handoffId.isEmpty, var summary = chatSummaries[session.id] {
+          summary.crossMachineHandoff = AgentChatCrossMachineHandoffRecord.pickNewer(
+            current: summary.crossMachineHandoff,
+            incoming: record
+          )
+          if summary != chatSummaries[session.id] { chatSummaries[session.id] = summary }
+        }
+        syncService.applyCrossMachineHandoffActionResult(record, sessionId: session.id)
+        if syncService.supportsChatRemoteAction("chat.getSummary", sessionId: session.id),
+           let fetched = try? await syncService.fetchChatSummary(sessionId: session.id) {
+          if fetched != chatSummaries[session.id] { chatSummaries[session.id] = fetched }
+          syncService.cacheChatSummary(fetched)
+        }
+      } catch {
+        ADEHaptics.error()
+        actionErrorMessage = "\(failure): \(error.localizedDescription)"
+      }
+    }
+  }
+
+  /// Which chats already carry auto-handoff rules. Rules live on the brain
+  /// that owns the chat, so the listed chats are grouped by their command
+  /// scope (this project, another project, another machine) and each scope is
+  /// read once, through the same routing the editor uses. A scope that can't
+  /// list rules, or whose read fails, keeps what the map already had for its
+  /// chats, so the menu falls back to "Auto handoff…" and the editor does its
+  /// own authoritative read.
+  func refreshAutoHandoffRuleIds() async {
+    var chatsByScope: [String: [String]] = [:]
+    for session in sessions where isChatSession(session) {
+      let scope = syncService.chatCommandScope(for: session.id)
+      chatsByScope["\(scope.projectId ?? "")|\(scope.rootPath ?? "")", default: []].append(session.id)
+    }
+    var next = autoHandoffRuleIdsBySession
+    for sessionIds in chatsByScope.values {
+      guard let representative = sessionIds.first,
+            syncService.autoHandoffRulesAvailable(sessionId: representative),
+            let rules = try? await syncService.listAutomationRules(forSessionId: representative)
+      else { continue }
+      let members = Set(sessionIds)
+      var found: [String: [String]] = [:]
+      for rule in rules where rule.handoffAction != nil {
+        guard let sessionId = rule.scope?.sessionId, members.contains(sessionId) else { continue }
+        found[sessionId, default: []].append(rule.id)
+      }
+      for sessionId in sessionIds {
+        next[sessionId] = found[sessionId] ?? []
+      }
+    }
+    if next != autoHandoffRuleIdsBySession { autoHandoffRuleIdsBySession = next }
+  }
 }

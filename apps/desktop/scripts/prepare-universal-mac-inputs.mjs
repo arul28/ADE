@@ -268,8 +268,8 @@ async function seedFromAppBundle(x64AppPath) {
   );
   await copyFromAppBundle(
     x64AppPath,
-    "Contents/Resources/app.asar.unpacked/node_modules/opencode-darwin-x64",
-    "node_modules/opencode-darwin-x64",
+    "Contents/Resources/app.asar.unpacked/node_modules/@opencode/cli-darwin-x64",
+    "node_modules/@opencode/cli-darwin-x64",
     "OpenCode x64 package",
   );
   await copyFromAppBundle(
@@ -302,8 +302,8 @@ async function seedFromLockfileAndPinnedArtifacts() {
   );
   await seedPackageFromResolvedUrl(
     packageLock,
-    "node_modules/opencode-darwin-x64",
-    "node_modules/opencode-darwin-x64",
+    "node_modules/@opencode/cli-darwin-x64",
+    "node_modules/@opencode/cli-darwin-x64",
     "OpenCode x64 package",
   );
   await seedPackageFromResolvedUrl(
@@ -336,7 +336,7 @@ async function assertUniversalInputsReady() {
     "x64 Codex CLI binary",
   );
   await assertPathExists(
-    path.join(appDir, "node_modules", "opencode-darwin-x64", "bin", "opencode"),
+    path.join(appDir, "node_modules", "@opencode", "cli-darwin-x64", "bin", "opencode"),
     "x64 OpenCode CLI binary",
   );
   await assertPathExists(

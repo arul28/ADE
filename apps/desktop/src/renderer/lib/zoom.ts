@@ -91,10 +91,11 @@ export function shellHeaderInsetPx(displayZoom: number): number {
  * lights never overlap the logo. No-op off macOS (no native traffic lights) and
  * outside a DOM; there the static `--shell-header-inset-start` default stands.
  *
- * `--shell-header-inset-start` (not `--shell-header-padding-start`) because
- * `data-theme` is set on <html>, <body>, and the shell wrapper, so each of them
- * re-declares the padding tokens and would shadow this value before it reached
- * the header. See the platform-inset block in index.css.
+ * Writes `--shell-header-inset-start` (the macOS clearance token the header
+ * reads with `--shell-header-padding-start` as its fallback), not the padding
+ * token itself. Only `<html>` carries `data-theme`; the inset token is also
+ * declared on `<html>`, so an inline value on the same element wins. See the
+ * platform-inset block in index.css.
  */
 export function applyShellHeaderInset(displayZoom: number): void {
   if (!isMac) return;

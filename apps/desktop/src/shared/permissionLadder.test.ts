@@ -6,9 +6,17 @@ import {
   permissionLevelForClaude,
   permissionLevelForCodex,
   permissionLevelForDroid,
+  permissionLevelForFamily,
   permissionLevelForOpenCode,
+  clampGenericPermissionMode,
+  permissionCeilingClamp,
   permissionLevelRank,
   resolvePermissionLevel,
+  sessionPermissionLevel,
+  type SessionPermissionFields,
+  type PermissionLadderControls,
+  type PermissionLadderFamily,
+  type PermissionLevel,
 } from "./permissionLadder";
 
 describe("round trip", () => {
@@ -99,5 +107,86 @@ describe("codex axes are independent", () => {
 describe("droid agi", () => {
   it("reads as full autonomy so a switch away keeps the top level", () => {
     expect(permissionLevelForDroid("agi")).toBe("full-auto");
+  });
+});
+
+describe("permissionLevelForFamily reads the level a family's own controls hold", () => {
+  // The controls a chat surface carries when every family sits on the ask tier.
+  const askControls: PermissionLadderControls = {
+    claudePermissionMode: "default",
+    codexApprovalPolicy: "on-request",
+    codexSandbox: "workspace-write",
+    opencodePermissionMode: "edit",
+    droidPermissionMode: "auto-low",
+    cursorModeId: "agent",
+  };
+  const cases: Array<[PermissionLadderFamily, Partial<PermissionLadderControls>, PermissionLevel]> = [
+    ["claude", { claudePermissionMode: "bypassPermissions" }, "full-auto"],
+    // A Full auto chat carries through to every family the surface can hand off
+    // to, which is what `AgentChatPane` resolves when the form opens.
+    ["codex", { codexSandbox: "danger-full-access", codexApprovalPolicy: "never" }, "full-auto"],
+    // Codex's two axes are independent: never-ask in a sandbox is not full autonomy.
+    ["codex", { codexSandbox: "workspace-write", codexApprovalPolicy: "never" }, "auto-edit"],
+    ["droid", { droidPermissionMode: "agi" }, "full-auto"],
+    ["cursor", { cursorModeId: "ask" }, "plan"],
+    ["cursor", { cursorModeId: "full-auto" }, "full-auto"],
+    ["opencode", { opencodePermissionMode: "full-auto" }, "full-auto"],
+    // ACP has no control of its own; it rides the OpenCode in-process mode.
+    ["acp", { opencodePermissionMode: "plan" }, "plan"],
+  ];
+
+  it.each(cases)("maps %s from its own controls to %s", (family, overrides, expected) => {
+    expect(permissionLevelForFamily(family, { ...askControls, ...overrides })).toBe(expected);
+  });
+});
+
+describe("permission ceiling", () => {
+  // The most open posture each provider can be asked for.
+  const fullAuto: Array<[string, SessionPermissionFields]> = [
+    ["claude", { provider: "claude", claudePermissionMode: "bypassPermissions", permissionMode: "full-auto" }],
+    ["codex", { provider: "codex", codexSandbox: "danger-full-access", codexApprovalPolicy: "never" }],
+    ["cursor", { provider: "cursor", cursorModeId: "full-auto" }],
+    ["droid", { provider: "droid", droidPermissionMode: "agi" }],
+    ["opencode", { provider: "opencode", opencodePermissionMode: "full-auto" }],
+    ["qwen", { provider: "qwen", acpPermissionMode: "yolo" }],
+    ["pi", { provider: "pi", permissionMode: "full-auto" }],
+  ];
+  const ceilings: PermissionLevel[] = ["plan", "ask", "auto-edit"];
+
+  it.each(fullAuto.flatMap(([name, fields]) => ceilings.map((ceiling) => [name, ceiling, fields] as const)))(
+    "clamps a full-auto %s session to %s and reads back no higher",
+    (_name, ceiling, fields) => {
+      const clamp = permissionCeilingClamp(fields, ceiling);
+      expect(clamp?.requested).toBe("full-auto");
+      const clamped = { ...fields, ...clamp!.patch };
+      const readBack = sessionPermissionLevel(clamped, "full-auto");
+      expect(permissionLevelRank(readBack)).toBeLessThanOrEqual(permissionLevelRank(ceiling));
+      // Re-checking the clamped session must not refuse it again.
+      expect(permissionCeilingClamp(clamped, ceiling)).toBeNull();
+    },
+  );
+
+  it.each<[string, SessionPermissionFields, PermissionLevel, PermissionLevel]>([
+    // A posture deferred to a config file is unreadable: the side decides.
+    ["codex config.toml as a child", { provider: "codex", codexConfigSource: "config-toml" }, "full-auto", "full-auto"],
+    ["codex config.toml as a parent", { provider: "codex", codexConfigSource: "config-toml" }, "ask", "ask"],
+    // Plan mode over ask-level access is the plan rung; over bypass it is not,
+    // because leaving plan mode restores the bypass.
+    ["claude plan over default", { provider: "claude", claudePermissionMode: "default", interactionMode: "plan" }, "full-auto", "plan"],
+    ["claude plan over bypass", { provider: "claude", claudePermissionMode: "bypassPermissions", interactionMode: "plan" }, "ask", "full-auto"],
+    ["unknown provider", { provider: "something-new", permissionMode: "plan" }, "ask", "ask"],
+  ])("reads %s", (_label, fields, unknown, expected) => {
+    expect(sessionPermissionLevel(fields, unknown)).toBe(expected);
+  });
+
+  it.each<[string | null, PermissionLevel, string | null]>([
+    ["full-auto", "ask", "default"],
+    ["edit", "plan", "plan"],
+    ["config-toml", "auto-edit", "edit"],
+    [null, "plan", "plan"],
+    ["plan", "ask", "plan"],
+    ["edit", "full-auto", "edit"],
+  ])("caps the generic word %s at %s", (mode, ceiling, expected) => {
+    expect(clampGenericPermissionMode(mode, ceiling) ?? null).toBe(expected);
   });
 });

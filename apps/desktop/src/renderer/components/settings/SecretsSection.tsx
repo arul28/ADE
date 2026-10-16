@@ -1,59 +1,40 @@
 import React from "react";
-import { Check, Copy, DownloadSimple, Eye, EyeSlash, Plus, Trash, UploadSimple, X } from "@phosphor-icons/react";
+import { Check, CloudArrowDown, Copy, DownloadSimple, Eye, EyeSlash, Key, MagnifyingGlass, Plus, Trash, UploadSimple, WarningCircle, X } from "@phosphor-icons/react";
 import type {
   ProjectSecretStorage,
   ProjectSecretSummary,
   ProjectSecretsImportPreview,
   ProjectSecretsListResult,
 } from "../../../shared/types";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { projectSecretPullSummary } from "../../../shared/projectSecretPullSummary";
+import { relativeTimeCompact } from "../../lib/format";
 import { SecretsImportEnvModal } from "./SecretsImportEnvModal";
-import {
-  SettingsManagerEmpty,
-  SettingsManagerPage,
-  SettingsManagerRow,
-  SettingsManagerTable,
-} from "./primitives/SettingsManagerPage";
-import { SettingsSegmented, SettingsTextField } from "./primitives";
+import { ModernRow, ModernRows, ModernSection, SettingsColumn } from "./primitives";
+import "./SecretsSection.css";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 
 /** The anchor `secrets.secrets` in `settingsManifest.ts` points at. */
 const ANCHOR = "secrets";
 
-/** Name, value, storage, updated, actions — shared by the header and every row. */
-const SECRET_COLUMNS = [
-  { label: "Name", width: "minmax(160px, 1fr)" },
-  { label: "Value", width: "minmax(180px, 1.4fr)" },
-  { label: "Where", width: "110px" },
-  { label: "Updated", width: "minmax(140px, 0.9fr)" },
-  { label: "Actions", width: "132px", align: "right" as const },
-];
+/** Waits between re-reads while a row still says "Uploading"; the last repeats. */
+const UPLOAD_RECHECK_DELAYS_MS = [1_000, 3_000, 10_000, 30_000];
 
-const inputStyle: React.CSSProperties = {
-  border: `1px solid ${COLORS.outlineBorder}`,
-  borderRadius: 8,
-  background: "var(--color-card)",
-  color: COLORS.textPrimary,
-  fontFamily: SANS_FONT,
-  fontSize: 12,
-  minHeight: 34,
-  padding: "8px 10px",
-  outline: "none",
-};
+function storageLabel(secret: ProjectSecretSummary): string {
+  if (secret.storage !== "account") return "This device";
+  return secret.uploadPending ? "Uploading" : "Account";
+}
 
-const iconButtonStyle: React.CSSProperties = {
-  width: 30,
-  height: 30,
-  borderRadius: 8,
-  border: `1px solid ${COLORS.outlineBorder}`,
-  background: "var(--color-card)",
-  color: COLORS.textSecondary,
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  cursor: "pointer",
-  flexShrink: 0,
-};
+/**
+ * What to say after a save whose requested scope could not be honoured.
+ *
+ * The backend reports where the value actually went. When that is not where the
+ * person asked for, saying only "Saved" is the lie this sentence exists to
+ * avoid: the row would look shared and never be shared.
+ */
+function savedMessage(name: string, requested: ProjectSecretStorage, actual: ProjectSecretStorage): string {
+  if (requested === actual) return `Saved ${name}.`;
+  return `Saved ${name} for this device only. Your account vault is not reachable, so this value stays on this machine and will not follow you to another one.`;
+}
 
 function formatUpdatedAt(value: string): string {
   const date = new Date(value);
@@ -61,36 +42,11 @@ function formatUpdatedAt(value: string): string {
   return date.toLocaleString();
 }
 
-function SecretValueCell({
-  secret,
-  value,
-  visible,
-}: {
-  secret: ProjectSecretSummary;
-  value: string | null;
-  visible: boolean;
-}) {
-  const displayValue = visible && value != null ? value : "*".repeat(Math.min(Math.max(secret.valueLength, 8), 24));
-  return (
-    <code
-      style={{
-        display: "block",
-        maxWidth: "min(38vw, 420px)",
-        minHeight: 28,
-        padding: "6px 8px",
-        borderRadius: 8,
-        border: `1px solid ${COLORS.outlineBorder}`,
-        background: "color-mix(in srgb, var(--color-card) 72%, var(--color-bg))",
-        color: visible ? COLORS.textPrimary : COLORS.textMuted,
-        fontSize: 12,
-        whiteSpace: "nowrap",
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-      }}
-    >
-      {displayValue}
-    </code>
-  );
+/** "2m ago", "3d ago"; the exact time is in the tooltip. */
+function updatedLabel(value: string): string {
+  const compact = relativeTimeCompact(value);
+  if (!compact) return "";
+  return compact === "now" ? "just now" : `${compact} ago`;
 }
 
 export function SecretsSection() {
@@ -123,11 +79,21 @@ export function SecretsSection() {
   const [importing, setImporting] = React.useState(false);
   const [importError, setImportError] = React.useState<string | null>(null);
   const [exporting, setExporting] = React.useState(false);
+  const [pulling, setPulling] = React.useState(false);
   const [confirmingExport, setConfirmingExport] = React.useState(false);
   const [importPreview, setImportPreview] = React.useState<ProjectSecretsImportPreview | null>(null);
   const [selectedImportNames, setSelectedImportNames] = React.useState<Set<string>>(new Set());
   const [message, setMessage] = React.useState<string | null>(null);
+  const [noteTone, setNoteTone] = React.useState<"success" | "warning">("success");
   const [error, setError] = React.useState<string | null>(null);
+  const [search, setSearch] = React.useState("");
+  const nameInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  /** The inline note carries a tone: a degraded outcome is not a success. */
+  const note = React.useCallback((text: string, tone: "success" | "warning" = "success") => {
+    setNoteTone(tone);
+    setMessage(text);
+  }, []);
 
   const load = React.useCallback(async () => {
     try {
@@ -142,6 +108,28 @@ export function SecretsSection() {
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  // A saved account secret uploads within a second; look again a few times,
+  // further apart each time, so "Uploading" turns into "Account" without a
+  // reload — and stays visible, re-checked every 30 s, while the upload is
+  // genuinely stuck. Each `load()` sets a new snapshot, which re-runs this
+  // effect for the next delay.
+  const uploadPending = Boolean(snapshot?.secrets.some((secret) => secret.uploadPending));
+  const uploadRecheckRef = React.useRef(0);
+  React.useEffect(() => {
+    if (!uploadPending) {
+      uploadRecheckRef.current = 0;
+      return;
+    }
+    const delay = UPLOAD_RECHECK_DELAYS_MS[
+      Math.min(uploadRecheckRef.current, UPLOAD_RECHECK_DELAYS_MS.length - 1)
+    ]!;
+    const timer = window.setTimeout(() => {
+      uploadRecheckRef.current += 1;
+      void load();
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [uploadPending, snapshot, load]);
 
   const fetchSecretValue = React.useCallback(async (secretName: string, cache: boolean): Promise<string> => {
     const cached = revealedValues[secretName];
@@ -161,7 +149,7 @@ export function SecretsSection() {
     setMessage(null);
     setError(null);
     try {
-      await window.ade.projectSecrets.set({ name: nextName, value, storage });
+      const saved = await window.ade.projectSecrets.set({ name: nextName, value, storage });
       setValue("");
       setName("");
       setConfirmDeleteName(null);
@@ -171,8 +159,10 @@ export function SecretsSection() {
         delete next[nextName];
         return next;
       });
-      setMessage(`Saved ${nextName}.`);
+      // A new save starts the "Uploading" re-checks over.
+      uploadRecheckRef.current = 0;
       await load();
+      note(savedMessage(nextName, storage, saved.storage), storage === saved.storage ? "success" : "warning");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -217,7 +207,7 @@ export function SecretsSection() {
         setError(`Couldn't copy ${secretName} to the clipboard.${reason ? ` ${reason}` : ""}`);
         return;
       }
-      setMessage(`Copied ${secretName}.`);
+      note(`Copied ${secretName}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -247,7 +237,7 @@ export function SecretsSection() {
         delete next[secretName];
         return next;
       });
-      setMessage(`Deleted ${secretName}.`);
+      note(`Deleted ${secretName}.`);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -299,7 +289,7 @@ export function SecretsSection() {
       });
       setImportPreview(null);
       setSelectedImportNames(new Set());
-      setMessage(`Imported ${total} secret${total === 1 ? "" : "s"}${result.replaced.length ? ` (${result.replaced.length} replaced)` : ""}.`);
+      note(`Imported ${total} secret${total === 1 ? "" : "s"}${result.replaced.length ? ` (${result.replaced.length} replaced)` : ""}.`);
       await load();
     } catch (err) {
       setImportError(err instanceof Error ? err.message : String(err));
@@ -321,7 +311,7 @@ export function SecretsSection() {
     setError(null);
     try {
       const result = await window.ade.projectSecrets.exportEnv();
-      setMessage(`Exported ${result.secretCount} secret${result.secretCount === 1 ? "" : "s"} to ${result.filePath} on the active machine.`);
+      note(`Exported ${result.secretCount} secret${result.secretCount === 1 ? "" : "s"} to ${result.filePath} on the active machine.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -330,202 +320,305 @@ export function SecretsSection() {
   };
 
   const secrets = snapshot?.secrets ?? [];
+  const canAdd = !saving && Boolean(name.trim()) && Boolean(value);
 
-  return (
-    <SettingsManagerPage
-      anchor={ANCHOR}
-      title="Secrets"
-      description="Encrypted project secrets for ADE agents, desktop, and CLI. Import reads a file from this computer. Export writes an unencrypted .env file containing all project secret values to Downloads on the machine hosting this project."
-      toolbar={
+  const pullFromAccount = async () => {
+    setPulling(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const result = await window.ade.projectSecrets.pullFromAccount();
+      note(projectSecretPullSummary(result), result.state === "unavailable" ? "warning" : "success");
+      // A pull can replace a value this section already revealed and cached, so
+      // drop every revealed value, reveal toggle and copy confirmation with it.
+      setRevealedValues({});
+      setVisibleNames({});
+      resetCopied();
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPulling(false);
+    }
+  };
+
+  const query = search.trim().toLowerCase();
+  const shownSecrets = query ? secrets.filter((secret) => secret.name.toLowerCase().includes(query)) : secrets;
+
+  const list = (
+    <ModernSection
+      group="Secrets"
+      title="Saved secrets"
+      hint={`${secrets.length} saved · encrypted`}
+      actions={(
         <>
+          {secrets.length > 0 ? (
+            <label className="ade-secrets-search">
+              <MagnifyingGlass size={13} aria-hidden />
+              <input
+                type="search"
+                className="ade-modern-field"
+                placeholder="Filter"
+                aria-label="Filter secrets"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                spellCheck={false}
+              />
+            </label>
+          ) : null}
           <button
             type="button"
-            disabled={choosingImport}
-            onClick={() => void chooseEnvFile()}
-            style={{ ...inputStyle, display: "inline-flex", alignItems: "center", gap: 6, cursor: choosingImport ? "not-allowed" : "pointer", opacity: choosingImport ? 0.55 : 1 }}
+            className="ade-modern-btn"
+            data-variant="ghost"
+            title="Take the account-stored secrets this repository has in the vault onto this machine"
+            aria-label="Pull from account"
+            onClick={() => {
+              if (!pulling) void pullFromAccount();
+            }}
           >
-            <UploadSimple size={14} />
-            {choosingImport ? "Opening…" : "Import .env"}
+            <CloudArrowDown size={13} />
+            {pulling ? "Pulling…" : "Pull from account"}
           </button>
-          <button
-            type="button"
-            disabled={exporting || secrets.length === 0}
-            onClick={() => void exportSecrets()}
-            style={{ ...inputStyle, display: "inline-flex", alignItems: "center", gap: 6, cursor: exporting || secrets.length === 0 ? "not-allowed" : "pointer", opacity: exporting || secrets.length === 0 ? 0.55 : 1 }}
-          >
-            <DownloadSimple size={14} />
-            {exporting ? "Exporting…" : confirmingExport ? "Confirm plaintext export" : "Export .env"}
+          <button type="button" className="ade-modern-btn" data-tone="primary" onClick={() => nameInputRef.current?.focus()}>
+            <Plus size={12} weight="bold" /> New
           </button>
         </>
-      }
+      )}
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 18, fontFamily: SANS_FONT }}>
-        <form
-          onSubmit={handleSave}
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-            gap: 10,
-            alignItems: "center",
-          }}
-        >
-          <SettingsTextField
-            value={name}
-            onChange={setName}
-            placeholder="STRIPE_API_KEY"
-            ariaLabel="Secret name"
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-            style={inputStyle}
-          />
-          <SettingsTextField
-            value={value}
-            onChange={setValue}
-            placeholder="Secret value"
-            ariaLabel="Secret value"
-            type="password"
-            autoComplete="new-password"
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-            style={inputStyle}
-          />
-          <SettingsSegmented
-            ariaLabel="Secret storage"
-            value={storage}
-            onChange={setStorage}
-            options={[
-              { value: "account", label: "Save to account" },
-              { value: "device", label: "This device only" },
-            ]}
-          />
-          <button
-            type="submit"
-            disabled={saving || !name.trim() || !value}
-            style={{
-              minHeight: 34,
-              borderRadius: 8,
-              border: "none",
-              background: COLORS.accent,
-              color: "white",
-              fontFamily: SANS_FONT,
-              fontSize: 12,
-              fontWeight: 700,
-              padding: "0 12px",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              cursor: saving || !name.trim() || !value ? "not-allowed" : "pointer",
-              opacity: saving || !name.trim() || !value ? 0.55 : 1,
-              whiteSpace: "nowrap",
-            }}
-          >
-            <Plus size={14} weight="bold" />
-            {saving ? "Saving" : "Add secret"}
-          </button>
-        </form>
-
-        {(message || error) && (
-          <div
-            role={error ? "alert" : "status"}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              color: error ? "#dc2626" : "#15803d",
-              fontSize: 12,
-              minHeight: 18,
-            }}
-          >
-            {error ? <X size={14} weight="bold" /> : <Check size={14} weight="bold" />}
-            <span>{error ?? message}</span>
+      <div className="ade-modern-rows ade-secrets-table" {...(secrets.length > 0 ? { role: "table", "aria-label": "Saved secrets" } : {})}>
+        {secrets.length === 0 ? (
+          <div className="ade-secrets-empty">
+            <span className="ade-modern-glyph" aria-hidden><Key size={16} weight="duotone" /></span>
+            <div className="ade-ap-rowtitle">No secrets yet</div>
+            <div className="ade-ap-rowhint">Add one below, or import a .env file.</div>
           </div>
-        )}
-
-        <SettingsManagerTable columns={SECRET_COLUMNS} minWidth={780}>
-          {secrets.length === 0 ? (
-            <SettingsManagerEmpty
-              title="No secrets saved."
-              description="Add one above, or import a .env file from this computer."
-            />
-          ) : (
-            secrets.map((secret) => {
+        ) : (
+          <>
+            <div className="ade-secret-row ade-secret-head" role="row">
+              <span role="columnheader">Name</span>
+              <span role="columnheader">Value</span>
+              <span role="columnheader">Saved to</span>
+              <span role="columnheader" style={{ textAlign: "right" }}>Updated</span>
+              <span role="columnheader" aria-label="Actions" />
+            </div>
+            {shownSecrets.length === 0 ? (
+              <div className="ade-secrets-empty" role="row">
+                <div className="ade-ap-rowhint" role="cell">No secret matches &ldquo;{search.trim()}&rdquo;.</div>
+              </div>
+            ) : null}
+            {shownSecrets.map((secret) => {
               const isVisible = Boolean(visibleNames[secret.name]);
               const isBusy = busyName === secret.name;
               const isConfirmingDelete = confirmDeleteName === secret.name;
               const rowCopied = isCopied(secret.name);
+              const revealed = revealedValues[secret.name];
+              const showValue = isVisible && revealed != null;
               return (
-                <SettingsManagerRow
-                  key={secret.name}
-                  actions={
-                    <>
+                <div key={secret.name} className="ade-secret-row" role="row">
+                  <span role="cell" className="ade-secret-name" title={secret.name}>{secret.name}</span>
+                  <span role="cell" className="ade-secret-value" data-revealed={showValue ? "true" : undefined}>
+                    {showValue ? revealed : (
+                      <>
+                        <span aria-hidden>{"•".repeat(Math.min(Math.max(secret.valueLength, 8), 12))}</span>
+                        <span className="ade-secret-len">{secret.valueLength} characters</span>
+                      </>
+                    )}
+                  </span>
+                  <span role="cell">
+                    <span
+                      className="kit-tag"
+                      title={secret.uploadPending ? "Saved here; not on your other machines until the upload finishes." : undefined}
+                    >
+                      {storageLabel(secret)}
+                    </span>
+                  </span>
+                  <span role="cell" className="ade-secret-updated" title={formatUpdatedAt(secret.updatedAt)}>
+                    {updatedLabel(secret.updatedAt)}
+                  </span>
+                  <span role="cell" className="ade-secret-actions">
+                    <button
+                      type="button"
+                      className="ade-modern-btn"
+                      data-variant="ghost"
+                      data-icon="true"
+                      title={isVisible ? "Hide value" : "Show value"}
+                      aria-label={isVisible ? `Hide ${secret.name}` : `Reveal ${secret.name}`}
+                      disabled={isBusy}
+                      onClick={() => void toggleReveal(secret.name)}
+                    >
+                      {isVisible ? <EyeSlash size={14} /> : <Eye size={14} />}
+                    </button>
+                    <button
+                      type="button"
+                      className="ade-modern-btn"
+                      data-variant="ghost"
+                      data-icon="true"
+                      data-copied={rowCopied ? "true" : undefined}
+                      title={rowCopied ? "Copied" : "Copy value"}
+                      aria-label={rowCopied ? `Copied ${secret.name}` : `Copy ${secret.name}`}
+                      disabled={isBusy}
+                      onClick={() => void copySecret(secret.name)}
+                    >
+                      {rowCopied ? <Check size={14} weight="bold" /> : <Copy size={14} />}
+                    </button>
+                    {isConfirmingDelete ? (
                       <button
                         type="button"
-                        title={isVisible ? "Hide secret" : "Reveal secret"}
-                        aria-label={isVisible ? `Hide ${secret.name}` : `Reveal ${secret.name}`}
-                        disabled={isBusy}
-                        onClick={() => void toggleReveal(secret.name)}
-                        style={{ ...iconButtonStyle, opacity: isBusy ? 0.5 : 1 }}
-                      >
-                        {isVisible ? <EyeSlash size={15} /> : <Eye size={15} />}
-                      </button>
-                      <button
-                        type="button"
-                        title={rowCopied ? "Copied" : "Copy secret"}
-                        aria-label={rowCopied ? `Copied ${secret.name}` : `Copy ${secret.name}`}
-                        disabled={isBusy}
-                        onClick={() => void copySecret(secret.name)}
-                        style={{
-                          ...iconButtonStyle,
-                          color: rowCopied ? "#15803d" : COLORS.textSecondary,
-                          borderColor: rowCopied ? "color-mix(in srgb, #15803d 42%, transparent)" : COLORS.outlineBorder,
-                          background: rowCopied ? "color-mix(in srgb, #15803d 12%, var(--color-card))" : "var(--color-card)",
-                          opacity: isBusy ? 0.5 : 1,
-                        }}
-                      >
-                        {rowCopied ? <Check size={15} weight="bold" /> : <Copy size={15} />}
-                      </button>
-                      <button
-                        type="button"
-                        title={isConfirmingDelete ? "Confirm delete" : "Delete secret"}
-                        aria-label={isConfirmingDelete ? `Confirm delete ${secret.name}` : `Delete ${secret.name}`}
+                        className="ade-modern-btn"
+                        data-tone="danger"
+                        aria-label={`Confirm delete ${secret.name}`}
                         disabled={isBusy}
                         onClick={() => void deleteSecret(secret.name)}
-                        style={{
-                          ...iconButtonStyle,
-                          width: isConfirmingDelete ? 72 : 30,
-                          color: isConfirmingDelete ? "white" : "#dc2626",
-                          background: isConfirmingDelete ? "#dc2626" : "var(--color-card)",
-                          borderColor: isConfirmingDelete ? "#dc2626" : COLORS.outlineBorder,
-                          opacity: isBusy ? 0.5 : 1,
-                        }}
                       >
-                        {isConfirmingDelete ? "Confirm" : <Trash size={15} />}
+                        Delete
                       </button>
-                    </>
-                  }
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ color: COLORS.textPrimary, fontSize: 13, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {secret.name}
-                    </div>
-                    <div style={{ color: COLORS.textMuted, fontSize: 11 }}>
-                      {secret.valueLength} chars
-                    </div>
-                  </div>
-                  <SecretValueCell secret={secret} value={revealedValues[secret.name] ?? null} visible={isVisible} />
-                  <div style={{ color: COLORS.textMuted, fontSize: 12, minWidth: 0 }}>
-                    {secret.storage === "account" ? "Account" : "This device"}
-                  </div>
-                  <div style={{ color: COLORS.textMuted, fontSize: 12, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {formatUpdatedAt(secret.updatedAt)}
-                  </div>
-                </SettingsManagerRow>
+                    ) : (
+                      <button
+                        type="button"
+                        className="ade-modern-btn ade-secret-delete"
+                        data-variant="ghost"
+                        data-icon="true"
+                        title="Delete secret"
+                        aria-label={`Delete ${secret.name}`}
+                        disabled={isBusy}
+                        onClick={() => void deleteSecret(secret.name)}
+                      >
+                        <Trash size={14} />
+                      </button>
+                    )}
+                  </span>
+                </div>
               );
-            })
+            })}
+          </>
+        )}
+      </div>
+    </ModernSection>
+  );
+
+  const addForm = (
+    <ModernSection
+      group="Secrets"
+      title="Add a secret"
+      hint={storage === "account"
+        ? "Follows your account to every machine that opens this repository."
+        : "Stays on this computer only."}
+    >
+      <form onSubmit={handleSave} className="ade-secrets-add">
+        <label className="ade-secrets-field">
+          <span>Name</span>
+          <input
+            ref={nameInputRef}
+            className="ade-modern-field"
+            data-mono="true"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="STRIPE_API_KEY"
+            aria-label="Secret name"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+        </label>
+        <label className="ade-secrets-field">
+          <span>Value</span>
+          <input
+            className="ade-modern-field"
+            data-mono="true"
+            type="password"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            placeholder="Paste the value"
+            aria-label="Secret value"
+            autoComplete="new-password"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+        </label>
+        <div className="ade-secrets-field">
+          <span>Save to</span>
+          <div role="radiogroup" aria-label="Secret storage" className="kit-seg" data-case="sentence">
+            {([
+              { value: "account", label: "Account" },
+              { value: "device", label: "This device only" },
+            ] as const).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                role="radio"
+                aria-checked={storage === option.value}
+                onClick={() => setStorage(option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <button type="submit" className="ade-modern-btn ade-secrets-submit" data-tone="primary" disabled={!canAdd}>
+          <Plus size={12} weight="bold" />
+          {saving ? "Saving…" : "Add secret"}
+        </button>
+      </form>
+    </ModernSection>
+  );
+
+  const envFiles = (
+    <ModernSection group="Secrets" title=".env files" hint="Move secrets in from, or out to, a plain .env file.">
+      <ModernRows>
+        <ModernRow
+          title="Import"
+          hint="Choose which keys to add from a .env file on this computer."
+          control={(
+            <button type="button" className="ade-modern-btn" aria-label="Import .env" disabled={choosingImport} onClick={() => void chooseEnvFile()}>
+              <UploadSimple size={13} />
+              {choosingImport ? "Opening…" : "Import…"}
+            </button>
           )}
-        </SettingsManagerTable>
+        />
+        <ModernRow
+          title="Export"
+          hint={
+            confirmingExport
+              ? "Writes every value unencrypted to Downloads. Click again to confirm."
+              : "Writes every value, unencrypted, to a .env file in Downloads."
+          }
+          control={(
+            <button
+              type="button"
+              className="ade-modern-btn"
+              data-tone={confirmingExport ? "danger" : undefined}
+              aria-label={confirmingExport ? "Confirm plaintext export" : "Export .env"}
+              disabled={exporting || secrets.length === 0}
+              onClick={() => void exportSecrets()}
+            >
+              <DownloadSimple size={13} />
+              {exporting ? "Exporting…" : confirmingExport ? "Confirm export" : "Export"}
+            </button>
+          )}
+        />
+      </ModernRows>
+    </ModernSection>
+  );
+
+  return (
+    <SettingsColumn wide>
+      <div id={ANCHOR} data-settings-anchor={ANCHOR} className="ade-secrets-page" style={{ scrollMarginTop: 16 }}>
+        {(message || error) && (
+          <div
+            role={error ? "alert" : "status"}
+            className="ade-secrets-note"
+            data-tone={error ? "crit" : noteTone === "warning" ? "warn" : "ok"}
+          >
+            {error
+              ? <X size={14} weight="bold" />
+              : noteTone === "warning" ? <WarningCircle size={14} weight="bold" /> : <Check size={14} weight="bold" />}
+            <span>{error ?? message}</span>
+          </div>
+        )}
+        {list}
+        {addForm}
+        {envFiles}
       </div>
       {importPreview && (
         <SecretsImportEnvModal
@@ -543,6 +636,6 @@ export function SecretsSection() {
           onSave={() => void importSelectedSecrets()}
         />
       )}
-    </SettingsManagerPage>
+    </SettingsColumn>
   );
 }

@@ -1,17 +1,22 @@
 import React from "react";
 import {
-  CheckCircle, XCircle,
+  XCircle,
   CircleNotch,
   X,
   CaretDown, CaretRight,
+  TreeStructure,
+  GitCommit,
+  GitMerge,
 } from "@phosphor-icons/react";
+import { Banner, type BannerModel } from "../../ui/notice";
 import type {
   PrWithConflicts, PrCheck, PrReview, PrComment, PrStatus, PrDetail,
   PrFile, PrCommit, PrActionRun, PrActivityEvent, PrReviewThread,
-  LaneSummary, MergeMethod, LandResult,
+  LaneSummary, MergeMethod, LandResult, LandHeadChange,
   FilePatch,
   PrSnapshotHydration,
   PrGithubCoords,
+  OpenProjectBinding,
   AgentChatSessionSummary,
   PrCheckLogExcerpt,
   PrRerunChecksTarget,
@@ -21,21 +26,30 @@ import type { PaletteKind } from "../shared/PrCommandPalettes";
 import { parsePrsRouteState, type PrDetailRouteTab } from "../prsRouteState";
 import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRailsRef, type PrStateAction } from "./PrDetailTimelineRails";
 import { PrDetailHeader, type PrHeaderChecksNote, type UnmappedAffordance } from "./PrDetailHeader";
+import type { PrSwitcher } from "../shared/PrSwitcher";
+import { formatChatOutputContextBlock } from "../../../../shared/chatOutputContext";
+import { queueAgentChatDraftHandoff } from "../../../lib/agentChatDraftHandoff";
+import { showToast } from "../../app/toast/toastStore";
+import { useChatRuntimeScope } from "../../chat/ChatRuntimeScope";
+import type { PrChatQuote } from "../shared/prMarkdownContext";
 import {
-  handPromptToChat,
+  chatLabel,
+  usePrChatHandoff,
   linkedPrChats,
   newestWorkChat,
   prFailingCheckNames,
   prOpenFindings,
 } from "../shared/prChatActions";
 import { readLastMergeMethod } from "../shared/prMergeRailUtils";
-import { formatError } from "../shared/prFormatters";
+import { formatError, formatTimeAgoCompact } from "../shared/prFormatters";
 import type { PrActionsContext } from "../shared/PrActionsMenu";
 import { PrChecksTab } from "./PrChecksTab";
 import { resolveMergeabilityDeadline, type MergeabilityDeadline } from "./mergeabilityDeadline";
 import { PrManageLaneDialogHost } from "../shared/PrManageLaneDialogHost";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle } from "../../lanes/laneDesignTokens";
 import { AdeDiffViewer } from "../../shared/AdeDiffViewer";
+import { DiffFileTree, type DiffFileTreeEntry } from "../../shared/DiffFileTree";
+import { readPersistedFlag, writePersistedFlag } from "../../shared/persistedFlag";
 import { usePrs } from "../state/PrsContext";
 import {
   buildUnifiedChecks,
@@ -43,9 +57,10 @@ import {
   summarizePipelineStates,
 } from "../shared/prUnifiedChecks";
 import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
-import { navigateToAppTarget } from "../../../lib/openExternal";
-import { queueAgentChatDraftHandoff } from "../../../lib/agentChatDraftHandoff";
+import { navigateToAppTarget, openLinkFromUi } from "../../../lib/openExternal";
 import { isWebClientMode } from "../../../lib/webClientMode";
+import { PrRuntimePinProvider } from "../state/prMachines";
+import { pinArg, type MachineChipModel } from "../../../state/laneMachineRouting";
 
 // ---- Sub-tab type ----
 type DetailTab = PrDetailRouteTab;
@@ -375,6 +390,29 @@ type PrDetailPaneProps = {
    * PR is unmapped. Provided by GitHubTab so this pane stays presentational.
    */
   unmappedAffordance?: UnmappedAffordance | null;
+  /**
+   * Set when this PR's lane (and its PR row) lives on another machine. Every
+   * call the pane and its menus make goes to that machine with this pin, and
+   * the lane opens there. Null/absent = the tab's machine, unpinned.
+   */
+  runtime?: PrDetailRuntime | null;
+  /** The lane's machine chip; null on a one-machine project. */
+  laneMachineChip?: MachineChipModel | null;
+  /**
+   * Merge is refused with this reason. Set when the lane's owner machine is
+   * offline: a merge from here would skip that machine's lane bookkeeping.
+   * GitHub-only actions (comment, labels, reviewers, review) stay available.
+   */
+  mergeBlockedReason?: string | null;
+  /** The chat's other pull requests; the header shows a switcher when set. */
+  prSwitcher?: PrSwitcher | null;
+};
+
+export type PrDetailRuntime = {
+  pin: OpenProjectBinding;
+  machineName: string;
+  /** Opens the lane on its own machine. */
+  onOpenLane: () => void;
 };
 
 export type { UnmappedAffordance };
@@ -400,7 +438,18 @@ export function PrDetailPane({
   unmapped = false,
   provisional = false,
   unmappedAffordance = null,
+  runtime = null,
+  laneMachineChip = null,
+  mergeBlockedReason = null,
+  prSwitcher = null,
 }: PrDetailPaneProps) {
+  // The machine every call below targets: `[]` is the tab machine's unpinned
+  // call; `[pin]` sends it to the lane's owner.
+  const runtimePin = runtime?.pin ?? null;
+  const onPin = React.useMemo(() => pinArg(runtimePin), [runtimePin]);
+  // Chat hand-offs keep the lane's machine: a foreign chat is focused with its
+  // binding and a new chat starts as a draft on the owner machine.
+  const chatHandoff = usePrChatHandoff(runtimePin);
   const {
     detailReviewThreads: ctxReviewThreads,
     detailDeployments,
@@ -603,6 +652,19 @@ export function PrDetailPane({
   const [actionBusy, setActionBusy] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [actionResult, setActionResult] = React.useState<LandResult | null>(null);
+  // The merge that produced `actionResult`, so a merge refused for a moved
+  // head can be sent again against the new head in one click.
+  const [lastMergeRequest, setLastMergeRequest] = React.useState<MergeRequest | null>(null);
+  // A stack merge that answered "still merging" finishes in the background.
+  // When the PR shows as merged, the banner says so instead of spinning on.
+  React.useEffect(() => {
+    if (pr.state !== "merged") return;
+    setActionResult((current) => (
+      current && !current.success && (current.mergeStatus === "pending" || current.mergeStatus === "enqueued")
+        ? { ...current, success: true, mergeStatus: "merged", error: null }
+        : current
+    ));
+  }, [pr.state]);
   const [commentDraft, setCommentDraft] = React.useState("");
   const [editingTitle, setEditingTitle] = React.useState(false);
   const [titleDraft, setTitleDraft] = React.useState("");
@@ -630,25 +692,13 @@ export function PrDetailPane({
     const prompt = buildCiFixPrompt(pr, excerpt, fallbackJobName);
     try {
       const session = newestWorkChat(
-        await window.ade.agentChat.list({ laneId: pr.laneId, includeArchived: false }),
+        await window.ade.agentChat.list({ laneId: pr.laneId, includeArchived: false }, ...onPin),
       );
-      if (session) {
-        queueAgentChatDraftHandoff({ sessionId: session.sessionId }, prompt);
-        navigateToAppTarget({
-          kind: "work",
-          laneId: pr.laneId,
-          sessionId: session.sessionId,
-        });
-        return;
-      }
-
-      const draftTargetId = `work:draft:${pr.laneId}:chat`;
-      queueAgentChatDraftHandoff({ draftTargetId }, prompt);
-      navigateToAppTarget({ kind: "work", laneId: pr.laneId });
+      chatHandoff({ laneId: pr.laneId, sessionId: session?.sessionId ?? null, prompt });
     } catch (error) {
       setActionError(formatError(error));
     }
-  }, [pr]);
+  }, [chatHandoff, onPin, pr]);
 
   const applyDetailPaneWarmCache = React.useCallback((cached: PrDetailPaneWarmCache) => {
     if (cached.detail) {
@@ -717,37 +767,37 @@ export function PrDetailPane({
   const fetchDetail = React.useCallback((): Promise<PrDetail> =>
     isUnmapped && coordsRef.current
       ? window.ade.prs.getDetailByGithub(coordsRef.current)
-      : window.ade.prs.getDetail(pr.id),
-  [isUnmapped, pr.id]);
+      : window.ade.prs.getDetail(pr.id, ...onPin),
+  [isUnmapped, onPin, pr.id]);
   const fetchFiles = React.useCallback((): Promise<PrFile[]> =>
     isUnmapped && coordsRef.current
       ? window.ade.prs.getFilesByGithub(coordsRef.current)
-      : window.ade.prs.getFiles(pr.id),
-  [isUnmapped, pr.id]);
+      : window.ade.prs.getFiles(pr.id, ...onPin),
+  [isUnmapped, onPin, pr.id]);
   const fetchCommits = React.useCallback((): Promise<PrCommit[]> => {
     if (isUnmapped && coordsRef.current) return window.ade.prs.getCommitsByGithub(coordsRef.current);
-    return typeof window.ade.prs.getCommits === "function" ? window.ade.prs.getCommits(pr.id) : Promise.resolve([]);
-  }, [isUnmapped, pr.id]);
+    return typeof window.ade.prs.getCommits === "function" ? window.ade.prs.getCommits(pr.id, ...onPin) : Promise.resolve([]);
+  }, [isUnmapped, onPin, pr.id]);
   const fetchActionRuns = React.useCallback((): Promise<PrActionRun[]> =>
     isUnmapped && coordsRef.current
       ? window.ade.prs.getActionRunsByGithub(coordsRef.current)
-      : window.ade.prs.getActionRuns(pr.id),
-  [isUnmapped, pr.id]);
+      : window.ade.prs.getActionRuns(pr.id, ...onPin),
+  [isUnmapped, onPin, pr.id]);
   const fetchActivity = React.useCallback((): Promise<PrActivityEvent[]> =>
     isUnmapped && coordsRef.current
       ? window.ade.prs.getActivityByGithub(coordsRef.current)
-      : window.ade.prs.getActivity(pr.id),
-  [isUnmapped, pr.id]);
+      : window.ade.prs.getActivity(pr.id, ...onPin),
+  [isUnmapped, onPin, pr.id]);
   const fetchReviewThreadsApi = React.useCallback((): Promise<PrReviewThread[]> =>
     isUnmapped && coordsRef.current
       ? window.ade.prs.getReviewThreadsByGithub(coordsRef.current)
-      : window.ade.prs.getReviewThreads(pr.id),
-  [isUnmapped, pr.id]);
+      : window.ade.prs.getReviewThreads(pr.id, ...onPin),
+  [isUnmapped, onPin, pr.id]);
   const fetchChecks = React.useCallback((): Promise<PrCheck[]> =>
     isUnmapped && coordsRef.current
       ? window.ade.prs.getChecksByGithub(coordsRef.current)
-      : window.ade.prs.getChecks(pr.id),
-  [isUnmapped, pr.id]);
+      : window.ade.prs.getChecks(pr.id, ...onPin),
+  [isUnmapped, onPin, pr.id]);
 
   const loadDetail = React.useCallback(async (options: { hydrateSnapshot?: boolean; forceLive?: boolean; showLoading?: boolean } = {}) => {
     const requestId = ++detailLoadSeqRef.current;
@@ -756,7 +806,7 @@ export function PrDetailPane({
       if (options.hydrateSnapshot && !options.forceLive) {
         const contextSnapshot = snapshotHydrationRef.current?.prId === pr.id ? snapshotHydrationRef.current : null;
         const cachedSnapshot = contextSnapshot ?? (typeof window.ade.prs.listSnapshots === "function"
-          ? (await window.ade.prs.listSnapshots({ prId: pr.id }).catch(() => []))[0]
+          ? (await window.ade.prs.listSnapshots({ prId: pr.id }, ...onPin).catch(() => []))[0]
           : null);
         if (requestId !== detailLoadSeqRef.current) return;
         if (cachedSnapshot) {
@@ -810,7 +860,30 @@ export function PrDetailPane({
               }
             }))
             .catch(() => null)
-        : Promise.resolve(null);
+        : runtimePin
+          // Another machine's PR has no PrsContext live data here: its owner
+          // answers status, checks, reviews and comments directly.
+          ? Promise.allSettled([
+              window.ade.prs.getStatus(pr.id, runtimePin).then(applyIfCurrent((value) => {
+                if (value) {
+                  setSnapshotStatus(value);
+                  updateDetailPaneWarmCache({ status: value });
+                }
+              })),
+              window.ade.prs.getChecks(pr.id, runtimePin).then(applyIfCurrent((value) => {
+                setSnapshotChecks(value);
+                updateDetailPaneWarmCache({ checks: value });
+              })),
+              window.ade.prs.getReviews(pr.id, runtimePin).then(applyIfCurrent((value) => {
+                setSnapshotReviews(value);
+                updateDetailPaneWarmCache({ reviews: value });
+              })),
+              window.ade.prs.getComments(pr.id, runtimePin).then(applyIfCurrent((value) => {
+                setSnapshotComments(value);
+                updateDetailPaneWarmCache({ comments: value });
+              })),
+            ])
+          : Promise.resolve(null);
       await Promise.allSettled([detailPromise, filesPromise, commitsPromise, actionRunsPromise, statusPromise]);
     } catch {
       // silently fail - basic data still available from context
@@ -820,7 +893,7 @@ export function PrDetailPane({
         setDetailLoading(false);
       }
     }
-  }, [applySnapshotHydration, fetchActionRuns, fetchCommits, fetchDetail, fetchFiles, isUnmapped, pr.id, updateDetailPaneWarmCache]);
+  }, [applySnapshotHydration, fetchActionRuns, fetchCommits, fetchDetail, fetchFiles, isUnmapped, onPin, pr.id, runtimePin, updateDetailPaneWarmCache]);
 
   const refreshReviewThreads = React.useCallback(async () => {
     const requestId = detailLoadSeqRef.current;
@@ -1055,7 +1128,7 @@ export function PrDetailPane({
         const coords = coordsRef.current;
         return readByCoords && coords ? readByCoords(coords) : null;
       }
-      return readById ? readById(pr.id) : null;
+      return readById ? readById(pr.id, ...onPin) : null;
     };
     let cancelled = false;
     // Stands down with the governor like every other automatic loop, by
@@ -1102,7 +1175,7 @@ export function PrDetailPane({
     };
   }, [
     mergeabilityComputing, isUnmapped, githubPollGeneration, githubPollPeriodFor,
-    isGithubPollStoodDown, noteGithubReadFailure, noteGithubReadSuccess, pr.id,
+    isGithubPollStoodDown, noteGithubReadFailure, noteGithubReadSuccess, onPin, pr.id,
     updateDetailPaneWarmCache,
   ]);
 
@@ -1125,16 +1198,13 @@ export function PrDetailPane({
   }, [loadDetail, onRefresh, pr.id]);
 
   // ---- Actions ----
-  const handleMerge = (
-    method: MergeMethod,
-    options?: {
-      bypassRules?: boolean;
-      commitTitle?: string;
-      commitBody?: string;
-      expectedHeadSha?: string;
-    },
-  ) => {
+  const handleMerge = (method: MergeMethod, options?: MergeRequestOptions) => {
     setActionResult(null);
+    setLastMergeRequest({ method, options: options ?? {} });
+    if (mergeBlockedReason) {
+      setActionError(mergeBlockedReason);
+      return Promise.resolve();
+    }
     return runAction(async () => {
       // No mapping check: `land` resolves a synthetic `gh:` id as readily as a
       // row id, because merging is a GitHub API call. A lane only decides
@@ -1146,11 +1216,17 @@ export function PrDetailPane({
         commitTitle: options?.commitTitle,
         commitBody: options?.commitBody,
         expectedHeadSha: options?.expectedHeadSha,
-      });
+      }, ...onPin);
       setActionResult(res);
       // GitHub has accepted the merge. Move the row to Merged now rather than
       // leaving it in Open until the snapshot refetch agrees.
-      if (res.success) markPrTerminalLocally(pr, "merged");
+      if (res.success) {
+        markPrTerminalLocally(pr, "merged");
+        // A stack merge also merged every open PR below this one.
+        for (const githubPrNumber of res.stackPrNumbers ?? []) {
+          markPrTerminalLocally({ repoOwner: pr.repoOwner, repoName: pr.repoName, githubPrNumber }, "merged");
+        }
+      }
       await onRefresh();
     });
   };
@@ -1173,15 +1249,19 @@ export function PrDetailPane({
           prId: pr.id,
           strategy,
           expectedHeadSha: status?.headSha ?? undefined,
-        });
+        }, ...onPin);
         // Conflicts come back as `{ success: false, hasConflicts: true, error }`,
         // so check hasConflicts FIRST — otherwise the generic failure branch
         // shadows the conflict UX (resolve-in-Rebase message + onOpenRebaseTab).
         if (result.hasConflicts) {
           setUpdateBranchNotice({
             tone: "error",
-            text: "Update hit conflicts — resolve in the Rebase tab / launch resolver.",
+            text: runtime
+              ? `Update hit conflicts on ${runtime.machineName} — resolve in the Rebase tab / launch resolver.`
+              : "Update hit conflicts — resolve in the Rebase tab / launch resolver.",
           });
+          // The Rebase view lists every machine's lanes and routes this one to
+          // its owner, so a foreign lane jumps there too.
           if (pr.laneId && onOpenRebaseTab) onOpenRebaseTab(pr.laneId);
         } else if (!result.success || result.error) {
           setUpdateBranchNotice({ tone: "error", text: result.error ?? "Update branch failed." });
@@ -1196,7 +1276,7 @@ export function PrDetailPane({
         setUpdateBranchBusy(false);
       }
     },
-    [onOpenRebaseTab, pr.id, pr.laneId, refreshAll, status?.headSha],
+    [onOpenRebaseTab, onPin, pr.id, pr.laneId, refreshAll, runtime, status?.headSha],
   );
 
   const handleDeleteBranch = () => runAction(async () => {
@@ -1204,14 +1284,14 @@ export function PrDetailPane({
       prId: pr.id,
       deleteLocalBranch: true,
       deleteRemoteBranch: true,
-    });
+    }, ...onPin);
     await onRefresh();
   });
 
   const handleAddComment = async () => {
     if (!commentDraft.trim()) return;
     return runAction(async () => {
-      await window.ade.prs.addComment({ prId: pr.id, body: commentDraft });
+      await window.ade.prs.addComment({ prId: pr.id, body: commentDraft }, ...onPin);
       setCommentDraft("");
       activityFetchKeyRef.current = null;
       setActivity([]);
@@ -1229,11 +1309,11 @@ export function PrDetailPane({
   const handleUpdateTitle = React.useCallback(() => {
     if (!titleDraft.trim()) return;
     void runAction(async () => {
-      await window.ade.prs.updateTitle({ prId: pr.id, title: titleDraft });
+      await window.ade.prs.updateTitle({ prId: pr.id, title: titleDraft }, ...onPin);
       setEditingTitle(false);
       await onRefresh();
     });
-  }, [onRefresh, pr.id, runAction, titleDraft]);
+  }, [onPin, onRefresh, pr.id, runAction, titleDraft]);
 
   const handleStartTitleEdit = React.useCallback(() => {
     setTitleDraft(pr.title);
@@ -1243,7 +1323,7 @@ export function PrDetailPane({
   const handleCancelTitleEdit = React.useCallback(() => setEditingTitle(false), []);
 
   const handleSetLabels = (labels: string[]) => runAction(async () => {
-    await window.ade.prs.setLabels({ prId: pr.id, labels });
+    await window.ade.prs.setLabels({ prId: pr.id, labels }, ...onPin);
     await loadDetail({ forceLive: true });
   });
 
@@ -1252,20 +1332,20 @@ export function PrDetailPane({
       prId: pr.id,
       reviewers: request.reviewers,
       teamReviewers: request.teamReviewers,
-    });
+    }, ...onPin);
     await onRefresh();
     await loadDetail({ forceLive: true });
   });
 
   const handleSubmitReview = (event: PrReviewEvent, body: string) => runAction(async () => {
-    await window.ade.prs.submitReview({ prId: pr.id, event, body: body || undefined });
+    await window.ade.prs.submitReview({ prId: pr.id, event, body: body || undefined }, ...onPin);
     // Clear the draft only now: a rejected review keeps the text to retry.
     setCommentDraft("");
     await onRefresh();
   });
 
   const handleReopenPr = () => runAction(async () => {
-    await window.ade.prs.reopen({ prId: pr.id });
+    await window.ade.prs.reopen({ prId: pr.id }, ...onPin);
     // Drop the optimistic "closed" this same pane may have recorded, or the row
     // and this pane both keep painting the PR as closed until it expires.
     clearPrTerminalLocally(pr);
@@ -1273,7 +1353,7 @@ export function PrDetailPane({
   });
 
   const handleRerunChecks = (target?: PrRerunChecksTarget) => runAction(async () => {
-    await window.ade.prs.rerunChecks({ prId: pr.id, ...target });
+    await window.ade.prs.rerunChecks({ prId: pr.id, ...target }, ...onPin);
     await onRefresh();
     await loadDetail({ forceLive: true });
   });
@@ -1292,21 +1372,25 @@ export function PrDetailPane({
     if (!pr.laneId) return undefined;
     let cancelled = false;
     void window.ade.agentChat
-      .list({ laneId: pr.laneId, includeArchived: false })
+      .list({ laneId: pr.laneId, includeArchived: false }, ...onPin)
       .then((sessions) => { if (!cancelled) setLaneChats(sessions); })
       .catch(() => undefined);
     return () => { cancelled = true; };
-  }, [pr.laneId, pr.id]);
+  }, [onPin, pr.laneId, pr.id]);
   const linkedChats = React.useMemo(() => linkedPrChats(pr, laneChats), [laneChats, pr]);
   const handleOpenChat = React.useCallback((session: AgentChatSessionSummary) => {
-    navigateToAppTarget({ kind: "work", laneId: session.laneId, sessionId: session.sessionId });
-  }, []);
+    chatHandoff({ laneId: session.laneId, sessionId: session.sessionId });
+  }, [chatHandoff]);
   const handleOpenLane = React.useCallback(() => {
     // Opening the lane from a PR goes to the Lanes tab, where the lane reads as
     // a lane (branch, stack, git actions). The Work tab is for its chats, which
     // is a different destination and a different intent.
+    if (runtime) {
+      runtime.onOpenLane();
+      return;
+    }
     if (pr.laneId) navigateToAppTarget({ kind: "lane", laneId: pr.laneId });
-  }, [pr.laneId]);
+  }, [pr.laneId, runtime]);
 
   const checksBuckets = React.useMemo(() => summarizePipelineStates(headerChecks), [headerChecks]);
   const checksNote = React.useMemo<PrHeaderChecksNote>(() => {
@@ -1334,24 +1418,59 @@ export function PrDetailPane({
   const handPrPrompt = React.useCallback((prompt: string) => {
     if (!pr.laneId) return;
     // Same rule as the ⋯ menu: the newest linked chat, else a new lane chat.
-    handPromptToChat({ laneId: pr.laneId, sessionId: linkedChats[0]?.sessionId ?? null, prompt });
-  }, [linkedChats, pr.laneId]);
+    chatHandoff({ laneId: pr.laneId, sessionId: linkedChats[0]?.sessionId ?? null, prompt });
+  }, [chatHandoff, linkedChats, pr.laneId]);
+
+  /**
+   * "Add to chat" on a part of the PR: the quote waits in the chat's composer
+   * and the reader stays here, so they can collect several before they write.
+   * Inside a chat's tools panel that chat takes it; else the newest linked
+   * chat, the same rule the prompt hand-off uses. With no chat yet, a new lane
+   * chat opens with the quote in it.
+   */
+  const hostChatSessionId = useChatRuntimeScope().sessionId;
+  const addQuoteToChat = React.useCallback((quote: PrChatQuote) => {
+    if (!pr.laneId) return;
+    const block = formatChatOutputContextBlock(
+      quote.text,
+      `${quote.from} in pull request #${pr.githubPrNumber} "${pr.title}" (${pr.githubUrl})`,
+    );
+    if (!block) return;
+    if (hostChatSessionId) {
+      // The chat beside this pane shows the quote arrive; no notice needed.
+      queueAgentChatDraftHandoff({ sessionId: hostChatSessionId }, block, { collect: true });
+      return;
+    }
+    const chat = linkedChats[0] ?? null;
+    if (!chat) {
+      chatHandoff({ laneId: pr.laneId, sessionId: null, prompt: block });
+      return;
+    }
+    queueAgentChatDraftHandoff({ sessionId: chat.sessionId }, block, { collect: true });
+    showToast({
+      id: `pr-add-to-chat:${pr.id}`,
+      tone: "success",
+      title: `Added to ${chatLabel(chat)}`,
+      message: "It waits in the chat's message box.",
+      actions: [{ label: "Open chat", onClick: () => chatHandoff({ laneId: chat.laneId, sessionId: chat.sessionId }) }],
+    });
+  }, [chatHandoff, hostChatSessionId, linkedChats, pr.githubPrNumber, pr.githubUrl, pr.id, pr.laneId, pr.title]);
 
   const handlePrStateAction = React.useCallback(async (action: PrStateAction) => {
     try {
-      if (action === "ready_for_review") await window.ade.prs.setDraft({ prId: pr.id, draft: false });
+      if (action === "ready_for_review") await window.ade.prs.setDraft({ prId: pr.id, draft: false }, ...onPin);
       else {
         await window.ade.prs.setAutoMerge({
           prId: pr.id,
           enabled: action === "enable_auto_merge",
           method: readLastMergeMethod(mergeMethod),
-        });
+        }, ...onPin);
       }
       await refreshAll();
     } catch (error) {
       setActionError(formatError(error));
     }
-  }, [mergeMethod, pr.id, refreshAll]);
+  }, [mergeMethod, onPin, pr.id, refreshAll]);
 
   const [readyBusy, setReadyBusy] = React.useState(false);
   const handleReadyForReview = React.useCallback(() => {
@@ -1392,6 +1511,9 @@ export function PrDetailPane({
   }), [githubPollGeneration, isGithubPollStoodDown, noteGithubReadFailure, noteGithubReadSuccess]);
 
   return (
+    // Menus, the resolver, lane management and reactions below read the pin
+    // from here, so the whole pane targets one machine.
+    <PrRuntimePinProvider value={runtimePin}>
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", background: COLORS.prSurface }}>
       {/* ===== HEADER ===== */}
       <PrDetailHeader
@@ -1403,6 +1525,7 @@ export function PrDetailPane({
         checksNote={checksNote}
         author={detail?.author ?? null}
         lane={laneForPr}
+        laneMachineChip={laneMachineChip}
         linkedChats={linkedChats}
         onOpenChat={handleOpenChat}
         onOpenLane={pr.laneId ? handleOpenLane : null}
@@ -1416,6 +1539,7 @@ export function PrDetailPane({
         onCancelTitleEdit={handleCancelTitleEdit}
         onSubmitTitle={handleUpdateTitle}
         unmappedAffordance={unmappedAffordance}
+        switcher={prSwitcher}
       />
 
       {/* ===== ERROR BAR ===== */}
@@ -1428,22 +1552,23 @@ export function PrDetailPane({
           <button type="button" onClick={() => setActionError(null)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger, padding: 4 }}><X size={14} /></button>
         </div>
       )}
-      {actionResult && (
-        <div style={{
-          padding: "10px 20px",
-          background: actionResult.success ? "color-mix(in srgb, var(--color-success) 5%, transparent)" : "color-mix(in srgb, var(--color-error) 5%, transparent)",
-          borderBottom: `1px solid ${actionResult.success ? "color-mix(in srgb, var(--color-success) 20%, transparent)" : "color-mix(in srgb, var(--color-error) 20%, transparent)"}`,
-          fontFamily: SANS_FONT, fontSize: 12,
-          color: actionResult.success ? COLORS.success : COLORS.danger,
-          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {actionResult.success ? <CheckCircle size={14} weight="fill" /> : <XCircle size={14} weight="fill" />}
-            <span>{actionResult.success ? `Merged PR #${actionResult.prNumber}` : `Failed: ${actionResult.error ?? "unknown"}`}</span>
-          </div>
-          <button type="button" onClick={() => setActionResult(null)} style={{ background: "none", border: "none", cursor: "pointer", color: actionResult.success ? COLORS.success : COLORS.danger, padding: 4 }} aria-label="Dismiss merge result"><X size={14} /></button>
-        </div>
-      )}
+      {actionResult ? (
+        <Banner
+          layout="inline"
+          style={{ margin: "8px 20px 0", flexShrink: 0 }}
+          model={mergeResultBannerModel(actionResult, {
+            onDismiss: () => setActionResult(null),
+            pr,
+            busy: actionBusy,
+            onMergeAgain: (currentHeadSha) => {
+              if (!lastMergeRequest) return;
+              void handleMerge(lastMergeRequest.method, { ...lastMergeRequest.options, expectedHeadSha: currentHeadSha });
+            },
+            canMergeAgain: Boolean(lastMergeRequest) && !mergeBlockedReason,
+            bypassing: Boolean(lastMergeRequest?.options.bypassRules),
+          })}
+        />
+      ) : null}
 
       {/* ===== TAB CONTENT ===== */}
       <div style={{ position: "relative", flex: 1, minHeight: 0, overflow: overviewRailsActive ? "hidden" : "auto" }}>
@@ -1474,6 +1599,7 @@ export function PrDetailPane({
             onRerunChecks={handleRerunChecks}
             mergeMethod={mergeMethod}
             onMerge={handleMerge}
+            mergeBlockedReason={mergeBlockedReason}
             onUpdateBranch={handleUpdateBranch}
             updateBranchBusy={updateBranchBusy}
             updateBranchNotice={updateBranchNotice}
@@ -1484,6 +1610,7 @@ export function PrDetailPane({
             onReopen={handleReopenPr}
             onSubmitReview={handleSubmitReview}
             onHandPrompt={pr.laneId ? handPrPrompt : undefined}
+            onAddToChat={pr.laneId ? addQuoteToChat : undefined}
             onOpenPrFile={(path) => {
               setExpandedFile(path);
               setActiveTab("files");
@@ -1497,7 +1624,12 @@ export function PrDetailPane({
           lane={laneForPr}
         />
         {activeTab === "files" && (
-          <FilesTab files={files} expandedFile={expandedFile} setExpandedFile={setExpandedFile} />
+          <FilesTab
+            files={files}
+            expandedFile={expandedFile}
+            setExpandedFile={setExpandedFile}
+            persistKey="pr-code-tab"
+          />
         )}
         {activeTab === "checks" && (
           <div data-tour="prs.checksPanel" style={{ display: "contents" }}>
@@ -1516,6 +1648,7 @@ export function PrDetailPane({
         )}
       </div>
     </div>
+    </PrRuntimePinProvider>
   );
 }
 
@@ -1523,9 +1656,72 @@ export function PrDetailPane({
 // FILES TAB
 // ================================================================
 
-function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; expandedFile: string | null; setExpandedFile: (f: string | null) => void }) {
+const FILE_TREE_STORAGE_PREFIX = "ade:diff:fileTree:";
+
+function readPersistedFileTree(key: string | undefined): boolean {
+  return readPersistedFlag(FILE_TREE_STORAGE_PREFIX, key);
+}
+
+function writePersistedFileTree(key: string | undefined, value: boolean): void {
+  writePersistedFlag(FILE_TREE_STORAGE_PREFIX, key, value);
+}
+
+function FilesTab({
+  files,
+  expandedFile,
+  setExpandedFile,
+  persistKey,
+}: {
+  files: PrFile[];
+  expandedFile: string | null;
+  setExpandedFile: (f: string | null) => void;
+  /** Stable per-view id so the tree toggle is remembered across mounts. */
+  persistKey?: string;
+}) {
   const totalAdd = files.reduce((s, f) => s + f.additions, 0);
   const totalDel = files.reduce((s, f) => s + f.deletions, 0);
+  const [showTree, setShowTree] = React.useState(() => readPersistedFileTree(persistKey));
+  const rowRefs = React.useRef(new Map<string, HTMLDivElement | null>());
+  const pendingScrollRef = React.useRef<string | null>(null);
+
+  const toggleTree = React.useCallback(() => {
+    setShowTree((value) => {
+      const next = !value;
+      writePersistedFileTree(persistKey, next);
+      return next;
+    });
+  }, [persistKey]);
+
+  const treeEntries = React.useMemo<DiffFileTreeEntry[]>(
+    () => files.map((file) => ({
+      path: file.filename,
+      status: file.status,
+      previousPath: file.previousFilename,
+      additions: file.additions,
+      deletions: file.deletions,
+    })),
+    [files],
+  );
+
+  // Tree click = expand that file's diff, then scroll it into view. The scroll
+  // is deferred to the effect so it runs after the expanded row has mounted;
+  // re-clicking an already-open file still scrolls it back.
+  const handleTreeSelect = React.useCallback((path: string) => {
+    if (expandedFile === path) {
+      rowRefs.current.get(path)?.scrollIntoView({ block: "start", behavior: "smooth" });
+      return;
+    }
+    pendingScrollRef.current = path;
+    setExpandedFile(path);
+  }, [expandedFile, setExpandedFile]);
+
+  React.useEffect(() => {
+    const path = pendingScrollRef.current;
+    if (!path) return;
+    pendingScrollRef.current = null;
+    rowRefs.current.get(path)?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [expandedFile]);
+
   const toPatchStatus = (status: PrFile["status"]): FilePatch["status"] => {
     if (status === "removed") return "deleted";
     if (status === "copied") return "added";
@@ -1552,17 +1748,57 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
           <span style={{ fontFamily: MONO_FONT, fontSize: 12, fontWeight: 600, color: COLORS.success, background: "color-mix(in srgb, var(--color-success) 12%, transparent)", padding: "2px 8px", borderRadius: 6 }}>+{totalAdd}</span>
           <span style={{ fontFamily: MONO_FONT, fontSize: 12, fontWeight: 600, color: COLORS.danger, background: "color-mix(in srgb, var(--color-error) 12%, transparent)", padding: "2px 8px", borderRadius: 6 }}>-{totalDel}</span>
         </div>
+        {files.length > 0 ? (
+          <button
+            type="button"
+            onClick={toggleTree}
+            aria-pressed={showTree}
+            aria-label="Show changed files as a tree"
+            title="Show changed files as a tree"
+            style={{
+              display: "flex", alignItems: "center", gap: 6,
+              height: 26, padding: "0 10px", borderRadius: 6,
+              border: `1px solid ${COLORS.border}`,
+              background: showTree ? `color-mix(in srgb, ${COLORS.accent} 12%, transparent)` : "transparent",
+              color: showTree ? COLORS.accent : COLORS.textSecondary,
+              fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600, cursor: "pointer",
+            }}
+          >
+            <TreeStructure size={12} weight="bold" />
+            Tree
+          </button>
+        ) : null}
       </div>
       {files.length === 0 ? (
         <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>No files changed</div>
       ) : (
-        <div style={{ ...cardStyle(), padding: 0, overflow: "hidden" }}>
-          {files.map((file, idx) => {
-            const isExpanded = expandedFile === file.filename;
-            const statusCol = fileStatusColor(file.status);
-            const filePatch = toPatch(file);
-            return (
-              <div key={file.filename}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+          {showTree ? (
+            <div
+              style={{
+                position: "sticky", top: 0, width: 260, flexShrink: 0,
+                maxHeight: "min(70vh, 640px)", display: "flex", flexDirection: "column",
+                ...cardStyle({ padding: 0, overflow: "hidden" }),
+              }}
+            >
+              <DiffFileTree
+                files={treeEntries}
+                selectedPath={expandedFile}
+                onSelectFile={handleTreeSelect}
+                className="h-full"
+              />
+            </div>
+          ) : null}
+          <div style={cardStyle({ padding: 0, overflow: "hidden", flex: 1, minWidth: 0 })}>
+            {files.map((file, idx) => {
+              const isExpanded = expandedFile === file.filename;
+              const statusCol = fileStatusColor(file.status);
+              const filePatch = toPatch(file);
+              return (
+                <div
+                  key={file.filename}
+                  ref={(node) => { rowRefs.current.set(file.filename, node); }}
+                >
                 <button
                   type="button"
                   onClick={() => setExpandedFile(isExpanded ? null : file.filename)}
@@ -1594,7 +1830,7 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
                 </button>
                 {isExpanded && filePatch ? (
                   <div style={{ borderBottom: `1px solid ${COLORS.border}`, height: 500 }}>
-                    <AdeDiffViewer patch={filePatch} editable={false} className="h-full rounded-none border-0" />
+                    <AdeDiffViewer patch={filePatch} editable={false} className="h-full rounded-none border-0" persistKey="pr-code-tab" />
                   </div>
                 ) : isExpanded ? (
                   <div
@@ -1611,10 +1847,121 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
                   </div>
                 ) : null}
               </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
   );
+}
+
+/** The banner for a merge result. A stack merge GitHub queued or still runs is not a failure. */
+type MergeRequestOptions = {
+  bypassRules?: boolean;
+  commitTitle?: string;
+  commitBody?: string;
+  expectedHeadSha?: string;
+};
+
+type MergeRequest = { method: MergeMethod; options: MergeRequestOptions };
+
+type MergeResultBannerHandlers = {
+  onDismiss: () => void;
+  pr: PrWithConflicts;
+  busy: boolean;
+  canMergeAgain: boolean;
+  bypassing: boolean;
+  onMergeAgain: (currentHeadSha: string) => void;
+};
+
+const HEAD_CHANGE_VISIBLE_COMMITS = 4;
+
+/** The commits that landed after the user loaded the PR, newest first. */
+function HeadChangeCommitList({ change, pr }: { change: LandHeadChange; pr: PrWithConflicts }) {
+  const commits = [...change.newCommits].reverse();
+  const shown = commits.slice(0, HEAD_CHANGE_VISIBLE_COMMITS);
+  const hidden = change.totalNewCommits - shown.length;
+  if (shown.length === 0) return null;
+  return (
+    <ul
+      data-testid="pr-merge-head-change-commits"
+      style={{ listStyle: "none", margin: "6px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: 3 }}
+    >
+      {shown.map((commit) => (
+        <li key={commit.sha} style={{ display: "flex", alignItems: "baseline", gap: 8, minWidth: 0, fontSize: 12 }}>
+          <a
+            href={`${pr.githubUrl}/commits/${commit.sha}`}
+            onClick={(event) => {
+              event.preventDefault();
+              openLinkFromUi(`${pr.githubUrl}/commits/${commit.sha}`, event);
+            }}
+            style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted, textDecoration: "none", flexShrink: 0 }}
+          >
+            {commit.sha.slice(0, 7)}
+          </a>
+          <span style={{ color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
+            {commit.title || "(no message)"}
+          </span>
+          <span style={{ color: COLORS.textMuted, fontSize: 11, flexShrink: 0 }}>
+            {[commit.author, commit.committedAt ? formatTimeAgoCompact(commit.committedAt) : null].filter(Boolean).join(" · ")}
+          </span>
+        </li>
+      ))}
+      {hidden > 0 ? (
+        <li style={{ fontSize: 11, color: COLORS.textMuted }}>+{hidden} more</li>
+      ) : null}
+    </ul>
+  );
+}
+
+function headChangeBannerModel(result: LandResult, change: LandHeadChange, handlers: MergeResultBannerHandlers): BannerModel {
+  const compareUrl = `https://github.com/${handlers.pr.repoOwner}/${handlers.pr.repoName}/compare/${change.expectedHeadSha}...${change.currentHeadSha}`;
+  return {
+    id: "pr-merge-result",
+    tone: "warning",
+    icon: <GitCommit size={16} weight="bold" />,
+    // The host words the refusal (new commits vs a force-push).
+    title: result.error ?? `PR #${result.prNumber} changed after you loaded it. Nothing was merged.`,
+    detail: "Look over what landed, then merge again.",
+    extra: <HeadChangeCommitList change={change} pr={handlers.pr} />,
+    actions: [
+      ...(handlers.canMergeAgain
+        ? [{
+            label: handlers.bypassing ? "Override & merge with these" : "Merge with these",
+            variant: "solid" as const,
+            icon: <GitMerge size={12} weight="bold" />,
+            busy: handlers.busy,
+            onClick: () => handlers.onMergeAgain(change.currentHeadSha),
+          }]
+        : []),
+      // Only the new commits, not the whole PR diff.
+      { label: "See what changed", variant: "secondary" as const, href: compareUrl },
+    ],
+    dismiss: { onDismiss: handlers.onDismiss, label: "Dismiss merge result" },
+  };
+}
+
+function mergeResultBannerModel(result: LandResult, handlers: MergeResultBannerHandlers): BannerModel {
+  const { onDismiss } = handlers;
+  if (!result.success && result.headChanged) return headChangeBannerModel(result, result.headChanged, handlers);
+  const inFlight = !result.success && (result.mergeStatus === "pending" || result.mergeStatus === "enqueued");
+  const stack = result.stackPrNumbers ?? [];
+  let title: string;
+  if (result.success) {
+    title = stack.length > 1
+      ? `Merged ${stack.length} stacked PRs (${stack.map((n) => `#${n}`).join(", ")})`
+      : `Merged PR #${result.prNumber}`;
+  } else if (inFlight) {
+    title = result.error ?? "GitHub is merging the stack.";
+  } else {
+    title = `Failed: ${result.error ?? "unknown"}`;
+  }
+  return {
+    id: "pr-merge-result",
+    tone: result.success ? "success" : inFlight ? "accent" : "error",
+    busy: inFlight,
+    title,
+    dismiss: { onDismiss, label: "Dismiss merge result" },
+  };
 }

@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import type { AppleDeviceOrientation } from "../../../shared/types";
 import { appleDragIntent, appleWheelIntent } from "./AppleDevice3DView";
-import { appleCanvasHasDecoded, appleDeviceInputSize, orientedToPortrait } from "./appleDeviceScene";
+import { appleCanvasHasDecoded, appleDeviceInputSize, orientedToPortrait, portraitUvToTextureUv } from "./appleDeviceScene";
 import { createDeviceModelLoader } from "./appleDeviceModelLoader";
 
 describe("appleDragIntent (round 4 §A3)", () => {
@@ -88,6 +88,21 @@ function portraitToOriented(
   }
 }
 
+
+describe("portraitUvToTextureUv (shared by the flat display and the Duo halves)", () => {
+  const portrait = { rotation: 0, rawLandscape: false, aspect: 0.46 };
+  const landscapeRight = { rotation: Math.PI / 2, rawLandscape: true, aspect: 0.46 };
+  const landscapeLeft = { rotation: -Math.PI / 2, rawLandscape: true, aspect: 0.46 };
+
+  it("is the identity on a portrait screen, where texture v is vFromBottom", () => {
+    expect(portraitUvToTextureUv(0.25, 0.75, portrait)).toEqual({ u: 0.25, v: 0.75 });
+  });
+
+  it("rotates the continuous canvas for each landscape axis", () => {
+    expect(portraitUvToTextureUv(0.25, 0.75, landscapeRight)).toEqual({ u: 0.25, v: 0.25 });
+    expect(portraitUvToTextureUv(0.25, 0.75, landscapeLeft)).toEqual({ u: 0.75, v: 0.75 });
+  });
+});
 
 describe("appleDeviceInputSize (round 4 §A3/§A4)", () => {
   const PIXELS = { width: 1_179, height: 2_556 };

@@ -1,6 +1,5 @@
 import {
   AgentChatEventEnvelope,
-  beginIdentityConfirmHold,
   buildCodingAgentSystemPrompt,
   claudeSdkCreateSessionCompat,
   createAgentChatService,
@@ -8,10 +7,10 @@ import {
   createService,
   cursorModelsListMock,
   fs,
-  mapPermissionToClaude,
   mapPermissionToCodex,
   mockState,
   path,
+  peekOpenCodeInventoryCache,
   probeOpenCodeProviderInventory,
   query,
   readPersistedChatState,
@@ -443,6 +442,12 @@ describe("createAgentChatService", () => {
         expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
       });
 
+      // Approving forces a thread/resume, and the app-server echoes the mode of
+      // the thread's last turn: the planning one.
+      mockState.codexResponseOverrides.set("thread/resume", {
+        thread: { id: "thread-1" },
+        collaborationMode: { mode: "plan", settings: {} },
+      });
       const turnStartCountBeforeApproval = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start").length;
       await service.respondToInput({
         sessionId: session.id,
@@ -454,9 +459,77 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start").length)
           .toBeGreaterThan(turnStartCountBeforeApproval);
       });
+      const implementationTurn = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start").at(-1);
+      expect((implementationTurn?.params as { collaborationMode?: { mode?: string } } | undefined)?.collaborationMode?.mode)
+        .toBe("default");
       // An approved plan hands the session straight to full access — the user
       // already reviewed exactly what will happen.
-      expect((await service.getSessionSummary(session.id))?.permissionMode).toBe("full-auto");
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        permissionMode: "full-auto",
+        interactionMode: "default",
+      });
+      // The composer re-seeds from this, including in a chat that is not selected.
+      expect(events.some((event) =>
+        event.event.type === "session_meta_updated"
+        && event.event.permissionMode === "full-auto"
+        && event.event.interactionMode === "default"
+      )).toBe(true);
+    });
+
+    it("keeps an approved plan out of plan mode across a restart before the implementation turn", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        if (mode === "config-toml") return null;
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+      await service.sendMessage({ sessionId: session.id, text: "Plan the fix before coding." }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: { id: "codex-plan-restart", type: "plan", text: "<proposed_plan>Patch it.</proposed_plan>" },
+        },
+      });
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval"),
+      );
+      // Answered while the planning turn still runs, so the implementation turn
+      // is only staged — and the process dies before it is sent.
+      await service.respondToInput({ sessionId: session.id, itemId: approvalEvent.event.itemId, decision: "accept" });
+      expect(readPersistedChatState(session.id).permissionMode).toBe("full-auto");
+
+      mockState.codexResponseOverrides.set("thread/resume", {
+        thread: { id: "thread-1" },
+        collaborationMode: { mode: "plan", settings: {} },
+      });
+      const restarted = createService().service;
+      const turnStartsBefore = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start").length;
+      await restarted.sendMessage({ sessionId: session.id, text: "Go ahead." }, { awaitDispatch: true });
+
+      const turnStarts = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start");
+      expect(turnStarts.length).toBeGreaterThan(turnStartsBefore);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/resume")).toBe(true);
+      expect((turnStarts.at(-1)?.params as { collaborationMode?: { mode?: string } } | undefined)?.collaborationMode?.mode)
+        .toBe("default");
+      expect((await restarted.getSessionSummary(session.id))?.interactionMode).toBe("default");
     });
 
     it("dismisses a completed Codex plan approval without staging a revision turn", async () => {
@@ -1265,20 +1338,19 @@ describe("createAgentChatService", () => {
       // The OpenCode directory is models.dev in its entirety (195 providers / ~7.2k
       // models). Emitting all of it made the synced catalog 4.85 MB and stalled or
       // killed the iOS model picker. Only connected providers may reach the catalog.
-      replaceDynamicOpenCodeModelDescriptors([
-        createDynamicOpenCodeModelDescriptor("", {
-          displayName: "GPT 5.4",
-          capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
-          openCodeProviderId: "openai",
-          openCodeModelId: "gpt-5.4",
-        }),
-        createDynamicOpenCodeModelDescriptor("", {
-          displayName: "Nano Model",
-          capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
-          openCodeProviderId: "nano-gpt",
-          openCodeModelId: "nano-model",
-        }),
-      ]);
+      const openAiModel = createDynamicOpenCodeModelDescriptor("", {
+        displayName: "GPT 5.4",
+        capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
+        openCodeProviderId: "openai",
+        openCodeModelId: "gpt-5.4",
+      });
+      const nanoModel = createDynamicOpenCodeModelDescriptor("", {
+        displayName: "Nano Model",
+        capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
+        openCodeProviderId: "nano-gpt",
+        openCodeModelId: "nano-model",
+      });
+      replaceDynamicOpenCodeModelDescriptors([openAiModel, nanoModel]);
       vi.mocked(probeOpenCodeProviderInventory).mockResolvedValue({
         modelIds: ["opencode/openai/gpt-5.4"],
         providers: [
@@ -1286,7 +1358,7 @@ describe("createAgentChatService", () => {
           { id: "nano-gpt", name: "nano-gpt", connected: false, modelCount: 1, availableModelCount: 0 },
         ],
         error: null,
-        descriptors: [],
+        descriptors: [openAiModel],
       });
 
       const { service } = createService();
@@ -1308,6 +1380,55 @@ describe("createAgentChatService", () => {
       expect(nanoGpt?.modelCount).toBe(0);
       expect(nanoGpt?.subsections).toEqual([]);
     });
+
+    it.each(["fresh probe", "cached inventory"] as const)(
+      "uses the project's OpenCode descriptor for a %s when another project replaced the shared registry entry",
+      async (inventorySource) => {
+        const projectDescriptor = createDynamicOpenCodeModelDescriptor("", {
+          displayName: "Project inventory GPT",
+          capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
+          openCodeProviderId: "openai",
+          openCodeModelId: "gpt-5.4",
+        });
+        const otherProjectDescriptor = createDynamicOpenCodeModelDescriptor("", {
+          displayName: "Other project's GPT",
+          capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
+          openCodeProviderId: "openai",
+          openCodeModelId: "gpt-5.4",
+        });
+        // Simulate the other project's probe replacing the process-wide entry
+        // after this project's inventory has already captured its descriptor.
+        replaceDynamicOpenCodeModelDescriptors([otherProjectDescriptor]);
+        const inventory = {
+          modelIds: [projectDescriptor.id],
+          providers: [
+            { id: "openai", name: "OpenAI", connected: true, modelCount: 1, availableModelCount: 1 },
+          ],
+          error: null,
+          descriptors: [projectDescriptor],
+        };
+        if (inventorySource === "fresh probe") {
+          vi.mocked(probeOpenCodeProviderInventory).mockResolvedValue(inventory);
+        } else {
+          vi.mocked(peekOpenCodeInventoryCache).mockReturnValue(inventory);
+        }
+
+        const { service } = createService();
+        const catalog = await service.getModelCatalog(
+          inventorySource === "fresh probe"
+            ? { mode: "force", refreshProvider: "opencode" }
+            : { mode: "cached" },
+        );
+        const projectModel = catalog.groups
+          .find((group) => group.key === "opencode")
+          ?.providers.find((provider) => provider.key === "openai")
+          ?.subsections.flatMap((subsection) => subsection.models)
+          .find((model) => model.id === projectDescriptor.id);
+
+        expect(projectModel?.displayName).toBe("Project inventory GPT");
+        expect(projectModel?.supportsReasoning).toBe(false);
+      },
+    );
 
     it("omits Codex service tier when fast mode was never turned on", async () => {
       mockState.codexResponseOverrides.set("thread/start", (payload) => ({
@@ -2073,7 +2194,7 @@ describe("Claude plan intent at query launch", () => {
     await vi.waitFor(() => expect(claudePrompts().length).toBeGreaterThan(0));
     const guidance = claudePrompts().at(-1)?.sessionActivityGuidance;
     if (expectGuidance) {
-      expect(guidance).toContain(`chat activity testing --session '${session.id}'`);
+      expect(guidance).toContain(`chat activity debugging --session '${session.id}'`);
     } else {
       expect(guidance).toBeNull();
     }
@@ -2081,136 +2202,6 @@ describe("Claude plan intent at query launch", () => {
   });
 });
 
-
-describe("leaving plan mode keeps a held CTO confirm-first", () => {
-  /**
-   * A voice call holds the CTO in confirm-first ("default") mode. Leaving plan
-   * mode restores whatever access the session had before it — for the CTO,
-   * bypass — so every exit has to re-assert the identity policy, or one exit
-   * hands the call write access without a spoken confirmation.
-   */
-  type ExitContext = {
-    service: ReturnType<typeof createService>["service"];
-    sessionId: string;
-    sessionOpts: any;
-    events: AgentChatEventEnvelope[];
-  };
-  type ExitPath = {
-    /** How the session got into plan mode. */
-    enterVia: "EnterPlanMode" | "plan-mode send";
-    /** Leaves plan mode; returns SDK messages the stream should yield. */
-    exit: (ctx: ExitContext) => Promise<unknown[]>;
-  };
-
-  const approveExitPlanMode = async ({ service, sessionId, sessionOpts, events }: ExitContext) => {
-    const exitPromise = sessionOpts.canUseTool("ExitPlanMode", { planDescription: "Ship it." }, {
-      signal: new AbortController().signal,
-      toolUseID: "tool-exit-plan-held",
-    });
-    const card = await Promise.race([
-      waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope & {
-          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
-        } => event.event.type === "approval_request"
-          && (event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval",
-      ),
-      // The stale-session branch answers without a card.
-      exitPromise.then(() => null),
-    ]);
-    if (card) await service.approveToolUse({ sessionId, itemId: card.event.itemId, decision: "accept" });
-    await exitPromise;
-    return [];
-  };
-
-  it.each<[string, ExitPath]>([
-    ["approving ExitPlanMode", { enterVia: "EnterPlanMode", exit: approveExitPlanMode }],
-    ["the SDK reporting it left plan mode", {
-      enterVia: "EnterPlanMode",
-      exit: async () => [{ type: "system", subtype: "status", status: null, permissionMode: "default" }],
-    }],
-    ["ExitPlanMode auto-approved for a session with bypass underneath", {
-      enterVia: "plan-mode send",
-      exit: approveExitPlanMode,
-    }],
-    ["the user switching the mode back", {
-      enterVia: "EnterPlanMode",
-      exit: async ({ service, sessionId }) => {
-        await service.updateSession({ sessionId, permissionMode: "full-auto" });
-        return [];
-      },
-    }],
-  ])("stays confirm-first after %s", async (_label, path) => {
-    vi.mocked(mapPermissionToClaude).mockImplementation((mode) => {
-      if (mode === "full-auto") return "bypassPermissions";
-      if (mode === "edit") return "acceptEdits";
-      if (mode === "default") return "default";
-      return "plan";
-    });
-    const events: AgentChatEventEnvelope[] = [];
-    let service!: ReturnType<typeof createService>["service"];
-    let sessionId = "";
-    let release: (() => void) | null = null;
-    let streamCall = 0;
-    const stream = vi.fn(() => (async function* () {
-      streamCall += 1;
-      if (streamCall === 1) {
-        yield { type: "system", subtype: "init", session_id: "sdk-held-cto", slash_commands: [] };
-        return;
-      }
-      const sessionOpts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
-      if (path.enterVia === "EnterPlanMode") {
-        await sessionOpts.canUseTool("EnterPlanMode", {}, {
-          signal: new AbortController().signal,
-          toolUseID: "tool-enter-plan-held",
-        });
-      }
-      expect((await service.getSessionSummary(sessionId))?.permissionMode).toBe("plan");
-      // The call starts while the CTO is planning.
-      release = beginIdentityConfirmHold(sessionId);
-      for (const message of await path.exit({ service, sessionId, sessionOpts, events })) yield message;
-      yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
-    })());
-    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-      send: vi.fn().mockResolvedValue(undefined),
-      stream,
-      close: vi.fn(),
-      sessionId: "sdk-held-cto",
-      setPermissionMode: vi.fn().mockResolvedValue(undefined),
-    } as any);
-
-    try {
-      ({ service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) }));
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "claude-sonnet-5",
-        modelId: "anthropic/claude-sonnet-5",
-        identityKey: "cto",
-      });
-      sessionId = session.id;
-      expect(session.permissionMode).toBe("full-auto");
-
-      await service.sendMessage({
-        sessionId,
-        text: "Plan the change.",
-        ...(path.enterVia === "plan-mode send" ? { interactionMode: "plan" as const } : {}),
-      }, { awaitDispatch: true });
-      await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
-        event.event.type === "done" && event.sessionId === sessionId);
-
-      const after = await service.getSessionSummary(sessionId);
-      expect(release).not.toBeNull();
-      expect(after?.interactionMode).toBe("default");
-      expect(after?.permissionMode).toBe("default");
-      expect(after?.claudePermissionMode).toBe("default");
-    } finally {
-      (release as (() => void) | null)?.();
-      vi.mocked(mapPermissionToClaude).mockImplementation(() => "plan" as const);
-      await service?.dispose({ sessionId });
-    }
-  });
-});
 
 describe("Codex async questions", () => {
   const emitAsyncQuestion = (itemId: string, questions: unknown[]): void => {

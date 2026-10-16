@@ -17,6 +17,7 @@ import type {
 } from "../../../../shared/types";
 import type { Logger } from "../../logging/logger";
 import { getErrorMessage } from "../../shared/utils";
+import { acpProviderOutdatedNotice, readAcpProviderLaunchStanding } from "../../ai/acpProviderDiagnostics";
 import type { ChatRuntimeBudget } from "../chatRuntimeBudget";
 import { AcpRpcError } from "./acpConnection";
 import {
@@ -77,7 +78,7 @@ export type AcpRuntimeCoordinatorCallbacks<TSteer> = {
   ) => void;
   onSessionInfo: (
     runtime: AcpRuntimeState<TSteer> | null,
-    info: { title: string | null; updatedAt: string | null },
+    info: { title: string | null; updatedAt: string | null; meta?: Record<string, unknown> | null },
   ) => void;
   onProcessExit: (
     runtime: AcpRuntimeState<TSteer> | null,
@@ -117,6 +118,12 @@ export type CreateAcpRuntimeArgs<TSteer> = {
   /** Provider-specific value for its declared mode config option. */
   nativeModeValue: string;
   setResumeCommand: (command: string) => void;
+  /**
+   * Config values to set on a freshly created session, before the model. Only
+   * applied on `session/new`: a rejoined session already carries its own (a
+   * Devin Cloud session's repos are fixed once its VM exists).
+   */
+  initialConfigValues?: ReadonlyArray<{ configId: string; value: string }>;
   spawnOverride?: OpenAcpSessionArgs["spawnOverride"];
   pool?: OpenAcpSessionArgs["pool"];
   binarySource: string;
@@ -124,6 +131,29 @@ export type CreateAcpRuntimeArgs<TSteer> = {
 };
 
 /** Identity used to decide whether a process-global model/effort changed. */
+/** Chats already warned this run, so a resumed runtime does not repeat the notice. */
+const outdatedNoticeSessions = new Set<string>();
+
+/**
+ * Warn in the chat when the CLI is older than the range ADE has tested. Runs
+ * after the chat is ready and never delays it; a spawn override (a cloud
+ * runtime) is not the local binary, so it is not checked.
+ */
+function warnWhenProviderOutdated<TSteer>(args: CreateAcpRuntimeArgs<TSteer>, runtime: AcpRuntimeState<TSteer>): void {
+  const sessionId = args.owner.session.id;
+  if (args.spawnOverride || outdatedNoticeSessions.has(sessionId)) return;
+  void readAcpProviderLaunchStanding({ provider: args.provider, cwd: args.spawnPlan.cwd, env: args.spawnPlan.env })
+    .then((info) => {
+      const notice = acpProviderOutdatedNotice(args.provider, info);
+      if (!notice || outdatedNoticeSessions.has(sessionId)) return;
+      outdatedNoticeSessions.add(sessionId);
+      args.callbacks.onEvents(runtime, [notice]);
+    })
+    .catch((error) => {
+      args.logger.warn("agent_chat.acp_version_check_failed", { sessionId, provider: args.provider, error: getErrorMessage(error) });
+    });
+}
+
 export function acpInvocationKey(plan: Pick<AcpSpawnPlan, "command" | "args">): string {
   return JSON.stringify([plan.command, plan.args]);
 }
@@ -152,19 +182,26 @@ function acpSessionAdvertisesEffort<TSteer>(runtime: AcpRuntimeState<TSteer>): b
 /**
  * True when an open runtime can serve `plan` although the invocation keys
  * differ. That is so only when the effort spawn flag is the difference and the
- * session advertises the effort option: the config option already moved the
- * session's effort, so a restart would buy nothing. A build that does not
- * advertise the option (Grok before 1.0.40) takes the effort only from the
- * flag, so it restarts.
+ * session offers the requested effort through its config option: setting the
+ * option then moves the session's effort, so a restart would buy nothing. A
+ * build that does not advertise the option (Grok before 1.0.40), or a session
+ * that does not offer that level (a Copilot model listing only low and
+ * medium), takes the effort only from the flag, so it restarts; the flag is
+ * process-wide, and reusing the process would keep the old effort.
  */
 function acpEffortFlagChangeOnly<TSteer>(
   existing: AcpRuntimeState<TSteer>,
   plan: Pick<AcpSpawnPlan, "command" | "args">,
 ): boolean {
-  const withoutFlag = acpInvocationKeyWithout(plan, existing.dialect.reasoningEffortOption?.spawnFlag);
-  return withoutFlag !== null
-    && withoutFlag === existing.invocationKeyWithoutEffortFlag
-    && acpSessionAdvertisesEffort(existing);
+  const option = existing.dialect.reasoningEffortOption;
+  const withoutFlag = acpInvocationKeyWithout(plan, option?.spawnFlag);
+  if (withoutFlag === null || withoutFlag !== existing.invocationKeyWithoutEffortFlag) return false;
+  if (!option || !acpSessionAdvertisesEffort(existing)) return false;
+  const flagIndex = option.spawnFlag ? plan.args.indexOf(option.spawnFlag) : -1;
+  const requested = flagIndex >= 0 ? plan.args[flagIndex + 1] : undefined;
+  // No flag means "the agent's default", which the session can always take.
+  if (requested === undefined) return true;
+  return resolveAcpConfigValue(existing.configOptions, option.configId, requested).kind === "advertised";
 }
 
 /** True when ADE already has a transcript and must suppress `session/load` replay. */
@@ -342,13 +379,14 @@ async function applyAcpModel<TSteer>(
   args: { sessionId: string; logger: Logger },
 ): Promise<void> {
   const { dialect, session } = runtime;
+  const modelOptionId = dialect.modelConfigOptionId ?? "model";
   const modelBehavior = behaviorOf(dialect.modelSelection);
   const viaConfigOption = !modelBehavior
     && dialect.sessionConfig.declared
-    && dialect.configOptionIds.includes("model");
+    && dialect.configOptionIds.includes(modelOptionId);
   if (!modelBehavior && !viaConfigOption) return;
 
-  const resolution = resolveAcpConfigValue(runtime.configOptions, "model", modelToken, dialect.modelIdFromAgent);
+  const resolution = resolveAcpConfigValue(runtime.configOptions, modelOptionId, modelToken, dialect.modelIdFromAgent);
   if (resolution.kind === "not_offered") {
     args.logger.warn("agent_chat.acp_model_not_offered", {
       sessionId: args.sessionId,
@@ -366,10 +404,10 @@ async function applyAcpModel<TSteer>(
       const call = modelBehavior({ sessionId: session.sessionId, modelId: resolution.value });
       await session.connection.request(call.method, call.params);
     } else {
-      reported = await session.setConfigOption({ configId: "model", value: resolution.value });
+      reported = await session.setConfigOption({ configId: modelOptionId, value: resolution.value });
     }
-    recordConfigChange(runtime, "model", resolution.value, reported);
-    const current = runtime.configOptions.find((option) => option.id === "model")?.value;
+    recordConfigChange(runtime, modelOptionId, resolution.value, reported);
+    const current = runtime.configOptions.find((option) => option.id === modelOptionId)?.value;
     session.noteCurrentModel(typeof current === "string" && current.length ? current : resolution.value);
   } catch (error) {
     args.logger.warn("agent_chat.acp_set_model_failed", {
@@ -400,6 +438,14 @@ export async function createAcpRuntime<TSteer>(
   args.runtimeBudget.enforce(args.owner.session.id);
 
   let runtime: AcpRuntimeState<TSteer> | null = null;
+  /**
+   * An agent can send `available_commands_update` in the same stdout chunk as
+   * the `session/new` response, before `runtime` is assigned. The translator
+   * dedupes by content, so dropping that first list would lose the agent's
+   * commands for the session's life. Buffer it and replay once the runtime
+   * exists.
+   */
+  let pendingSlashCommands: AcpSlashCommand[] | null = null;
   let session: AcpSession;
   try {
     session = await openAcpSession({
@@ -421,7 +467,10 @@ export async function createAcpRuntime<TSteer>(
         onEvents: (events) => args.callbacks.onEvents(runtime, events),
         onPermissionRequested: (pending) => args.callbacks.onPermissionRequested(runtime, pending),
         onPermissionSettled: (requestId) => args.callbacks.onPermissionSettled(runtime, requestId),
-        onSlashCommands: (commands) => args.callbacks.onSlashCommands(runtime, commands),
+        onSlashCommands: (commands) => {
+          if (runtime) args.callbacks.onSlashCommands(runtime, commands);
+          else pendingSlashCommands = commands;
+        },
         onConfigOptions: (snapshot) => args.callbacks.onConfigOptions(runtime, snapshot),
         onSessionInfo: (info) => args.callbacks.onSessionInfo(runtime, info),
         onProcessExit: (detail) => args.callbacks.onProcessExit(runtime, detail),
@@ -452,6 +501,10 @@ export async function createAcpRuntime<TSteer>(
   };
   args.callbacks.onRuntimeCreated(runtime);
   const createdRuntime = runtime as AcpRuntimeState<TSteer>;
+  if (pendingSlashCommands) {
+    args.callbacks.onSlashCommands(runtime, pendingSlashCommands);
+    pendingSlashCommands = null;
+  }
 
   // Grok declares session config for model and effort only. Its permission
   // posture rides spawn flags, so it gets no `mode` call.
@@ -480,6 +533,32 @@ export async function createAcpRuntime<TSteer>(
           args.callbacks.onOpenFailed(error);
         }
         throw error;
+      }
+    }
+  }
+  if (args.initialConfigValues?.length && session.entryPlan.mode === "new" && args.dialect.sessionConfig.declared) {
+    for (const { configId, value } of args.initialConfigValues) {
+      if (!value.trim()) continue;
+      const resolution = resolveAcpConfigValue(runtime.configOptions, configId, value);
+      if (resolution.kind === "not_offered") {
+        args.logger.warn("agent_chat.acp_initial_config_not_offered", {
+          sessionId: args.owner.session.id,
+          provider: args.provider,
+          configId,
+          value,
+        });
+        continue;
+      }
+      if (resolution.kind === "advertised" && resolution.current) continue;
+      try {
+        recordConfigChange(runtime, configId, resolution.value, await session.setConfigOption({ configId, value: resolution.value }));
+      } catch (error) {
+        args.logger.warn("agent_chat.acp_initial_config_failed", {
+          sessionId: args.owner.session.id,
+          provider: args.provider,
+          configId,
+          error: getErrorMessage(error),
+        });
       }
     }
   }
@@ -519,6 +598,7 @@ export async function createAcpRuntime<TSteer>(
   }
 
   await args.callbacks.onReady(runtime);
+  warnWhenProviderOutdated(args, runtime);
   args.setResumeCommand(`chat:${args.provider}:${args.owner.session.id}`);
   args.logger.info("agent_chat.acp_runtime_ready", {
     sessionId: args.owner.session.id,

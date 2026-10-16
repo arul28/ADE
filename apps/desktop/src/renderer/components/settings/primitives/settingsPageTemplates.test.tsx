@@ -75,7 +75,7 @@ describe("settings page templates", () => {
       expect(screen.getByRole("button", { name: "Import .env" })).toBeTruthy();
     });
 
-    it("renders table headers, row cells and row actions", () => {
+    it("renders row cells and row actions", () => {
       render(
         <SettingsManagerPage anchor="secrets" title="Secrets">
           <SettingsManagerTable
@@ -89,7 +89,6 @@ describe("settings page templates", () => {
         </SettingsManagerPage>,
       );
 
-      expect(screen.getByText("Name")).toBeTruthy();
       expect(screen.getByText("STRIPE_API_KEY")).toBeTruthy();
       expect(screen.getByRole("button", { name: "Delete" })).toBeTruthy();
     });

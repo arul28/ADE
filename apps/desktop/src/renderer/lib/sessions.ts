@@ -1,5 +1,7 @@
 /** Shared session/terminal utilities for the renderer. */
 
+import { PROVIDER_DISPLAY_NAME } from "../../shared/providers";
+
 import type { AgentChatProvider, AgentChatSession, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
 import { isProviderSlashCommandInput } from "../../shared/chatSlashCommands";
 import { stripElectronErrorWrapper } from "../../shared/codedError";
@@ -31,11 +33,13 @@ export function isPtyContextInsertableToolType(toolType: TerminalSessionSummary[
     || toolType === "codex"
     || toolType === "cursor-cli"
     || toolType === "droid"
+    || toolType === "muse"
     || toolType === "opencode"
     || toolType === "qwen"
     || toolType === "kimi"
     || toolType === "grok"
-    || toolType === "copilot";
+    || toolType === "copilot"
+    || toolType === "devin";
 }
 
 /**
@@ -95,11 +99,13 @@ export type KnownChatProvider =
   | "cursor"
   | "droid"
   | "pi"
+  | "muse"
   | "opencode"
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 
 export const CHAT_TOOL_TYPE_BY_PROVIDER: Record<KnownChatProvider, TerminalToolType> = {
   claude: "claude-chat",
@@ -107,11 +113,13 @@ export const CHAT_TOOL_TYPE_BY_PROVIDER: Record<KnownChatProvider, TerminalToolT
   cursor: "cursor",
   droid: "droid-chat",
   pi: "pi-chat",
+  muse: "muse-chat",
   opencode: "opencode-chat",
   qwen: "qwen-chat",
   kimi: "kimi-chat",
   grok: "grok-chat",
   copilot: "copilot-chat",
+  devin: "devin-chat",
 };
 
 const CHAT_PROVIDER_BY_TOOL_TYPE: Record<string, KnownChatProvider> = {
@@ -120,11 +128,13 @@ const CHAT_PROVIDER_BY_TOOL_TYPE: Record<string, KnownChatProvider> = {
   cursor: "cursor",
   "droid-chat": "droid",
   "pi-chat": "pi",
+  "muse-chat": "muse",
   "opencode-chat": "opencode",
   "qwen-chat": "qwen",
   "kimi-chat": "kimi",
   "grok-chat": "grok",
   "copilot-chat": "copilot",
+  "devin-chat": "devin",
 };
 
 /**
@@ -192,6 +202,8 @@ export function defaultSessionLabel(toolType: string | null | undefined): string
   if (toolType === "codex-chat") return "Codex chat";
   if (toolType === "opencode-chat") return "OpenCode chat";
   if (toolType === "pi-chat") return "Pi chat";
+  if (toolType === "muse-chat") return "Muse chat";
+  if (toolType === "muse") return "Muse CLI session";
   if (toolType === "cursor") return "Cursor chat";
   if (toolType === "cursor-cli") return "Cursor CLI session";
   if (toolType === "droid") return "Droid CLI session";
@@ -201,10 +213,12 @@ export function defaultSessionLabel(toolType: string | null | undefined): string
   if (toolType === "kimi-chat") return "Kimi chat";
   if (toolType === "grok-chat") return "Grok chat";
   if (toolType === "copilot-chat") return "Copilot chat";
+  if (toolType === "devin-chat") return "Devin chat";
   if (toolType === "qwen") return "Qwen CLI session";
   if (toolType === "kimi") return "Kimi CLI session";
   if (toolType === "grok") return "Grok CLI session";
   if (toolType === "copilot") return "Copilot CLI session";
+  if (toolType === "devin") return "Devin CLI session";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
   return "Session";
@@ -221,6 +235,7 @@ export function buildOptimisticChatSessionSummary(args: {
     | "createdAt"
     | "lastActivityAt"
     | "idleSinceAt"
+    | "promptCache"
   >;
   laneName?: string | null;
 }): TerminalSessionSummary {
@@ -251,6 +266,7 @@ export function buildOptimisticChatSessionSummary(args: {
     runtimeState: isEnded ? "exited" : args.session.status === "active" ? "running" : "idle",
     resumeCommand: null,
     chatIdleSinceAt: args.session.status === "idle" ? args.session.idleSinceAt ?? null : null,
+    chatPromptCache: args.session.promptCache ?? null,
   };
 }
 
@@ -262,6 +278,7 @@ const SHORT_TOOL_TYPE_LABELS: Record<string, string> = {
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   qwen: "Qwen",
   kimi: "Kimi",
   grok: "Grok",
@@ -276,10 +293,12 @@ const SHORT_TOOL_TYPE_PREFIXES: readonly [string, string][] = [
   ["codex", "Codex"],
   ["opencode", "OpenCode"],
   ["pi", "Pi"],
+  ["muse", PROVIDER_DISPLAY_NAME.muse],
   ["qwen", "Qwen"],
   ["kimi", "Kimi"],
   ["grok", "Grok"],
   ["copilot", "Copilot"],
+  ["devin", "Devin"],
 ];
 
 /** Resolve a short label via exact match, prefix match, or hyphen-to-space fallback. */
@@ -305,6 +324,8 @@ export function formatToolTypeLabel(toolType: string | null | undefined): string
   if (toolType === "claude-chat") return "Claude chat";
   if (toolType === "codex-chat") return "Codex chat";
   if (toolType === "opencode-chat") return "OpenCode chat";
+  if (toolType === "muse-chat") return "Muse chat";
+  if (toolType === "muse") return "Muse CLI session";
   if (toolType === "cursor") return "Cursor chat";
   if (toolType === "cursor-cli") return "Cursor CLI session";
   if (toolType === "droid") return "Droid CLI session";
@@ -314,10 +335,12 @@ export function formatToolTypeLabel(toolType: string | null | undefined): string
   if (toolType === "kimi-chat") return "Kimi chat";
   if (toolType === "grok-chat") return "Grok chat";
   if (toolType === "copilot-chat") return "Copilot chat";
+  if (toolType === "devin-chat") return "Devin chat";
   if (toolType === "qwen") return "Qwen CLI session";
   if (toolType === "kimi") return "Kimi CLI session";
   if (toolType === "grok") return "Grok CLI session";
   if (toolType === "copilot") return "Copilot CLI session";
+  if (toolType === "devin") return "Devin CLI session";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
   if (toolType === "shell") return "Terminal session";

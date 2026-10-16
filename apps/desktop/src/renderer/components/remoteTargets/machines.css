@@ -1,0 +1,24 @@
+/* Motion for the Machines list: a live update and a busy machine. */
+@keyframes ade-machine-pulse {
+  50% { opacity: 0.35; }
+}
+
+@keyframes ade-machine-update-bar {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(240%); }
+}
+
+.ade-machine-pulse {
+  animation: ade-machine-pulse 1.2s ease-in-out infinite;
+}
+
+.ade-machine-update-bar {
+  animation: ade-machine-update-bar 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-machine-pulse,
+  .ade-machine-update-bar {
+    animation: none;
+  }
+}

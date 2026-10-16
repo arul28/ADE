@@ -18,7 +18,6 @@ import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 export const CTO_SECTION_COLORS = {
   identity: "#22D3EE",
   model: "#A78BFA",
-  voice: "#F59E0B",
   memory: "#34D399",
   prompt: "#60A5FA",
   history: "#FB7185",

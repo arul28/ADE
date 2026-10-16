@@ -9,6 +9,18 @@ export function isLocalReleaseBuildOutputError(error: unknown): boolean {
   return errorMessage(error).includes(LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE);
 }
 
+/**
+ * Told to callers whose connect attempt was refused while an update replaces
+ * the background service. Shared so the renderer can recognise it: the failed
+ * project open it causes belongs to the update notice, not the project banner.
+ */
+export const LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE =
+  "ADE is applying an update. The background service is restarting.";
+
+export function isRuntimeUpdateInProgressError(error: unknown): boolean {
+  return errorMessage(error).includes(LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE);
+}
+
 export function isProjectRegistrationRequiredError(error: unknown): boolean {
   return /Register a project first/i.test(errorMessage(error));
 }

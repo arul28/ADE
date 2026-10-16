@@ -13,6 +13,7 @@ import {
 } from "../../state/chatLaunchStore";
 import { STANDARD_EASE } from "../../lib/motion";
 import { cn } from "../ui/cn";
+import { cancelChatLaunch } from "../chat/launch/chatLaunchActions";
 import { LaneSetupCard, LaunchStageGlyph } from "../chat/launch/LaneSetupCard";
 import { LaunchProgressRail } from "../chat/launch/LaunchProgressRail";
 import { useLaunchDurationText } from "../chat/launch/launchClock";
@@ -71,6 +72,19 @@ export function useChatLaunchSlideOutVisible(): boolean {
   );
 }
 
+/**
+ * A CLI launch still on the fetch stage has no lane and no session. Closing
+ * the slide-out is the only control in view, so it cancels that launch.
+ * Anything past fetch has a lane to delete, and that stays on the row's
+ * Cancel button, which asks first.
+ */
+export function cliFetchDismissCancels(launch: ChatLaunchSnapshot): boolean {
+  if (launch.kind !== "cli" || launch.phase !== "running" || launch.laneCreated || launch.sessionId) return false;
+  const active = launch.stages.find((stage) => stage.status === "running")
+    ?? launch.stages.find((stage) => stage.status === "pending");
+  return !active || active.id === "fetch";
+}
+
 export function slideOutHeadline(launches: ChatLaunchSnapshot[]): string {
   const running = launches.filter((launch) => !isChatLaunchSucceeded(launch) && launch.phase !== "failed").length;
   if (running > 0) return `Setting up ${running} lane${running === 1 ? "" : "s"}…`;
@@ -121,7 +135,7 @@ const LaunchRow = React.memo(function LaunchRow({ launch }: { launch: ChatLaunch
         aria-expanded={expanded}
         className="flex w-full min-w-0 flex-col gap-1.5 text-left"
       >
-        <span className="flex w-full min-w-0 items-center gap-2.5">
+        <span className="flex w-full min-w-0 items-start gap-2.5">
           <span className="relative shrink-0" aria-hidden>
             <NoticeIcon tone={tone} size="sm" icon={<KindIcon size={13} weight="bold" />} />
             <span className="absolute -bottom-1 -right-1 grid h-3 w-3 place-items-center rounded-full bg-card">
@@ -134,7 +148,7 @@ const LaunchRow = React.memo(function LaunchRow({ launch }: { launch: ChatLaunch
               )}
             </span>
           </span>
-          <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-fg" title={launch.title}>
+          <span className="line-clamp-2 min-w-0 flex-1 text-[12.5px] font-medium leading-snug text-fg" title={launch.title || launch.prompt.text}>
             {launch.title || launch.prompt.text}
           </span>
           <span className="shrink-0 rounded-full border border-fg/[0.09] bg-fg/[0.04] px-1.5 py-px text-[10px] text-muted-fg">
@@ -144,23 +158,22 @@ const LaunchRow = React.memo(function LaunchRow({ launch }: { launch: ChatLaunch
             size={10}
             weight="bold"
             aria-hidden
-            className={cn("shrink-0 text-muted-fg/70 transition-transform duration-150", expanded && "rotate-90")}
+            className={cn("mt-1 shrink-0 self-start text-muted-fg/70 transition-transform duration-150", expanded && "rotate-90")}
           />
         </span>
-        <span className="flex w-full min-w-0 items-center gap-2 pl-[32px] text-[11px]">
-          <span className="inline-flex min-w-0 max-w-[40%] items-center gap-1 text-muted-fg" title={launch.laneName}>
-            <LaneIcon size={10} style={{ color: noticeTone("accent").text }} />
-            <span className="min-w-0 truncate">{launch.laneName}</span>
-          </span>
-          <span className="h-3 w-px shrink-0 bg-fg/[0.1]" aria-hidden />
+        <span className="flex w-full min-w-0 items-start gap-2 pl-[32px] text-[11px]">
           <span
-            className="min-w-0 flex-1 truncate"
+            className="line-clamp-2 min-w-0 flex-1 leading-snug"
             style={{ color: failed || succeeded ? noticeTone(tone).text : "var(--color-muted-fg)" }}
             data-testid="chat-launch-row-status"
           >
             {chatLaunchStatusLine(launch)}
           </span>
           <LaunchElapsed launch={launch} />
+        </span>
+        <span className="flex min-w-0 items-center gap-1 pl-[32px] text-[11px] text-muted-fg" title={launch.laneName}>
+          <LaneIcon size={10} style={{ color: noticeTone("accent").text }} />
+          <span className="min-w-0 truncate">{launch.laneName}</span>
         </span>
         <span className="block w-full pl-[32px]" title={`${done} of ${total} steps`}>
           <LaunchProgressRail stages={launch.stages} />
@@ -226,7 +239,13 @@ export function ChatLaunchesSlideOut() {
         closeLabel: "Dismiss launches",
         closeTitle: "Dismiss",
       }}
-      onClose={() => dismissChatLaunches(launches.map((launch) => launch.launchId))}
+      onClose={() => {
+        for (const launch of launches) {
+          if (!cliFetchDismissCancels(launch)) continue;
+          void cancelChatLaunch(launch.launchId).catch(() => undefined);
+        }
+        dismissChatLaunches(launches.map((launch) => launch.launchId));
+      }}
     />
   );
 }

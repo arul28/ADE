@@ -20,6 +20,7 @@ import {
   type NormalizedSubagentLifecycleEvent,
 } from "../../../shared/chatSubagents";
 import { backgroundCommandLabel } from "../../../shared/chatScheduledWork";
+import { redactCommandLine } from "../../../shared/secretRedaction";
 import { sceneRowIdentity } from "../../../shared/chatScene";
 import { adeCardProgressTotal, adeCardRowKey } from "../../../shared/adeCard";
 import {
@@ -38,6 +39,7 @@ import {
 import { isLegacyProviderRetryNotice } from "../../../shared/providerRetryPresentation";
 import { groupStoppedSubagentResultCards, subagentResultKey, subagentSpawnKey } from "./chatSubagentCardGrid";
 import { groupedEnvelopeTurnId } from "./chatTranscriptTurnFolds";
+import { foldSpawnCompletionLines, readSpawnCompletionChildId, type SpawnCompletionSibling } from "./spawnCompletionLines";
 import {
   isChatTaskListEvent,
   reduceChatTaskList,
@@ -155,6 +157,12 @@ export type ChatWorkLogGroupEvent = {
   summary?: string;
   toolUseIds?: string[];
   turnId?: string | null;
+  /**
+   * Desktop timeline only: a run of computer-use actions that is not the
+   * turn's last one, so all of its rows draw compact
+   * (`arrangeComputerUseRuns`).
+   */
+  computerUseCompact?: boolean;
 };
 
 export type ChatActivityBundleItem = {
@@ -186,6 +194,9 @@ export type SubagentSpawnAnchorRenderEvent = {
   agentType: string | null;
   /** Explicit provider for spawned ADE chats; absent for runtime-native tasks. */
   provider: string | null;
+  /** The model and effort the agent reported, shown on the card's meta line. */
+  model?: string | null;
+  reasoningEffort?: string | null;
   /**
    * Explicit display name from the lifecycle events (Claude Task `name`, Codex
    * nickname, Cursor label). The card title comes from
@@ -234,6 +245,9 @@ export type SubagentResultCardRenderEvent = {
   agentType?: string | null;
   /** Explicit provider for spawned ADE chats; absent for runtime-native tasks. */
   provider?: string | null;
+  /** The model and effort the agent reported, shown on the card's meta line. */
+  model?: string | null;
+  reasoningEffort?: string | null;
   background?: boolean;
   label?: string | null;
   status: SubagentCardTerminalStatus;
@@ -414,6 +428,8 @@ export type SpawnWakeDividerRenderEvent = {
   spawnKind: AgentChatSpawnKind;
   status: "completed" | "failed" | "stopped";
   summary: string | null;
+  /** Set when the child ran on another machine than this chat. */
+  childMachineName?: string;
   turnId?: string;
 };
 
@@ -444,28 +460,6 @@ export type SubagentCardGridEvent = {
 };
 
 /**
- * One CTO voice call, folded into a single row. Produced by the grouping pass
- * only — nothing persists it and no emitter produces it. Deliberately NOT part
- * of `ChatTranscriptRenderEvent`: it can only exist after grouping, so it lives
- * in `ChatTranscriptGroupedEnvelope["event"]`.
- * Row key: `voice-call:${callId}`.
- */
-export type VoiceCallGroupRenderEvent = {
-  type: "voice_call_group";
-  callId: string;
-  /** Wall-clock the folded rows span, ms. Null when only one timestamp exists. */
-  durationMs: number | null;
-  /** How many things the user said in the call (user_message rows). */
-  exchanges: number;
-  /** The first thing the user said, one line, clipped. Null if nothing was said. */
-  openingLine: string | null;
-  /** True when the call raised at least one approval. */
-  hadApproval: boolean;
-  /** The folded rows, in order, already grouped by the normal passes. */
-  rows: ChatTranscriptGroupedEnvelope[];
-};
-
-/**
  * The one row a finished turn's intermediate work folds into
  * (`Worked for 4m 12s · 18 tools`). Presentation only and produced last, by
  * {@link applyChatTranscriptTurnFolds}: nothing persists it, no emitter produces
@@ -484,6 +478,25 @@ export type TurnFoldRenderEvent = {
   /** Background jobs in the span, and how many failed (`· 5 jobs (1 failed)`). */
   jobCount?: number;
   failedJobCount?: number;
+};
+
+/**
+ * The one row a run of self-paced wake-up checks folds into (every check but
+ * the latest). Presentation only, produced after the turn fold by
+ * `applyWakeChains`. Row key: `wake-chain:${firstTurnId}`.
+ */
+export type WakeChainRenderEvent = {
+  type: "wake_chain";
+  chainId: string;
+  checkCount: number;
+  firstAt: string;
+  lastAt: string;
+};
+
+/** Presentation only: marks where rows that arrived while the reader was away begin. */
+export type NewSinceDividerRenderEvent = {
+  type: "new_since_divider";
+  sinceMs: number;
 };
 
 export type TurnDiagnosticsEvent = Extract<AgentChatEvent, { type: "turn_diagnostics" }>;
@@ -572,17 +585,30 @@ export type ChatTranscriptRenderEnvelope = {
   timestamp: string;
   event: ChatTranscriptRenderEvent;
   /**
-   * How many folded events this row stands for. Set only by the adjacency fold
-   * for `spawn_completed` notices, which the chip renders as a trailing `×N`.
+   * How many folded events this row stands for. Set only for `spawn_completed`
+   * notices (the adjacency fold, then `foldSpawnCompletionLines`), which the
+   * line renders as a trailing `×N`.
    * Render-side only: nothing persists it and no emitter produces it.
    */
   repeatCount?: number;
   /**
-   * The CTO voice call this row was produced by, copied off the source
-   * envelope's `provenance.voiceCallId`. Consecutive rows sharing one id fold
-   * into a single `voice_call_group` row (see {@link groupVoiceCallRows}).
+   * Later `codex_image_view` events folded into this one by adjacency, oldest
+   * first. A run of screenshots the agent looked at reads as one strip, not one
+   * row per file. Render-side only, like `repeatCount`.
    */
-  voiceCallId?: string;
+  imageViewSiblings?: CodexImageViewRenderEvent[];
+  /**
+   * Other children's `spawn_completed` rows drawn on this one's line, in
+   * transcript order. Set only by `foldSpawnCompletionLines`. Render-side
+   * only, like `repeatCount`.
+   */
+  spawnCompletionSiblings?: SpawnCompletionSibling[];
+  /**
+   * Copied off the source envelope's `provenance.timestampSynthetic`. True when
+   * `timestamp` is an ordering placeholder with no provider time behind it; the
+   * row still sorts on it but must not show it as a clock (subagent drill-in).
+   */
+  timestampSynthetic?: boolean;
   /**
    * What names this row on disk for a scene drawn in it.
    *
@@ -611,16 +637,28 @@ export type ChatTranscriptGroupedEnvelope = {
     | SubagentStoppedGroupEvent
     | SubagentCardGridEvent
     | BackgroundJobGroupRenderEvent
-    | VoiceCallGroupRenderEvent
-    | TurnFoldRenderEvent;
+    | TurnFoldRenderEvent
+    | WakeChainRenderEvent
+    | NewSinceDividerRenderEvent;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `repeatCount`. */
   repeatCount?: number;
-  /** Carried through from `ChatTranscriptRenderEnvelope`; see its `voiceCallId`. */
-  voiceCallId?: string;
+  /** Carried through from `ChatTranscriptRenderEnvelope`; see its `imageViewSiblings`. */
+  imageViewSiblings?: CodexImageViewRenderEvent[];
+  /** Carried through from `ChatTranscriptRenderEnvelope`; see its `spawnCompletionSiblings`. */
+  spawnCompletionSiblings?: SpawnCompletionSibling[];
+  /**
+   * On a `done` row: the turn ended at a usage limit, so its turn-end line
+   * says so and the error row is not drawn. Set only by `foldTurnFailureRows`.
+   * Render-side only, like `repeatCount`.
+   */
+  endedAtUsageLimit?: boolean;
+  /** Carried through from `ChatTranscriptRenderEnvelope`; see its `timestampSynthetic`. */
+  timestampSynthetic?: boolean;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `sceneScopeKey`. */
   sceneScopeKey?: string;
 };
 
+export type CodexImageViewRenderEvent = Extract<AgentChatEvent, { type: "codex_image_view" }>;
 type PlanTranscriptEvent = Extract<AgentChatEvent, { type: "plan" }>;
 type TodoUpdateTranscriptEvent = Extract<AgentChatEvent, { type: "todo_update" }>;
 type TaskListSourceEvent = PlanTranscriptEvent | TodoUpdateTranscriptEvent;
@@ -675,6 +713,9 @@ type SubagentAnchorState = {
   label: string | null;
   agentType: string | null;
   provider: string | null;
+  /** The model and effort the agent reported; null until it does. */
+  model: string | null;
+  reasoningEffort: string | null;
   taskType: string | null;
   command: string | null;
   background: boolean;
@@ -773,9 +814,46 @@ type CollapseTranscriptContext = {
   foreignTurnEndKeys: Set<string>;
   /** Position of the one `task_list` row, or null while the chat has none. */
   taskListRowIndex: number | null;
+  /**
+   * `work_log_entry` rows keyed by `collapseKey`. A tool call, its resend and
+   * its result all land on one row; without this every first sighting of a
+   * tool scanned the whole transcript for a row that is not there.
+   */
+  workLogRowIndexByCollapseKey: Map<string, number>;
+  /**
+   * True when this context has seen every row since the list was empty. Only
+   * then does a key missing from one of the row-index maps prove the row does
+   * not exist; a context made for rows it did not build keeps the full scan.
+   */
+  rowIndexesComplete: boolean;
+  /**
+   * The two most recent {@link CollapseCheckpoint}s, oldest first. See
+   * {@link collapseChatTranscriptEventsIncrementalWithContext}.
+   */
+  checkpoints: CollapseCheckpoint[];
 };
 
-export function createCollapseTranscriptContext(): CollapseTranscriptContext {
+/**
+ * The collapse state as it was after the first `eventCount` events. A provider
+ * resend replaces an envelope a few events back, and the rows after it depend
+ * on everything before it, so the only exact answer is a replay. A checkpoint
+ * lets that replay start a few hundred events back instead of at the first
+ * event of the chat. Never mutated: a resume works on a clone.
+ */
+type CollapseCheckpoint = {
+  eventCount: number;
+  firstEvent: AgentChatEventEnvelope;
+  lastEvent: AgentChatEventEnvelope;
+  rows: ChatTranscriptRenderEnvelope[];
+  context: CollapseTranscriptContext;
+};
+
+/** A checkpoint is taken each time this many events have passed the newest one. */
+const COLLAPSE_CHECKPOINT_INTERVAL = 128;
+
+export function createCollapseTranscriptContext(
+  { rowIndexesComplete = false }: { rowIndexesComplete?: boolean } = {},
+): CollapseTranscriptContext {
   return {
     latestTodoItemsByTurn: new Map(),
     subagentAnchors: new Map(),
@@ -793,7 +871,71 @@ export function createCollapseTranscriptContext(): CollapseTranscriptContext {
     eventRowKeyOrdinals: new Map(),
     foreignTurnEndKeys: new Set(),
     taskListRowIndex: null,
+    workLogRowIndexByCollapseKey: new Map(),
+    rowIndexesComplete,
+    checkpoints: [],
   };
+}
+
+/**
+ * An independent copy of a collapse context, without its checkpoints. Every
+ * field is copied by name so a field added to the context fails to compile
+ * here until it is copied too. Values are primitives, immutable events, or
+ * snapshots written once; only the subagent states are mutated in place, and
+ * several map keys alias one state, so the copy keeps that aliasing.
+ */
+function cloneCollapseTranscriptContext(context: CollapseTranscriptContext): CollapseTranscriptContext {
+  const stateCopies = new Map<SubagentAnchorState, SubagentAnchorState>();
+  const subagentAnchors = new Map<string, SubagentAnchorState>();
+  for (const [key, state] of context.subagentAnchors) {
+    let copy = stateCopies.get(state);
+    if (!copy) {
+      copy = { ...state };
+      stateCopies.set(state, copy);
+    }
+    subagentAnchors.set(key, copy);
+  }
+  return {
+    latestTodoItemsByTurn: new Map(context.latestTodoItemsByTurn),
+    subagentAnchors,
+    errorKeysByTurn: new Set(context.errorKeysByTurn),
+    userMessageRowIndexBySteer: new Map(context.userMessageRowIndexBySteer),
+    unmatchedUserMessageResolutionsBySteer: new Map(context.unmatchedUserMessageResolutionsBySteer),
+    turnDetailsRowIndexByTurn: new Map(context.turnDetailsRowIndexByTurn),
+    turnDetailsWindowRowIndex: context.turnDetailsWindowRowIndex,
+    stalledRowIndexByTurn: new Map(context.stalledRowIndexByTurn),
+    adeCardRowIndexById: new Map(context.adeCardRowIndexById),
+    backgroundJobRowIndexByKey: new Map(context.backgroundJobRowIndexByKey),
+    systemNoticeSignatures: new Set(context.systemNoticeSignatures),
+    resolvedInputItemIds: new Set(context.resolvedInputItemIds),
+    turnEndSnapshots: new Map(context.turnEndSnapshots),
+    eventRowKeyOrdinals: new Map(context.eventRowKeyOrdinals),
+    foreignTurnEndKeys: new Set(context.foreignTurnEndKeys),
+    taskListRowIndex: context.taskListRowIndex,
+    workLogRowIndexByCollapseKey: new Map(context.workLogRowIndexByCollapseKey),
+    rowIndexesComplete: context.rowIndexesComplete,
+    checkpoints: [],
+  };
+}
+
+/** Record the state after `eventCount` events; keeps the two newest. */
+function recordCollapseCheckpoint(
+  context: CollapseTranscriptContext,
+  rows: ChatTranscriptRenderEnvelope[],
+  events: readonly AgentChatEventEnvelope[],
+  eventCount: number,
+): void {
+  if (eventCount <= 0) return;
+  context.checkpoints = [
+    ...context.checkpoints.slice(-1),
+    {
+      eventCount,
+      firstEvent: events[0]!,
+      lastEvent: events[eventCount - 1]!,
+      rows: rows.slice(),
+      context: cloneCollapseTranscriptContext(context),
+    },
+  ];
 }
 
 /** Turn-end snapshots recorded by a collapse pass; empty without a context. */
@@ -1021,19 +1163,13 @@ function mergePlanTranscriptEvent(previous: PlanTranscriptEvent, incoming: PlanT
   };
 }
 
-/**
- * Replace a row in place while keeping its voice-call stamp. The stamp is
- * applied by the collapse callers AFTER `appendCollapsedChatTranscriptEvent`
- * returns, so a later event that rewrites an earlier row wholesale (rather than
- * spreading it) would otherwise drop the id and split the call's fold.
- */
-function replaceRowPreservingVoiceCall(
+/** Replace a row in place, re-deriving its scene scope key. */
+function replaceRowInPlace(
   rows: ChatTranscriptRenderEnvelope[],
   index: number,
   next: ChatTranscriptRenderEnvelope,
 ): void {
-  const voiceCallId = rows[index]?.voiceCallId;
-  rows[index] = stampSceneScopeKey(voiceCallId ? { ...next, voiceCallId } : next);
+  rows[index] = stampSceneScopeKey(next);
 }
 
 /**
@@ -1048,8 +1184,44 @@ function stampSceneScopeKey<T extends ChatTranscriptRenderEnvelope>(row: T): T {
   return { ...row, sceneScopeKey: sceneRowIdentity(event, row.key) };
 }
 
+const MARKDOWN_INLINE_CHARS = /[*_`[\]~#>+-]/;
+
+/**
+ * Strip inline Markdown for a collapsed one-line preview. A small scanner, not
+ * a parser: it removes the punctuation a preview would otherwise show as
+ * literal (`**bold**`, `_italic_`, `` `code` ``, `[label](url)`, `~~gone~~`)
+ * plus line-leading headings, blockquotes, and list markers.
+ *
+ * Deliberately conservative so it does not corrupt text that only looks like
+ * Markdown: emphasis markers are removed only in pairs, `_`/`*` only at word
+ * boundaries, so `snake_case`, a shell glob, and a lone `*` survive.
+ */
+export function stripInlineMarkdown(value: string): string {
+  if (!MARKDOWN_INLINE_CHARS.test(value) && !/^[ \t]{0,3}\d+[.)]\s/m.test(value)) return value;
+  const withoutLinks = value.replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1");
+  const withoutCode = withoutLinks.replace(/`+([^`]+)`+/g, "$1");
+  const withoutBold = withoutCode
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1");
+  const withoutStrike = withoutBold.replace(/~~([^~]+)~~/g, "$1");
+  const withoutEmphasis = withoutStrike
+    .replace(/(^|[^\w*])\*([^*\s](?:[^*\n]*[^*\s])?)\*(?=[^\w*]|$)/g, "$1$2")
+    .replace(/(^|[^\w_])_([^_\s](?:[^_\n]*[^_\s])?)_(?=[^\w_]|$)/g, "$1$2");
+  return withoutEmphasis
+    .split("\n")
+    .map((line) => line
+      .replace(/^\s{0,3}(?:#{1,6}\s+|>\s+)/, "")
+      .replace(/^\s{0,3}(?:[-+*]|\d+[.)])\s+/, ""))
+    .join("\n");
+}
+
+/** Whitespace-collapse without touching Markdown, for internal comparisons. */
+function normalizeInlineText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
 export function summarizeInlineText(value: string, maxChars = 120): string {
-  const text = value.replace(/\s+/g, " ").trim();
+  const text = normalizeInlineText(stripInlineMarkdown(value));
   if (!text.length) return "";
   return text.length > maxChars ? `${text.slice(0, maxChars)}...` : text;
 }
@@ -1149,6 +1321,10 @@ function normalizeLocalhostHref(url: string, host: string): string {
 }
 
 export function extractLocalhostUrlsFromText(text: string): ChatLocalhostUrl[] {
+  // Every match has a scheme. Tool output and args are scanned again on every
+  // streamed event; most of it has no URL at all, and `includes` is far
+  // cheaper than running the case-insensitive Unicode pattern over it.
+  if (!text.includes("://")) return [];
   const urls: ChatLocalhostUrl[] = [];
   const seen = new Set<string>();
 
@@ -1276,6 +1452,20 @@ function readToolTitle(value: unknown): string | null {
   if (!record) return null;
   const title = typeof record.title === "string" ? record.title.trim() : "";
   return title.length ? title : null;
+}
+
+/**
+ * The error sentence of a failed tool result, when it carries one. A failed
+ * call's result is `{ error, errorType }` (or `{ error: { message } }`); the
+ * sentence is what a reader needs, not its JSON wrapper.
+ */
+export function readToolFailureText(result: unknown): string | null {
+  if (typeof result === "string") return result.trim() || null;
+  const record = readRecord(result);
+  const error = record?.error;
+  if (typeof error === "string") return error.trim() || null;
+  const nested = readRecord(error);
+  return typeof nested?.message === "string" ? nested.message.trim() || null : null;
 }
 
 export function formatStructuredValue(value: unknown): string {
@@ -1476,7 +1666,10 @@ function buildCommandWorkLogEvent(
   event: Extract<AgentChatEvent, { type: "command" }>,
   timestamp: string,
 ): WorkLogRenderEvent {
-  const collapseKey = buildCollapseKey("command", event, event.command);
+  // A provider may refine a partial command while keeping the same item id.
+  // Use the command text only as a fallback when the event has no stable id.
+  const hasStableItemId = Boolean(event.logicalItemId ?? event.itemId);
+  const collapseKey = buildCollapseKey("command", event, hasStableItemId ? undefined : event.command);
   return {
     type: "work_log_entry",
     collapseKey,
@@ -1679,8 +1872,16 @@ function mergeWorkLogEntries(previous: ChatWorkLogEntry, next: ChatWorkLogEntry)
 function findMatchingWorkLogEntryIndex(
   rows: ChatTranscriptRenderEnvelope[],
   collapseKey: string | undefined,
+  context: CollapseTranscriptContext | undefined,
 ): number {
   if (!collapseKey) return -1;
+  const stored = context?.workLogRowIndexByCollapseKey.get(collapseKey);
+  if (stored != null) {
+    const candidate = rows[stored];
+    if (candidate?.event.type === "work_log_entry" && candidate.event.collapseKey === collapseKey) return stored;
+  } else if (context?.rowIndexesComplete) {
+    return -1;
+  }
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const candidate = rows[index];
     if (!candidate || candidate.event.type !== "work_log_entry") continue;
@@ -1694,11 +1895,13 @@ function appendWorkLogRow(
   envelope: AgentChatEventEnvelope,
   rowKey: string,
   nextEvent: WorkLogRenderEvent,
+  context: CollapseTranscriptContext | undefined,
 ): void {
-  const matchIndex = findMatchingWorkLogEntryIndex(rows, nextEvent.collapseKey);
+  const matchIndex = findMatchingWorkLogEntryIndex(rows, nextEvent.collapseKey, context);
   if (matchIndex >= 0) {
     const existing = rows[matchIndex];
     if (existing?.event.type === "work_log_entry") {
+      if (nextEvent.collapseKey) context?.workLogRowIndexByCollapseKey.set(nextEvent.collapseKey, matchIndex);
       rows[matchIndex] = {
         ...existing,
         timestamp: envelope.timestamp,
@@ -1711,6 +1914,7 @@ function appendWorkLogRow(
     }
   }
 
+  if (nextEvent.collapseKey) context?.workLogRowIndexByCollapseKey.set(nextEvent.collapseKey, rows.length);
   rows.push({
     key: rowKey,
     timestamp: envelope.timestamp,
@@ -1783,26 +1987,6 @@ function resolveSubagentCardRowIndex(
   return null;
 }
 
-/**
- * The child a `spawn_completed` system notice reports on, or `null` for
- * anything else — including a notice whose detail lost its `spawnCompletion`
- * (an old or truncated transcript). An unidentified completion folds into
- * nothing, so it keeps its own row rather than silently absorbing a different
- * child's.
- *
- * Takes the RENDER event type, not `AgentChatEvent`: the fold compares an
- * incoming event against one already stored on a row, and a row holds the
- * render union. Narrowing on `type` rejects the synthetic render-only members
- * anyway, so widening the parameter costs nothing and removes a cast.
- */
-function readSpawnCompletionChildId(event: ChatTranscriptRenderEvent): string | null {
-  if (event.type !== "system_notice") return null;
-  if (event.noticeKind !== "info" || event.status !== "spawn_completed") return null;
-  const detail = event.detail;
-  if (!detail || typeof detail === "string") return null;
-  return detail.spawnCompletion?.childSessionId?.trim() || null;
-}
-
 function repairSubagentRowPositionsAfterSplice(
   context: CollapseTranscriptContext,
   removedIndex: number,
@@ -1833,6 +2017,7 @@ function repairIndexedTranscriptRowsAfterSplice(
     context.stalledRowIndexByTurn,
     context.adeCardRowIndexById,
     context.backgroundJobRowIndexByKey,
+    context.workLogRowIndexByCollapseKey,
   ]) {
     for (const [key, storedIndex] of rowIndexes) {
       if (storedIndex === removedIndex) rowIndexes.delete(key);
@@ -1853,9 +2038,13 @@ function resolveKeyedRowIndex(
   rowIndexes: Map<string, number> | undefined,
   lookupKey: string,
   expectedKey: string,
+  rowIndexesComplete = false,
 ): number | null {
   const stored = rowIndexes?.get(lookupKey);
   if (stored != null && rows[stored]?.key === expectedKey) return stored;
+  // No entry in a complete index: the row was never added. A subagent's every
+  // progress tick asks for a background-job line it never had.
+  if (stored == null && rowIndexes && rowIndexesComplete) return null;
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     if (rows[index]?.key === expectedKey) return index;
   }
@@ -1868,7 +2057,7 @@ function resolveAdeCardRowIndex(
   cardId: string,
   expectedKey: string,
 ): number | null {
-  return resolveKeyedRowIndex(rows, context?.adeCardRowIndexById, cardId, expectedKey);
+  return resolveKeyedRowIndex(rows, context?.adeCardRowIndexById, cardId, expectedKey, context?.rowIndexesComplete);
 }
 
 type AdeCardEvent = Extract<AgentChatEvent, { type: "ade_card" }>;
@@ -1954,9 +2143,12 @@ function backgroundExitCode(event: NormalizedSubagentLifecycleEvent): number | n
  * command and description are the fallbacks, in that order.
  */
 function backgroundJobLabel(state: SubagentAnchorState): string {
-  return backgroundCommandLabel(state.command ?? state.description ?? "")
-    || state.command
-    || state.description
+  // Masked before the shell noise is stripped and the label is cut, so no secret is split.
+  const command = state.command ? redactCommandLine(state.command) : state.command;
+  const description = state.description ? redactCommandLine(state.description) : state.description;
+  return backgroundCommandLabel(command ?? description ?? "")
+    || command
+    || description
     || "Background command";
 }
 
@@ -1968,7 +2160,13 @@ function resolveBackgroundJobRowIndex(
   context: CollapseTranscriptContext | undefined,
   expectedKey: string,
 ): number | null {
-  return resolveKeyedRowIndex(rows, context?.backgroundJobRowIndexByKey, expectedKey, expectedKey);
+  return resolveKeyedRowIndex(
+    rows,
+    context?.backgroundJobRowIndexByKey,
+    expectedKey,
+    expectedKey,
+    context?.rowIndexesComplete,
+  );
 }
 
 /**
@@ -2016,7 +2214,7 @@ function upsertBackgroundJobLine(
     if (event.status === "running") return;
   }
   context?.backgroundJobRowIndexByKey.set(expectedKey, rowIndex);
-  replaceRowPreservingVoiceCall(rows, rowIndex, { key: expectedKey, timestamp, event });
+  replaceRowInPlace(rows, rowIndex, { key: expectedKey, timestamp, event });
 }
 
 /**
@@ -2103,6 +2301,8 @@ function spawnAnchorEvent(
     description: subagentTitleDescription(state) ?? "Subagent task",
     agentType: state.agentType,
     provider: state.provider,
+    model: state.model,
+    reasoningEffort: state.reasoningEffort,
     label: state.label,
     background: state.background,
     status: "running",
@@ -2144,6 +2344,9 @@ function enrichSubagentStateFromEvent(
   if (!state.label) state.label = subagentText(event.label);
   state.agentType = preferredSubagentAgentType(state.agentType, subagentText(event.agentType));
   state.provider = subagentText(record.provider) ?? state.provider;
+  const model = subagentText((event as { model?: unknown }).model);
+  if (model && model !== "inherit") state.model = model;
+  state.reasoningEffort = subagentText((event as { reasoningEffort?: unknown }).reasoningEffort) ?? state.reasoningEffort;
   state.taskType = subagentText(event.taskType) ?? state.taskType;
   state.command = longerSubagentText(state.command, subagentText(record.command));
   if (record.background === true) state.background = true;
@@ -2202,7 +2405,6 @@ function handleSubagentLifecycleEvent(
   event: NormalizedSubagentLifecycleEvent,
   timestamp: string,
   context: CollapseTranscriptContext,
-  eventVoiceCallId: string | undefined,
 ): boolean {
   const anchors = context.subagentAnchors;
   const agentKey = subagentAgentKey(event);
@@ -2243,6 +2445,8 @@ function handleSubagentLifecycleEvent(
       label: null,
       agentType: null,
       provider: null,
+      model: null,
+      reasoningEffort: null,
       taskType: null,
       command: null,
       background: false,
@@ -2366,7 +2570,7 @@ function handleSubagentLifecycleEvent(
     // Mutate the anchor row IN PLACE — a NEW object with the SAME key.
     const rowIndex = resolveSubagentCardRowIndex(rows, state);
     if (rowIndex != null) {
-      replaceRowPreservingVoiceCall(rows, rowIndex, {
+      replaceRowInPlace(rows, rowIndex, {
         key: state.cardKey!,
         timestamp,
         event: spawnAnchorEvent(state, anchors),
@@ -2430,6 +2634,8 @@ function handleSubagentLifecycleEvent(
     description: subagentTitleDescription(state),
     agentType: state.agentType,
     provider: state.provider,
+    model: state.model,
+    reasoningEffort: state.reasoningEffort,
     background: state.background,
     label: state.label,
     status: terminalStatus,
@@ -2455,26 +2661,22 @@ function handleSubagentLifecycleEvent(
     childSessionId: state.childSessionId,
     spawnKind: state.spawnKind,
   };
-  // Settle IN PLACE: the card row keeps its position and key (and the voice
-  // call it was stamped with), so a grid keeps its cards in order and React
+  // Settle IN PLACE: the card row keeps its position and key, so a grid keeps
+  // its cards in order and React
   // keeps the row mounted with its measured height. Late results — after the
   // parent's `done`, even during a later turn — land here the same way.
   const rowIndex = resolveSubagentCardRowIndex(rows, state);
   if (rowIndex != null) {
-    replaceRowPreservingVoiceCall(rows, rowIndex, { key: state.cardKey!, timestamp, event: resultEvent });
+    replaceRowInPlace(rows, rowIndex, { key: state.cardKey!, timestamp, event: resultEvent });
     return true;
   }
   // No card in the window: the spawn sits in an unloaded older page (or the
   // result is the agent's only lifecycle event). Append the card where the
-  // result arrives. The row claims the call this terminal event was spoken
-  // under: a splice above (a dropped job line) can net the append to zero new
-  // rows, and `appendCollapsedEventWithVoiceStamp` stamps only appended rows.
+  // result arrives.
   const cardKey = subagentResultKey(state.renderKeyBase);
   state.cardKey = cardKey;
   state.rowIndex = rows.length;
-  rows.push(eventVoiceCallId
-    ? { key: cardKey, timestamp, event: resultEvent, voiceCallId: eventVoiceCallId }
-    : { key: cardKey, timestamp, event: resultEvent });
+  rows.push({ key: cardKey, timestamp, event: resultEvent });
   return true;
 }
 
@@ -2586,6 +2788,7 @@ export function appendCollapsedChatTranscriptEvent(
             spawnKind,
             status,
             summary: completion.summary?.trim() || null,
+            ...(completion.childMachineName?.trim() ? { childMachineName: completion.childMachineName.trim() } : {}),
             ...(event.turnId ? { turnId: event.turnId } : {}),
           },
         });
@@ -2734,7 +2937,7 @@ export function appendCollapsedChatTranscriptEvent(
   }
 
   if (event.type === "status") {
-    const normalizedMessage = summarizeInlineText(event.message ?? "", 120).toLowerCase();
+    const normalizedMessage = normalizeInlineText(event.message ?? "").toLowerCase();
     const keepStatus =
       event.turnStatus === "failed"
       || event.turnStatus === "interrupted"
@@ -2772,6 +2975,10 @@ export function appendCollapsedChatTranscriptEvent(
     // Hide this legacy durable shape during replay so old transcripts upgrade
     // to the same calm presentation as new events.
     if (isLegacyProviderRetryNotice(event)) return;
+    // A chat's move to or from another machine shows as a banner above the
+    // composer (the live move record, and the destination's arrival marker);
+    // it is state, not conversation. `cross_machine_handoff_ended` still renders.
+    if (event.status === "cross_machine_handoff_state" || event.status === "cross_machine_handoff_arrived") return;
     if (event.noticeKind === "info" && event.message.trim().toLowerCase() === "session ready") {
       return;
     }
@@ -2785,13 +2992,14 @@ export function appendCollapsedChatTranscriptEvent(
         envelope,
         rowKey,
         buildHookErrorWorkLogEvent(event, envelope.timestamp, rowKey, preToolUseHookError),
+        context,
       );
       return;
     }
   }
 
   if (event.type === "delegation_state") {
-    const normalizedMessage = summarizeInlineText(event.message ?? "", 140);
+    const normalizedMessage = normalizeInlineText(event.message ?? "");
     const keepDelegation =
       normalizedMessage.length > 0
       || event.contract.status === "blocked"
@@ -2858,6 +3066,13 @@ export function appendCollapsedChatTranscriptEvent(
       rows[rows.length - 1] = {
         ...previous,
         timestamp: envelope.timestamp,
+        // The merged row now carries this envelope's time, so its synthetic
+        // marker must follow that time: fragments with one messageId but
+        // different item ids can reach this branch with different provenance,
+        // and a stale marker would hide (or invent) the clock.
+        ...(envelope.provenance?.timestampSynthetic === true
+          ? { timestampSynthetic: true }
+          : { timestampSynthetic: false }),
         event: {
           ...previous.event,
           text: `${previous.event.text}${event.text}`,
@@ -2994,6 +3209,26 @@ export function appendCollapsedChatTranscriptEvent(
   // for background shell commands). Normalize canonical dotted events first, then
   // fold every lifecycle event into the anchor state (handled BEFORE the generic
   // passthrough so no raw subagent_* row ever reaches the activity bundler).
+  if (event.type === "codex_image_view") {
+    // An update to an image already folded into a strip: merge it in place.
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const siblings = rows[index]!.imageViewSiblings;
+      const siblingIndex = siblings?.findIndex((sibling) =>
+        sibling.itemId === event.itemId && (sibling.turnId ?? null) === (event.turnId ?? null)) ?? -1;
+      if (!siblings || siblingIndex < 0) continue;
+      const previous = siblings[siblingIndex]!;
+      const nextSiblings = [...siblings];
+      nextSiblings[siblingIndex] = {
+        ...previous,
+        ...event,
+        path: event.path ?? previous.path,
+        url: event.url ?? previous.url,
+        title: event.title ?? previous.title,
+      };
+      rows[index] = { ...rows[index]!, imageViewSiblings: nextSiblings };
+      return;
+    }
+  }
   if (event.type === "codex_image_generation" || event.type === "codex_image_view") {
     const matchIndex = [...rows]
       .reverse()
@@ -3035,6 +3270,26 @@ export function appendCollapsedChatTranscriptEvent(
         return;
       }
     }
+    // A NEW image joins the strip of the previous image in the same turn when
+    // only folded work sits between them: tool calls, commands and narration,
+    // the rows a finished turn hides under "Worked for". An agent screenshotting
+    // a UI runs a command and says a line before every look, so strict
+    // adjacency never fired. A row the reader keeps seeing (a CI card, a
+    // question) starts a new strip.
+    if (event.type === "codex_image_view") {
+      for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const candidate = rows[index]!;
+        if (candidate.event.type === "codex_image_view") {
+          if ((candidate.event.turnId ?? null) !== (event.turnId ?? null)) break;
+          rows[index] = {
+            ...candidate,
+            imageViewSiblings: [...(candidate.imageViewSiblings ?? []), event],
+          };
+          return;
+        }
+        if (candidate.event.type !== "text" && classifyTurnFoldEvent(candidate.event) !== "history") break;
+      }
+    }
   }
   // `ade_card` — a PERMANENT chronological transcript row (like a file-change
   // summary), not activity: it is never classified by `classifyActivityPhaseRow`
@@ -3050,7 +3305,7 @@ export function appendCollapsedChatTranscriptEvent(
     const existingIndex = resolveAdeCardRowIndex(rows, context, cardId, key);
     const existing = existingIndex != null ? rows[existingIndex] : null;
     if (existingIndex != null && existing?.event.type === "ade_card") {
-      replaceRowPreservingVoiceCall(rows, existingIndex, {
+      replaceRowInPlace(rows, existingIndex, {
         key,
         timestamp: envelope.timestamp,
         event: mergeAdeCardEvent(existing.event, event, cardId),
@@ -3072,28 +3327,27 @@ export function appendCollapsedChatTranscriptEvent(
       normalizedSubagentEvent,
       envelope.timestamp,
       activeContext,
-      envelope.provenance?.voiceCallId?.trim() || undefined,
     );
     return;
   }
 
   if (event.type === "tool_call" || event.type === "tool_result") {
-    appendWorkLogRow(rows, envelope, rowKey, buildToolWorkLogEvent(event, envelope.timestamp));
+    appendWorkLogRow(rows, envelope, rowKey, buildToolWorkLogEvent(event, envelope.timestamp), context);
     return;
   }
 
   if (event.type === "command") {
-    appendWorkLogRow(rows, envelope, rowKey, buildCommandWorkLogEvent(event, envelope.timestamp));
+    appendWorkLogRow(rows, envelope, rowKey, buildCommandWorkLogEvent(event, envelope.timestamp), context);
     return;
   }
 
   if (event.type === "file_change") {
-    appendWorkLogRow(rows, envelope, rowKey, buildFileWorkLogEvent(event, envelope.timestamp));
+    appendWorkLogRow(rows, envelope, rowKey, buildFileWorkLogEvent(event, envelope.timestamp), context);
     return;
   }
 
   if (event.type === "web_search") {
-    appendWorkLogRow(rows, envelope, rowKey, buildWebSearchWorkLogEvent(event, envelope.timestamp));
+    appendWorkLogRow(rows, envelope, rowKey, buildWebSearchWorkLogEvent(event, envelope.timestamp), context);
     return;
   }
 
@@ -3117,7 +3371,13 @@ export function appendCollapsedChatTranscriptEvent(
       if (previous) {
         rows[actualIndex] = {
           ...rows[actualIndex]!,
-          timestamp: envelope.timestamp,
+          // Two "started" rows are one compaction still running (an older peer
+          // repeats Claude's `compacting` status every ~30s). The row counts
+          // its elapsed from this timestamp, so a repeat must not move it
+          // forward — that is what restarted the "Compacting 42s" clock.
+          timestamp: previous.state === "started" && incoming.state === "started"
+            ? rows[actualIndex]!.timestamp
+            : envelope.timestamp,
           event: toContextCompactChatEvent(mergeNormalizedContextCompact(previous, incoming)),
         };
         return;
@@ -3166,14 +3426,15 @@ export function appendCollapsedChatTranscriptEvent(
     return;
   }
 
-  // ── Spawned-chat turn completions: ONE chip per adjacent run ──
+  // ── Spawned-chat turn completions: ONE row per adjacent run ──
   // A parent that spawned a peer gets one `spawn_completed` notice per sibling
   // TURN, which stacks identical rows. Fold an incoming notice into the LAST
   // row when that row is a completion for the SAME child, carrying a
-  // `repeatCount` the chip renders as `×N`. Adjacency-only on purpose:
-  // anything the parent said or did in between separates the runs, and
+  // `repeatCount` the line renders as `×N`. Adjacency-only on purpose:
   // consulting only the row just appended is what keeps the incremental and
-  // full collapses byte-identical.
+  // full collapses byte-identical. Folding across other rows (and dropping a
+  // child's out-of-date notices) happens later, on the visible rows, in
+  // `foldSpawnCompletionLines`.
   const spawnCompletionChildId = readSpawnCompletionChildId(event);
   if (spawnCompletionChildId) {
     const last = rows[rows.length - 1];
@@ -3249,23 +3510,24 @@ export type CollapseTranscriptResult = {
 };
 
 /**
- * Append one collapsed event and stamp whatever rows it produced with the voice
- * call it belongs to. Stamping happens HERE rather than inside
- * `appendCollapsedChatTranscriptEvent` because that function pushes rows from
- * dozens of branches; the caller only has to look at what the row count did.
+ * Append one collapsed event and stamp whatever rows it produced. Stamping
+ * happens HERE rather than inside `appendCollapsedChatTranscriptEvent` because
+ * that function pushes rows from dozens of branches; the caller only has to
+ * look at what the row count did.
  */
-function appendCollapsedEventWithVoiceStamp(
+function appendCollapsedEventWithStamp(
   rows: ChatTranscriptRenderEnvelope[],
   envelope: AgentChatEventEnvelope,
   context: CollapseTranscriptContext,
 ): void {
-  const callId = envelope.provenance?.voiceCallId?.trim() || null;
+  const timestampSynthetic = envelope.provenance?.timestampSynthetic === true;
   const before = rows.length;
   const rowKey = allocateTranscriptEventRowKey(envelope, context.eventRowKeyOrdinals);
   appendCollapsedChatTranscriptEvent(rows, envelope, rowKey, context);
   for (let index = before; index < rows.length; index += 1) {
     const row = rows[index]!;
-    rows[index] = stampSceneScopeKey(callId ? { ...row, voiceCallId: callId } : row);
+    const stamped = timestampSynthetic ? { ...row, timestampSynthetic: true } : row;
+    rows[index] = stampSceneScopeKey(stamped);
   }
 }
 
@@ -3273,9 +3535,16 @@ export function collapseChatTranscriptEventsWithContext(
   events: AgentChatEventEnvelope[],
 ): CollapseTranscriptResult {
   const rows: ChatTranscriptRenderEnvelope[] = [];
-  const context = createCollapseTranscriptContext();
-  for (const envelope of events) {
-    appendCollapsedEventWithVoiceStamp(rows, envelope, context);
+  const context = createCollapseTranscriptContext({ rowIndexesComplete: true });
+  // Leave the pass with checkpoints one and two intervals behind the end, so
+  // the first resend after opening a long chat replays a tail, not the chat.
+  const olderCheckpointAt = events.length - 2 * COLLAPSE_CHECKPOINT_INTERVAL;
+  const newerCheckpointAt = events.length - COLLAPSE_CHECKPOINT_INTERVAL;
+  for (let index = 0; index < events.length; index += 1) {
+    if (index > 0 && (index === olderCheckpointAt || index === newerCheckpointAt)) {
+      recordCollapseCheckpoint(context, rows, events, index);
+    }
+    appendCollapsedEventWithStamp(rows, events[index]!, context);
   }
   return { rows, context };
 }
@@ -3305,13 +3574,53 @@ export function collapseChatTranscriptEventsIncrementalWithContext(
     return collapseChatTranscriptEventsWithContext(events);
   }
 
-  if (events[previousEvents.length - 1] !== previousEvents[previousEvents.length - 1]) {
+  // History is not strictly append-only: a provider can resend a tool call
+  // under the same item id (Claude sends `tool_call` with empty args, then
+  // again with the command), and the live merge replaces the earlier envelope
+  // in place (`upsertRepeatedToolCalls`). When another event arrived between
+  // the two, the last event is unchanged, so only a scan finds the
+  // replacement. Reference compares only.
+  let firstChangedIndex = -1;
+  for (let index = 0; index < previousEvents.length; index += 1) {
+    if (events[index] !== previousEvents[index]) {
+      firstChangedIndex = index;
+      break;
+    }
+  }
+
+  if (firstChangedIndex >= 0) {
+    // Replay from the newest checkpoint that ends at or before the replaced
+    // event. Everything before a checkpoint is unchanged (the scan above), so
+    // the result is the one a full pass produces; without a usable checkpoint
+    // (the replacement is older than both) it is a full pass.
+    const checkpoints = previousContext.checkpoints;
+    for (let pick = checkpoints.length - 1; pick >= 0; pick -= 1) {
+      const checkpoint = checkpoints[pick]!;
+      if (
+        checkpoint.eventCount > firstChangedIndex
+        || events[0] !== checkpoint.firstEvent
+        || events[checkpoint.eventCount - 1] !== checkpoint.lastEvent
+      ) {
+        continue;
+      }
+      const rows = checkpoint.rows.slice();
+      const context = cloneCollapseTranscriptContext(checkpoint.context);
+      context.checkpoints = checkpoints.slice(0, pick + 1);
+      for (let index = checkpoint.eventCount; index < events.length; index += 1) {
+        appendCollapsedEventWithStamp(rows, events[index]!, context);
+      }
+      return { rows, context };
+    }
     return collapseChatTranscriptEventsWithContext(events);
   }
 
   const rows = previousRows.slice();
   for (let index = previousEvents.length; index < events.length; index += 1) {
-    appendCollapsedEventWithVoiceStamp(rows, events[index]!, previousContext);
+    appendCollapsedEventWithStamp(rows, events[index]!, previousContext);
+  }
+  const newestCheckpoint = previousContext.checkpoints[previousContext.checkpoints.length - 1];
+  if (events.length - (newestCheckpoint?.eventCount ?? 0) >= COLLAPSE_CHECKPOINT_INTERVAL) {
+    recordCollapseCheckpoint(previousContext, rows, events, events.length);
   }
   return { rows, context: previousContext };
 }
@@ -3673,87 +3982,6 @@ function groupChatTranscriptRowsCore(
   );
 }
 
-/**
- * Split `rows` into maximal consecutive runs that share one `voiceCallId` (rows
- * with no id form their own runs), group each run with `groupRun`, and fold each
- * voice run into a single `voice_call_group` row carrying its grouped rows.
- *
- * With no voice-stamped rows present there is exactly ONE run — the whole array —
- * so the output is identical to calling `groupRun(rows)` directly. That property
- * is what makes this safe to wrap the existing passes with.
- */
-export function groupVoiceCallRows(
-  rows: ChatTranscriptRenderEnvelope[],
-  groupRun: (run: ChatTranscriptRenderEnvelope[]) => ChatTranscriptGroupedEnvelope[],
-): ChatTranscriptGroupedEnvelope[] {
-  if (!rows.some((row) => row.voiceCallId)) return groupRun(rows);
-
-  const result: ChatTranscriptGroupedEnvelope[] = [];
-  let index = 0;
-  while (index < rows.length) {
-    const callId = rows[index]!.voiceCallId ?? null;
-    let end = index + 1;
-    while (end < rows.length && (rows[end]!.voiceCallId ?? null) === callId) end += 1;
-    const grouped = groupRun(rows.slice(index, end));
-    if (callId) {
-      const folded = foldVoiceCallRun(callId, grouped);
-      if (folded) result.push(folded);
-    } else {
-      result.push(...grouped);
-    }
-    index = end;
-  }
-  return result;
-}
-
-/**
- * Derive the one card a call's rows collapse into. A call that produced no rows
- * cannot reach here — no rows means no run — which is how "a call that said
- * nothing posts no card" falls out for free.
- */
-function foldVoiceCallRun(
-  callId: string,
-  grouped: ChatTranscriptGroupedEnvelope[],
-): ChatTranscriptGroupedEnvelope | null {
-  const first = grouped[0];
-  const last = grouped[grouped.length - 1];
-  if (!first || !last) return null;
-
-  let exchanges = 0;
-  let openingLine: string | null = null;
-  let hadApproval = false;
-  for (const row of grouped) {
-    if (row.event.type === "user_message") {
-      exchanges += 1;
-      if (openingLine === null) {
-        const text = row.event.displayText?.trim() || row.event.text.trim();
-        openingLine = text ? summarizeInlineText(text, 120) : null;
-      }
-    } else if (row.event.type === "approval_request") {
-      hadApproval = true;
-    }
-  }
-
-  const startedAt = Date.parse(first.timestamp);
-  const endedAt = Date.parse(last.timestamp);
-  const span = Number.isFinite(startedAt) && Number.isFinite(endedAt) ? endedAt - startedAt : null;
-
-  return {
-    key: `voice-call:${callId}`,
-    timestamp: last.timestamp,
-    voiceCallId: callId,
-    event: {
-      type: "voice_call_group",
-      callId,
-      durationMs: span !== null && span >= 0 ? span : null,
-      exchanges,
-      openingLine,
-      hadApproval,
-      rows: grouped,
-    },
-  };
-}
-
 export {
   applyChatTranscriptTurnFolds,
   deriveChatTranscriptTurnFolds,
@@ -3774,22 +4002,25 @@ export function groupChatTranscriptRows(
   rows: ChatTranscriptRenderEnvelope[],
   previousRows: readonly ChatTranscriptGroupedEnvelope[] = [],
 ): ChatTranscriptGroupedEnvelope[] {
-  return groupVoiceCallRows(rows, (run) => groupChatTranscriptRowsCore(run, previousRows));
+  return groupChatTranscriptRowsCore(rows, previousRows);
+}
+
+function rowDrawsVisibleItem({ event }: ChatTranscriptRenderEnvelope): boolean {
+  if (event.type === "context_usage" && event.origin !== undefined && event.origin !== "command") return false;
+  if (event.type === "model_handoff" && event.fromProvider === event.toProvider) return false;
+  return true;
 }
 
 /**
- * Rows that never mount a visible transcript item are dropped before grouping.
- * Anchor lookup must use the same filter so stable row keys agree with the
- * rendered transcript.
+ * Rows that never mount a visible transcript item are dropped before grouping,
+ * and "finished its turn" notices are folded to one line per run (see
+ * `foldSpawnCompletionLines`). Anchor lookup must use the same filter so
+ * stable row keys agree with the rendered transcript.
  */
 export function filterVisibleTranscriptRows(
   rows: readonly ChatTranscriptRenderEnvelope[],
 ): ChatTranscriptRenderEnvelope[] {
-  return rows.filter(({ event }) => {
-    if (event.type === "context_usage" && event.origin !== undefined && event.origin !== "command") return false;
-    if (event.type === "model_handoff" && event.fromProvider === event.toProvider) return false;
-    return true;
-  });
+  return foldSpawnCompletionLines(rows.filter(rowDrawsVisibleItem));
 }
 
 type TerminusDoneEvent = Extract<AgentChatEvent, { type: "done" }>;

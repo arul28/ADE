@@ -1,8 +1,11 @@
 import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+  BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD,
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
+  USER_BROWSER_RUNTIME_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
-import { CTO_VOICE_ACTIONS, type CtoVoiceAction } from "../../../shared/types/ctoVoice";
+import { THREAD_COMMENT_ACTION_NAMES } from "../../../shared/threadComments";
+import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../../shared/claudePluginUi";
 import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
 import type { AdeActionDomain } from "./domains";
 
@@ -80,7 +83,12 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
     ],
   },
   linear_oauth: { only: ["startSession"] },
+  // Installing or removing the ADE agent, or changing who runs unrouted
+  // delegations, changes a Linear workspace for everyone in it.
+  linear_agent: { only: ["startInstall", "uninstall", "updateSettings"] },
   github: { only: ["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"] },
+  // Jira credentials are machine-wide and never belong in an agent's hands.
+  jira: { only: ["connect", "disconnect"] },
   update: { only: ["quitAndInstall"] },
   // Linear webhook lifecycle mutates account-level state (registers/deletes a
   // webhook against the user's Linear organization), so it stays CTO-only;
@@ -88,19 +96,27 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // cancelScheduledCleanup can silently defeat a cleanup policy another
   // automation scheduled, so it is operator-only like the webhook lifecycle.
   automations: { only: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"] },
-  // `storeMachineApiKey` / `deleteMachineApiKey` join the project-scoped pair
-  // for the same reason: writing or destroying a provider credential is
-  // operator work. `getMachineApiKeyStatus` stays open like `getStatus` — it
-  // answers "is a key configured and where from", never the key.
-  ai: { only: ["updateConfig", "storeApiKey", "deleteApiKey", "storeMachineApiKey", "deleteMachineApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
+  // Writing or destroying a provider credential is operator work.
+  // `acpProviderDiagnostics` can run a provider CLI's doctor, so it is
+  // operator-only like the updater it pairs with.
+  // `harnessLaunchEnv` returns a routed launch's environment WITH its tokens
+  // (it is how `ade harness env` runs a custom provider in the user's own
+  // terminal), and `testHarnessRoute` spends the user's key on a live request.
+  // Both are operator work, like `project_secret.exportEnv`. `museSettings`
+  // opens a Muse host on the user's credential to read or change Muse's own
+  // settings, the same tier as the updater beside it.
+  ai: { only: ["harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "acpProviderUpdate", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
   budget: { only: ["updateConfig"] },
   feedback: { only: ["submitPreparedDraft"] },
   // `applyAccountRollups` writes another machine's history into a
   // CRR-replicated table. The desktop app pushes it over the local socket
   // after its own account fan-out; no agent has any reason to call it.
-  usage: { only: ["forceRefresh", "refreshHistory", "poll", "start", "stop", "applyAccountRollups"] },
+  usage: { only: ["forceRefresh", "refreshHistory", "poll", "start", "stop", "applyAccountRollups", "setModelPriceOverride"] },
   analytics: { only: ["setEnabled", "flush"] },
   storage: { only: ["cleanup", "runMaintenanceNow"] },
+  // Restoring brings a lane's worktree and services back up — the CTO's call,
+  // not any agent's. Deleting is the person's alone (ADE_ACTION_USER_ONLY).
+  archive: { only: ["restore"] },
   search: { only: ["rebuildIndex"] },
   project_secret: { only: ["exportEnv"] },
   account_vault: { only: ["get", "set", "remove"] },
@@ -133,24 +149,6 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
    * fleet already depends on.
    */
   cto_state: { only: ["startFreshSession"] },
-  /*
-   * Fail-closed, with no exceptions at all.
-   *
-   * A voice call opens a billed socket to OpenAI on the user's own key, puts the
-   * CTO thread into confirm-first mode for its duration, and carries a live
-   * microphone and speaker in a desktop window. None of that is something an
-   * agent has any business starting, driving, or listening to — `pullAudio`
-   * alone would let a session-bound agent drain the audio out from under the
-   * user mid-sentence, and `getState` returns the call's running transcript.
-   *
-   * Desktop main is the only intended caller and reaches this at `cto` role:
-   * `buildLocalRuntimeNodeEnv` launches the project runtime with
-   * `ADE_DEFAULT_ROLE=cto`, and the pool refuses to connect to a runtime whose
-   * default role is anything else. `allExcept: []` therefore denies every
-   * agent-role caller while leaving the router untouched — and a voice action
-   * added later is CTO-only by omission, which is the polarity this gate wants.
-   */
-  cto_voice: { allExcept: [] },
   // Every settle WRITER is CTO-only on purpose. "Is this work actually done?"
   // is a subjective judgment and agents are unreliable at it, so settlement is
   // reachable only from surfaces that connect at cto role — the desktop
@@ -176,10 +174,37 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       "undoBoardMove",
     ],
   },
-  // Stashes are unsent user-authored drafts. Desktop runtime clients connect
-  // without a chat binding at CTO role; session-bound agents must never read
-  // or mutate this private composer state through `ade actions`.
-  chat: { only: ["listPromptStashes", "createPromptStash", "deletePromptStash"] },
+  // DELIBERATE BOUNDARY CHANGE (2026-10-09): drafts used to be CTO-only here.
+  // Session-bound agents were denied `listDrafts`/`createDraft`/`deleteDraft`
+  // because a draft was private unsent composer state. Drafts are now the
+  // backing store for scheduled send, and the product decision is that an
+  // agent may arm and manage them on the user's behalf: an agent that schedules
+  // a send produces a message the user would otherwise have typed, and the user
+  // asked for that. Consequences accepted with the decision:
+  //   • an agent can read the user's unsent drafts, so never paste secrets into
+  //     a draft you have not sent;
+  //   • an agent-armed send is indistinguishable from one the user armed.
+  // `armUpdateResume` stays CTO-only: it is machine-wide and spends a real turn
+  // on every chat the desktop names. Voice is the user's microphone and a
+  // session billed to their ChatGPT plan: an agent must not start, stop, or
+  // watch it.
+  chat: {
+    only: [
+      // The desktop's post-update resume arm: machine-wide, and each row it
+      // creates spends a real turn. A session-bound agent must not drive it.
+      "armUpdateResume",
+      // Thread comments are the user's unsent review of an agent's reply. An
+      // agent that could write or delete them could edit what the user is
+      // about to tell it.
+      ...THREAD_COMMENT_ACTION_NAMES,
+      // What a mod draws is for the person at the chat. A press runs plugin
+      // code on the host; an agent must not press a control on its own chat.
+      ...CLAUDE_PLUGIN_UI_ACTION_NAMES,
+      "startCodexRealtime",
+      "stopCodexRealtime",
+      "getCodexRealtimeState",
+    ],
+  },
   // ── Domain-coverage decisions (deliberately NOT added here) ──
   // The CTO gained curated tools over automation planning, search,
   // usage/budget reads, project config reads, iOS-simulator / app-control /
@@ -195,9 +220,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   //   • search.query / indexStatus — reads over an index agents already build.
   //     `search.rebuildIndex` stays CTO-only above (it is a privileged rebuild).
   //   • project_config.get and project_secret.list — reads with no secret VALUES
-  //     in them. `project_secret.get`/`exportEnv` remain what they were:
-  //     `exportEnv` CTO-only, `get` reachable only when the user asked for that
-  //     secret by name. No CTO tool calls either one.
+  //     in them. `project_secret.get`/`exportEnv` return values, so the CTO's
+  //     generic action tool refuses them (`isSecretBearingAdeAction`), and no
+  //     other CTO tool calls either one.
   // Proof lifecycle and ingestion operate on project-scoped persisted bytes.
   // Session-bound agents use the dedicated RPC tools, which derive an owner
   // and filesystem jail from their authenticated chat context.
@@ -220,6 +245,11 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       // modal fired at whoever is at the Mac.
       "recheckPermissions",
       "requestPermission",
+      // Windows: a person's admin prompt and their choice to take the private
+      // screen from another lane. Neither is a session-bound agent's to make.
+      "setupWindows",
+      "takeoverWindows",
+      "useSharedDesktop",
     ],
   },
   computer_use_artifacts: {
@@ -255,10 +285,51 @@ const ROLE_ORDER: Record<AdeActionRole, number> = {
  */
 export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
   ios_simulator: APPLE_USER_ONLY_ACTIONS,
+  // ADE never deletes from the archive on its own, and no agent or automation
+  // deletes for the person: a delete can take a lane's uncommitted work.
+  archive: ["delete"],
+  // An agent asking to move a chat must not approve its own request. And only
+  // a person's client hosts an MCP App, so only it may pass an app's call on.
+  chat: ["resolveCrossMachineHandoffApproval", "mcpAppRequest", "revokeMcpAppGrant"],
 };
 
 export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
   return ADE_ACTION_USER_ONLY[domain]?.includes(action) ?? false;
+}
+
+/**
+ * Actions whose RESULT carries a secret: a credential, a token, an env file,
+ * or raw artifact bytes. The CTO's generic action tool (`runMachineAction`)
+ * refuses these outright, on its home machine and on any other, because the
+ * result would land in the model's transcript. A person reads them in Settings.
+ *
+ * The table names the known ones; `SECRET_BEARING_ACTION_NAME` catches a
+ * method added later under an obvious name, and fails closed.
+ */
+export const ADE_ACTION_SECRET_BEARING: Partial<Record<AdeActionDomain, readonly string[]>> = {
+  account: ["getToken", "createToken"],
+  account_vault: ["get"],
+  project_secret: ["get", "exportEnv"],
+  // A custom provider's launch env, tokens included.
+  ai: ["harnessLaunchEnv"],
+  // Raw proof bytes, streamed to the user's own desktop.
+  computer_use_artifacts: ["readArtifactRange"],
+  // Mints the loopback stream token.
+  mac_desktop: ["startStream"],
+  jira: ["connect"],
+};
+
+/**
+ * `get…Token`, `export…Env`, and anything naming a secret, a password or a
+ * private key. `…SecretNames` lists names only, so it stays reachable.
+ */
+const SECRET_BEARING_ACTION_NAME =
+  /^(?:get|read|reveal|export|create|mint)\w*Tokens?$|^export\w*Env$|Secret(?!Names$)|Password|PrivateKey/;
+
+export function isSecretBearingAdeAction(domain: string, action: string): boolean {
+  const name = action.trim();
+  if (ADE_ACTION_SECRET_BEARING[domain as AdeActionDomain]?.includes(name)) return true;
+  return SECRET_BEARING_ACTION_NAME.test(name);
 }
 
 export function isCtoOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
@@ -271,18 +342,6 @@ export function callerHasRoleAtLeast(role: AdeActionRole | undefined | null, min
   if (!role) return false;
   return ROLE_ORDER[role] >= ROLE_ORDER[minRole];
 }
-
-/**
- * Every voice action, spread from the one list that defines them.
- *
- * Exhaustive by construction rather than by review: a tenth action added to
- * `CTO_VOICE_ACTIONS` is on the bus the moment it exists, and cannot sit on the
- * service unreachable because nobody remembered this file. Sorted at read time,
- * because the allowlist is read as documentation as well as policy — the
- * ordering is presentation, the membership is not.
- */
-const CTO_VOICE_ALLOWED_ACTIONS: readonly CtoVoiceAction[] =
-  [...CTO_VOICE_ACTIONS].sort();
 
 export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly string[]>> = {
   account: [
@@ -303,12 +362,16 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getPreferences",
     "putPreferences",
     "putMachinePreferences",
+    // `ade notify`. Not CTO-only, so agents and automation steps can call it;
+    // the relay caps it at 60 an hour per account.
+    "sendNotification",
   ],
   lane: [
     "archive",
     "archiveAndReclaim",
     "attachLinearIssueToSession",
     "attachGitHubIssueToSession",
+    "attachJiraIssueToSession",
     "cancelDelete",
     "create",
     "createChild",
@@ -319,6 +382,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "deleteTemplate",
     "detachLinearIssueFromSession",
     "detachGitHubIssueFromSession",
+    "detachJiraIssueFromSession",
     "diagnosticsActivateFallback",
     "diagnosticsDeactivateFallback",
     "diagnosticsGetLaneHealth",
@@ -350,6 +414,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listLinearIssuesForSession",
     "listGitHubIssuesForLaneSessions",
     "listGitHubIssuesForSession",
+    "listJiraIssuesForLaneSessions",
+    "listJiraIssuesForSession",
     "linkLinearIssues",
     "oauthDecodeState",
     "oauthEncodeState",
@@ -443,7 +509,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "unstageFile",
     "unstagePaths",
   ],
-  diff: ["getChanges", "getLaneDiffStats", "listLaneDiffStats", "getFileDiff", "getFilePatch"],
+  diff: ["getChanges", "getBranchChanges", "getLaneDiffStats", "listLaneDiffStats", "getFileDiff", "getFilePatch"],
   conflicts: [
     "applyProposal",
     "attachResolverSession",
@@ -561,6 +627,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "submitReview",
     "syncGithubStacks",
     "unstackGithubStack",
+    "linkChatSession",
+    "unlinkChatSession",
+    "linkChatStack",
+    "listChatSessionsForPr",
+    "getStackLinkOffer",
+    "setChatWatch",
+    "getChatWatches",
     "updateBody",
     "updateBranch",
     "updateComment",
@@ -578,7 +651,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "dispatchSteer",
     "editSteer",
     "ensureCtoSession",
+    "moveSteer",
     "getAvailableModels",
+    "getLaunchDefaults",
     "getClaudeSessionInfo",
     "getClaudeSessionMessages",
     "getChatEventHistory",
@@ -590,6 +665,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setCodexGoal",
     "setCodexGoalStatus",
     "clearCodexGoal",
+    "startCodexRealtime",
+    "stopCodexRealtime",
+    "getCodexRealtimeState",
     "getCodexGoal",
     "resetCodexMemory",
     "terminateCodexBackgroundTerminal",
@@ -603,6 +681,14 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "interrupt",
     "interruptWithQueueMode",
     "stopTask",
+    "messageSubagent",
+    "controlSubagent",
+    "restartSession",
+    "waitFor",
+    "armWait",
+    "listWaits",
+    "cancelWait",
+    "holdBackgroundWork",
     "recoverTurn",
     "recoverCodexTurn",
     "resolveUnprocessedMessage",
@@ -622,6 +708,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "createScheduledWork",
     "listScheduledWork",
     "getScheduledWorkState",
+    // Update-install resume. The read is open; the arm is CTO-only (see
+    // ADE_ACTION_CTO_ONLY.chat) because it spends real turns on every chat the
+    // desktop names, and only the desktop's main process should do that.
+    "listInterruptedChats",
+    "armUpdateResume",
     "listClaudePlugins",
     "listCodexPlugins",
     "listClaudeSessions",
@@ -630,9 +721,15 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     // merges them so an agent can find and poll its CLI children.
     "listCliChildSessions",
     "listSubagents",
-    "listPromptStashes",
-    "createPromptStash",
-    "deletePromptStash",
+    "listDrafts",
+    "getDraft",
+    "createDraft",
+    "updateDraft",
+    "deleteDraft",
+    "claimDraft",
+    "sendDraftNow",
+    ...THREAD_COMMENT_ACTION_NAMES,
+    ...CLAUDE_PLUGIN_UI_ACTION_NAMES,
     "messageSession",
     "modelCatalog",
     "approveToolUse",
@@ -646,8 +743,29 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "fastForwardCrossMachineHandoffLane",
     "acceptCrossMachineHandoff",
     "markCrossMachineHandoff",
+    // The brain-owned move. `startCrossMachineHandoff` is open to agents on
+    // purpose ("move this chat to my Mac mini"); the RPC server stamps
+    // `requestedBy`, holds a bound agent to its own chat, and strips any
+    // permission fields so the move keeps the chat's own settings. An agent
+    // moving a chat that isn't full-auto waits for the person's approval
+    // (crossMachineHandoffOrchestrator). Approval itself is the person's: see
+    // ADE_ACTION_USER_ONLY. `previewCrossMachineHandoff` only reads.
+    "getCrossMachineHandoffOptions",
+    "previewCrossMachineHandoff",
+    "startCrossMachineHandoff",
+    "cancelCrossMachineHandoff",
+    "retryCrossMachineHandoff",
+    "resolveCrossMachineHandoffApproval",
+    "acknowledgeCrossMachineHandoff",
     "respondToInput",
     "dismissPendingInput",
+    // MCP Apps. `getMcpApp` reads a stored page. `mcpAppRequest` is the user's
+    // alone (ADE_ACTION_USER_ONLY): it runs a tool for an app in a frame, and
+    // an agent has its own, permissioned way to call its MCP tools.
+    "getMcpApp",
+    "mcpAppRequest",
+    "listMcpAppGrants",
+    "revokeMcpAppGrant",
     "resolveSmartLinkPreview",
     // og:image bytes for a link's hover card; same public-host guard.
     "resolveSmartLinkImage",
@@ -671,6 +789,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "cancelScheduledWork",
     "resumeUsageLimitNow",
     "continueUsageLimitOnAlternate",
+    "switchAccount",
     "setScheduledWorkPaused",
     "steer",
     "suggestLaneNameFromPrompt",
@@ -687,24 +806,35 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getStatus",
     "getOpenCodeRuntimeDiagnostics",
     "isOpenCodeInstalled",
+    "museBinaryStatus",
+    "ensureMuseBinary",
+    "museSettings",
+    "museSettingsClose",
+    "acpProviderDiagnostics",
+    "acpProviderUpdate",
+    "listApiCredentials",
+    "getApiCredential",
+    "storeApiCredential",
+    "removeApiCredential",
     "verifyApiKeyConnection",
     "storeApiKey",
     "deleteApiKey",
     "listApiKeys",
-    // Machine-scoped keys (this install's ADE home, not the project's). On the
-    // bus so the renderer can reach the store the RUNTIME reads — desktop main
-    // writes through a different credential store and the runtime cannot open
-    // it. The secret travels one way, in; only a status comes back.
-    "getMachineApiKeyStatus",
-    "storeMachineApiKey",
-    "deleteMachineApiKey",
     "updateConfig",
     "opencodeAuthMethods",
     "opencodeOAuthStart",
     "opencodeOAuthCancel",
     "setOpencodeProviderKey",
     "clearOpencodeProviderKey",
+    "opencodeAccounts",
+    "opencodeAccountActivate",
+    "opencodeAccountRename",
+    "opencodeAccountRemove",
+    "opencodeCloudConnect",
     "refreshModelsDev",
+    "listHarnessRoutes",
+    "testHarnessRoute",
+    "harnessLaunchEnv",
     "piLoginProviders",
     "piLoginStart",
     "piLoginSubmit",
@@ -730,9 +860,15 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "openCursorCloudChat",
     "watchCursorCloudMirror",
     "getCursorCloudFleet",
+    "getCursorAgentUsage",
     "resolveCursorCloudAgentLane",
     "pullCursorCloudAgentIntoLane",
     "stopCursorCloudAgentRun",
+    "listCloudAgents",
+    "openCloudAgent",
+    "stopCloudAgent",
+    "archiveCloudAgent",
+    "launchCloudAgent",
   ],
   onboarding: [
     "complete",
@@ -755,10 +891,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "updateIdentity",
   ],
   cto_memory: ["getSnapshot", "searchMemory", "updateMemory", "recordDiscovery"],
-  // The desktop router's whole surface. Every one of these is CTO-only — see
-  // `ADE_ACTION_CTO_ONLY.cto_voice`, which is `allExcept: []` so a voice action
-  // added later is operator-only by omission rather than by remembering.
-  cto_voice: CTO_VOICE_ALLOWED_ACTIONS,
   session: [
     "backfillDeltas",
     "clearWokeMarker",
@@ -789,7 +921,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
   project_config: ["diffAgainstDisk", "get", "save", "setPrTranscriptGists", "validate"],
-  project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv"],
+  // `request` asks the person through the private secret card; it returns the
+  // outcome only, never the value, so it is not secret-bearing.
+  project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount", "request"],
   // Reads and writes of the user's own account-scoped settings. No secret
   // values pass through here — the vault is a separate domain with its own
   // approval rules, precisely so "change my theme" and "read my API key"
@@ -798,7 +932,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // `list` reports names and readability, never values, which is why it sits
   // beside the harmless actions. `get` returns a credential and is gated below
   // for the same reason `project_secret.exportEnv` is.
-  account_vault: ["list", "get", "set", "remove", "sync"],
+  account_vault: ["list", "get", "set", "remove", "sync", "pendingKeys"],
   linear_credentials: [
     "clearOAuthClientCredentials",
     "clearToken",
@@ -811,10 +945,28 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getSession",
     "startSession",
   ],
+  linear_agent: [
+    "getInstallSession",
+    "getOverview",
+    "registerMember",
+    "startInstall",
+    "uninstall",
+    "unregisterMember",
+    "updateSettings",
+  ],
   linear_issue_tracker: [
     "addIssueLabel",
     "addLabel",
+    "cancelIssue",
+    "countIssues",
     "createComment",
+    "createFollowUpIssue",
+    "createIssue",
+    "createIssueRelation",
+    "createProjectUpdate",
+    "getIssueCreateOptions",
+    "listProjectMilestones",
+    "uploadFile",
     "fetchIssueById",
     "fetchIssuesByIds",
     "fetchIssueComments",
@@ -824,15 +976,20 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getQuickView",
     "getStatus",
     "getWorkflowCatalog",
+    "listCustomViews",
     "listLabels",
     "listIssues",
+    "listNotifications",
     "listProjects",
+    "markNotification",
     "listWorkflowStates",
     "listUsers",
     "removeIssueLabel",
     "searchIssues",
     "updateComment",
+    "updateIssue",
     "updateIssueAssignee",
+    "updateIssuePriority",
     "updateIssueState",
   ],
   github: [
@@ -851,28 +1008,67 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listRepoCollaborators",
     "listRepoIssues",
     "getIssue",
+    "getRepoIssueSummary",
+    "listRepoIssueList",
+    "getIssueWriteAccess",
+    "createIssue",
+    "listIssueTemplates",
+    "listIssueTypes",
+    "linkSubIssue",
+    "updateIssue",
+    "commentOnIssue",
+    "listRepoMilestones",
+    "listIssueComments",
     "listRepoLabels",
     "pollAppUserDeviceAuth",
     "publishCurrentProject",
     "setToken",
     "startAppUserDeviceAuth",
   ],
+  jira: [
+    "getConnectionStatus",
+    "connect",
+    "disconnect",
+    "listProjects",
+    "listIssues",
+    "getIssue",
+    "listComments",
+    "addComment",
+    "updateIssue",
+    "listTransitions",
+    "transitionIssue",
+    "listAssignableUsers",
+    "listLabels",
+    "getCreateMeta",
+    "createIssue",
+  ],
+  issues: ["list", "get", "resolve", "comment", "setState", "create"],
   feedback: ["list", "prepareDraft", "submitPreparedDraft"],
   usage: [
     "applyAccountRollups",
     "consumeResetCredit",
     "forceRefresh",
     "getAdeUsageStats",
+    "getCostBreakdown",
+    "getModelDetail",
+    "getModelPriceOverrides",
+    "getModelRoutes",
+    "getRouterEfficiency",
+    "getRouterShadowSummary",
     "getTurnUsageSummary",
     "getUsageSnapshot",
     "noteQuotaDemand",
     "refreshHistory",
     "poll",
+    "previewModelRoute",
+    "refreshModelRegistry",
+    "setModelPriceOverride",
     "start",
     "stop",
   ],
   analytics: ["capture", "getStatus", "setEnabled", "flush"],
   storage: ["cleanup", "cleanupPreview", "compressNow", "getSnapshot", "runMaintenanceNow"],
+  archive: ["delete", "list", "restore", "summary"],
   budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],
   update: ["checkForUpdates", "dismissInstalledNotice", "getSnapshot", "quitAndInstall"],
   file: [
@@ -903,7 +1099,17 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // so phones and the hosted web client can mirror it. `show` is an agent
   // asking that desktop to put a surface of its own chat on screen, and
   // `acknowledgeShow` is the desktop's answer (user clients only).
-  work_tools: ["getLaneState", "setActiveTool", "readObservationPreview", "show", "acknowledgeShow"],
+  // `listDevServers` and `probePort` let a Browser on another machine see this
+  // machine's dev servers; both only read.
+  work_tools: [
+    "getLaneState",
+    "setActiveTool",
+    "readObservationPreview",
+    "show",
+    "acknowledgeShow",
+    "listDevServers",
+    "probePort",
+  ],
   // `ingest` is intentionally absent. Proof-drawer entries are created only by
   // the `ingest_computer_use_artifacts` RPC tool and the `ade proof` commands
   // that wrap it, which validate owner claims and the caller's import root.
@@ -938,7 +1144,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
    * durable agent transcript, so an unredacted stream token would be printed
    * into one.
    *
-   * Writes: `start`, `stop`, `open`, `claimWindow`, `releaseWindow`, `click`,
+   * Writes: `start`, `stop`, `open`, `claimWindow`, `releaseWindow`,
+   * `focusWindow`, `minimizeWindow`, `closeWindow`, `requestSharedDesktop`, `click`,
    * `type`, `press`, `scroll`, `drag`, `wait`, `screenshot`, `startRecording`,
    * `stopRecording`, `requestInputLease`, `present`.
    *
@@ -962,6 +1169,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "open",
     "claimWindow",
     "releaseWindow",
+    "quitApp",
+    // Windows: a lane's own windows only (the service refuses any other).
+    "focusWindow",
+    "minimizeWindow",
+    "closeWindow",
+    // Windows: asks the user in the calling chat; their answer is the consent.
+    "requestSharedDesktop",
     "observe",
     "click",
     "type",
@@ -981,8 +1195,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "takeControl",
     "returnControl",
     "renewLease",
+    "setupWindows",
+    "takeoverWindows",
+    "useSharedDesktop",
   ],
-  app_control: ["getStatus", "claim", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal", "listDrivers", "observe", "agentClick", "agentHover", "agentFill", "agentClear", "agentType", "agentPress", "agentScroll", "agentWait", "getTrace", "windows", "switchWindow"],
+  app_control: ["getStatus", "claim", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal", "listDrivers", "observe", "agentClick", "agentHover", "agentFill", "agentClear", "agentType", "agentPress", "agentScroll", "agentWait", "getTrace", "windows", "switchWindow", "startRecording", "stopRecording", "getRecordingStatus", "captureProof", "getLatestFrame"],
   // `acknowledgeRemoteRequest` is not a `BuiltInBrowserService` method: it is
   // served by the runtime daemon itself, so a desktop that took a forwarded
   // `ade browser open` can tell the machine that asked. Absent on a desktop's
@@ -990,6 +1207,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   built_in_browser: [
     ...BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
     BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+    // The answer to a command this machine sent to the desktop its user sits
+    // at (`built_in_browser_remote_call`). Runtime-served, like the ack above.
+    BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD,
+    // `ade browser attach` / `detach`: also runtime-served, so a desktop's own
+    // service object lacks them too.
+    ...USER_BROWSER_RUNTIME_METHODS,
   ],
   automations: [
     "list",
@@ -998,6 +1221,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "deleteRule",
     "toggleRule",
     "triggerManually",
+    "planTest",
+    "runTest",
+    "cleanUpTestRun",
     "getHistory",
     "listRuns",
     "getRunDetail",
@@ -1012,6 +1238,19 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "linearIngressSetup",
     "linearIngressTeardown",
     "linearIngressPollNow",
+    // Webhook URLs: an agent that builds a webhook automation needs the URL to
+    // hand back, and the log to check its work. `saveRule` (already open)
+    // carries more power than any of these.
+    "webhookCreateEndpoint",
+    "webhookGetEndpoint",
+    "webhookRotateEndpoint",
+    "webhookListDeliveries",
+    "webhookGetDelivery",
+    "webhookReplayDelivery",
+    "webhookSendTest",
+    "webhookCreateAutomation",
+    "webhookList",
+    "webhookRetire",
   ],
   issue: [
     "addComment",
@@ -1034,9 +1273,17 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
    * `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. The store never reads, writes, copies
    * or returns a token: the provider's own CLI writes its credentials inside
    * that directory, `loginCommand` only hands back the argv and the one env var
-   * that points the CLI at it, and `remove` forgets the entry without deleting
-   * anything on disk. So none of these methods can leak or destroy a
-   * credential, which is the bar the CTO gate exists to enforce.
+   * that points the CLI at it, and none of them can leak a credential.
+   * `signOut` and `remove` (which signs out first) clear one account's saved
+   * login. They stay open to agents on purpose: the user wants an agent to
+   * manage accounts end to end, and the default account is refused by both.
+   *
+   * `loginStart`/`loginSubmitCode` run the provider's own sign-in for one
+   * account in a private PTY. That opens the user's browser and, once the user
+   * approves there, the CLI writes a new login into that account's directory,
+   * which can replace the login it held (tracked as `replacedAccount`). ADE
+   * still never sees the token, and nothing changes without the user's
+   * approval in the browser.
    *
    * The locked decision is that an agent may both see and manage accounts:
    * a worker agent that needs a second Claude login (rate limits, a separate
@@ -1048,9 +1295,15 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "list",
     "create",
     "remove",
+    "signOut",
     "rename",
     "setDefault",
     "setAccent",
+    "dismissReplaced",
+    "loginStart",
+    "loginStatus",
+    "loginSubmitCode",
+    "loginCancel",
     "getSettings",
     "setSettings",
     "loginCommand",

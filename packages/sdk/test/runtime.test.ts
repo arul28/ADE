@@ -292,6 +292,7 @@ describe("resolveBinary resolution order", () => {
     expect(LEGACY_BINARY_SOURCE).toEqual({
       explicit: "option",
       "bundled-package": "option",
+      packaged: "option",
       "cached-download": "cache",
       path: "path",
       downloaded: "download",

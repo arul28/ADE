@@ -1,4 +1,7 @@
+import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
+import { WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS } from "../../../shared/types/macDesktop";
+import { ACP_PROVIDER_UPDATE_RUN_BUDGET_MS } from "../ai/acpProviderUpdate";
 
 export const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 120_000;
 
@@ -25,6 +28,15 @@ export const USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS =
   LEDGER_WORKER_TIMEOUT_MS + 15_000;
 
 /**
+ * ADE's one-click update of a provider CLI runs an npm or vendor install, then
+ * re-reads the version. On the 30s default the renderer reported a failure
+ * while the install went on, and "Try again" could start a second install
+ * against the same CLI. Each budget outward is longer than the one inside it.
+ */
+export const ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS = ACP_PROVIDER_UPDATE_RUN_BUDGET_MS + 10_000;
+export const ACP_PROVIDER_UPDATE_TIMEOUT_MS = ACP_PROVIDER_UPDATE_RUN_BUDGET_MS + 20_000;
+
+/**
  * A cold simulator launch is boot (90s) + xcodebuild (600s) + install (180s)
  * + launch (60s) = 930s worst case; 17 min keeps headroom above that sum.
  */
@@ -37,13 +49,22 @@ export const IOS_SIMULATOR_LAUNCH_TIMEOUT_MS = 17 * 60_000;
 export const IOS_SIMULATOR_PREVIEW_TIMEOUT_MS = 10 * 60_000;
 
 /**
- * Device lifecycle: create clones a template (`simctl clone`, 120s), delete
+ * Device lifecycle: create makes a new device (`simctl create`, 120s), delete
  * shuts the device down (60s) then deletes it (120s), start waits on
  * `simctl bootstatus` (90s), stop shuts down (60s). Without a budget of its own
  * each ran on the 30s default, so the renderer rejected while the device was
  * still provisioning/booting.
  */
 export const IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS = 4 * 60_000;
+
+/**
+ * `runTests` runs `xcodebuild test`, which the service bounds at 2 hours; the
+ * margin covers the device boot before it and the log read after it.
+ */
+export const IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS = 2 * 60 * 60_000 + 5 * 60_000;
+
+/** The cleanup pass may delete several devices, each up to 120s, plus power-offs. */
+export const IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS = 15 * 60_000;
 
 /**
  * The innermost budgets on the remote path: the JSON-RPC transport carrying
@@ -60,6 +81,10 @@ export const IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS =
   IOS_SIMULATOR_LAUNCH_TIMEOUT_MS - 30_000;
 export const IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS =
   IOS_SIMULATOR_PREVIEW_TIMEOUT_MS - 30_000;
+export const IOS_SIMULATOR_RUN_TESTS_REMOTE_TRANSPORT_TIMEOUT_MS =
+  IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS - 30_000;
+export const IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS =
+  IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS - 30_000;
 export const LOCAL_RUNTIME_ACTION_TIMEOUT_MS = 30_000;
 export const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 export const LOCAL_RUNTIME_SYNC_TIMEOUT_MS = 30_000;
@@ -115,9 +140,34 @@ export const PI_LOGIN_IPC_TIMEOUT_MS = 11 * 60_000;
  */
 export const CURSOR_LOGIN_IPC_TIMEOUT_MS = 21 * 60_000;
 
+export { DEMO_RECORDING_STOP_TIMEOUT_MS };
+
+/**
+ * Windows Desktop actions that wait on a person at the Windows PC: the UAC
+ * prompt of setup, the Windows password dialog, and Windows' own sign-in
+ * window of a private screen (the driver allows that 160 s). On the 30 s
+ * default the pane reported "Remote ADE service timed out" while Windows was
+ * still waiting for the password, and the start looked frozen.
+ */
+export const WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS = 180_000;
+/** The remote transport outlives the brain's own budget for the same action. */
+export const WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS = 195_000;
+/** The renderer's timer outlives the transport, so the real reason wins. */
+export const WINDOWS_DESKTOP_INTERACTIVE_IPC_TIMEOUT_MS = 210_000;
+/**
+ * Windows types one character at a time, so a long `type` outlives the 30 s
+ * default. The brain's own driver budget is capped at
+ * `WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS`; the caller waits a little longer so
+ * the brain's own answer arrives first.
+ */
+export const WINDOWS_DESKTOP_TYPE_TIMEOUT_MS = WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS + 15_000;
+export const WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS = WINDOWS_DESKTOP_TYPE_TIMEOUT_MS + 15_000;
+
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["ai.piLoginStart", PI_LOGIN_IPC_TIMEOUT_MS],
   ["ai.cursorAuthLogin", CURSOR_LOGIN_IPC_TIMEOUT_MS],
+  // See ACP_PROVIDER_UPDATE_TIMEOUT_MS.
+  ["ai.acpProviderUpdate", ACP_PROVIDER_UPDATE_TIMEOUT_MS],
   // Lane deletion can legitimately include a 60s worktree removal followed by
   // a 45s remote-branch deletion. The old 30s client budget reported failure
   // while the daemon kept mutating state to a successful completion.
@@ -126,7 +176,14 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // deletes the chat and the lane (worktree + local and remote branch).
   ["chat.cancelLaunch", 5 * 60_000],
   ["lane.archive", 120_000],
+  // A GitHub Stack merge polls GitHub for up to 20s, then cleans up each
+  // merged PR. The 30s default reported a failure while the merge went on.
+  ["pr.land", 120_000],
   ["lane.unarchive", 120_000],
+  // Archive restore/delete walk a batch one item at a time, and a lane in the
+  // batch can take as long as `lane.unarchive` / `lane.delete` on its own.
+  ["archive.restore", 10 * 60_000],
+  ["archive.delete", 15 * 60_000],
   ["chat.suggestLaneNameFromPrompt", 120_000],
   ["chat.generateAutoLaneIdentity", 120_000],
   // Handoff = AI brief generation (bounded at 45s) + session creation +
@@ -141,6 +198,12 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // daemon later created an empty session (ADE-122 class).
   ["ai.openCursorCloudChat", 120_000],
   ["ai.createCursorCloudRun", 120_000],
+  // An issue with pictures runs `gh issue create --attach` (up to 120s), then
+  // a PATCH, a read and a sub-issue link. Timing out first would report a
+  // failure while the issue is created, and a retry would file it twice.
+  ["github.createIssue", 180_000],
+  // Up to 10 MB of picture bytes to Linear's storage.
+  ["linear_issue_tracker.uploadFile", 120_000],
   // See USAGE_REFRESH_HISTORY_TIMEOUT_MS: in runtime-backed (production) mode
   // the Usage page's Refresh reaches the ledger worker through this action.
   ["usage.refreshHistory", USAGE_REFRESH_HISTORY_TIMEOUT_MS],
@@ -158,6 +221,23 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["ios_simulator.deviceCreate", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   ["ios_simulator.deviceDelete", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   ["ios_simulator.deviceDetach", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
+  ["ios_simulator.deviceCleanup", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
+  // See IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS.
+  ["ios_simulator.runTests", IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS],
+  // See DEMO_RECORDING_STOP_TIMEOUT_MS.
+  ["mac_desktop.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
+  // See WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS.
+  ["mac_desktop.start", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
+  ["mac_desktop.setupWindows", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
+  ["mac_desktop.takeoverWindows", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
+  ["mac_desktop.useSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
+  // Waits on the user's answer to the shared-seat card, then the start.
+  ["mac_desktop.requestSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
+  // See WINDOWS_DESKTOP_TYPE_TIMEOUT_MS.
+  ["mac_desktop.type", WINDOWS_DESKTOP_TYPE_TIMEOUT_MS],
+  ["app_control.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
+  ["built_in_browser.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
+  ["ios_simulator.recordStop", DEMO_RECORDING_STOP_TIMEOUT_MS],
 ]);
 
 export function longRunningLocalRuntimeActionTimeoutMs(

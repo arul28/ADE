@@ -11,6 +11,7 @@ import {
   type AutoUpdatePreferences,
   type AutoUpdateSnapshot,
   type RecentlyInstalledUpdate,
+  type UpdateInterruptedChat,
   type UpdateTransactionResult,
   type UpdateTransactionStepId,
 } from "../../../shared/types";
@@ -38,6 +39,15 @@ import {
   DEFAULT_RELEASE_NOTES_BASE_URL,
   DEFAULT_RELEASE_REPOSITORY,
 } from "./autoUpdateVersions";
+import {
+  buildUpdateFeedProbeUrl,
+  canReplaceUpdaterNetSession,
+  describeChromiumNet,
+  isChromiumNetError,
+  probeUpdateFeed,
+  replaceUpdaterNetSession,
+  switchUpdaterToNodeTransport,
+} from "./updaterNetRecovery";
 
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
 // Warn only, never fatal. Squirrel.Mac needs roughly this long just to expand
@@ -119,8 +129,26 @@ type CreateAutoUpdateServiceArgs = {
   currentVersion: string;
   globalStatePath: string;
   updater?: AutoUpdaterLike;
-  beforeQuitAndInstall?: () => void | Promise<void>;
+  /**
+   * Runs immediately before the native install handoff. `resumeChats` is the
+   * user's install-dialog choice. Returning the chats it armed for post-restart
+   * resume lets the service persist them alongside the pending install, so the
+   * launch that lands the update can name what came back.
+   */
+  beforeQuitAndInstall?: (resumeChats: boolean) => void | Promise<UpdateInterruptedChat[] | void>;
   rollbackQuitAndInstall?: (reason: string) => void | Promise<void>;
+  /**
+   * Runs right before the native installer takes over, so something can be on
+   * screen while ADE is gone (a Windows install is silent). Returns a cancel
+   * that runs when the install unwinds and ADE stays open.
+   */
+  onInstallHandoff?: (args: {
+    version: string;
+    installerPath: string | null;
+  }) => (() => void) | null;
+  /** Quits and reopens ADE, after the usual quit warnings. */
+  /** Resolves true once the person agreed to restart; false when they kept ADE open. */
+  relaunchApp?: () => Promise<boolean>;
   forceQuit?: (args: { blockedPhase: string; blockedMs: number }) => void;
   getRuntimeActivitySummary?: () => Promise<{ idle: boolean }>;
   productAnalyticsService?: Pick<ProductAnalyticsService, "captureInternal">;
@@ -199,6 +227,8 @@ export function createEmptyAutoUpdateSnapshot(currentVersion = ""): AutoUpdateSn
     autoApplyPending: null,
     autoApplySuppressedUntil: null,
     updateTransaction: null,
+    lastCheckedAt: null,
+    checkFailure: null,
   };
 }
 
@@ -224,6 +254,20 @@ function cloneRecentlyInstalledUpdate(
   return update ? { ...update } : null;
 }
 
+/**
+ * Whether the installed notice should still be shown for a record.
+ *
+ * A record whose notice the user dismissed is kept in state for the one thing
+ * it still owes: the continue rows it has not managed to arm yet. Two readers
+ * need that same answer — the notice the launch reconciles, and the row it
+ * consumes — so the record's owner answers it, in one place.
+ */
+export function shouldShowInstalledNotice(
+  update: RecentlyInstalledUpdate | null | undefined,
+): update is RecentlyInstalledUpdate {
+  return update != null && update.noticeDismissedAt == null;
+}
+
 // Backfill missing links and replace stale links from packages that did not
 // persist their configured update repository yet.
 function withGithubReleaseUrl(
@@ -243,6 +287,7 @@ function cloneSnapshot(snapshot: AutoUpdateSnapshot): AutoUpdateSnapshot {
     parked: snapshot.parked ? { ...snapshot.parked } : null,
     lastInstallFailed: snapshot.lastInstallFailed ? { ...snapshot.lastInstallFailed } : null,
     autoApplyPending: snapshot.autoApplyPending ? { ...snapshot.autoApplyPending } : null,
+    checkFailure: snapshot.checkFailure ? { ...snapshot.checkFailure } : null,
     updateTransaction: snapshot.updateTransaction
       ? {
           ...snapshot.updateTransaction,
@@ -326,6 +371,18 @@ function reconcilePersistedUpdateState(args: {
     changed = true;
   }
 
+  // A failure for a version this launch already runs is resolved, however it
+  // got here: a retry that landed without a pending record, or a manual
+  // install. Left alone it re-reported `install_did_not_land` on the version it
+  // named, and counted toward evicting the next download.
+  if (
+    nextState.failedInstallAttempts
+    && compareUpdateVersions(args.currentVersion, nextState.failedInstallAttempts.targetVersion) >= 0
+  ) {
+    nextState.failedInstallAttempts = undefined;
+    changed = true;
+  }
+
   // The counter outlives the launch that recorded it, so the notice has to as
   // well. Without this, one ordinary quit-and-reopen drops lastInstallFailed
   // from the snapshot while the persisted counter still makes the next failure
@@ -350,6 +407,9 @@ function reconcilePersistedUpdateState(args: {
         releaseNotesUrl: buildReleaseNotesUrl(args.currentVersion, args.releaseNotesBaseUrl)
           ?? pendingInstall.releaseNotesUrl,
         githubReleaseUrl: buildGithubReleaseUrl(args.currentVersion, args.releaseRepository),
+        ...(pendingInstall.resumedChats && pendingInstall.resumedChats.length > 0
+          ? { resumedChats: pendingInstall.resumedChats }
+          : {}),
       };
       cacheCleanupReason = "installed";
       nextState.failedInstallAttempts = undefined;
@@ -377,8 +437,11 @@ function reconcilePersistedUpdateState(args: {
     changed = true;
   }
 
+  // A record the user dismissed is kept in state only for the continue rows it
+  // still owes; it must not bring the notice back on the next launch.
+  const installedUpdate = nextState.recentlyInstalledUpdate ?? null;
   const recentlyInstalled = withGithubReleaseUrl(
-    cloneRecentlyInstalledUpdate(nextState.recentlyInstalledUpdate ?? null),
+    cloneRecentlyInstalledUpdate(shouldShowInstalledNotice(installedUpdate) ? installedUpdate : null),
     args.releaseRepository,
   );
   if (
@@ -418,6 +481,8 @@ export function createAutoUpdateService({
   updater = autoUpdater as unknown as AutoUpdaterLike,
   beforeQuitAndInstall,
   rollbackQuitAndInstall,
+  onInstallHandoff,
+  relaunchApp,
   forceQuit,
   getRuntimeActivitySummary,
   productAnalyticsService,
@@ -453,13 +518,14 @@ export function createAutoUpdateService({
   // after discovering the artifact size but before bytes are written.
   updater.autoDownload = false;
   updater.autoInstallOnAppQuit = false;
+  let overrideFeedUrl: string | undefined;
   try {
     // Dev/test override: ADE_UPDATE_FEED_URL points the updater at a local/staging
     // feed (generic provider) instead of the GitHub release feed. Used to exercise
     // the real Install-update flow against a local server. Unset in production.
     // Defense-in-depth: only honor the override in non-packaged (dev/test) builds so
     // a packaged app can never be redirected to an attacker-controlled feed.
-    const overrideFeedUrl = !app.isPackaged ? process.env.ADE_UPDATE_FEED_URL?.trim() : undefined;
+    overrideFeedUrl = !app.isPackaged ? process.env.ADE_UPDATE_FEED_URL?.trim() : undefined;
     if (overrideFeedUrl) {
       updater.setFeedURL?.({ provider: "generic", url: overrideFeedUrl });
       logger.info("autoUpdate.feed_override", { url: overrideFeedUrl });
@@ -545,15 +611,24 @@ export function createAutoUpdateService({
    * has started the status is no longer `ready`, so a failure of the new
    * download flows through the normal error path instead.
    *
-   * Returns true when the caller must return without touching the snapshot.
+   * Keeping the download must not hide the failure, though: `checkFailure`
+   * tells Settings the newest version it shows may be out of date.
+   *
+   * Returns true when the caller must leave the rest of the snapshot alone.
    */
   function preserveStagedUpdateOnCheckFailure(err: unknown): boolean {
     if (!readyCheckInProgress || snapshot.status !== "ready") return false;
+    const message = formatErrorMessage(err);
+    // network_stuck describes a Chromium net failure only; anything else the
+    // recovery's retries hit keeps its own classification.
+    const kind = (isChromiumNetError(err) ? checkFailureKind : null)
+      ?? classifyUpdateError(err, currentPhase).kind;
     logger.warn("autoUpdate.ready_check_failed", {
-      message: formatErrorMessage(err),
-      kind: classifyUpdateError(err, currentPhase).kind,
+      message,
+      kind,
       readyVersion: snapshot.version,
     });
+    patchSnapshot({ checkFailure: { kind, message, at: nowMs() } });
     return true;
   }
   const readyRefreshFailure: {
@@ -572,6 +647,8 @@ export function createAutoUpdateService({
   let autoApplyDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
   let idleSinceMs: number | null = null;
   let installQuitArmed = false;
+  /** Cancels whatever `onInstallHandoff` put on screen for the armed install. */
+  let cancelInstallHandoff: (() => void) | null = null;
   let activityCheckFailed = false;
   let activityCheckInProgress = false;
   let downloadedFilePath: string | null = null;
@@ -579,6 +656,14 @@ export function createAutoUpdateService({
   let archiveRestoreInProgress = false;
   let staleHandoffRecoveriesThisInstall = 0;
   let staleHandoffRecoveryInProgress = false;
+  // Fresh updater sessions handed out so far; each needs its own partition name.
+  let netSessionGeneration = 0;
+  // Neither a fresh session nor Node transport was available for this
+  // streak. Background checks stop retrying until a check succeeds; a user's
+  // Check again may still try once more.
+  let netRecoveryExhausted = false;
+  // Set by the net recovery when the feed is reachable but the updater is not.
+  let checkFailureKind: AutoUpdateErrorKind | null = null;
   const listeners = new Set<(snapshot: AutoUpdateSnapshot) => void>();
 
   function emit(): void {
@@ -608,6 +693,7 @@ export function createAutoUpdateService({
     writeGlobalState(globalStatePath, {
       ...currentState,
       pendingInstallUpdate: undefined,
+      restoreUpdateWorkspaceOnLaunch: undefined,
     });
   }
 
@@ -658,6 +744,7 @@ export function createAutoUpdateService({
     phase: AutoUpdatePhase,
   ): boolean {
     return phase !== "download"
+      && phase !== "check"
       && (kind === "insufficient_space" || kind === "disk_full" || kind === "quota" || kind === "permission" || kind === "installer");
   }
 
@@ -687,14 +774,15 @@ export function createAutoUpdateService({
       && (classified.kind === "insufficient_space" || classified.kind === "disk_full" || classified.kind === "quota")
     ) {
       try {
-        const targetPath = classified.phase === "download"
+        const downloadSide = classified.phase === "download" || classified.phase === "check";
+        const targetPath = downloadSide
           ? updaterCacheDir ?? path.dirname(globalStatePath)
           : installTargetPath;
         const disk = getDiskSpace(targetPath);
         capacity = {
           availableBytes: disk.availableBytes,
           requiredBytes: estimateUpdateRequiredBytes(
-            classified.phase === "download" ? "download" : "install",
+            downloadSide ? "download" : "install",
             compressedUpdateBytes,
           ),
           volumePath: disk.volumePath,
@@ -847,7 +935,7 @@ export function createAutoUpdateService({
 
   const onCheckingForUpdate = () => {
     logger.info("autoUpdate.checking");
-    currentPhase = "download";
+    currentPhase = "check";
     patchSnapshot(preservedOrIdlePatch("checking"));
   };
 
@@ -1018,6 +1106,10 @@ export function createAutoUpdateService({
     }
     ignoredDownloadVersion = null;
     if (staleHandoffRecoveryInProgress && isStaleHandoffError(err)) return;
+    // A Chromium net failure of the feed request belongs to runUpdateCheck: it
+    // may still recover and retry, so nothing is surfaced from here. Its catch
+    // applies the same ordering as below if the check really failed.
+    if (currentPhase === "check" && isChromiumNetError(err)) return;
     // The pre-install refresh is tested first. It can piggyback on a periodic
     // check that is already in flight, which leaves `readyCheckInProgress` set
     // too. Recording the failure is what aborts the install; swallowing it here
@@ -1060,7 +1152,92 @@ export function createAutoUpdateService({
   updater.on("update-cancelled", onUpdateCancelled);
   updater.on("error", onError);
 
-  async function runUpdateCheck(): Promise<void> {
+  /**
+   * One feed check that survives a wedged updater session. When Chromium fails
+   * the request, Node asks the feed the same question. Node getting through
+   * means the network is fine and the updater's session is not, so the updater
+   * gets a fresh session and the check runs once more. When the fresh session
+   * fails too, the updater moves to Node's HTTP stack for the rest of the
+   * launch and the check runs a last time. Any failure that is left propagates
+   * to runUpdateCheck's catch.
+   */
+  async function checkFeedRecoveringNetSession(userInitiated: boolean): Promise<unknown> {
+    try {
+      return await updater.checkForUpdates();
+    } catch (error) {
+      if (
+        currentPhase !== "check"
+        || !isChromiumNetError(error)
+        || !canReplaceUpdaterNetSession(updater)
+      ) {
+        throw error;
+      }
+      const message = formatErrorMessage(error);
+      const probeUrl = buildUpdateFeedProbeUrl({
+        platform,
+        repository: releaseRepository,
+        genericFeedUrl: overrideFeedUrl,
+      });
+      if (!probeUrl) throw error;
+      const probe = await probeUpdateFeed(probeUrl);
+      if (!probe.reachable) {
+        logger.warn("autoUpdate.feed_unreachable", { message, probe });
+        throw error;
+      }
+      checkFailureKind = "network_stuck";
+      const attemptRecovery = !netRecoveryExhausted || userInitiated;
+      const chromiumDiagnostics = describeChromiumNet(probeUrl);
+      logger.warn("autoUpdate.net_wedge_detected", {
+        message,
+        probe,
+        attemptRecovery,
+        userInitiated,
+      });
+      void chromiumDiagnostics.then((chromium) => {
+        logger.info("autoUpdate.chromium_net_diagnostics", { chromium });
+      });
+      if (!attemptRecovery) throw error;
+      netSessionGeneration += 1;
+      const partition = `electron-updater-recovered-${netSessionGeneration}`;
+      if (replaceUpdaterNetSession(updater, partition)) {
+        try {
+          const result = await updater.checkForUpdates();
+          checkFailureKind = null;
+          logger.info("autoUpdate.net_wedge_recovered", { partition, transport: "fresh_session", probe });
+          return result;
+        } catch (retryError) {
+          if (!isChromiumNetError(retryError)) {
+            // The fresh session reached the server; whatever failed now is a
+            // different problem with its own classification.
+            checkFailureKind = null;
+            throw retryError;
+          }
+          logger.warn("autoUpdate.net_fresh_session_failed", {
+            partition,
+            message: formatErrorMessage(retryError),
+          });
+        }
+      } else {
+        logger.warn("autoUpdate.net_fresh_session_failed", { partition, reason: "session_unavailable" });
+      }
+      // Chromium refuses the feed even on a fresh session while Node reaches
+      // it, so the updater stops using Chromium until the next launch.
+      if (!switchUpdaterToNodeTransport(updater)) {
+        netRecoveryExhausted = true;
+        logger.warn("autoUpdate.net_wedge_unrecovered", { partition, reason: "node_transport_unavailable", message });
+        throw error;
+      }
+      // Node reached the feed moments ago, so a failure from here is not the
+      // stuck session. Cleared first: the updater's `error` event runs before
+      // the rejection and must not file it as network_stuck.
+      checkFailureKind = null;
+      const result = await updater.checkForUpdates();
+      logger.info("autoUpdate.net_wedge_recovered", { partition, transport: "node", probe });
+      return result;
+    }
+  }
+
+  async function runUpdateCheck(userInitiated = false): Promise<void> {
     if (checkPromise) {
       await checkPromise;
       return;
@@ -1101,8 +1278,14 @@ export function createAutoUpdateService({
       ? { version: reusableDownloadedVersion, releaseNotesUrl: snapshot.releaseNotesUrl }
       : null;
     readyCheckInProgress = isReadyCheck;
-    checkPromise = updater.checkForUpdates()
+    checkFailureKind = null;
+    checkPromise = checkFeedRecoveringNetSession(userInitiated)
       .then(async (result) => {
+        // The feed answered, so the updater's session works again and anything
+        // that fails from here on is download-side.
+        netRecoveryExhausted = false;
+        currentPhase = "download";
+        patchSnapshot({ lastCheckedAt: nowMs(), checkFailure: null });
         const updateInfo = isUpdateCheckResultLike(result) ? result.updateInfo : undefined;
         if (
           updateInfo
@@ -1158,6 +1341,7 @@ export function createAutoUpdateService({
           setErrorSnapshot({
             error,
             fallbackPhase: currentPhase,
+            kind: checkFailureKind ?? undefined,
             preservesDownload: preservedUpdate ? true : undefined,
             preservedUpdate: preservedUpdate ?? undefined,
           });
@@ -1179,12 +1363,17 @@ export function createAutoUpdateService({
    * older release is ignored, and a check that fails leaves the staged update
    * untouched. `userInitiated` is recorded for the logs only.
    */
-  function checkForUpdates(options: { userInitiated?: boolean } = {}): void {
+  /**
+   * Settles when the check (and any download it started) is over. Never
+   * rejects: failures land on the snapshot. Timers and the Settings button
+   * fire and forget; a caller that must know the outcome awaits it.
+   */
+  function checkForUpdates(options: { userInitiated?: boolean } = {}): Promise<void> {
     logger.info("autoUpdate.check_requested", {
       userInitiated: options.userInitiated === true,
       status: snapshot.status,
     });
-    void runUpdateCheck();
+    return runUpdateCheck(options.userInitiated === true);
   }
 
   async function refreshReadyUpdateBeforeInstall(): Promise<boolean> {
@@ -1564,6 +1753,7 @@ export function createAutoUpdateService({
   }
 
   async function unwindArmedInstall(rollbackReason: string): Promise<void> {
+    runInstallHandoffCancel();
     clearQuitDeadline();
     installQuitArmed = false;
     clearPendingInstallUpdate();
@@ -1737,16 +1927,38 @@ export function createAutoUpdateService({
   function dismissInstalledNotice(): void {
     if (!snapshot.recentlyInstalled) return;
     const currentState = readGlobalState(globalStatePath);
+    const installed = currentState.recentlyInstalledUpdate;
+    // The notice and the resume are two promises. Dismissing the notice is not
+    // a refusal to resume, so a continue row this install still owes a chat
+    // — the launch that lands it may not have managed to arm one — outlives
+    // the notice instead of being deleted with it. The record goes entirely
+    // once there is nothing left to arm for.
+    const unarmed = installed?.resumedChats ?? [];
     writeGlobalState(globalStatePath, {
       ...currentState,
-      recentlyInstalledUpdate: undefined,
+      recentlyInstalledUpdate: installed && unarmed.length > 0
+        ? { ...installed, noticeDismissedAt: now() }
+        : undefined,
     });
     patchSnapshot({
       recentlyInstalled: null,
     });
   }
 
-  async function quitAndInstall(): Promise<boolean> {
+  function runInstallHandoffCancel(): void {
+    const cancel = cancelInstallHandoff;
+    cancelInstallHandoff = null;
+    if (!cancel) return;
+    try {
+      cancel();
+    } catch (error) {
+      logger.warn("autoUpdate.install_handoff_surface_cancel_failed", {
+        message: formatErrorMessage(error),
+      });
+    }
+  }
+
+  async function quitAndInstall(resumeChats = false): Promise<boolean> {
     // Mirrors checkPromise: collapse concurrent IPC/idle-timer calls onto one
     // transaction so cleanup, rollback, and native handoff cannot race.
     if (quitAndInstallPromise) return quitAndInstallPromise;
@@ -1795,15 +2007,17 @@ export function createAutoUpdateService({
       if (!preflightSpace("install", installTargetPath)) {
         return await abortInstall("install_preflight_failed", installReadySnapshot);
       }
+      let resumedChats: UpdateInterruptedChat[] = [];
       try {
         const prepareResult = await waitForInstallStep(
-          Promise.resolve(beforeQuitAndInstall?.()),
+          Promise.resolve(beforeQuitAndInstall?.(resumeChats)),
           "install",
           "ADE could not prepare to quit for the update. Try again.",
         );
         if (!prepareResult.completed) {
           return await abortInstall("prepare_timeout", installReadySnapshot);
         }
+        resumedChats = Array.isArray(prepareResult.value) ? prepareResult.value : [];
       } catch (error) {
         const message = formatErrorMessage(error);
         logger.warn("autoUpdate.prepare_quit_and_install_failed", {
@@ -1812,15 +2026,31 @@ export function createAutoUpdateService({
         });
         return await abortInstall("prepare_failed", installReadySnapshot);
       }
+      const stateBeforeInstall = readGlobalState(globalStatePath);
+      // This install supersedes the record of the last one, and with it any
+      // continue row that record still owed a chat no project would claim. A
+      // chat that is gone is the usual reason, and one still mid-turn is queued
+      // again by this install — but a resume the user asked for must never go
+      // quiet, so a chat this install does NOT carry forward is named.
+      const carriedForwardResumes = new Set(resumedChats.map((chat) => chat.sessionId));
+      const droppedResumes = (stateBeforeInstall.recentlyInstalledUpdate?.resumedChats ?? [])
+        .filter((chat) => !carriedForwardResumes.has(chat.sessionId));
+      if (droppedResumes.length > 0) {
+        logger.warn("autoUpdate.install_superseded_unarmed_resumes", {
+          chats: droppedResumes.length,
+        });
+      }
       writeGlobalState(globalStatePath, {
-        ...readGlobalState(globalStatePath),
+        ...stateBeforeInstall,
         pendingInstallUpdate: {
           fromVersion: currentVersion,
           targetVersion: snapshot.version ?? installVersion,
           releaseNotesUrl: snapshot.releaseNotesUrl,
           requestedAt: now(),
+          ...(resumedChats.length > 0 ? { resumedChats } : {}),
         },
         recentlyInstalledUpdate: undefined,
+        restoreUpdateWorkspaceOnLaunch: true,
       });
       logger.info("autoUpdate.quit_and_install", { version: snapshot.version ?? installVersion });
       patchSnapshot({
@@ -1835,6 +2065,20 @@ export function createAutoUpdateService({
       });
       try {
         currentPhase = "install";
+        // Started before the quit deadline is armed, so whatever the hook
+        // costs is not counted as quitting.
+        runInstallHandoffCancel();
+        try {
+          cancelInstallHandoff = onInstallHandoff?.({
+            version: snapshot.version ?? installVersion,
+            installerPath: downloadedFilePath,
+          }) ?? null;
+        } catch (error) {
+          // The window is a courtesy; the install goes ahead without it.
+          logger.warn("autoUpdate.install_handoff_surface_failed", {
+            message: formatErrorMessage(error),
+          });
+        }
         // Mark the quit before entering electron-updater: it calls app.quit()
         // synchronously, and ADE's before-quit handler must recognize this
         // consented path instead of opening the normal quit confirmation.
@@ -1843,7 +2087,31 @@ export function createAutoUpdateService({
         // silently ignores later ones. A parked retry or stale-handoff recovery
         // must clear that latch or Windows never launches the installer again.
         updater.quitAndInstallCalled = false;
-        updater.quitAndInstall(false, true);
+        // `isSilent` MUST be true on Windows, and it is what makes the relaunch
+        // happen at all. ADE's NSIS target is `oneClick: false`, so the
+        // installer is the assisted one, and app-builder-lib's
+        // `installSection.nsh` starts the app from exactly one place:
+        //
+        //   !else  # assisted
+        //     ${if} ${isForceRun}
+        //     ${andIf} ${Silent}
+        //       !insertmacro doStartApp
+        //
+        // `--force-run` was never the missing piece: `isForceRunAfter` only
+        // reaches the installer when `isSilent` is true
+        // (`BaseUpdater.quitAndInstall` substitutes `autoRunAppAfterInstall`
+        // otherwise), and that defaults to true, so the flag was passed either
+        // way. `${Silent}` is the half that was false, and without it
+        // `doStartApp` cannot run. The other route, the finish page's run
+        // checkbox, is not even compiled in: `runAfterFinish: false` defines
+        // `HIDE_RUN_AFTER_FINISH`. So no path could relaunch ADE — the "it never
+        // comes back" half of the Windows update complaint — and the installer's
+        // pages sat on screen waiting for a click (~146 s of the last update,
+        // between the last file written and the app starting).
+        //
+        // macOS ignores both flags for this purpose; its updater relaunches on
+        // its own.
+        updater.quitAndInstall(true, true);
         return true;
       } catch (error) {
         const message = formatErrorMessage(error);
@@ -1859,6 +2127,19 @@ export function createAutoUpdateService({
       if (snapshot.status === "ready") scheduleAutoApply(0);
     });
     return quitAndInstallPromise;
+  }
+
+  /**
+   * The remedy for a `network_stuck` check: a relaunch has cleared it every
+   * time. main.ts owns the quit warnings and the relaunch itself.
+   */
+  async function requestRelaunch(): Promise<boolean> {
+    logger.info("autoUpdate.relaunch_requested", {
+      status: snapshot.status,
+      kind: snapshot.errorDetails?.kind ?? null,
+    });
+    if (!relaunchApp) return false;
+    return relaunchApp();
   }
 
   const startupTimer = autoCheckEnabled ? setTimeout(checkForUpdates, startupDelayMs) : null;
@@ -1905,6 +2186,7 @@ export function createAutoUpdateService({
       return () => listeners.delete(cb);
     },
     dismissInstalledNotice,
+    requestRelaunch,
     /**
      * Publishes the post-relaunch update-transaction result. It rides the same
      * snapshot as everything else about updates, so the renderer learns about a

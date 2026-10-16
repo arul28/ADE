@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Scene</title>
+<script>
+// The hosted web client's scene frame. A scene document cannot load there from
+// a blob: URL, because a blob inherits the web client's own policy, and that
+// policy refuses inline script. This page is served with the scene policy
+// instead (see public/_headers), in a sandboxed frame, and becomes the scene:
+// it asks its parent for the document once and writes it in place.
+(function () {
+  var done = false;
+  window.addEventListener("message", function (event) {
+    if (done || event.source !== window.parent) return;
+    var message = event.data;
+    if (!message || message.__adeSceneBoot !== 1 || typeof message.html !== "string") return;
+    done = true;
+    document.open();
+    document.write(message.html);
+    document.close();
+  });
+  try { window.parent.postMessage({ __adeSceneBoot: 1, ready: true }, "*"); } catch (e) {}
+})();
+</script>
+</head><body></body></html>

@@ -53,7 +53,9 @@ const mockLocalStorage = {
 // Import after window is set up
 import {
   createProjectAppStore,
+  effectiveThemeId,
   retainProjectAppStoreState,
+  selectEffectiveThemeId,
   useAppStore,
   THEME_IDS,
   DEFAULT_TERMINAL_PREFERENCES,
@@ -75,6 +77,7 @@ function resetStore() {
     projectTransition: null,
     projectTransitionError: null,
     isNewTabOpen: false,
+    standaloneSettingsOpen: false,
     personalChatsTabOpen: false,
     laneSnapshots: [],
     lanes: [],
@@ -94,7 +97,7 @@ function resetStore() {
     smartTooltipsEnabled: true,
     launchPromptClipboardEnabled: true,
     launchPromptClipboardNoticeEnabled: true,
-    promptStashButtonEnabled: true,
+    draftsButtonEnabled: true,
     appleDevice: { ...DEFAULT_APPLE_DEVICE_PREFERENCES },
     laneInspectorTabs: {},
     workViewByProject: {},
@@ -259,6 +262,94 @@ describe("appStore", () => {
       expect(latest).toBeTruthy();
       expect(JSON.parse(latest![1])).toMatchObject({ theme: "dark" });
     });
+
+    it("selects a shipped theme and resolves a retired id to its replacement", () => {
+      useAppStore.getState().setTheme("parchment");
+      // `parchment` is a retired shipped id, so it canonicalizes to the variant
+      // that replaced it; a stored choice keeps its look instead of falling
+      // back to ADE dark.
+      expect(useAppStore.getState().themeId).toBe("dune-light");
+      // Dune is a light family; `theme` stays the base mode every existing
+      // surface reads.
+      expect(useAppStore.getState().theme).toBe("light");
+      const latestCalls = mockLocalStorage.setItem.mock.calls
+        .filter(([key]) => key === "ade.userPreferences.v1");
+      const latest = latestCalls[latestCalls.length - 1];
+      expect(JSON.parse(latest[1])).toMatchObject({ themeId: "dune-light", theme: "light" });
+      useAppStore.getState().setTheme("dark");
+    });
+
+    it("round-trips a custom theme and its selection through the preferences blob", () => {
+      const custom = {
+        formatVersion: 1 as const,
+        id: "my-theme",
+        name: "My Theme",
+        baseMode: "light" as const,
+        source: "custom" as const,
+        palette: { bg: "#ffffff", fg: "#111111", surface: "#fafafa", card: "#ffffff", accent: "#be185d" },
+      };
+      useAppStore.getState().setCustomThemes([custom]);
+      useAppStore.getState().setTheme("my-theme");
+
+      expect(useAppStore.getState().themeId).toBe("my-theme");
+      expect(useAppStore.getState().theme).toBe("light");
+      expect(useAppStore.getState().customThemes).toHaveLength(1);
+
+      const latestCalls = mockLocalStorage.setItem.mock.calls
+        .filter(([key]) => key === "ade.userPreferences.v1");
+      const latest = latestCalls[latestCalls.length - 1];
+      const persisted = JSON.parse(latest[1]);
+      expect(persisted).toMatchObject({ themeId: "my-theme", theme: "light" });
+      expect(persisted.customThemes).toHaveLength(1);
+      expect(persisted.customThemes[0]).toMatchObject({ id: "my-theme", name: "My Theme" });
+
+      useAppStore.getState().setTheme("dark");
+      useAppStore.getState().setCustomThemes([]);
+    });
+  });
+
+  describe("follow-the-system colour scheme", () => {
+    it("paints the chosen family's variant for the OS mode without rewriting the choice", () => {
+      useAppStore.getState().setCustomThemes([]);
+      useAppStore.getState().setThemeFollowsSystem(false);
+      useAppStore.getState().setTheme("ocean-dark");
+
+      useAppStore.getState().setThemeFollowsSystem(true);
+      useAppStore.getState().setSystemColorScheme("light");
+      // The stored choice keeps the family; only the painted id moves.
+      expect(useAppStore.getState().themeId).toBe("ocean-dark");
+      expect(selectEffectiveThemeId(useAppStore.getState())).toBe("ocean-light");
+
+      // An OS flip repaints again, still without touching the choice.
+      useAppStore.getState().setSystemColorScheme("dark");
+      expect(useAppStore.getState().themeId).toBe("ocean-dark");
+      expect(selectEffectiveThemeId(useAppStore.getState())).toBe("ocean-dark");
+
+      useAppStore.getState().setThemeFollowsSystem(false);
+      useAppStore.getState().setTheme("dark");
+    });
+
+    it("leaves a custom theme, which has one mode, unchanged when the system flips", () => {
+      const custom = {
+        formatVersion: 1 as const,
+        id: "follow-system-custom",
+        name: "Follow System Custom",
+        baseMode: "dark" as const,
+        source: "custom" as const,
+        palette: { bg: "#111111", fg: "#eeeeee", surface: "#141414", card: "#161616", accent: "#60a5fa" },
+      };
+      useAppStore.getState().setCustomThemes([custom]);
+      useAppStore.getState().setTheme("follow-system-custom");
+      useAppStore.getState().setThemeFollowsSystem(true);
+
+      expect(effectiveThemeId("follow-system-custom", true, "light")).toBe("follow-system-custom");
+      expect(effectiveThemeId("follow-system-custom", true, "dark")).toBe("follow-system-custom");
+      expect(selectEffectiveThemeId(useAppStore.getState())).toBe("follow-system-custom");
+
+      useAppStore.getState().setThemeFollowsSystem(false);
+      useAppStore.getState().setTheme("dark");
+      useAppStore.getState().setCustomThemes([]);
+    });
   });
 
   describe("setTerminalPreferences", () => {
@@ -370,16 +461,16 @@ describe("appStore", () => {
     });
 
     it("shows the prompt stash button by default and persists hiding it", () => {
-      expect(useAppStore.getState().promptStashButtonEnabled).toBe(true);
-      useAppStore.getState().setPromptStashButtonEnabled(false);
-      expect(useAppStore.getState().promptStashButtonEnabled).toBe(false);
+      expect(useAppStore.getState().draftsButtonEnabled).toBe(true);
+      useAppStore.getState().setDraftsButtonEnabled(false);
+      expect(useAppStore.getState().draftsButtonEnabled).toBe(false);
       const calls = mockLocalStorage.setItem.mock.calls.filter(
         ([key]) => key === "ade.userPreferences.v1",
       );
       const latest = calls[calls.length - 1];
       expect(latest).toBeTruthy();
       expect(JSON.parse(latest![1])).toMatchObject({
-        promptStashButtonEnabled: false,
+        draftsButtonEnabled: false,
       });
     });
 
@@ -410,6 +501,43 @@ describe("appStore", () => {
       const project = { id: "p1", name: "Test", rootPath: "/tmp/test", gitRemoteUrl: null, gitDefaultBranch: "main", createdAt: "" } as any;
       useAppStore.getState().setProject(project);
       expect(useAppStore.getState().project).toBe(project);
+      const binding = useAppStore.getState().projectBinding;
+
+      // The host sends a fresh object on every switch. Equal fields keep the
+      // stored project and binding, so nothing that reads them renders again.
+      useAppStore.getState().setProject({ ...project });
+      expect(useAppStore.getState().project).toBe(project);
+      expect(useAppStore.getState().projectBinding).toBe(binding);
+
+      const renamed = { ...project, displayName: "Renamed" };
+      useAppStore.getState().setProject(renamed);
+      expect(useAppStore.getState().project).toBe(renamed);
+      expect(useAppStore.getState().projectBinding).not.toBe(binding);
+    });
+
+    it("replaces lane selection at binding change before project hydration, including A → B → A", () => {
+      const a = { rootPath: "/repo/a", displayName: "A", baseRef: "main" } as any;
+      const b = { rootPath: "/repo/b", displayName: "B", baseRef: "main" } as any;
+      const laneA = { id: "lane-a", laneType: "primary" } as any;
+      const laneB = { id: "lane-b", laneType: "primary" } as any;
+      useAppStore.setState({
+        laneCacheByProject: {
+          [a.rootPath]: { lanes: [laneA], laneSnapshots: [] },
+          [b.rootPath]: { lanes: [laneB], laneSnapshots: [] },
+        },
+        laneSelectionByProject: { [b.rootPath]: { laneId: laneA.id, sessionId: "stale" } },
+      });
+      useAppStore.getState().setProject(a);
+      for (const [project, lane] of [[b, laneB], [a, laneA]]) {
+        useAppStore.getState().setProjectBinding({
+          kind: "local", key: `local:${project.rootPath}`, rootPath: project.rootPath, displayName: project.displayName,
+        });
+        expect(useAppStore.getState().lanes).toEqual([lane]);
+        expect(useAppStore.getState().selectedLaneId).toBe(lane.id);
+        expect(useAppStore.getState().focusedSessionId).toBeNull();
+        useAppStore.getState().setProject(project);
+        expect(useAppStore.getState().selectedLaneId).toBe(lane.id);
+      }
     });
 
     it("setProject restores a persisted lane cache before the first refresh", () => {
@@ -597,6 +725,18 @@ describe("appStore", () => {
       expect(useAppStore.getState().showWelcome).toBe(true);
     });
 
+    it("a new tab ends Settings-without-a-project and shows the new-project screen", () => {
+      useAppStore.getState().setStandaloneSettingsOpen(true);
+      expect(useAppStore.getState().standaloneSettingsOpen).toBe(true);
+
+      useAppStore.getState().openNewTab();
+
+      const state = useAppStore.getState();
+      expect(state.standaloneSettingsOpen).toBe(false);
+      expect(state.isNewTabOpen).toBe(true);
+      expect(state.showWelcome).toBe(true);
+    });
+
     it("setLanes updates the lanes array", () => {
       const lanes = [{ id: "lane-1", name: "test" }] as any[];
       useAppStore.getState().setLanes(lanes);
@@ -750,6 +890,172 @@ describe("appStore", () => {
       expect(JSON.parse(mockStorage.get(laneCacheKey("/p/lite")) ?? "{}").lanes[0]).toEqual(
         expect.objectContaining({ id: "lane-lite", color: "#7dd3fc" }),
       );
+    });
+
+    const activateSurface = (store: ReturnType<typeof createProjectAppStore>) => {
+      store.getState().requestLaneStatusRead();
+    };
+    const identityRefresh = (store: ReturnType<typeof createProjectAppStore>) => {
+      void store.getState().refreshLanes({ includeStatus: false });
+    };
+    it.each([
+      ["the surface becomes active", activateSurface, false],
+      ["an identity-only refresh runs", identityRefresh, false],
+      ["the surface becomes active and the status read fails", activateSurface, true],
+    ])("a project surface seeded with a cached lane status measures it when %s", async (_trigger, trigger, readFails) => {
+      // The History drift pill showed ↑4 ↓17 for a lane git had at 6/34: the
+      // surface was seeded from the lane cache and only ever refreshed without
+      // status, so the cached number was carried forward and re-persisted.
+      vi.useFakeTimers();
+      // The window stub captured the real timers at load; hand it the fake ones.
+      const realTimers = { setTimeout: window.setTimeout, clearTimeout: window.clearTimeout };
+      window.setTimeout = globalThis.setTimeout as typeof window.setTimeout;
+      window.clearTimeout = globalThis.clearTimeout as typeof window.clearTimeout;
+      try {
+        const project = { rootPath: "/p/stale", displayName: "Stale", baseRef: "main" } as any;
+        mockStorage.set(laneCacheKey("/p/stale"), JSON.stringify({
+          savedAt: Date.now(),
+          lanes: [{ id: "lane-w", name: "windows-desktop", status: { ahead: 4, behind: 17 } }],
+        }));
+        // The brain: a status-less read returns its 0/0 placeholder, a status
+        // read returns what git measures now (or fails, for that row).
+        let measured = { ahead: 6, behind: 34 };
+        (window.ade.lanes.list as any).mockImplementation(async (args: { includeStatus?: boolean }) => {
+          if (args.includeStatus && readFails) throw new Error("brain unreachable");
+          return [{ id: "lane-w", name: "windows-desktop", status: args.includeStatus ? measured : { ahead: 0, behind: 0 } }];
+        });
+        const store = createProjectAppStore(project);
+        const shown = () => ({ status: store.getState().lanes[0].status, stale: store.getState().laneStatusStale });
+        // A cached number of unknown age is never current.
+        expect(shown()).toEqual({ status: { ahead: 4, behind: 17 }, stale: true });
+
+        trigger(store);
+        await vi.advanceTimersByTimeAsync(5_000);
+        if (readFails) {
+          // The last numbers stay, still marked not fresh; never the 0/0 placeholder.
+          expect(shown()).toEqual({ status: { ahead: 4, behind: 17 }, stale: true });
+          return;
+        }
+        expect(shown()).toEqual({ status: { ahead: 6, behind: 34 }, stale: false });
+
+        // Measured a moment ago: identity reads keep it, fresh, without re-paying git.
+        measured = { ahead: 7, behind: 34 };
+        await store.getState().refreshLanes({ includeStatus: false });
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(shown()).toEqual({ status: { ahead: 6, behind: 34 }, stale: false });
+
+        // Once that ages out, the next identity read marks it not current while
+        // the read is out, then the measured numbers replace it in place.
+        await vi.advanceTimersByTimeAsync(30_000);
+        await store.getState().refreshLanes({ includeStatus: false });
+        expect(shown()).toEqual({ status: { ahead: 6, behind: 34 }, stale: true });
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(shown()).toEqual({ status: { ahead: 7, behind: 34 }, stale: false });
+      } finally {
+        window.setTimeout = realTimers.setTimeout;
+        window.clearTimeout = realTimers.clearTimeout;
+        vi.useRealTimers();
+      }
+    });
+
+    it("collapses a burst of lane-status requests into one measured read", async () => {
+      vi.useFakeTimers();
+      const realTimers = { setTimeout: window.setTimeout, clearTimeout: window.clearTimeout };
+      window.setTimeout = globalThis.setTimeout as typeof window.setTimeout;
+      window.clearTimeout = globalThis.clearTimeout as typeof window.clearTimeout;
+      try {
+        const project = { rootPath: "/p/burst", displayName: "Burst", baseRef: "main" } as any;
+        (window.ade.lanes.list as any).mockImplementation(async (args: { includeStatus?: boolean }) => [
+          { id: "lane-b", name: "B", status: args.includeStatus ? { ahead: 1, behind: 0 } : { ahead: 0, behind: 0 } },
+        ]);
+        const store = createProjectAppStore(project);
+        // Several surfaces ask at once (tab activation, History open, a reload).
+        store.getState().requestLaneStatusRead();
+        store.getState().requestLaneStatusRead();
+        store.getState().requestLaneStatusRead();
+        void store.getState().refreshLanes({ includeStatus: false });
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        const measured = (window.ade.lanes.list as any).mock.calls
+          .filter(([args]: [{ includeStatus?: boolean }]) => args?.includeStatus === true);
+        expect(measured).toHaveLength(1);
+        expect(store.getState().laneStatusStale).toBe(false);
+      } finally {
+        window.setTimeout = realTimers.setTimeout;
+        window.clearTimeout = realTimers.clearTimeout;
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not drop a forced status read behind a pending looser timer", async () => {
+      vi.useFakeTimers();
+      const realTimers = { setTimeout: window.setTimeout, clearTimeout: window.clearTimeout };
+      window.setTimeout = globalThis.setTimeout as typeof window.setTimeout;
+      window.clearTimeout = globalThis.clearTimeout as typeof window.clearTimeout;
+      try {
+        const project = { rootPath: "/p/forced", displayName: "Forced", baseRef: "main" } as any;
+        (window.ade.lanes.list as any).mockImplementation(async (args: { includeStatus?: boolean }) => [
+          { id: "lane-f", name: "F", status: args.includeStatus ? { ahead: 5, behind: 0 } : { ahead: 0, behind: 0 } },
+        ]);
+        const measured = () => (window.ade.lanes.list as any).mock.calls
+          .filter(([args]: [{ includeStatus?: boolean }]) => args?.includeStatus === true).length;
+        const store = createProjectAppStore(project);
+
+        await store.getState().refreshLanes({ includeStatus: true, includeSnapshots: false });
+        // Age the status out, then arm the default (30 s) timer.
+        await vi.advanceTimersByTimeAsync(31_000);
+        store.getState().requestLaneStatusRead();
+
+        // Another surface's full read lands before that timer fires and makes
+        // the status fresh again — but it predates the branch move.
+        await store.getState().refreshLanes({ includeStatus: true, includeSnapshots: false });
+        const before = measured();
+
+        // History's commit-list reload asks for an immediate read.
+        store.getState().requestLaneStatusRead({ maxAgeMs: 0 });
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        expect(measured()).toBeGreaterThan(before);
+      } finally {
+        window.setTimeout = realTimers.setTimeout;
+        window.clearTimeout = realTimers.clearTimeout;
+        vi.useRealTimers();
+      }
+    });
+
+    it("measures a lane this store has never seen instead of trusting the brain's 0/0", async () => {
+      vi.useFakeTimers();
+      const realTimers = { setTimeout: window.setTimeout, clearTimeout: window.clearTimeout };
+      window.setTimeout = globalThis.setTimeout as typeof window.setTimeout;
+      window.clearTimeout = globalThis.clearTimeout as typeof window.clearTimeout;
+      try {
+        const project = { rootPath: "/p/unknown", displayName: "Unknown", baseRef: "main" } as any;
+        // `lane-a` is measured first; `lane-b` first appears in a status-less
+        // read and carries only the brain's 0/0 placeholder.
+        let includeB = false;
+        (window.ade.lanes.list as any).mockImplementation(async (args: { includeStatus?: boolean }) => [
+          { id: "lane-a", name: "A", status: args.includeStatus ? { ahead: 3, behind: 9 } : { ahead: 0, behind: 0 } },
+          ...(includeB ? [{ id: "lane-b", name: "B", status: args.includeStatus ? { ahead: 2, behind: 4 } : { ahead: 0, behind: 0 } }] : []),
+        ]);
+        const store = createProjectAppStore(project);
+
+        // Measure the store, so the freshness window is not what forces the read.
+        await store.getState().refreshLanes({ includeStatus: true, includeSnapshots: false });
+        expect(store.getState().laneStatusStale).toBe(false);
+
+        // A status-less read now returns the measured lane plus a brand-new one.
+        includeB = true;
+        await store.getState().refreshLanes({ includeStatus: false });
+        expect(store.getState().laneStatusStale).toBe(true);
+
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(store.getState().lanes.find((lane) => lane.id === "lane-b")?.status).toEqual({ ahead: 2, behind: 4 });
+        expect(store.getState().laneStatusStale).toBe(false);
+      } finally {
+        window.setTimeout = realTimers.setTimeout;
+        window.clearTimeout = realTimers.clearTimeout;
+        vi.useRealTimers();
+      }
     });
 
     it("refreshLanes can update lane git status without snapshot decorations", async () => {
@@ -960,6 +1266,21 @@ describe("appStore", () => {
         laneId: "lane-7",
         sessionId: "session-abc",
       });
+    });
+
+    const otherRecovery = { message: "Out of space", code: "disk_full", rootPath: "/repo/b" };
+    it.each([
+      { name: "nothing on screen", existing: null, shown: { code: "project_data_missing", rootPath: "/repo/a" } },
+      {
+        name: "a plain error with no recovery code",
+        existing: { message: "Switching took longer than 30 seconds" },
+        shown: { code: "project_data_missing", rootPath: "/repo/a" },
+      },
+      { name: "another recovery screen", existing: otherRecovery, shown: otherRecovery },
+    ])("reportProjectDataProblem over $name", ({ existing, shown }) => {
+      useAppStore.setState({ projectTransitionError: existing });
+      useAppStore.getState().reportProjectDataProblem("/repo/a", "missing");
+      expect(useAppStore.getState().projectTransitionError).toMatchObject(shown);
     });
 
     it("clearProjectTransitionError clears project action errors", () => {
@@ -1181,7 +1502,7 @@ describe("appStore", () => {
         workLaneSortMode: "manual",
         workLaneOrder: ["lane-2", "lane-1"],
         workSessionFilters: {
-          status: ["awaiting-input"], tool: ["claude"], hasPr: true, dirtyLane: false,
+          status: ["awaiting-input"], tool: ["claude"], hasPr: true, dirtyLane: false, machine: [],
         },
       });
 
@@ -1196,7 +1517,7 @@ describe("appStore", () => {
       expect(other.workPinnedLaneIds).toEqual([]);
       expect(other.workLaneSortMode).toBe("created");
       expect(other.workSessionFilters).toEqual({
-        status: [], tool: [], hasPr: false, dirtyLane: false,
+        status: [], tool: [], hasPr: false, dirtyLane: false, machine: [],
       });
     });
 
@@ -1222,7 +1543,7 @@ describe("appStore", () => {
       expect(restored.workPinnedLaneIds).toEqual([]);
       expect(restored.workLaneOrder).toEqual([]);
       expect(restored.workSessionFilters).toEqual({
-        status: [], tool: [], hasPr: false, dirtyLane: false,
+        status: [], tool: [], hasPr: false, dirtyLane: false, machine: [],
       });
     });
 
@@ -1298,7 +1619,7 @@ describe("appStore", () => {
       expect(restored.workLaneOrder).toEqual(["lane-2", "lane-1"]);
       expect(restored.workLaneSortMode).toBe("created");
       expect(restored.workSessionFilters).toEqual({
-        status: ["running"], tool: [], hasPr: false, dirtyLane: false,
+        status: ["running"], tool: [], hasPr: false, dirtyLane: false, machine: [],
       });
     });
 
@@ -1414,6 +1735,33 @@ describe("appStore", () => {
         recordingOverlays: { tapRings: true, keyBadges: true },
         remoteBitrateKbpsCap: 1000,
         recordingsWarnBytes: 5 * 1024 ** 3,
+      });
+    });
+  });
+
+  describe("background (scene) preferences", () => {
+    // The release that ships pictures puts every user on the shipped default
+    // once — shuffle, a new picture on each wake, every picture in — whatever
+    // they had before. After that, their own choice survives a relaunch.
+    it("resets older preferences to the shipped default once, then keeps the user's choice", async () => {
+      mockStorage.set("ade.userPreferences.v1", JSON.stringify({
+        interfacePreferences: {
+          scene: { mode: "gradient", shuffleEvery: "day", shuffleExclude: ["ade:storm-field"], matchTheme: false },
+        },
+      }));
+      vi.resetModules();
+      const firstLoad = await import("./appStore");
+      const reset = firstLoad.useAppStore.getState().interfacePreferences.scene;
+      expect(reset).toMatchObject({ mode: "shuffle", shuffleEvery: "wake", shuffleExclude: [], matchTheme: true });
+
+      firstLoad.useAppStore.getState().setInterfacePreferences({
+        scene: { ...reset, mode: "gradient", shuffleExclude: ["ade:storm-field"] },
+      });
+      vi.resetModules();
+      const relaunch = await import("./appStore");
+      expect(relaunch.useAppStore.getState().interfacePreferences.scene).toMatchObject({
+        mode: "gradient",
+        shuffleExclude: ["ade:storm-field"],
       });
     });
   });
@@ -1624,7 +1972,7 @@ describe("appStore", () => {
 
       expect(useAppStore.getState().projectTransitionError).toEqual({
         code: "disk_full",
-        message: "Your computer ran out of storage while ADE was saving project data. Free up space, then try again.",
+        message: "Your computer is out of space. Free up some space, then try again.",
         detail: "internal database detail",
         rootPath: "/tmp/project",
       });
@@ -1695,7 +2043,7 @@ describe("appStore", () => {
 
       expect(useAppStore.getState().projectTransitionError).toEqual({
         code: "db_integrity",
-        message: "ADE's background service could not open this project.",
+        message: "This project needs a quick fix before it can open.",
         detail: "damaged index",
         rootPath: "/tmp/closing",
       });
@@ -2288,5 +2636,31 @@ describe("appStore", () => {
 
       expect(useAppStore.getState().workViewByProject["remote:target:project-a"]).toBeUndefined();
     });
+  });
+});
+
+describe("machine-level top tabs", () => {
+  it("reports a Browser or Music tab once when it joins the tab strip, not on every visit", () => {
+    const capture = vi.fn(async (_payload: any) => undefined);
+    (window as any).ade.analytics = { capture };
+    useAppStore.setState({ browserTabOpen: false, musicTabOpen: false } as any);
+
+    useAppStore.getState().setBrowserTabOpen(true);
+    useAppStore.getState().setBrowserTabOpen(true);
+    useAppStore.getState().setMusicTabOpen(true);
+    useAppStore.getState().setBrowserTabOpen(false);
+    useAppStore.getState().setBrowserTabOpen(true);
+
+    expect(capture.mock.calls.map(([payload]: any[]) => [payload.properties.outcome, payload.dedupeKey])).toEqual([
+      ["tab_browser", "home_tab_opened:tab_browser"],
+      ["tab_music", "home_tab_opened:tab_music"],
+      ["tab_browser", "home_tab_opened:tab_browser"],
+    ]);
+    expect(capture.mock.calls[0]![0]).toMatchObject({
+      event: "ade_feature_used",
+      properties: { feature: "home", action: "tab_opened", source: "renderer_route" },
+      minimumIntervalMs: 24 * 60 * 60_000,
+    });
+    delete (window as any).ade.analytics;
   });
 });

@@ -9,7 +9,6 @@ import {
 } from "@phosphor-icons/react";
 import type {
   AppControlDriver,
-  AppControlDriversResult,
   AppControlTarget,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
@@ -30,7 +29,7 @@ const STATUS_DOT_TONE: Record<AppControlStatusTone, string> = {
   error: "bg-rose-300",
 };
 
-const DRIVER_LABEL: Record<AppControlDriver, string> = {
+export const APP_CONTROL_DRIVER_LABEL: Record<AppControlDriver, string> = {
   cdp: "CDP",
   computer_use: "Computer use",
 };
@@ -78,8 +77,6 @@ export function AppControlToolbar({
   onConnect,
   connecting,
   onHelpWireCdp,
-  drivers,
-  activeDriver,
   statusWord,
   statusTone,
   statusDetail,
@@ -92,6 +89,7 @@ export function AppControlToolbar({
   pickerOpen,
   onPickerOpenChange,
   renderOverflow,
+  actions,
   previewControls,
 }: {
   appLabel: string;
@@ -107,8 +105,6 @@ export function AppControlToolbar({
   onConnect: () => void;
   connecting: boolean;
   onHelpWireCdp: (() => void) | null;
-  drivers: AppControlDriversResult | null;
-  activeDriver: AppControlDriver;
   statusWord: string;
   statusTone: AppControlStatusTone;
   statusDetail: string;
@@ -122,12 +118,16 @@ export function AppControlToolbar({
   pickerOpen: boolean;
   onPickerOpenChange: (open: boolean) => void;
   renderOverflow: (close: () => void) => ReactNode;
+  /**
+   * The pane's chrome buttons (Record, Screenshot, Inspect, Stop), drawn before
+   * the ⋯ menu the way the Mac Desktop row draws its own.
+   */
+  actions?: ReactNode;
   /** The pane's own preview/maximize controls, drawn at the far right. */
   previewControls?: ReactNode;
 }) {
   const segments = windows.slice(0, MAX_WINDOW_SEGMENTS);
   const overflowWindows = windows.slice(MAX_WINDOW_SEGMENTS);
-  const driverRows = drivers?.drivers ?? [];
   const reduceMotion = useReducedMotion() ?? false;
   // Launching, connecting and switching windows are all "the pane is fetching
   // you a frame" — one bar, not three different spinners in three controls.
@@ -135,7 +135,9 @@ export function AppControlToolbar({
 
   return (
     <div className={cn(
-      "relative flex shrink-0 items-center gap-1 border-b border-white/[0.07] px-2",
+      // A container, so the status word gives way before any button does in a
+      // 280px pane.
+      "@container relative flex shrink-0 items-center gap-1 border-b border-fg/[0.07] px-2",
       WORK_TOOL_CHROME_ROW_HEIGHT,
     )}>
       {/* App picker — the launch target, and everything that changes it. */}
@@ -165,7 +167,7 @@ export function AppControlToolbar({
                 aria-label="App Control launch command"
                 disabled={controlsDisabled}
                 className={cn(
-                  "h-[26px] min-w-0 flex-1 rounded-[var(--radius-sm)] border border-white/[0.08] bg-black/25 px-1.5",
+                  "h-[26px] min-w-0 flex-1 rounded-[var(--radius-sm)] border border-fg/[0.08] bg-black/25 px-1.5",
                   "text-[10.5px] text-fg/85 outline-none placeholder:text-muted-fg/45",
                   "focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]",
                   "disabled:cursor-not-allowed disabled:opacity-45",
@@ -187,8 +189,8 @@ export function AppControlToolbar({
                 aria-label="Launch App Control command"
                 className={cn(
                   "inline-flex h-[26px] shrink-0 items-center gap-1 rounded-[var(--radius-sm)] px-2 text-[10.5px] font-medium",
-                  "border border-white/[0.1] bg-white/[0.03] text-fg/80",
-                  "transition-colors duration-[120ms] ease-out hover:bg-white/[0.07]",
+                  "border border-fg/[0.1] bg-fg/[0.03] text-fg/80",
+                  "transition-colors duration-[120ms] ease-out hover:bg-fg/[0.07]",
                   "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
                   "disabled:cursor-not-allowed disabled:opacity-45",
                 )}
@@ -235,7 +237,7 @@ export function AppControlToolbar({
                 inputMode="numeric"
                 disabled={controlsDisabled}
                 className={cn(
-                  "h-[26px] w-[86px] shrink-0 rounded-[var(--radius-sm)] border border-white/[0.08] bg-black/25 px-1.5",
+                  "h-[26px] w-[86px] shrink-0 rounded-[var(--radius-sm)] border border-fg/[0.08] bg-black/25 px-1.5",
                   "text-[10.5px] text-fg/85 outline-none placeholder:text-muted-fg/45",
                   "focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]",
                   "disabled:cursor-not-allowed disabled:opacity-45",
@@ -256,8 +258,8 @@ export function AppControlToolbar({
                 title="Connect to a running Electron app via CDP"
                 className={cn(
                   "inline-flex h-[26px] shrink-0 items-center gap-1 rounded-[var(--radius-sm)] px-2 text-[10.5px] font-medium",
-                  "border border-white/[0.1] bg-white/[0.03] text-fg/80",
-                  "transition-colors duration-[120ms] ease-out hover:bg-white/[0.07]",
+                  "border border-fg/[0.1] bg-fg/[0.03] text-fg/80",
+                  "transition-colors duration-[120ms] ease-out hover:bg-fg/[0.07]",
                   "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
                   "disabled:cursor-not-allowed disabled:opacity-45",
                 )}
@@ -277,62 +279,6 @@ export function AppControlToolbar({
                   close();
                 }}
               />
-            ) : null}
-          </>
-        )}
-      </AppControlMenu>
-
-      {/*
-        The driver, as a dot.
-
-        "CDP" spelled out on the row was a debug chip: it named an internal
-        transport in a bar that otherwise answers product questions, and it
-        named it even when there was nothing to drive. The menu behind it is
-        unchanged — the dot is still the way to pick a driver — and the name
-        lives in the tooltip, where a name that only matters when you go looking
-        for it belongs.
-      */}
-      <AppControlMenu
-        ariaLabel="App Control driver"
-        triggerTitle={`Driving with ${DRIVER_LABEL[activeDriver]}`}
-        triggerIcon={(
-          <span
-            aria-hidden="true"
-            className={cn(
-              "h-[6px] w-[6px] shrink-0 rounded-full",
-              hasSession ? "bg-sky-300/85" : "bg-muted-fg/45",
-            )}
-          />
-        )}
-        triggerClassName={cn(
-          "h-7 w-7 justify-center rounded-[7px] px-0 text-muted-fg hover:bg-white/[0.06]",
-        )}
-        showCaret={false}
-        menuClassName="w-[236px]"
-      >
-        {(close) => (
-          <>
-            <AppControlMenuLabel>Driver</AppControlMenuLabel>
-            {driverRows.length === 0 ? (
-              <div className="px-2 pb-1.5 text-[10.5px] text-muted-fg/65">
-                Driver support is still loading.
-              </div>
-            ) : (
-              driverRows.map((row) => (
-                <AppControlMenuItem
-                  key={row.driver}
-                  label={DRIVER_LABEL[row.driver]}
-                  checked={row.driver === activeDriver}
-                  disabled={row.status !== "available"}
-                  disabledReason={row.reason}
-                  onSelect={close}
-                />
-              ))
-            )}
-            {driverRows.some((row) => row.status !== "available" && row.reason) ? (
-              <div className="px-2 pb-1.5 pt-0.5 text-[10px] leading-[14px] text-muted-fg/65">
-                {driverRows.find((row) => row.status !== "available" && row.reason)?.reason}
-              </div>
             ) : null}
           </>
         )}
@@ -359,14 +305,14 @@ export function AppControlToolbar({
               statusTone === "warn" ? "motion-safe:animate-pulse" : null,
             )}
           />
-          <span className="truncate">{statusWord}</span>
+          <span className="truncate @max-[420px]:sr-only">{statusWord}</span>
         </span>
       ) : null}
 
       {remoteLabel ? (
         <span
           className={cn(
-            "inline-flex h-5 shrink-0 items-center rounded-full bg-white/[0.06] px-2",
+            "inline-flex h-5 shrink-0 items-center rounded-full bg-fg/[0.06] px-2",
             "text-[10px] font-medium text-fg/70",
           )}
           title={`App Control runs on ${remoteLabel}`}
@@ -380,7 +326,7 @@ export function AppControlToolbar({
           <div
             role="group"
             aria-label="Controlled window"
-            className="inline-flex h-6 items-center rounded-md bg-white/[0.05] p-[2px]"
+            className="inline-flex h-6 items-center rounded-md bg-fg/[0.05] p-[2px]"
           >
             {segments.map((target) => {
               const label = windowSegmentLabel(target);
@@ -399,7 +345,7 @@ export function AppControlToolbar({
                     "transition-colors duration-[120ms] ease-out",
                     "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
                     "disabled:cursor-not-allowed disabled:opacity-45",
-                    selected ? "bg-white/[0.10] text-fg/90" : "text-muted-fg/70 hover:text-fg/85",
+                    selected ? "bg-fg/[0.10] text-fg/90" : "text-muted-fg/70 hover:text-fg/85",
                   )}
                 >
                   <span className="truncate">{label}</span>
@@ -436,6 +382,8 @@ export function AppControlToolbar({
             ) : null}
           </div>
         ) : null}
+
+        {actions}
 
         <AppControlMenu
           ariaLabel="App Control actions"

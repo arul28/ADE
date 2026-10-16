@@ -153,3 +153,185 @@ export async function readTranscriptHistoryPage(args: {
     hasMore: startOffset > 0,
   };
 }
+
+const SEQUENCE_PROBE_CHUNK_BYTES = 64 * 1024;
+/** A probe never materializes a row larger than this; such rows are skipped. */
+const SEQUENCE_PROBE_MAX_ROW_BYTES = 8 * 1024 * 1024;
+
+type SequencedRowProbe = { lineStart: number; sequence: number };
+
+function parseSequencedRow(raw: string, sessionId: string): number | null {
+  const trimmed = raw.trim();
+  if (!trimmed.length) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as Partial<AgentChatEventEnvelope>;
+    if (typeof parsed.sessionId !== "string" || parsed.sessionId.trim() !== sessionId) return null;
+    if (!parsed.event || typeof parsed.event !== "object") return null;
+    const sequence = parsed.sequence;
+    return typeof sequence === "number" && Number.isFinite(sequence) && sequence > 0
+      ? Math.floor(sequence)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The first row of `sessionId` that starts at or after `offset` and carries a
+ * sequence, or null at EOF. Reads forward in bounded chunks.
+ */
+async function probeSequencedRowAtOrAfter(args: {
+  transcriptPath: string;
+  sessionId: string;
+  offset: number;
+  size: number;
+  signal?: AbortSignal;
+}): Promise<SequencedRowProbe | null> {
+  const { transcriptPath, sessionId, size, signal } = args;
+  // Find the first line start at or after `offset`.
+  let lineStart: number;
+  if (args.offset <= 0) {
+    lineStart = 0;
+  } else {
+    let scan = args.offset - 1;
+    lineStart = -1;
+    while (scan < size) {
+      signal?.throwIfAborted();
+      const chunk = await readHistoryFileRange(
+        transcriptPath,
+        scan,
+        Math.min(SEQUENCE_PROBE_CHUNK_BYTES, size - scan),
+        signal,
+      );
+      if (chunk.length === 0) break;
+      const newline = chunk.indexOf(0x0a);
+      if (newline >= 0) {
+        lineStart = scan + newline + 1;
+        break;
+      }
+      scan += chunk.length;
+    }
+    if (lineStart < 0) return null;
+  }
+  // Walk rows forward until one carries a sequence.
+  while (lineStart < size) {
+    signal?.throwIfAborted();
+    let length = Math.min(SEQUENCE_PROBE_CHUNK_BYTES, size - lineStart);
+    let row: Buffer | null = null;
+    let rowEnd = -1;
+    while (true) {
+      const chunk = await readHistoryFileRange(transcriptPath, lineStart, length, signal);
+      const newline = chunk.indexOf(0x0a);
+      if (newline >= 0) {
+        row = chunk.subarray(0, newline);
+        rowEnd = lineStart + newline + 1;
+        break;
+      }
+      if (lineStart + chunk.length >= size) {
+        row = chunk;
+        rowEnd = size;
+        break;
+      }
+      if (length >= SEQUENCE_PROBE_MAX_ROW_BYTES) {
+        // Too large to parse here: skip to the end of this row.
+        let skip = lineStart + chunk.length;
+        rowEnd = -1;
+        while (skip < size) {
+          const next = await readHistoryFileRange(
+            transcriptPath,
+            skip,
+            Math.min(SEQUENCE_PROBE_CHUNK_BYTES, size - skip),
+            signal,
+          );
+          if (next.length === 0) break;
+          const skipNewline = next.indexOf(0x0a);
+          if (skipNewline >= 0) {
+            rowEnd = skip + skipNewline + 1;
+            break;
+          }
+          skip += next.length;
+        }
+        row = null;
+        break;
+      }
+      length = Math.min(size - lineStart, length * 2, SEQUENCE_PROBE_MAX_ROW_BYTES);
+    }
+    if (row) {
+      const sequence = parseSequencedRow(row.toString("utf8"), sessionId);
+      if (sequence != null) return { lineStart, sequence };
+    }
+    if (rowEnd < 0 || rowEnd <= lineStart) return null;
+    lineStart = rowEnd;
+  }
+  return null;
+}
+
+/**
+ * Byte offset of the first row whose sequence is `>= sequence` — the exclusive
+ * end of "everything older than `sequence`". Binary search over line starts:
+ * the durable transcript's sequences increase with file position, so the probe
+ * predicate is monotone and the search costs O(log size) bounded reads.
+ * Returns the file size when every row is older.
+ */
+export async function findTranscriptOffsetForSequence(args: {
+  transcriptPath: string;
+  sessionId: string;
+  sequence: number;
+  signal?: AbortSignal;
+}): Promise<number> {
+  const size = await readHistoryFileSize(args.transcriptPath);
+  let lo = 0;
+  let hi = size;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const probe = await probeSequencedRowAtOrAfter({ ...args, offset: mid, size });
+    if (!probe || probe.sequence >= args.sequence) {
+      hi = mid;
+    } else {
+      // Every offset up to this row's start probes the same (older) row.
+      lo = Math.max(mid + 1, probe.lineStart + 1);
+    }
+  }
+  const first = await probeSequencedRowAtOrAfter({ ...args, offset: lo, size });
+  return first && first.sequence >= args.sequence ? first.lineStart : size;
+}
+
+/**
+ * One page of history OLDER than `beforeSequence` (a persisted envelope
+ * sequence) — the sequence-cursor twin of `readTranscriptHistoryPage`, for
+ * clients whose cached log trims its oldest rows and so cannot keep a byte
+ * cursor. Same byte window, same ordering (oldest first), same `hasMore`.
+ */
+export async function readTranscriptHistoryPageBeforeSequence(args: {
+  transcriptPath: string;
+  sessionId: string;
+  beforeSequence: number;
+  maxBytes?: number | null;
+  signal?: AbortSignal;
+}): Promise<TranscriptHistoryPageRead> {
+  const beforeSequence = Math.floor(args.beforeSequence);
+  if (!Number.isFinite(beforeSequence) || beforeSequence <= 1) return { ...EMPTY_PAGE };
+  const beforeOffset = await findTranscriptOffsetForSequence({
+    transcriptPath: args.transcriptPath,
+    sessionId: args.sessionId,
+    sequence: beforeSequence,
+    ...(args.signal ? { signal: args.signal } : {}),
+  });
+  const page = await readTranscriptHistoryPage({
+    transcriptPath: args.transcriptPath,
+    sessionId: args.sessionId,
+    beforeOffset,
+    maxBytes: args.maxBytes,
+    ...(args.signal ? { signal: args.signal } : {}),
+  });
+  // Defensive: a legacy file whose numbering restarted can put a newer
+  // sequence below the cut. Never hand those back as "older".
+  const keep = page.envelopes.map((envelope) =>
+    !(typeof envelope.sequence === "number" && envelope.sequence >= beforeSequence));
+  if (keep.every(Boolean)) return page;
+  return {
+    ...page,
+    envelopes: page.envelopes.filter((_, index) => keep[index]),
+    envelopeStartOffsets: page.envelopeStartOffsets.filter((_, index) => keep[index]),
+  };
+}

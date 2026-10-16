@@ -341,7 +341,15 @@ export function DrawerMenu<T extends string>({
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
-        <DropdownMenu.Content align="end" sideOffset={6} collisionPadding={8} className={MENU_CONTENT_CLASS}>
+        <DropdownMenu.Content
+          align="end"
+          sideOffset={6}
+          collisionPadding={8}
+          className={MENU_CONTENT_CLASS}
+          // A long list (a runtime's device models) stops at the window edge and
+          // scrolls, instead of running past it.
+          style={{ maxHeight: "min(480px, var(--radix-dropdown-menu-content-available-height))" }}
+        >
           <DropdownMenu.RadioGroup
             value={value ?? ""}
             onValueChange={(next) => {

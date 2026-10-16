@@ -18,7 +18,7 @@ const SEARCH_HINT = "name · pr:open · pr:none · author:me · mine · stale:30
 const ROW_BASE =
   "group flex w-full items-start gap-3 rounded-lg px-3 py-2 text-left transition-colors";
 const ROW_SELECTED = "bg-accent/[0.12] ring-1 ring-accent/40";
-const ROW_DEFAULT = "hover:bg-white/[0.04]";
+const ROW_DEFAULT = "hover:bg-fg/[0.04]";
 
 /** Strip the remote name from `origin/feat/x` so PR lookups match local heads. */
 function stripRemotePrefix(branch: LaneBranchOption): string {
@@ -35,7 +35,7 @@ function findPrForBranch(
 function PrPill({ pr }: { pr: BranchPullRequest }) {
   const isDraft = pr.state === "draft";
   const tone = isDraft
-    ? "bg-white/[0.08] text-muted-fg"
+    ? "bg-fg/[0.08] text-muted-fg"
     : "bg-emerald-400/15 text-emerald-300";
   return (
     <span
@@ -73,7 +73,7 @@ function BranchRow({
       className={`${ROW_BASE} ${selected ? ROW_SELECTED : ROW_DEFAULT}`}
       data-branch-name={branch.name}
     >
-      <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.04] text-sky-300">
+      <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-fg/[0.04] text-sky-300">
         <BranchIcon size={14} weight="duotone" />
       </span>
       <span className="min-w-0 flex-1">
@@ -87,7 +87,7 @@ function BranchRow({
             </span>
           ) : null}
           {branch.isRemote ? (
-            <span className="rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-fg">
+            <span className="rounded-full bg-fg/[0.06] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-fg">
               remote
             </span>
           ) : null}
@@ -187,7 +187,7 @@ export function BranchPickerView({
         <button
           type="button"
           onClick={onBack}
-          className="flex h-8 w-8 items-center justify-center rounded-md text-muted-fg transition-colors hover:bg-white/[0.05] hover:text-fg"
+          className="flex h-8 w-8 items-center justify-center rounded-md text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
           aria-label="Back to lane setup"
           disabled={busy}
         >
@@ -216,7 +216,7 @@ export function BranchPickerView({
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={SEARCH_HINT}
-          className="h-10 w-full rounded-lg border border-white/[0.06] bg-white/[0.03] pl-9 pr-3 text-sm text-fg outline-none transition-colors placeholder:text-muted-fg/50 focus:border-accent/40"
+          className="h-10 w-full rounded-lg border border-fg/[0.06] bg-fg/[0.03] pl-9 pr-3 text-sm text-fg outline-none transition-colors placeholder:text-muted-fg/50 focus:border-accent/40"
           spellCheck={false}
           autoComplete="off"
           disabled={busy}
@@ -225,7 +225,7 @@ export function BranchPickerView({
 
       <div
         ref={listRef}
-        className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-white/[0.06] bg-black/20"
+        className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-fg/[0.06] bg-black/20"
       >
         {filtered.length === 0 ? (
           <div className="flex h-full items-center justify-center px-4 text-center text-[12px] text-muted-fg/60">

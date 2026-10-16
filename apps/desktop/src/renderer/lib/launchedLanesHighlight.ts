@@ -78,8 +78,9 @@ export function subscribeLaunchedLanesHighlight(
  */
 
 export type CreatingIssuePlaceholder = {
-  /** Linear issue id the lane is being created for. */
+  /** Tracker issue id (qualified by tracker when needed) the lane is being created for. */
   issueId: string;
+  tracker?: "linear" | "github" | "jira";
   /** Display name for the spinner tab (the prospective lane name). */
   name: string;
   /** When the placeholder was recorded (for TTL expiry). */
@@ -108,13 +109,13 @@ function emitCreating(): void {
  * TTL and name.
  */
 export function rememberCreatingIssues(args: {
-  issues: Array<{ issueId: string; name: string }>;
+  issues: Array<{ issueId: string; name: string; tracker?: "linear" | "github" | "jira" }>;
 }): void {
   if (!args.issues.length) return;
   const now = Date.now();
-  for (const { issueId, name } of args.issues) {
+  for (const { issueId, name, tracker } of args.issues) {
     if (!issueId) continue;
-    creating.set(issueId, { issueId, name, requestedAt: now });
+    creating.set(issueId, { issueId, name, ...(tracker ? { tracker } : {}), requestedAt: now });
   }
   emitCreating();
 }

@@ -184,6 +184,26 @@ describe("buildTimelineEvents fold", () => {
     expect(events.some((e) => e.type === "commit_push")).toBe(true);
   });
 
+  it("shows a comment one time when the comment list and the activity feed both carry it", () => {
+    // The two sources name the same GitHub comment with different prefixes.
+    const comment = {
+      id: "issue:IC_abc", author: "octocat", authorAvatarUrl: null, body: "Looks right.", source: "issue",
+      url: null, path: null, line: null, createdAt: "2026-01-02T00:00:00Z", updatedAt: null,
+    } as Parameters<typeof buildTimelineEvents>[0]["comments"][number];
+    const activity = (id: string, body: string): PrActivityEvent => ({
+      id, type: "comment", author: "octocat", avatarUrl: null, body, timestamp: "2026-01-02T00:00:00Z", metadata: { source: "issue" },
+    });
+    const rows = buildTimelineEvents(foldArgs({
+      comments: [comment],
+      activity: [activity("comment-issue:IC_abc", "Looks right."), activity("comment-issue:IC_other", "A second one.")],
+    })).filter((event) => event.type === "issue_comment");
+    // The copy from the comment list wins: it carries the ids that edit and react need.
+    expect(rows.map((row) => [row.id, row.body]).sort()).toEqual([
+      ["comment:comment-issue:IC_other", "A second one."],
+      ["comment:issue:IC_abc", "Looks right."],
+    ]);
+  });
+
   it("suppresses a bodyless 'commented' review but keeps one with a summary body", () => {
     const reviews: PrReview[] = [
       { reviewer: "bot", reviewerAvatarUrl: null, state: "commented", body: "   ", submittedAt: "2026-01-03T00:00:00Z" },
@@ -414,16 +434,31 @@ describe("PrDetailTimelineRails — Overview layout", () => {
     expect(rows[1]!.getAttribute("data-bot")).toBe("true");
   });
 
-  it("replaces ADE merge controls with GitHub guidance for a stacked PR", () => {
+  it.each([
+    { name: "a PR with open PRs below it", openThroughHere: 2, bypass: false, label: /Merge 2 PRs/ },
+    // GitHub bypasses only the bottom PR, so above it the host merges layer by layer.
+    { name: "a PR with open PRs below it, with bypass", openThroughHere: 2, bypass: true, label: /Bypass & merge 2 PRs/ },
+    { name: "the bottom open PR, with bypass", openThroughHere: 1, bypass: true, label: /Bypass & merge/ },
+  ])("merges a stacked PR after a confirm click: $name", ({ openThroughHere, bypass, label }) => {
+    const onMerge = vi.fn();
     renderRails({
       pr: {
         ...layoutPr,
-        stack: { id: "stack-18", number: 18, size: 3, position: 2, baseBranch: "main" },
+        stack: { id: "stack-18", number: 18, size: 3, position: 2, baseBranch: "main", openThroughHere },
       } as PrWithConflicts,
+      status: { headSha: "abc123" } as PrStatus,
+      onMerge,
     });
     expect(screen.getByText("GitHub Stack 2 of 3")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Review and merge on GitHub/ })).toBeTruthy();
     expect(screen.queryByTestId("pr-merge-anyway")).toBeNull();
+    // The override is offered on every layer, not only the bottom one.
+    const bypassBox = screen.getByTestId("pr-stack-merge-bypass");
+    if (bypass) fireEvent.click(bypassBox);
+
+    fireEvent.click(screen.getByRole("button", { name: label }));
+    expect(onMerge).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /Confirm: (bypass and )?merge/ }));
+    expect(onMerge).toHaveBeenCalledWith("squash", expect.objectContaining({ bypassRules: bypass, expectedHeadSha: "abc123" }));
   });
 });
 

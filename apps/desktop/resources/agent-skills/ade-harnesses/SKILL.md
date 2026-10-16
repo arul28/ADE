@@ -1,14 +1,17 @@
 ---
 name: ade-harnesses
-description: Use this skill when you need to run a chat, a CLI session, or a subagent on a specific setup — a saved Custom provider (a "harness preset" internally), one of this machine's provider accounts, or one stored API key — instead of whatever ADE would pick by default. Covers listing what is available (`ade chat models`, `ade providers accounts list`) and launching with `--preset`, `--credential`, or `--instance`.
+description: Use this skill when you need to run a chat, a CLI session, or a subagent on a specific setup — any model you pay for inside any harness (e.g. OpenCode Go's DeepSeek inside Claude Code), a saved Custom provider (a "harness preset" internally), one of this machine's provider accounts, or one stored API key — instead of whatever ADE would pick by default. Covers listing what is reachable (`ade harness routes`, `ade chat models`, `ade providers accounts list`), launching with `--via`, `--preset`, `--credential`, or `--instance`, checking a pairing (`ade harness test`), and running one in a plain terminal (`ade harness env`).
 ---
 
 # ADE harnesses: picking what a session runs on
 
 ADE separates the **harness** (which agent runs: Claude Code, Codex, Droid,
 OpenCode, …) from the **model provider** (where it gets its intelligence: a
-native sign-in, a stored API key, or a subscription borrowed through ADE's
-proxy).
+native sign-in, a provider signed in to OpenCode — OpenCode Go, Zen, or any
+provider connected there — a stored API key, or a subscription borrowed
+through ADE's proxy). Any routable harness can run any model its sources serve:
+ADE points the harness straight at the source when they speak the same API, and
+translates through its local proxy when they do not.
 
 A **harness preset** — shown in the app as **Custom** (Settings › Providers ›
 Custom) — is one saved pairing of the two, with the model, the thinking level
@@ -36,10 +39,26 @@ Read `harnessPresets[]` (`{id, name, harness, model, source}`) and
 `providerAccounts[]` (`{id, provider, label, isDefault, signedIn}`). Neither
 carries a key or a config path — only the ids the flags below take.
 
+## See what each harness can reach
+
+```bash
+ade harness routes --harness claude --text   # every model Claude Code can run, by source
+ade harness routes --text                    # the same for every routable harness
+```
+
+Rows tagged `via ADE proxy` are translated (the proxy starts on demand). Check
+one pairing with a one-token request before relying on it — the verdict is
+remembered, so later launches route around a protocol the model refused:
+
+```bash
+ade harness test --harness claude --via opencode-go --model deepseek-v4.1-flash --text
+```
+
 ## Launch on a specific setup
 
 | you want | flag |
 |---|---|
+| any reachable model, no saved preset | `--provider <harness> --via <source> --model <id>` |
 | a saved custom setup (harness preset) | `--preset <preset-id>` |
 | one stored API key, no preset | `--credential <credential-id>` |
 | a specific Claude/Codex account | `--instance <account-id>` |
@@ -57,7 +76,24 @@ ade chat create --lane <lane> --provider claude --credential openrouter
 
 # A specific account, without a preset.
 ade chat create --lane <lane> --provider claude --instance work
+
+# OpenCode Go's DeepSeek inside Claude Code, chat or CLI, no preset.
+ade chat create --lane <lane> --provider claude --via opencode-go --model deepseek-v4.1-flash
+ade new chat --mode cli --lane <lane> --provider codex --via opencode-go --model glm-5.3
 ```
+
+`--via` takes `opencode-go`, `opencode` (Zen), `opencode:<provider>`, or
+`key:<provider>[:<credentialId>]`. Subagents follow the main model unless a
+preset pins them.
+
+## Run a custom setup in your own terminal
+
+```bash
+eval "$(ade harness env <preset-id> --text)" && claude --model <model>
+```
+
+The output holds the provider token. It is printed for `eval` and never
+written anywhere; do not paste it into a chat or a file.
 
 `--preset` and `--credential` are mutually exclusive: each names a whole setup,
 and passing both would leave ADE guessing which one you meant.
@@ -73,18 +109,29 @@ ade chat create --lane <lane> --preset hp_haiku_cheap \
   --prompt "Find every caller of resolveLaunchBrain and report the list."
 ```
 
-For a Claude preset you do not have to spawn a separate chat at all: a preset
-can pin Explore, Plan and general-purpose to their own models (Settings ›
-Providers › Custom › Advanced). Those pins apply to every subagent the chat
-spawns natively, with no extra flag.
+For a harness that takes one, you do not have to spawn a separate chat at all:
+a preset can name its subagents' model and thinking level (Settings ›
+Providers › Custom › Subagents), which apply to every subagent the chat spawns
+natively, with no extra flag. Claude Code, Codex CLI, Grok and OpenCode take a
+subagent model; Claude Code and Codex CLI take a level too. Claude Code, Grok
+and OpenCode also let you pin individual named roles (Explore, Plan,
+general-purpose) under **Subagent naming**. A harness the preset's wizard says
+runs subagents on the main model takes neither.
 
 ## What does not take a preset
 
-Four CLIs read their identity from their own sign-in and accept no key from the
-launch: **Grok**, **Cursor**, **Copilot**, **Kimi**. A preset on one of them in
-CLI mode is dropped and the native CLI starts — a working session on the
-harness's own account, with the reason recorded. Chat mode is unaffected for the
-harnesses whose adapters ADE drives itself.
+Three CLIs read their identity from their own sign-in and accept no key or
+endpoint from the launch: **Cursor**, **Copilot**, **Kimi**. A preset on one of
+them in CLI mode is dropped and the native CLI starts — a working session on
+the harness's own account, with the reason recorded. (Grok used to be here; it
+now runs routed models from an ADE-owned `GROK_HOME`.)
+
+OpenCode's **free** Zen models only answer inside OpenCode itself, so they are
+never offered as a reachable choice in another harness (the editor still lists
+them, greyed, with the reason). The same goes for an OpenCode sign-in that is
+measured as a subscription-only login — an OpenAI sign-in there is a ChatGPT
+subscription whose token no outside client can use; route it with an OpenAI API
+key or a Codex subscription through ADE's proxy instead.
 
 Two more have no key path at all, in either mode:
 

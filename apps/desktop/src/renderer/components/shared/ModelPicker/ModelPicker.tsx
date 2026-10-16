@@ -3,6 +3,8 @@ import * as Popover from "@radix-ui/react-popover";
 import { CaretDown, Lightning } from "@phosphor-icons/react";
 import {
   modelSupportsFastMode,
+  modelSupportsUltrafast,
+  type FastTier,
   modelSupportsServiceTier,
   type AuthType,
   type ModelDescriptor,
@@ -19,7 +21,7 @@ import type { AuthStatus } from "./ModelPickerRail";
 import {
   createUnknownModelPlaceholder,
   descriptorsFromAgentChatModelCatalog,
-  filterAcpFallbackModelsToRuntimeCatalog,
+  filterFallbackModelsToRuntimeCatalog,
   mergeSelectorModels,
   requestModelCatalog,
   resolveModelDescriptorWithRuntimeCatalog,
@@ -39,10 +41,18 @@ import {
 } from "./runtimeCatalogCache";
 import { fetchSharedRuntimeCatalog } from "./sharedCatalogFetch";
 
-/** The saved preset a surface is currently running on, for the trigger. */
+/** The saved preset (or ad-hoc route) a surface is running on, for the trigger. */
 export type ModelPickerActivePreset = {
   name: string;
   logo: HarnessPresetLogo;
+  /**
+   * The preset's accent, drawn as the mark's ring.
+   *
+   * Present for a route too, where it is the harness's own colour. Omitted only
+   * by callers that have no accent to give — and then the ring is absent, not
+   * the default purple, because a wrong brand is worse than no ring.
+   */
+  accentColor?: string | null;
 };
 
 export type ModelPickerProps = {
@@ -96,7 +106,20 @@ export type ModelPickerProps = {
    * affordance at all.
    */
   fastMode?: boolean;
-  onFastModeChange?: (next: boolean) => void;
+  /**
+   * The faster tier Fast is on. Passing it (null included) opts the surface in
+   * to Ultrafast: a model whose catalog offers it cycles its chip Off → Fast →
+   * Ultrafast, and the tier arrives as `onFastModeChange`'s second argument.
+   * Omit it on a surface that cannot carry the tier, so the chip stays Fast.
+   */
+  fastTier?: FastTier | null;
+  /**
+   * The tier the server last reported for this chat's Fast. Passing it puts a
+   * badge on the selected row so a tier the server declined or downgraded is
+   * visible instead of the chip silently claiming the request.
+   */
+  effectiveFastTier?: string | null;
+  onFastModeChange?: (next: boolean, tier?: FastTier) => void;
   /** @deprecated Older alias for {@link ModelPickerProps.fastMode}. */
   fastModeActive?: boolean;
   /** @deprecated Older alias for {@link ModelPickerProps.onFastModeChange}. */
@@ -119,12 +142,19 @@ export type ModelPickerProps = {
   onServiceTierChange?: (next: CursorCloudServiceTier | null) => void;
   allowCliOnlyModels?: boolean;
   /**
-   * Whether the Custom rail entry is offered. False for a surface launching
-   * a tracked CLI: four harnesses take no key from the launch, so a preset
-   * picked there would be dropped, and offering a choice that is then ignored
-   * is worse than not offering it. See `shared/harnessPresetCliGate.ts`.
+   * Whether the Custom rail entry is offered at all. It shows in chat and CLI
+   * mode alike; see `harnessLaunchMode` for how CLI mode differs.
    */
   listsHarnessPresets?: boolean;
+  /**
+   * Chat or tracked CLI. In CLI mode the Custom tab lists the CLIs that take no
+   * endpoint from a launch (`shared/harnessPresetCliGate.ts`) as unavailable,
+   * with the reason, instead of letting a pick be silently dropped. Defaults
+   * from `allowCliOnlyModels`.
+   */
+  harnessLaunchMode?: "chat" | "cli";
+  /** The saved preset or ad-hoc route id the surface runs on (highlights it in Custom). */
+  activePresetId?: string | null;
   cursorAvailabilityMode?: "chat" | "cli" | "all";
   /**
    * Hide permission-related rail/picker rows when the caller already pins the
@@ -156,6 +186,8 @@ export const ModelPicker = memo(function ModelPicker({
   runtimePin,
   constrainToAvailableModelIds = false,
   fastMode,
+  fastTier,
+  effectiveFastTier = null,
   onFastModeChange,
   fastModeActive,
   onFastModeToggle,
@@ -166,6 +198,8 @@ export const ModelPicker = memo(function ModelPicker({
   onServiceTierChange,
   allowCliOnlyModels = false,
   listsHarnessPresets = true,
+  harnessLaunchMode = allowCliOnlyModels ? "cli" : "chat",
+  activePresetId = null,
   cursorAvailabilityMode = allowCliOnlyModels ? "cli" : "chat",
   hidePermissionRail = false,
   onOpenHarnessSettings,
@@ -349,7 +383,7 @@ export const ModelPicker = memo(function ModelPicker({
       if (!normalizedValue) return "";
       return constrainedAvailable.has(normalizedValue) ? normalizedValue : "";
     })();
-    const fallbackModels = filterAcpFallbackModelsToRuntimeCatalog(
+    const fallbackModels = filterFallbackModelsToRuntimeCatalog(
       mergeSelectorModels(
         availableModelIds,
         selectedValue,
@@ -472,6 +506,7 @@ export const ModelPicker = memo(function ModelPicker({
             disabled={disabled}
             open={open}
             fastMode={fastModeOn && !legacyFastChip}
+            fastTier={fastTier ?? null}
             {...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {})}
             {...(serviceTierMode ? { serviceTier, serviceTierSupported } : {})}
             className={triggerClassName}
@@ -508,9 +543,14 @@ export const ModelPicker = memo(function ModelPicker({
                 hidePermissionRail={hidePermissionRail}
                 allowCliOnlyModels={allowCliOnlyModels}
                 listsHarnessPresets={listsHarnessPresets}
+                harnessLaunchMode={harnessLaunchMode}
+                activePresetId={activePresetId}
                 cursorAvailabilityMode={cursorAvailabilityMode}
                 allowRegistryExpansion={!constrainToAvailableModelIds}
                 fastMode={fastModeOn}
+                fastTier={fastTier ?? null}
+                ultrafastEnabled={fastTier !== undefined}
+                effectiveFastTier={effectiveFastTier}
                 {...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {})}
                 {...(!serviceTierMode && onFastModeChange ? { onFastModeChange } : {})}
                 {...(fastModeUnavailableReason ? { fastModeUnavailableReason } : {})}
@@ -576,7 +616,7 @@ const LegacyFastModeButton = memo(function LegacyFastModeButton({
           : "h-8 gap-1 px-2 text-[11px]",
         active
           ? "border-amber-300/30 bg-amber-400/12 text-amber-100 shadow-[0_0_0_1px_rgba(251,191,36,0.08)]"
-          : "border-white/[0.07] bg-white/[0.025] text-muted-fg/60 hover:bg-white/[0.06] hover:text-fg/80",
+          : "border-fg/[0.07] bg-fg/[0.025] text-muted-fg/60 hover:bg-fg/[0.06] hover:text-fg/80",
       )}
     >
       <Lightning size={compact ? 10 : 13} weight="fill" />
@@ -611,6 +651,7 @@ export function composeModelPickerTriggerLabel({
   model,
   value,
   fastMode = false,
+  fastTier = null,
   fastModeSupported,
   serviceTier,
   serviceTierSupported,
@@ -619,6 +660,8 @@ export function composeModelPickerTriggerLabel({
   model: ModelDescriptor | undefined;
   value: string;
   fastMode?: boolean;
+  /** Ultrafast names itself on the trigger; it applies only where the model offers it. */
+  fastTier?: FastTier | null;
   fastModeSupported?: boolean;
   serviceTier?: CursorCloudServiceTier | null;
   serviceTierSupported?: boolean;
@@ -640,7 +683,8 @@ export function composeModelPickerTriggerLabel({
     fastMode,
     ...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {}),
   });
-  return fast ? `${base} Fast` : base;
+  if (!fast) return base;
+  return fastTier === "ultrafast" && modelSupportsUltrafast(model) ? `${base} Ultrafast` : `${base} Fast`;
 }
 
 type TriggerProps = {
@@ -651,6 +695,7 @@ type TriggerProps = {
   disabled: boolean;
   open: boolean;
   fastMode: boolean;
+  fastTier?: FastTier | null;
   fastModeSupported?: boolean;
   serviceTier?: CursorCloudServiceTier | null;
   serviceTierSupported?: boolean;
@@ -660,7 +705,7 @@ type TriggerProps = {
 const ModelPickerTrigger = memo(
   forwardRef<HTMLButtonElement, TriggerProps & React.ButtonHTMLAttributes<HTMLButtonElement>>(
     function ModelPickerTrigger(
-      { model, value, activePreset, compact, disabled, open, fastMode, fastModeSupported, serviceTier, serviceTierSupported, className, ...rest },
+      { model, value, activePreset, compact, disabled, open, fastMode, fastTier, fastModeSupported, serviceTier, serviceTierSupported, className, ...rest },
       ref,
     ) {
       const label = composeModelPickerTriggerLabel({
@@ -668,6 +713,7 @@ const ModelPickerTrigger = memo(
         value,
         ...(activePreset?.name ? { presetName: activePreset.name } : {}),
         fastMode,
+        fastTier: fastTier ?? null,
         ...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {}),
         ...(serviceTierSupported !== undefined ? { serviceTier, serviceTierSupported } : {}),
       });
@@ -694,10 +740,10 @@ const ModelPickerTrigger = memo(
             compact
               ? "h-6 px-1 text-[9px]"
               : "h-8 px-2 text-[11px] sm:text-[12px]",
-            "border-white/[0.06] bg-white/[0.03] text-fg/80",
+            "border-fg/[0.06] bg-fg/[0.03] text-fg/80",
             "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
             open && "border-violet-400/30 bg-violet-500/[0.08] text-fg",
-            disabled && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
+            disabled && "cursor-not-allowed opacity-60 hover:border-fg/[0.06] hover:bg-fg/[0.03]",
             className,
           )}
         >
@@ -705,6 +751,7 @@ const ModelPickerTrigger = memo(
             <HarnessLogo
               logo={activePreset.logo}
               size={compact ? 11 : 13}
+              accentColor={activePreset.accentColor ?? null}
               className="shrink-0"
             />
           ) : model ? (

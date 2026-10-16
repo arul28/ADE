@@ -226,6 +226,10 @@ describe("resolveLaneIdsDeepLinkSelection", () => {
   it("scrubs action lane params while preserving unrelated query params", () => {
     expect(buildLaneActionClearedSearch("?action=batch&laneId=lane-a&laneIds=lane-a,lane-b&inspectorTab=work"))
       .toBe("?inspectorTab=work");
+    // The Work bulk menu's batch link also carries the dialog's opening tab; it
+    // must clear with the action so a back-navigation cannot reopen the dialog.
+    expect(buildLaneActionClearedSearch("?action=batch&laneIds=lane-a,lane-b&manageTab=delete&inspectorTab=work"))
+      .toBe("?inspectorTab=work");
   });
 });
 
@@ -847,5 +851,22 @@ describe("lane vs chat PR scoping", () => {
     const detachedForeign = makePr({ id: "b", laneId: "lane-2", chatSessionIds: ["sess-a"], detached: DETACHED });
 
     expect(selectChatPrs(lane, [detachedOwned, detachedForeign], "sess-a")).toEqual([]);
+  });
+
+  it("keeps a primary lane's PR visible to the chat that linked it while the lane surface hides it", () => {
+    const primary = makeLane({ id: "lane-1", laneType: "primary", branchRef: "main", baseRef: "main" });
+    const linked = makePr({
+      id: "pr-linked",
+      laneId: "lane-1",
+      headBranch: "fix/update-recovery",
+      state: "merged",
+      chatSessionIds: ["sess-a"],
+    });
+
+    // The lane is parked on main, so its own surfaces show nothing...
+    expect(selectLanePrs(primary, [linked])).toEqual([]);
+    // ...but the thread that opened the PR still shows the PR it worked on.
+    expect(selectChatPrs(primary, [linked], "sess-a").map((pr) => pr.id)).toEqual(["pr-linked"]);
+    expect(selectChatPrs(primary, [linked], "sess-b")).toEqual([]);
   });
 });

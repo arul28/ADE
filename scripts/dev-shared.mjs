@@ -639,6 +639,9 @@ export function printDevIsolationReport(socketPath, projectRoot, { ownsRuntime =
   const sync = ownsRuntime
     ? requested
     : `${requested} requested; this launch left the process already on the socket alone`;
+  const remoteMachines = process.env.ADE_DEV_REMOTE_AUTOCONNECT === "1"
+    ? "AUTO-CONNECT (ADE_DEV_REMOTE_AUTOCONNECT=1): this app will take paired machines from the installed ADE"
+    : "only on Connect (the installed ADE keeps its machine connections)";
   const homeNote = isDefault
     ? "(shared with the installed brain)"
     : "(ADE_HOME override — NOT the installed brain's machine state: different account, runtime dir and heartbeat)";
@@ -648,6 +651,7 @@ export function printDevIsolationReport(socketPath, projectRoot, { ownsRuntime =
     `[ade]   dev socket : ${socketPath}`,
     `[ade]   sync       : ${sync}`,
     `[ade]   project    : ${projectRoot ?? "(launcher default)"}`,
+    `[ade]   machines   : ${remoteMachines}`,
     "[ade]   installed brain: untouched (its own socket, its own sync lease, service never repaired by a dev app)",
     "",
   ].join("\n"));
@@ -706,7 +710,27 @@ export function assertDevAdeHome() {
   );
 }
 
-export async function ensureRuntime(socketPath, projectRoot = null) {
+/** Whether a process exists. EPERM means it exists but belongs to someone else. */
+export function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+/**
+ * Start (or reuse) the dev brain on `socketPath`.
+ *
+ * `exitWithLauncher` ties a brain this call starts to the calling process: the
+ * brain exits when it is gone. `dev:desktop` passes it — its launcher lives for
+ * the whole session, Electron restarts included — so an app stopped without a
+ * clean signal (App Control closing its terminal) no longer leaves a brain on
+ * the shared home. `dev:runtime` does not: that brain is meant to outlive it.
+ */
+export async function ensureRuntime(socketPath, projectRoot = null, { exitWithLauncher = false } = {}) {
   try {
     const info = await getRuntimeInfo(socketPath);
     const mismatch = runtimeMismatchReason(info, { projectRoot });
@@ -736,7 +760,10 @@ export async function ensureRuntime(socketPath, projectRoot = null) {
   const syncArgs = process.env.ADE_DEV_RUNTIME_SYNC === "1" ? [] : ["--no-sync"];
   const child = spawn(process.execPath, [cliPath(), "serve", "--socket", socketPath, ...syncArgs], {
     cwd: repoRoot,
-    env: detachedDevRuntimeEnv(socketPath, projectRoot),
+    env: {
+      ...detachedDevRuntimeEnv(socketPath, projectRoot),
+      ...(exitWithLauncher ? { ADE_RUNTIME_PARENT_PID: String(process.pid) } : {}),
+    },
     detached: true,
     // Detached means nobody is reading this process's output — without a log
     // file a dev daemon that dies at startup leaves no trace at all.
@@ -783,14 +810,7 @@ export async function ensureRuntime(socketPath, projectRoot = null) {
 async function terminateSpawnedRuntime(child) {
   const pid = child?.pid;
   if (!pid) return;
-  const alive = () => {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (error) {
-      return error?.code === "EPERM";
-    }
-  };
+  const alive = () => isPidAlive(pid);
   try {
     process.kill(pid, "SIGTERM");
   } catch {
@@ -925,9 +945,12 @@ export function detachedDevRuntimeEnv(
     // the agent shell we just stripped.
     ...devRuntimeEnv(socketPath, projectRoot, inherited),
     // An explicit value wins: a developer debugging a quiet brain can raise or
-    // disable the budget without editing this file.
+    // disable the budget (`0`) without editing this file. It is read from its
+    // own name, because `ADE_RUNTIME_IDLE_EXIT_MS` is stripped above (an ADE
+    // shell can carry another runtime's timer), so reading it from the
+    // sanitized env could never see the developer's value.
     ADE_RUNTIME_IDLE_EXIT_MS:
-      inherited.ADE_RUNTIME_IDLE_EXIT_MS?.trim()
+      parentEnv.ADE_DEV_RUNTIME_IDLE_EXIT_MS?.trim()
       || String(DEV_RUNTIME_IDLE_EXIT_MS),
   };
 }

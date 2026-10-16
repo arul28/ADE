@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope, AgentChatEventHistoryPage } from "../../../shared/types";
-import { readOlderHistoryBatch, trimChatEventHistory } from "./chatHistoryWindow";
+import { mergeAgentChatLiveEvents } from "../../../shared/chatHistoryMerge";
+import { chatDisplayEvents, readOlderHistoryBatch, trimChatEventHistory } from "./chatHistoryWindow";
 
 const SESSION_ID = "session-1";
 
@@ -232,5 +233,40 @@ describe("trimChatEventHistory pending-input carve-out", () => {
   it("trims an answered card like ordinary history", () => {
     const events = [approvalRequest(0, "a"), receipt(1, "a"), envelope("text", 2)];
     expect(trimChatEventHistory(events, 1)).toEqual([events[2]]);
+  });
+});
+
+describe("chatDisplayEvents over a streamed thread", () => {
+  const at = (second: number, event: Record<string, unknown>): AgentChatEventEnvelope => ({
+    sessionId: SESSION_ID,
+    timestamp: `2026-03-17T10:00:${String(second).padStart(2, "0")}.000Z`,
+    event,
+  } as never);
+
+  it("shows each batch as it arrives, hides subagent twins, and retires a queue notice once its message is delivered", () => {
+    const prompt = at(0, { type: "user_message", text: "go" });
+    const twin = at(1, { type: "subagent.started", agentId: "a-1" });
+    const text = at(2, { type: "text", text: "one", messageId: "m-1" });
+    const loaded = [prompt, twin, text];
+    expect(chatDisplayEvents(loaded)).toEqual([prompt, text]);
+
+    const more = at(3, { type: "text", text: "two", messageId: "m-2" });
+    const afterText = mergeAgentChatLiveEvents(loaded, [more]);
+    const shownAfterText = chatDisplayEvents(afterText);
+    expect(shownAfterText).toEqual([prompt, text, more]);
+
+    // A batch with nothing to show leaves the shown list as it is: same list, no render.
+    const afterTwin = mergeAgentChatLiveEvents(afterText, [at(4, { type: "subagent.progress", agentId: "a-1" })]);
+    expect(afterTwin).toHaveLength(5);
+    expect(chatDisplayEvents(afterTwin)).toBe(shownAfterText);
+
+    const queued = at(5, { type: "system_notice", noticeKind: "info", message: "Message queued", steerId: "steer-1" });
+    const afterQueued = mergeAgentChatLiveEvents(afterTwin, [queued]);
+    expect(chatDisplayEvents(afterQueued)).toEqual([prompt, text, more, queued]);
+
+    // The delivery arrives later and hides a notice that an earlier batch showed.
+    const delivered = at(6, { type: "user_message", text: "steer", steerId: "steer-1", deliveryState: "delivered" });
+    const afterDelivered = mergeAgentChatLiveEvents(afterQueued, [delivered, at(7, { type: "subagent.completed", agentId: "a-1" })]);
+    expect(chatDisplayEvents(afterDelivered)).toEqual([prompt, text, more, delivered]);
   });
 });

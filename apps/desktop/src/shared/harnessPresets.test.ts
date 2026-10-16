@@ -28,6 +28,7 @@ function preset(overrides: Partial<HarnessPreset> = {}): HarnessPreset {
     model: "claude-opus-4-5",
     subagentModel: HARNESS_PRESET_SUBAGENT_INHERIT,
     agentOverrides: {},
+    agentEfforts: {},
     accentColor: "#d97757",
     logo: { kind: "ade" },
     createdAt: "2026-09-01T00:00:00.000Z",

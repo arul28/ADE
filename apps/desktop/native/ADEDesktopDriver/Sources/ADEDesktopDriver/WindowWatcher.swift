@@ -153,6 +153,10 @@ extension WindowControl {
                             if isFirst {
                                 log("window \(windowId) of pid \(pid) is not ready yet; retrying up to \(newWindows.maxNotReadyAttempts) times")
                             }
+                        case .retryLater(let isFirst):
+                            if isFirst {
+                                log("window \(windowId) of pid \(pid) is still not ready; the lane launched it, so it keeps retrying on a slower schedule")
+                            }
                         case .giveUp:
                             log("window \(windowId) of pid \(pid) never became ready; leaving it where it is")
                         }

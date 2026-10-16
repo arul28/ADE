@@ -10,8 +10,20 @@ export type ParsedCodedError = {
 // delimiter because it never appears in a human-readable error message.
 const ROOT_PATH_DELIMITER = String.fromCharCode(0);
 
+/**
+ * Git refused a folder that belongs to another account (safe.directory). The
+ * open flow answers it with a "Trust this folder?" prompt; see
+ * `trustGitSafeDirectory` in the main process.
+ */
+export const GIT_UNTRUSTED_FOLDER_CODE = "git_untrusted_folder";
+
 export function codedError<TCode extends string>(message: string, code: TCode): Error & { code: TCode } {
   return Object.assign(new Error(message), { code });
+}
+
+/** Whether `error` carries `code`, as a `codedError` with that code does. */
+export function isCodedError(error: unknown, code: string): boolean {
+  return (error as { code?: unknown })?.code === code;
 }
 
 /**
@@ -93,6 +105,15 @@ export function parseCodedErrorMessage(error: unknown): ParsedCodedError {
 
 export function extractCodeFromMessage(error: unknown): string | null {
   return parseCodedErrorMessage(error).code ?? null;
+}
+
+/**
+ * A chat refused because a turn is running (`turn_in_flight`). Older hosts
+ * send only the sentence, so its wording is the fallback.
+ */
+export function isTurnInFlightError(error: unknown): boolean {
+  const parsed = parseCodedErrorMessage(error);
+  return parsed.code === "turn_in_flight" || /\bturn is running\b/i.test(parsed.message);
 }
 
 export const ACTION_NOT_CALLABLE_CODE = "action_not_callable";

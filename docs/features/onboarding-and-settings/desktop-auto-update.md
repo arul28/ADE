@@ -75,6 +75,62 @@ Windows x64 uses electron-builder's per-user NSIS target and
    to match `ADE_RELEASE_REPOSITORY`, preventing a fork build from silently
    checking a different repository.
 
+### What the person sees, and what the installer does
+
+The handoff is silent (`quitAndInstall(true, true)`; it has to be, or the
+assisted installer never relaunches ADE), so ADE shows its own window for the
+gap. Right before the handoff, `windowsInstallProgress.ts` copies
+`resources/ade-cli/windows-update-progress.ps1` to
+`%LOCALAPPDATA%\ADE\update-progress-<channel>\` and starts it through
+`cmd /c start`. It runs from outside the install folder because the installer
+renames that folder away and kills every process whose image lives in it, and
+not from `%TEMP%` because some machines point TEMP at a folder other users can
+write. It uses `cmd start` because, from Electron, a `detached`
+powershell.exe exits without running and an attached one dies with ADE. The
+small, topmost "Updating ADE to vX" window follows the old app quitting, the
+installer running, and the steps in `install-steps.log`. It closes when the new
+ADE has a window on screen. If the installer ends and no new ADE appears, it
+says so and offers Open ADE. Its log is read into `ade-update.jsonl` as
+`autoUpdate.install_progress_report` 30 s into the next launch.
+
+The window also writes a heartbeat. A copy of the old ADE opened by hand during
+the install (the person sees nothing happening and clicks the shortcut) reads
+it, brings the window forward, and exits before starting anything, instead of
+being force-killed by the installer seconds later. An `ade://` link opened in
+that window of time is dropped with it.
+
+An in-place update does only what an update needs. The old uninstaller runs with
+`--updated`, so `customUnInstall` passes `-Updating`: it stops the background
+service without starting ADE.exe, and leaves the terminal shim, the user PATH
+entry, `ade://`, file associations and the firewall rule in place.
+`customInstall` passes `-Updating` to `windows-install-setup.ps1`, which then
+refreshes only the shim. If that refresh fails, the script puts the previous
+shim back, logs `update_continues`, and still exits 0: the update flow has
+already removed the service, and NSIS does not relaunch ADE after an abort, so
+failing here used to leave no brain and no ADE window. When the previous shim
+cannot be put back either, the script also writes
+`runtime/cli-shim-repair-request` in the channel's ADE home, and the relaunched
+app rewrites the shim even though its one-time `ade` install already ran,
+removing the request once that succeeds. The relaunched app
+reinstalls, restarts and verifies the service itself (`runUpdateTransaction`). Every `--updated` install comes
+from `quitAndInstall` (`autoInstallOnAppQuit` is off), which records the
+pending install that makes that launch run the transaction. The trade: if the
+new ADE does not open at all, the brain stays down, and the machine is
+unreachable from the phone, until ADE is next opened. `install-path.cmd` broadcasts
+`WM_SETTINGCHANGE` only when PATH actually changed, and detached. Its 5 s
+per-window timeout stacked to 82 s inside the installer. `customCheckAppRunning`
+replaces electron-builder's app-running check with one PowerShell pass instead
+of three or four. Every step appends its duration to
+`runtime/install-steps.log` in the channel's ADE home (`~/.ade` on Stable,
+`~/.ade-beta` and `~/.ade-alpha` on the channels).
+
+Measured in Windows Sandbox with real installers (2026-10-07): from
+`quit_and_install` to the new ADE on screen took 77 s before these changes
+(1.2.94 → next). The steady state, one fixed version to the next, took 43-50 s.
+Over half of that was the sandbox copying files; the same copy takes 7 s on
+recent hardware. The first update after this change still runs the previous
+version's uninstaller, so it gets the install-side savings only.
+
 `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1` is the single gate. It builds Windows
 fresh on the release tag and adds the installer, blockmap, and `latest.yml` to
 the draft release. The build is fail-closed on Authenticode: the installer and
@@ -144,7 +200,8 @@ labels this value as an estimate rather than an exact installer requirement.
 | Capacity preflight | Synchronous ADE check before download/install | `insufficient_space` with measured free/required bytes and affected path | Preserve only after a verified download |
 | `ENOSPC` | Synchronous throw, rejected download, or updater `error` event | `disk_full` at the active phase | Preserve a verified download; clear incomplete download data |
 | `EDQUOT` | Rejected download or updater `error` event | `quota` at the active phase | Same as `ENOSPC` |
-| Network | Rejected check/download or updater `error` event | `network` | Retry; incomplete cache may be cleared |
+| Network | Rejected check/download or updater `error` event; `net::ERR_*` included | `network` (phase `check` when the feed request itself failed) | Retry; incomplete cache may be cleared |
+| Wedged updater session | Feed check fails with `net::ERR_*` while Node's `fetch` reaches the feed; ADE retries with a fresh session, then switches the updater to Node HTTP/HTTPS if Chromium still fails | Recovered checks continue normally; if the Node transport also fails, the check reports `network` at phase `check` | Same as a check failure |
 | Checksum/signature | Rejected verification or updater `error` event | `verification` / `signature` | Clear unsafe cached data |
 | Permission | Synchronous throw or updater `error` event | `permission` | Preserve only a previously verified download |
 | Installer handoff | Synchronous throw, async updater `error`, or watchdog expiry | `installer` | Preserve the verified download |
@@ -156,6 +213,35 @@ watchdog, while the native Squirrel handoff has a separate five-minute watchdog
 so loopback transfer and staging are not mistaken for a stalled quit. Handoff
 timeouts retain the pending-install marker because Squirrel may still complete;
 an explicit updater error clears it.
+
+## Wedged updater session
+
+electron-updater fetches through Chromium's `net` on one session it caches for
+the life of the process. That session can stop working while the machine is
+online: checks then fail with `net::ERR_FAILED` a few milliseconds after they
+start, before any request leaves the machine. ADE now recovers the updater
+transport for the rest of that launch.
+
+When a check fails with `net::ERR_*`, `checkFeedRecoveringNetSession` asks
+Node's `fetch` for the channel file (`latest-mac.yml` / `latest.yml`) on the
+configured feed (`updaterNetRecovery.ts`). If Node gets no success response
+either (no answer, a 404, a 5xx, a captive portal's page), the feed itself is
+unavailable: `network`, "ADE can't reach the update server". If Node gets a
+success response, the updater gets a fresh in-memory session
+(`electron-updater-recovered-<n>`) and the check runs once more. If Chromium
+still fails on that session, ADE replaces the updater executor's request
+creation with Node's `http` / `https` transports and retries again. The Node
+executor follows `location` redirects for both feed checks and artifact
+downloads, and remains active for the rest of that launch.
+
+`autoUpdate.net_wedge_detected` records the Node probe and starts recovery
+without waiting for Chromium diagnostics. `autoUpdate.chromium_net_diagnostics`
+later records default-session reachability, network-service pid/age, and app
+uptime. `autoUpdate.net_wedge_recovered` records whether a fresh Chromium
+session or Node transport recovered the check. Only if the final Node request
+also fails does the check report a normal `network` error; a feed reachable by
+Node no longer requires restarting ADE just because Chromium's updater session
+is stuck.
 
 ## Quit deadline during the native handoff
 
@@ -205,8 +291,10 @@ internal-only `ade_update_install_did_not_land` event with just the bounded
 `attempt` counter, and exposes `lastInstallFailed` on the snapshot so the
 top-bar pill reads "Retry install vX" instead of silently offering the same
 update again. Requesting another install clears `lastInstallFailed` (the new
-attempt supersedes the notice); a launch that does land on the target version
-clears `failedInstallAttempts` entirely.
+attempt supersedes the notice). A launch on the target version or newer clears
+`failedInstallAttempts` entirely, even when no pending marker remains, as when
+an earlier launch already consumed the marker; a landed retry does not log
+`install_did_not_land`.
 
 The first such failure **keeps** the cached archive. It was checksum-verified
 before the update was ever offered, so a lost quit race says nothing about the
@@ -225,7 +313,12 @@ same way for all of them while the status is `ready`:
 | --- | --- |
 | Same or older than the staged version | Ignored (`autoUpdate.update_available_ignored`). The status, the staged version, and the cached archive do not change; `latestKnownVersion` still records what the feed reported. |
 | Strictly newer | Supersedes. The recorded `downloadedFile` is dropped, the updater cache is wiped with reason `superseded_ready_update`, any auto-apply countdown for the old version is cancelled, and the snapshot runs `checking` → `downloading` → `ready` on the new version. The countdown re-arms on the new `ready`. |
-| The check fails | Nothing changes. Both the `error` event and a rejected `checkForUpdates()` return early while the status is still `ready`, logging `autoUpdate.ready_check_failed`. |
+| The check fails | The staged version, ready status, and cached archive stay intact. ADE records the failure kind, message, and time in `checkFailure`, and logs `autoUpdate.ready_check_failed`. |
+
+Every answered feed check records `lastCheckedAt` and clears any prior
+`checkFailure`. Settings → About shows the last check time, or the failure kind
+and time when the latest check did not get an answer. `ade update status` exposes
+the same timestamps and failure kind to CLI users.
 
 Every entry point first logs `autoUpdate.check_requested` with the current
 status and a `userInitiated` label, so an operator can tell whether a check was
@@ -346,6 +439,56 @@ machine's identity *before* reinstalling, so the pid it may later find squatting
 is one it can name. `processes/processStartTime.ts` guards that record — a pid
 alone is not identity once the OS starts recycling them.
 
+### Resuming the chats an update interrupts
+
+Installing an update quits the app and restarts the brain, which stops every
+chat with a live turn. The install confirmation names those chats and offers one
+checkbox (default on) to resume them. When the user accepts with the box
+checked, the list is persisted with the pending install; it is not turned into
+work yet.
+
+The launch that actually lands the install is the only one that arms the resume.
+`reconcilePersistedUpdateState` moves the list onto `recentlyInstalledUpdate`,
+and main arms one durable scheduled-work row per chat under the `update_restart`
+source. A failed or declined install clears the pending record, so it can never
+leave a resume behind: nothing is armed until the new version is running. Each
+armed session is consumed from the persisted list, so a later launch does not
+arm it twice; a chat whose project was not reachable stays on the list and gets
+another attempt.
+
+**That launch waits for the transaction above before it opens anything.** The
+pool refuses every project while the transaction's update window is open
+(`createConnection` answers "ADE is applying an update…"), so a project opened
+during it — a restored tab, the startup project, or the one the resume has to
+reach — was refused and dropped, and the resume found no project to ask at all.
+The wait is bounded at 30 seconds and applies only to a launch with a project to
+open or a resume to arm; every install recorded so far finished the whole
+transaction in two to four seconds. Past that bound the launch opens its window
+immediately, and the resume — which opens nothing — is still armed the moment
+the transaction lets the pool go.
+
+The arm happens in exactly one place, on the far side of that wait, because
+`armUpdateResume` upserts a deterministic row id: arming a session twice
+re-schedules a row that may already have fired, and the chat is told to continue
+a second time. What goes wrong instead is now named in the log:
+`update_resume.arm_no_project` when no project was reachable to ask,
+`update_resume.arm_failed` when a project that was asked refused,
+`update_resume.arm_chain_failed` for a throw outside both,
+`autoUpdate.post_update_transaction_wait_timeout` when the install outlasted the
+wait, and `autoUpdate.install_superseded_unarmed_resumes` when a later install
+drops a resume the record never placed.
+
+Dismissing the "ADE updated" notice is not a refusal to resume. The record is
+kept, marked `noticeDismissedAt`, for the resumes it still owes — it simply
+stops being surfaced as a notice, including on the next launch — and it is
+dropped entirely once it owes nothing or a later install replaces it.
+
+Each row delivers the "ADE restarted, so your last turn ended early…" continue prompt (the same rows re-arm chats after a quit-prompt Repair)
+once. Only rows that actually landed `scheduled` (not paused) are reported in
+the post-update "Scheduled N chats to resume" notice, and typing into a chat
+cancels its pending resume. Remote-machine chats and terminals are never
+included.
+
 ### Repair is suppressed while an update is applying
 
 The connection pool repairs a machine endpoint that is missing or incompatible
@@ -371,19 +514,25 @@ one installer per connect attempt.
 
 The typed result rides the existing `AutoUpdateSnapshot` over
 `IPC.updateEvent` / `updateGetState` as `updateTransaction`; no new channel. A
-failure names the step in plain words and `AutoUpdateBanner` renders that one
-line beside the shared **Repair** control and a **Report issue** button (the
-notice wraps rather than truncating, since the message can run long and Repair
-grows a failure line of its own). Its colours are the app shell's amber strip:
-the notice used to be written for a light surface, which on ADE's near-black
-shell rendered as brown text with an all-but-invisible dismiss.
+failure names the step in plain words. A failed `swap` is a warning banner in
+`AutoUpdateBanner` (it stands down while the staleness banner already offers
+the retry). Every other failed step means the background service is down, and
+`BrainDownNotice` owns it: one error banner with the cause, **Fix it** (the real
+service reinstall and restart), then **Restart ADE**, then **Reset ADE**, and
+**Report issue** under the text — see
+[the brain-down notice](../storage-and-recovery/README.md#the-recovery-screen-and-the-brain-down-notice).
+A project open the pool refused mid-update (`LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE`)
+is part of the same notice ("Finishing the update"), never a second banner.
 
 | Step | Line |
 | --- | --- |
-| `swap` | The update didn't finish installing — ADE is still on the old version. |
-| `service` | Updated the app, but the background service couldn't be set up — click Repair. |
-| `restart` | Updated the app, but the background service didn't restart — click Repair. |
-| `health` | Updated the app, but the background service isn't answering — click Repair. |
+| `swap` | The update didn't finish installing. ADE is still on the old version. |
+| `service` | ADE's background service didn't start after the update |
+| `restart` | ADE's background service didn't restart after the update |
+| `health` | ADE's background service isn't responding after the update |
+
+When the live service status says macOS's "Allow in the Background" is off,
+the notice says that instead of the step's line.
 
 The first failure stops the sequence; later steps are recorded `skipped`. A
 dependency that throws becomes a `failed` step, never an unhandled rejection.
