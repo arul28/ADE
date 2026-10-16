@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -12,6 +13,7 @@ import {
   qwenConfigHome,
 } from "../../../../../desktop/src/main/services/shared/providerConfigHomes";
 import { piAgentDirectoryForEnvironment } from "../../../../../desktop/src/main/services/chat/piSessionStore";
+import { resolveAdeOpenCodeStoreDir, resolveUserOpenCodeDataRoot } from "../../../../../desktop/src/shared/opencodeDataHome";
 import { resolveMachineAdeDir } from "../machineLayout";
 import { remapUnderRoot } from "./moveGitLinks";
 
@@ -34,6 +36,8 @@ export type HistoryRename = {
   to: string;
   /** Pi also checks the `cwd` in each session file's first line. */
   rewritePiHeaders?: { oldCwd: string; newCwd: string };
+  /** An OpenCode snapshot repo names the lane and the project's objects by absolute path. */
+  rewriteOpenCodeSnapshot?: { oldSpellings: string[]; newRoot: string };
 };
 
 const claudeSlug = (cwd: string) => cwd.replace(/[^A-Za-z0-9]/gu, "-");
@@ -42,6 +46,7 @@ const droidSlug = (cwd: string) => `-${cwd.replace(/^\/+/u, "").replace(/\/+/gu,
 const piSlug = (cwd: string) => `--${cwd.replace(/^\/+/u, "").replace(/\/+/gu, "-")}--`;
 const grokSlug = (cwd: string) => encodeURIComponent(cwd);
 const cursorChatBucket = (cwd: string) => createHash("md5").update(cwd).digest("hex");
+const openCodeSnapshotName = (cwd: string) => createHash("sha1").update(cwd).digest("hex");
 
 function listDirs(dir: string): string[] {
   try {
@@ -136,18 +141,28 @@ export function planAgentHistoryRenames(args: {
       // subfolder: it is the path when the session began, so after an earlier
       // move it names a folder the project has since left.
       const exact = known.find((entry) => claudeSlug(entry.oldPath) === name);
-      let newCwd = exact?.newPath ?? null;
-      if (!newCwd) {
+      let newName = exact ? claudeSlug(exact.newPath) : null;
+      if (!newName) {
         const cwd = claudeFolderCwd(folder);
-        newCwd = cwd ? mapToNew(cwd) : null;
+        if (cwd) {
+          const newCwd = mapToNew(cwd);
+          newName = newCwd ? claudeSlug(newCwd) : null;
+        } else {
+          // No session left to say where it ran (a lane ADE has since closed,
+          // with only a backup file inside). ADE's lanes live at
+          // `<root>/.ade/worktrees/<name>`, so a folder named after that is
+          // this project's lane; the slug is lossy, so nothing looser counts.
+          const lanePrefix = rootSlugs.map((slug) => `${slug}--ade-worktrees-`).find((prefix) => name.startsWith(prefix));
+          newName = lanePrefix ? `${claudeSlug(path.join(args.newRoot, ".ade", "worktrees"))}-${name.slice(lanePrefix.length)}` : null;
+        }
       }
-      if (!newCwd) continue;
+      if (!newName) continue;
       add({
         provider: "claude",
         label: adeOwned ? "ADE chats (Claude)" : "Claude Code",
         adeOwned,
         from: folder,
-        to: path.join(projectsDir, claudeSlug(newCwd)),
+        to: path.join(projectsDir, newName),
       });
     }
   }
@@ -174,6 +189,36 @@ export function planAgentHistoryRenames(args: {
     }
     const newCwd = mapToNew(decoded);
     if (newCwd) add({ provider: "grok", label: "Grok", adeOwned: false, from: path.join(grokDir, name), to: path.join(grokDir, grokSlug(newCwd)) });
+  }
+
+  // OpenCode keeps undo snapshots in `snapshot/<repo id>/<sha1 of the lane
+  // path>`, a git dir whose `core.worktree` and `objects/info/alternates`
+  // name the lane and the project's `.git`. After a move OpenCode looks under
+  // the new path's hash and starts over, so the folder is renamed and its two
+  // paths follow. ADE's own store always moves; the user's own is opt-in.
+  const openCodeStores = [
+    { dir: resolveAdeOpenCodeStoreDir(), adeOwned: true },
+    ...(() => {
+      const user = resolveUserOpenCodeDataRoot({ ...process.env, HOME: home });
+      return user ? [{ dir: user, adeOwned: false }] : [];
+    })(),
+  ];
+  for (const { dir, adeOwned } of openCodeStores) {
+    const snapshots = path.join(dir, "snapshot");
+    for (const repoId of listDirs(snapshots)) {
+      for (const { oldPath, newPath } of known) {
+        const from = path.join(snapshots, repoId, openCodeSnapshotName(oldPath));
+        if (!fs.existsSync(from)) continue;
+        add({
+          provider: "opencode",
+          label: adeOwned ? "ADE chats (OpenCode snapshots)" : "OpenCode snapshots",
+          adeOwned,
+          from,
+          to: path.join(snapshots, repoId, openCodeSnapshotName(newPath)),
+          rewriteOpenCodeSnapshot: { oldSpellings: args.oldSpellings, newRoot: args.newRoot },
+        });
+      }
+    }
   }
 
   const piSessions = path.join(piAgentDirectoryForEnvironment({ ...process.env, HOME: home }), "sessions");
@@ -268,6 +313,7 @@ export function applyAgentHistoryRenames(plans: HistoryRename[]): { moved: numbe
         else fs.rmdirSync(plan.from);
       }
       if (plan.rewritePiHeaders) rewritePiHeaders(plan.to, plan.rewritePiHeaders.oldCwd, plan.rewritePiHeaders.newCwd);
+      if (plan.rewriteOpenCodeSnapshot) rewriteOpenCodeSnapshot(plan.to, plan.rewriteOpenCodeSnapshot.oldSpellings, plan.rewriteOpenCodeSnapshot.newRoot);
       moved += 1;
     } catch (error) {
       problems.push(`${plan.label}: couldn't move ${plan.from} (${error instanceof Error ? error.message : String(error)}).`);
@@ -296,6 +342,50 @@ function rewritePiHeaders(folder: string, oldCwd: string, newCwd: string): void 
     fs.writeFileSync(temp, JSON.stringify(header) + (newline < 0 ? "" : content.slice(newline)));
     fs.renameSync(temp, file);
   }
+}
+
+/** Points a renamed OpenCode snapshot repo at the moved lane and the moved project's objects. */
+function rewriteOpenCodeSnapshot(gitDir: string, oldSpellings: string[], newRoot: string): void {
+  const rewriteLines = (file: string, remapLine: (line: string) => string | null) => {
+    let content: string;
+    try {
+      content = fs.readFileSync(file, "utf8");
+    } catch {
+      return;
+    }
+    let changed = false;
+    const next = content.split("\n").map((line) => {
+      const remapped = remapLine(line);
+      if (remapped === null || remapped === line) return line;
+      changed = true;
+      return remapped;
+    }).join("\n");
+    if (!changed) return;
+    const temp = `${file}.ade-move-${process.pid}`;
+    fs.writeFileSync(temp, next);
+    fs.renameSync(temp, file);
+  };
+  const configFile = path.join(gitDir, "config");
+  if (fs.existsSync(configFile)) {
+    let worktree: string | null = null;
+    try {
+      worktree = execFileSync("git", ["config", "--file", configFile, "--get", "core.worktree"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trimEnd();
+    } catch (error) {
+      // Git exits with status 1 when the key is absent. Spawn and parse errors
+      // must reach applyAgentHistoryRenames so they are reported to the caller.
+      if ((error as NodeJS.ErrnoException & { status?: number }).status !== 1) throw error;
+    }
+    const remapped = worktree ? remapUnderRoot(worktree, oldSpellings, newRoot) : null;
+    if (remapped !== null) {
+      execFileSync("git", ["config", "--file", configFile, "--replace-all", "core.worktree", remapped], {
+        stdio: "ignore",
+      });
+    }
+  }
+  rewriteLines(path.join(gitDir, "objects", "info", "alternates"), (line) => remapUnderRoot(line, oldSpellings, newRoot));
 }
 
 const TOML_ESCAPES: Record<string, string> = { "\\": "\\\\", "\"": "\\\"", "\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r" };
