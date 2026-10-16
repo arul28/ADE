@@ -98,13 +98,11 @@ isolated ADE home. All chat calls below used `--personal`.
   message ID. Interrupt produced `system_notice: Copilot turn was interrupted`,
   `status: interrupted`, and `done: interrupted`; the chat summary then showed
   `status: idle` and `runtimeAlive: true` before the runtime restart.
-- **d — PASS, resume/history only.** Stopped the isolated runtime with
-  `node scripts/dev-runtime-stop.mjs --socket /tmp/ade-runtime-copilot-review3.sock`
-  and started a fresh CLI-only runtime at `review5.sock`. The same personal
-  chat remained in the isolated ADE home with 45 transcript events. Resuming
-  its saved SDK ID through the built SDK worker returned that same session ID
-  with 48 SDK history events. I did not send a new post-restart prompt, so the
-  next-message send path is not checked.
+- **d — PASS.** Created Copilot Auto personal chat
+  `4705f1e5-41ea-4464-9296-853d9ed56c8d` and got `before-restart`. Stopped the
+  isolated CLI-only runtime and started it again with the same isolated ADE
+  home. The same ADE chat accepted `Reply with exactly: after-restart` and
+  returned `after-restart`; its transcript contains both turns in order.
 - **e — PASS, SDK resume path.** Read-only inspection found an existing
   persisted Copilot chat with an ACP-era `acpSessionId` in the primary cache.
   `CopilotClient.resumeSession` through ADE's built SDK worker returned the
@@ -155,10 +153,10 @@ isolated ADE home. All chat calls below used `--personal`.
   CLI, with output limited to auth-present and model-count booleans/count. Auth
   was available and the account returned one model row. This opened no session
   and used no premium request.
-- Not validated: a post-restart user message through ADE, the app's visible
-  model picker and Settings page, and an ADE-managed persisted-session resume
-  using the legacy `acpSessionId` field. The SDK worker's resume of an existing
-  legacy ACP id and its history was verified directly.
+- Not validated: the app's visible model picker and Settings page, and an
+  ADE-managed persisted-session resume using the legacy `acpSessionId` field.
+  The SDK worker's resume of an existing legacy ACP id and its history was
+  verified directly.
 
 ## Existing test failures and cleanup
 
