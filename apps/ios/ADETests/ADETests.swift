@@ -25568,6 +25568,14 @@ final class ADETests: XCTestCase {
       ("ade screen type \">\" --app Notes", "", "Typed “>” in Notes", .notChecked),
       ("ade screen type hello *>$null", "", "Typed “hello” on the lane screen", .notChecked),
       ("ade proof capture --caption Login --text>proof.txt", "Attached", "Filed proof “Login”", .unconfirmed),
+      // A click never reads as a bare "Clicked": an element with no name is
+      // named by the role its output printed, and a click on no element by its
+      // point. Same rows as the desktop table.
+      ("ade browser click --handle e1", "hit: button (e1)\neffect: observed", "Clicked a button using ADE browser", .observed),
+      ("ade screen click --handle e5", "hit: AXPopUpButton (e5)\neffect: observed", "Clicked a pop-up button on the lane screen", .observed),
+      ("ade screen click --handle e9", "hit: div (e9)\neffect: observed", "Clicked an element on the lane screen", .observed),
+      ("ade screen click --handle e1", "hit: no element; acted on a point (412, 300)\neffect: observed", "Clicked at a point on the lane screen", .observed),
+      ("ade screen click 120 420", "", "Clicked at 120, 420 on the lane screen", .notChecked),
     ]
     for row in rows {
       guard let action = workComputerUseSummary(command: row.command, output: row.output, status: "completed", exitCode: 0) else {
