@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveAdeOpenCodeStoreDir } from "../../../shared/opencodeDataHome";
+import type { HarnessSourceSignInKind } from "../../../shared/harnessRoutes";
 import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
 import { OPENCODE_HOUSE_PROVIDER_IDS, openCodeSignInViaProvider } from "../../../shared/opencodeProviders";
 
@@ -19,7 +20,7 @@ export type OpenCodeCredentialSummary = {
   integrationId: string;
   label: string;
   methodId: string | null;
-  type: "key" | "oauth" | "external" | null;
+  type: HarnessSourceSignInKind | null;
   accountId: string | null;
   /** An external login's string metadata; empty for every other type. */
   externalDetails: Record<string, string>;
@@ -146,6 +147,12 @@ export type OpenCodeLaunchSecret = {
   token: string;
   expiresAt: number | null;
   orgId: string | null;
+  /**
+   * The credential's kind. An `oauth` login is the vendor's own subscription
+   * flow and may answer only inside OpenCode; a `key` is a pasted API key,
+   * which every client can use.
+   */
+  methodType: HarnessSourceSignInKind | null;
 };
 
 /**
@@ -182,13 +189,13 @@ export function readOpenCodeLaunchSecret(
       token,
       expiresAt: row.type === "oauth" && Number.isFinite(expires) && expires > 0 ? expires : null,
       orgId: textOrNull(row.orgId),
+      methodType: row.type === "key" || row.type === "oauth" || row.type === "external" ? row.type : null,
     };
   });
 }
 
-/** OpenCode provider ids with a usable sign-in on this machine (no secrets). */
-export function readOpenCodeSignedInProviderIds(dbPath: string = resolveAdeOpenCodeDbPath()): string[] {
-  const integrations = new Set(readOpenCodeCredentials(dbPath).map((row) => row.integrationId));
+/** OpenCode provider ids to offer for a set of signed-in integrations. */
+function providerIdsForIntegrations(integrations: ReadonlySet<string>): string[] {
   // The house services ride the opencode.ai sign-in. OpenCode Go first: it is
   // the flat subscription people route; Zen bills a separate balance that is
   // often empty.
@@ -197,4 +204,48 @@ export function readOpenCodeSignedInProviderIds(dbPath: string = resolveAdeOpenC
     : [];
   for (const id of integrations) if (id !== "opencode") ids.push(id);
   return ids;
+}
+
+/**
+ * One provider a sign-in on this machine backs, with the kind of its
+ * credential.
+ *
+ * `signInKind` follows the same first-row rule a launch reads: one credential
+ * per integration decides, active first and newest first. The route catalog and
+ * a launch therefore can never disagree about which credential is in use — the
+ * reason this lives beside the launch's own read instead of in the catalog.
+ */
+export type OpenCodeSignedInSource = {
+  providerId: string;
+  /** The integration that holds the sign-in; OpenCode Go rides `opencode`. */
+  integrationId: string;
+  signInKind: HarnessSourceSignInKind | null;
+};
+
+/** OpenCode provider ids with a usable sign-in on this machine (no secrets). */
+export function readOpenCodeSignedInProviderIds(dbPath: string = resolveAdeOpenCodeDbPath()): string[] {
+  return providerIdsForIntegrations(new Set(readOpenCodeCredentials(dbPath).map((row) => row.integrationId)));
+}
+
+/**
+ * The same list, each with its credential's kind, from one store read — so a
+ * caller that needs both (the route catalog) does not open the store twice.
+ */
+export function readOpenCodeSignedInSources(
+  dbPath: string = resolveAdeOpenCodeDbPath(),
+): OpenCodeSignedInSource[] {
+  const signInKindByIntegration = new Map<string, HarnessSourceSignInKind | null>();
+  for (const row of readOpenCodeCredentials(dbPath)) {
+    if (!signInKindByIntegration.has(row.integrationId)) {
+      signInKindByIntegration.set(row.integrationId, row.type);
+    }
+  }
+  return providerIdsForIntegrations(new Set(signInKindByIntegration.keys())).map((providerId) => {
+    const integrationId = openCodeIntegrationForProvider(providerId);
+    return {
+      providerId,
+      integrationId,
+      signInKind: signInKindByIntegration.get(integrationId) ?? null,
+    };
+  });
 }

@@ -10,8 +10,10 @@
  * 1. The harness's own accounts (a Claude account in Claude Code). Native, no
  *    endpoint involved; models from the runtime catalog or registry.
  * 2. OpenCode sign-ins and stored API keys, from `ai.listHarnessRoutes`. Each
- *    model's route is computed here; `impossible` rows are dropped and only
- *    counted.
+ *    model's route is computed here. A model no route can carry is kept as an
+ *    `unreachable` entry with the route decision's reason (the wizard lists
+ *    those greyed under the source, instead of silently dropping them); only a
+ *    source that supplies nothing at all is absent.
  * 3. Claude and Codex subscriptions borrowed through ADE's proxy, for every
  *    other harness that takes an endpoint.
  *
@@ -70,6 +72,13 @@ export type ReachableModel = {
 
 export type ReachableGroupKind = "native" | "source" | "subscription";
 
+/** One model a source serves that cannot run in this harness, with the reason. */
+export type UnreachableModel = {
+  model: ReachableModel;
+  /** The route decision's own sentence, shown where the rows are explained. */
+  reason: string;
+};
+
 export type ReachableGroup = {
   key: string;
   kind: ReachableGroupKind;
@@ -79,8 +88,8 @@ export type ReachableGroup = {
   logoProvider: string;
   source: HarnessPresetSource;
   models: ReachableModel[];
-  /** Models this source serves that cannot run in this harness. */
-  unreachableCount: number;
+  /** Models this source serves that cannot run in this harness, with reasons. */
+  unreachable: UnreachableModel[];
   /** A subscription the proxy has not been signed in to yet. */
   needsProxySignIn?: boolean;
   /** The catalog source behind a `source` group — what the Test button checks. */
@@ -194,7 +203,7 @@ export function buildReachableGroups(harness: HarnessPresetBody, inputs: Harness
         logoProvider: harness,
         source,
         models: inputs.nativeModels[harness].map((model) => nativeRow(key, model, { kind: "native" })),
-        unreachableCount: 0,
+        unreachable: [],
       });
     }
   }
@@ -202,15 +211,11 @@ export function buildReachableGroups(harness: HarnessPresetBody, inputs: Harness
   // 2 — OpenCode sign-ins and stored keys.
   for (const routeSource of inputs.catalog?.sources ?? []) {
     const models: ReachableModel[] = [];
-    let unreachable = 0;
+    const unreachable: UnreachableModel[] = [];
     for (const model of routeSource.models) {
       const route = routeForListedModel(harness, routeSource, model);
-      if (route.kind === "impossible") {
-        unreachable += 1;
-        continue;
-      }
       const registry = getModelById(model.id);
-      models.push({
+      const row: ReachableModel = {
         key: `${routeSource.key}::${model.id}`,
         id: model.id,
         label: model.label || model.id,
@@ -220,9 +225,15 @@ export function buildReachableGroups(harness: HarnessPresetBody, inputs: Harness
         ...(model.reasoningTiers?.length ? { reasoningTiers: model.reasoningTiers } : {}),
         family: registry?.family ?? null,
         route,
-      });
+      };
+      if (route.kind === "impossible") unreachable.push({ model: row, reason: route.reason });
+      else models.push(row);
     }
-    if (models.length === 0) continue;
+    // A source that can serve nothing for this harness stays listed: the
+    // wizard shows it with the reason instead of hiding the source, which is
+    // the only way "why can't I use my ChatGPT sign-in here" has an answer on
+    // screen. A source with no models at all is genuinely absent.
+    if (models.length === 0 && unreachable.length === 0) continue;
     groups.push({
       key: routeSource.key,
       kind: "source",
@@ -231,7 +242,7 @@ export function buildReachableGroups(harness: HarnessPresetBody, inputs: Harness
       logoProvider: routeSource.logoProvider,
       source: routeSource.source,
       models,
-      unreachableCount: unreachable,
+      unreachable,
       routeSource,
     });
   }
@@ -255,7 +266,7 @@ export function buildReachableGroups(harness: HarnessPresetBody, inputs: Harness
         logoProvider: provider,
         source,
         models,
-        unreachableCount: 0,
+        unreachable: [],
         ...(signedIn === false ? { needsProxySignIn: true } : {}),
       });
     }

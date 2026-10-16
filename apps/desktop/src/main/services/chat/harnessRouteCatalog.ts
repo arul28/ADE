@@ -6,8 +6,9 @@
  * what ADE already knows — a key's own declared models, OpenCode's cached
  * inventory for the same provider, then the static registry — so listing never
  * spends a request. Routes are computed in the renderer from the pure
- * `resolveHarnessRoute`, which is why each source ships its endpoints and each
- * model its probe verdict rather than a pre-decided route.
+ * `resolveHarnessRoute`, which is why each source ships its endpoints, its
+ * sign-in kind and, per model, its probe verdict rather than a pre-decided
+ * route.
  *
  * The live check behind the Test button lives with the verdicts it records, in
  * `harnessRouteProbes.ts`.
@@ -26,7 +27,10 @@ import { openCodeSourceLabel, type HarnessPresetBody, type HarnessPresetSource }
 import { providerLabel } from "../../../shared/modelCatalog";
 import { decodeOpenCodeRegistryId, MODEL_REGISTRY, type ProviderFamily } from "../../../shared/modelRegistry";
 import { listApiCredentials } from "../ai/apiKeyStore";
-import { readOpenCodeSignedInProviderIds } from "../opencode/openCodeCredentials";
+import {
+  readOpenCodeSignedInProviderIds,
+  readOpenCodeSignedInSources,
+} from "../opencode/openCodeCredentials";
 import { listPersistedOpenCodeProviderModels } from "../opencode/openCodeInventory";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { HarnessPresetLaunchResult } from "./harnessPresetLaunch";
@@ -93,7 +97,9 @@ export function listHarnessRouteCatalog(deps: { adeHome?: string } = {}): Harnes
   const adeHome = deps.adeHome ?? resolveMachineAdeDir();
   const sources: HarnessRouteSource[] = [];
 
-  for (const providerId of readOpenCodeSignedInProviderIds()) {
+  // One store read gives every signed-in provider and its credential kind; the
+  // kind follows the same first-row rule the launch resolver reads.
+  for (const { providerId, signInKind } of readOpenCodeSignedInSources()) {
     const endpoints = KNOWN_SOURCE_ENDPOINTS[canonicalSourceProvider(providerId)] ?? {};
     if (Object.keys(endpoints).length === 0) continue;
     const source = { kind: "opencode" as const, providerId };
@@ -106,6 +112,7 @@ export function listHarnessRouteCatalog(deps: { adeHome?: string } = {}): Harnes
       detail: "via your OpenCode sign-in",
       logoProvider: providerId,
       endpoints,
+      ...(signInKind ? { signInKind } : {}),
       models,
     });
   }
