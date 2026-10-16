@@ -30,6 +30,10 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /ADE is applying an update\. The background service is restarting/,
   /\bproject_moving: This project is being moved/,
   /Project is switching\. Wait for the current project to finish loading/,
+  // A project that is set to follow another ADE machine. Hosting it here is not
+  // a thing this computer can do, and the message names the machine to open it
+  // on, so a caller (or a retrying brain) is being answered, not broken.
+  /^This project is set to follow another ADE machine\b/,
   // Mac-only surfaces asked for before the runtime that owns them connected.
   /^(Mac Desktop is not available on this machine|iOS Simulator service is not available)\.$/,
   // A paired machine that is asleep, offline or stopped.

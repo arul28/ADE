@@ -3187,10 +3187,26 @@ phone flow:
 5. A project that follows another machine's brain cannot be hosted here.
    `prepareProjectConnection` asks the target's sync service
    (`getHostBlocker`) before it answers, and replies `ok: false` with the
-   reason. Completion passes `requireHostRole`, so `switchSyncHost` refuses
-   such a target before it deactivates the current host. Without this
-   check, the old host released the machine-wide lease, the target never
-   took it, and every connected client dropped until the switch timed out.
+   reason. `switchSyncHost` asks the same question, and what it does with the
+   answer depends on what its caller asked for (`purpose`):
+
+   - `"host"` (the default — this phone handoff, and the brain's startup loop
+     when it was told which project to host) **refuses**, before the previous
+     host is touched and before either phase runs. Without this check the old
+     host released the machine-wide lease, the target never took it, and every
+     connected client dropped until the switch timed out. Refusing before the
+     phases is also what keeps the refusal honest: both of them await the one
+     shared role-refresh drain, `activation` is
+     `setHostStartupEnabled(true)`, and for a viewer project that drain dials
+     the other machine. The dial has no connect timeout of its own, so an
+     unanswered connect runs to the macOS SYN timeout (75s) and the attempt is
+     reported as the 10-second activation budget instead of the reason.
+   - `"serve"` (status, roster and document reads, via
+     `resolveActiveSyncHost`) **adopts the scope as-is**. A laptop following a
+     desktop is a supported, working configuration and a viewer already owns
+     sync here, so refusing it would break reads that work. Nothing is
+     activated for it — there is no host here to start — which is what keeps
+     the 75-second dial out of this path too.
 
 The saved viewer connection (`sync-peer-draft.json`) is in the machine-wide
 pairing directory, but joining another brain is a choice about one project
