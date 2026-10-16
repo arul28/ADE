@@ -15078,3 +15078,237 @@ describe("chatLogV2 durable chat log", () => {
     }
   });
 });
+
+describe("adaptive sync poll cadence", () => {
+  const ACTIVE_POLL_MS = 100;
+  const IDLE_POLL_MS = 1_000;
+
+  function createCadenceHost(
+    projectRoot: string,
+    getDbVersion: () => number,
+    extra: Record<string, unknown> = {},
+  ) {
+    const base = createHostArgs(projectRoot, []);
+    return createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      pollIntervalMs: ACTIVE_POLL_MS,
+      pollIdleIntervalMs: IDLE_POLL_MS,
+      db: {
+        sync: {
+          getSiteId: () => "site-host-cadence",
+          getDbVersion,
+          exportChangesSince: () => [],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      ...extra,
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+  }
+
+  /**
+   * A raw socket with promise-based envelope waits, so a test that fakes the
+   * clock can still observe a handshake without advancing that clock.
+   */
+  function openRawPeer(port: number) {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const envelopes: ParsedSyncEnvelope[] = [];
+    ws.on("message", (data) => {
+      envelopes.push(parseSyncEnvelope(wsDataToText(data)));
+    });
+    return {
+      ws,
+      envelopes,
+      opened: new Promise<void>((resolve, reject) => {
+        ws.once("open", () => resolve());
+        ws.once("error", reject);
+      }),
+      waitForEnvelope(type: string): Promise<void> {
+        return new Promise((resolve) => {
+          const check = () => {
+            if (envelopes.some((envelope) => envelope?.type === type)) resolve();
+          };
+          check();
+          ws.on("message", check);
+        });
+      },
+      sendHello(token: string, deviceId: string): void {
+        ws.send(encodeSyncEnvelope({
+          type: "hello",
+          payload: {
+            peer: {
+              deviceId,
+              deviceName: deviceId,
+              platform: "iOS",
+              deviceType: "phone",
+              siteId: `${deviceId}-site`,
+              dbVersion: 0,
+            },
+            auth: { kind: "bootstrap", token },
+          },
+        }));
+      },
+    };
+  }
+
+  it("polls on the idle cadence while no connected peer can receive, then on the active cadence once one can", async () => {
+    vi.useFakeTimers();
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const getDbVersion = vi.fn(() => 7);
+    const host = createCadenceHost(projectRoot, getDbVersion);
+    let raw: ReturnType<typeof openRawPeer> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      raw = openRawPeer(port);
+      await raw.opened;
+
+      // A socket that has not said hello is connected but can receive nothing
+      // the pump produces: `pumpChanges` reads the db version and then bails at
+      // its auth check, so the db-version read count is this test's tick count.
+      const idleStart = getDbVersion.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(3_000);
+      const idleReads = getDbVersion.mock.calls.length - idleStart;
+      expect(idleReads).toBeGreaterThan(0);
+      expect(idleReads).toBeLessThanOrEqual(4);
+
+      // The hello makes this a replica peer, so the pump has a receiver again.
+      raw.sendHello(host.getBootstrapToken(), "ios-idle-then-replica");
+      await raw.waitForEnvelope("hello_ok");
+
+      const activeStart = getDbVersion.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(getDbVersion.mock.calls.length - activeStart).toBeGreaterThanOrEqual(5);
+    } finally {
+      raw?.ws.close();
+      await host.dispose();
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it("brings the next pump forward to the active cadence when a peer becomes able to receive", async () => {
+    vi.useFakeTimers();
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const getDbVersion = vi.fn(() => 7);
+    const host = createCadenceHost(projectRoot, getDbVersion);
+    let raw: ReturnType<typeof openRawPeer> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      raw = openRawPeer(port);
+      await raw.opened;
+      // No fake time has passed: the pending tick is still a full idle
+      // interval away.
+      raw.sendHello(host.getBootstrapToken(), "ios-cadence-wake");
+      await raw.waitForEnvelope("hello_ok");
+
+      const start = getDbVersion.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(ACTIVE_POLL_MS + 50);
+      expect(getDbVersion.mock.calls.length - start).toBeGreaterThanOrEqual(1);
+    } finally {
+      raw?.ws.close();
+      await host.dispose();
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a peer's pump single-flight while its transcript read is still in flight", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const transcriptPath = path.join(projectRoot, "transcripts", "chat-1.chat.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    fs.writeFileSync(transcriptPath, "", "utf8");
+    const session = {
+      id: "chat-1",
+      laneId: "lane-1",
+      transcriptPath,
+      status: "running",
+      runtimeState: "running",
+      lastOutputPreview: "",
+    };
+    const getDbVersion = vi.fn(() => 0);
+    const host = createCadenceHost(projectRoot, getDbVersion, {
+      sessionService: {
+        list: () => [session],
+        get: (id: string) => (id === "chat-1" ? session : null),
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory: vi.fn().mockReturnValue({
+          sessionId: "chat-1",
+          events: [],
+          truncated: false,
+          transcriptTruncated: false,
+          windowTruncated: false,
+          sessionFound: true,
+        }),
+        getSessionSummary: vi.fn().mockResolvedValue({ status: "active" }),
+      },
+    });
+    let ticker: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let tailer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let openSpy: { mockRestore: () => void } | null = null;
+    const readGateControl = { release: () => {} };
+    try {
+      const port = await host.waitUntilListening();
+      // An unblocked replica peer: its per-tick db-version read is the tick
+      // counter this test advances on.
+      ticker = await connectPeer(port, host.getBootstrapToken(), "ios-cadence-ticker");
+      tailer = await connectPeer(port, host.getBootstrapToken(), "ios-cadence-tailer");
+      tailer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "sub-single-flight",
+        payload: { sessionId: "chat-1" },
+      }));
+      await waitForEnvelope(tailer.envelopes, "chat_subscribe", "sub-single-flight");
+
+      // Hold the tailer's transcript read open so its chat phase stays in
+      // flight across the next ticks.
+      const realOpen = fs.promises.open.bind(fs.promises) as (
+        file: unknown,
+        ...rest: unknown[]
+      ) => Promise<unknown>;
+      let transcriptReadStarts = 0;
+      const readGate = new Promise<void>((resolve) => {
+        readGateControl.release = resolve;
+      });
+      openSpy = vi.spyOn(fs.promises, "open").mockImplementation((async (file: unknown, ...rest: unknown[]) => {
+        if (String(file) === transcriptPath) {
+          transcriptReadStarts += 1;
+          await readGate;
+        }
+        return realOpen(file, ...rest);
+      }) as unknown as typeof fs.promises.open);
+
+      await waitForValue(
+        () => (transcriptReadStarts > 0 ? true : null),
+        "the tailer's transcript read to start",
+      );
+      const ticksWhileBlocked = getDbVersion.mock.calls.length;
+      await waitForValue(
+        () => (getDbVersion.mock.calls.length >= ticksWhileBlocked + 3 ? true : null),
+        "three more pumps for the unblocked peer",
+      );
+      expect(transcriptReadStarts).toBe(1);
+
+      readGateControl.release();
+      await waitForValue(
+        () => (transcriptReadStarts > 1 ? true : null),
+        "the tailer's next transcript read",
+      );
+      expect(transcriptReadStarts).toBe(2);
+    } finally {
+      readGateControl.release();
+      openSpy?.mockRestore();
+      ticker?.ws.close();
+      tailer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+});

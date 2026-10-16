@@ -590,6 +590,11 @@ const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 60_000;
 const DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT = 4;
 const MOBILE_SYNC_HEARTBEAT_MISS_LIMIT = 6;
 const DEFAULT_SYNC_POLL_INTERVAL_MS = 400;
+// Cadence the pump falls back to while no connected peer can receive anything
+// it produces. Nothing is in flight in that state, so the tick only walks an
+// empty receiver set; the slow tick stays as a safety net for any receiver
+// state a wake trigger fails to observe.
+const DEFAULT_SYNC_POLL_IDLE_INTERVAL_MS = 2_000;
 const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
 const NATIVE_LAN_DISCOVERY_RECOVERY_DELAY_MS = 1_000;
 const NATIVE_LAN_DISCOVERY_FALLBACK_MS = 30_000;
@@ -1218,6 +1223,11 @@ type SyncHostServiceArgs = {
   runtimeVersion?: string;
   heartbeatIntervalMs?: number;
   pollIntervalMs?: number;
+  /**
+   * Cadence the pump drops to while no connected peer can receive anything it
+   * produces. Never allowed below `pollIntervalMs`.
+   */
+  pollIdleIntervalMs?: number;
   authTimeoutMs?: number;
   messageTimeoutMs?: number;
   /** Test seam; production warns for commands taking at least five seconds. */
@@ -2421,6 +2431,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const heartbeatIntervalMs = Math.max(5_000, Math.floor(args.heartbeatIntervalMs ?? DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS));
   const backpressureTimeoutMs = Math.max(heartbeatIntervalMs * 3, 10_000);
   const pollIntervalMs = Math.max(100, Math.floor(args.pollIntervalMs ?? DEFAULT_SYNC_POLL_INTERVAL_MS));
+  const pollIdleIntervalMs = Math.max(
+    pollIntervalMs,
+    Math.floor(args.pollIdleIntervalMs ?? DEFAULT_SYNC_POLL_IDLE_INTERVAL_MS),
+  );
   const brainStatusIntervalMs = Math.max(1_000, Math.floor(args.brainStatusIntervalMs ?? DEFAULT_BRAIN_STATUS_INTERVAL_MS));
   const authTimeoutMs = Math.max(1_000, Math.floor(args.authTimeoutMs ?? SYNC_HOST_AUTH_TIMEOUT_MS));
   const messageTimeoutMs = Math.max(100, Math.floor(args.messageTimeoutMs ?? DEFAULT_SYNC_MESSAGE_TIMEOUT_MS));
@@ -3206,9 +3220,63 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
 
-  const pollTimer = setInterval(() => {
-    runPollPump();
-  }, pollIntervalMs);
+  /**
+   * True while at least one connected peer could receive something the pump
+   * produces: a CRDT changeset, or a chat event tailed from a transcript file.
+   *
+   * The pump is the ONLY detector for both. Nothing subscribes to local DB
+   * writes (`AdeDb` exposes no change hook, and another process can write this
+   * project's database too), and a transcript can be appended by a process
+   * that emits no in-process chat event (a CLI run, a foreign quick-look
+   * path). So the 400 ms cadence must not move while such a peer is connected:
+   * a slower tick would delay exactly the deliveries only the pump can make.
+   *
+   * With no such peer the pump can only walk an empty receiver set, which is
+   * what lets it back off.
+   */
+  function pollPumpHasReceivableWork(): boolean {
+    for (const peer of peers) {
+      if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
+      // A pending batch is waiting on an ack timeout / rejection retry.
+      if (peer.pendingChangesetBatch) return true;
+      // A runtime-only paired host shares this socket for rpc/fwd envelopes
+      // only: `pumpChanges` returns early for it, so it can receive nothing.
+      if (isRuntimeOnlyPairedHost(peer)) continue;
+      if (isReplicaSyncPeer(peer.metadata)) return true;
+      if (peer.subscribedChatSessionIds.size > 0) return true;
+    }
+    return false;
+  }
+
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let pollTimerIntervalMs = 0;
+
+  /**
+   * (Re-)arm the poll timer at the cadence the connected peers call for: the
+   * active interval while any peer could receive, the idle interval otherwise.
+   *
+   * Idempotent — it only touches the timer when the cadence actually changes —
+   * so every site that can make a connected peer receivable calls it as an
+   * immediate wake, and the timer callback calls it to re-evaluate after each
+   * run. Because capability only ever begins at one of those call sites, the
+   * wait from "this peer can receive" to "the pump ran for it" is at most one
+   * active interval — the same bound the free-running interval gave.
+   */
+  function wakePollPump(): void {
+    if (disposed) return;
+    const intervalMs = pollPumpHasReceivableWork() ? pollIntervalMs : pollIdleIntervalMs;
+    if (pollTimer && pollTimerIntervalMs === intervalMs) return;
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimerIntervalMs = intervalMs;
+    pollTimer = setTimeout(() => {
+      pollTimer = null;
+      pollTimerIntervalMs = 0;
+      runPollPump();
+      wakePollPump();
+    }, intervalMs);
+  }
+
+  wakePollPump();
   const heartbeatTimer = setInterval(() => {
     pairFailureTracker.pruneExpired();
     adoptChallengeTracker.pruneExpired();
@@ -3627,6 +3695,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       productAnalyticsEnabled: false,
     };
     peers.add(peer);
+    // A new socket may become a receivable peer at its hello; wake the pump so
+    // its first catch-up runs on the active cadence rather than waiting out an
+    // idle interval.
+    wakePollPump();
     peer.authTimeout = setTimeout(() => {
       if (disposed || peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) return;
       args.logger.warn("sync_host.auth_timeout", {
@@ -4025,6 +4097,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
     }
     runPollPump();
+    // Adopted peers arrive already authenticated and subscribed; the cadence
+    // this host inherited may be the idle one.
+    wakePollPump();
   }
 
   let detachSharedListener: (() => void) | null = null;
@@ -7869,6 +7944,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       peer.pendingPairingCommitSecret = pendingPairingCommitDeviceId
         ? (auth.kind === "paired" ? auth.secret : null)
         : null;
+      // The hello is what decides whether this peer can receive a changeset
+      // (replica role) or a transcript tail (chat subscription), so it is the
+      // point where the pump's cadence may have to move back to the active
+      // interval.
+      wakePollPump();
       installRelayAuthorization(
         peer,
         peer.transportOrigin === "relay-bridge"
@@ -9074,6 +9154,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             }
           }
         }
+        // Subscribing is what makes this peer a transcript-tail receiver (and
+        // the rollback above can take that away again), so re-evaluate the
+        // cadence either way.
+        wakePollPump();
         break;
       }
       case "chat_unsubscribe": {
@@ -9463,7 +9547,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       chatEventSubscription?.();
       sessionChangeSubscription?.();
       chatLaunchSubscription?.();
-      clearInterval(pollTimer);
+      if (pollTimer) clearTimeout(pollTimer);
+      pollTimer = null;
       clearInterval(heartbeatTimer);
       clearInterval(brainStatusTimer);
       clearInterval(accountLeaseTimer);
