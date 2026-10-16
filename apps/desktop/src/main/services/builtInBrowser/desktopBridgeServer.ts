@@ -101,6 +101,43 @@ export type BuiltInBrowserDesktopBridgeServer = {
 const execFileAsync = promisify(execFile);
 
 /**
+ * What a failed `listen` on the bridge socket means for this desktop.
+ *
+ * `EADDRINUSE` is the one bind failure with a benign reading: another desktop
+ * already answers on this bridge. Two desktops resolve the same bridge path
+ * whenever they share the ADE home (a dev build beside the installed app, or
+ * two copies of one channel), and the loser must leave the winner's bridge
+ * alone — a blind unlink once handed the live brain's browser calls to
+ * whichever desktop started last (2026-09-18).
+ *
+ * Unix keeps the socket as a file, so a loser cannot tell a live owner from a
+ * socket a crashed desktop left behind without probing, and it may replace only
+ * the second. The first `EADDRINUSE` is therefore retried after that probe, and
+ * an `EADDRINUSE` after the retry means an owner bound the path in the window
+ * between the unlink and the new `listen` — a live one, so the loser yields
+ * rather than replacing it.
+ *
+ * Windows' socket is a named pipe. Nothing is left on disk and Windows destroys
+ * the name with its owner, so a collision there is always a live desktop and
+ * there is never anything to replace. Reading it as a server error instead
+ * reported two coexisting desktops as a defect on every launch
+ * (ADE-DESKTOP-1S, a `listen EADDRINUSE` on `\\.\pipe\ade-desktop-bridge-…`
+ * that the `!isNamedPipe` guard sent straight to `logger.error`).
+ */
+export function bridgeListenFailureOutcome(input: {
+  /** `code` from the `listen` error, absent when the error carries none. */
+  code: string | undefined;
+  /** The socket path is a Windows named pipe (`\\.\pipe\…`). */
+  isNamedPipe: boolean;
+  /** A stale Unix socket has already been probed, unlinked and re-listened. */
+  retriedAfterStaleUnlink: boolean;
+}): "retry-stale-socket" | "already-served" | "server-error" {
+  if (input.code !== "EADDRINUSE") return "server-error";
+  if (input.isNamedPipe) return "already-served";
+  return input.retriedAfterStaleUnlink ? "already-served" : "retry-stale-socket";
+}
+
+/**
  * True when this Windows process runs elevated (High or System integrity).
  * `whoami /groups` names the token's mandatory label; never throws.
  */
@@ -215,12 +252,27 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     });
   });
 
-  // One retry after a stale-socket unlink; a second EADDRINUSE means a live
-  // owner appeared in between and this desktop yields to it.
+  const yieldToLiveOwner = (): void => {
+    logger.warn("built_in_browser_bridge.already_served", {
+      socketPath,
+      reason: "another desktop answers on this bridge socket; leaving it in place",
+    });
+    try {
+      server.close();
+    } catch {
+      // ignore close failures when yielding
+    }
+  };
+
   let retriedAfterStaleUnlink = false;
   server.on("error", (error) => {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EADDRINUSE" && !isNamedPipe && !retriedAfterStaleUnlink) {
+    const outcome = bridgeListenFailureOutcome({ code, isNamedPipe, retriedAfterStaleUnlink });
+    if (outcome === "already-served") {
+      yieldToLiveOwner();
+      return;
+    }
+    if (outcome === "retry-stale-socket") {
       retriedAfterStaleUnlink = true;
       // Probe: a live bridge accepts the connection; a stale file refuses it.
       const probe = net.connect(socketPath);
@@ -230,15 +282,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         settled = true;
         probe.destroy();
         if (live) {
-          logger.warn("built_in_browser_bridge.already_served", {
-            socketPath,
-            reason: "another desktop answers on this bridge socket; leaving it in place",
-          });
-          try {
-            server.close();
-          } catch {
-            // ignore close failures when yielding
-          }
+          yieldToLiveOwner();
           return;
         }
         try {
