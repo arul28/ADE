@@ -15361,9 +15361,11 @@ export function AgentChatPane({
             && attachedShellNestParentId(row, NO_NESTING) === sessionId
           )));
         }
-      } catch {
+      } catch (error) {
         // A pane that cannot read the list shows no shells rather than a stale
-        // set from the last chat it was on.
+        // set from the last chat it was on — and says why, so a broken read is
+        // visible in the renderer log instead of looking like "no shells".
+        console.error("[AgentChatPane] attached shells read failed", { sessionId, error });
         if (!cancelled) setAttachedShells([]);
       }
     };

@@ -196,7 +196,8 @@ import {
 import { renderSubagentTimelineRow, type SpawnedChatProviderProps } from "./chatSubagentTimelineRenderer";
 import { WorkflowScriptRow } from "./WorkflowScriptRow";
 import type { WorkflowScriptRenderEvent } from "./chatTranscriptRows";
-import { SUBAGENT_RUN_HEADER_MIN, workflowRunShape } from "./SubagentActivityCards";
+import { SUBAGENT_RUN_HEADER_MIN } from "./SubagentActivityCards";
+import { workflowRunShape } from "./SubagentWorkflowRunView";
 import { AdeCard } from "./AdeCard";
 import { LaneSetupTranscriptCard } from "./launch/LaneSetupCard";
 import { navigateToSpawnedChat } from "./spawnNavigation";

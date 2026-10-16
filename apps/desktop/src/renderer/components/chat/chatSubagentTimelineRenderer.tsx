@@ -6,9 +6,8 @@ import {
   SubagentRunHeader,
   SubagentSpawnCard,
   SubagentStoppedGroupCard,
-  SubagentWorkflowRun,
-  workflowRunParent,
 } from "./SubagentActivityCards";
+import { SubagentWorkflowRun, workflowRunParent } from "./SubagentWorkflowRunView";
 import type {
   SubagentCardGridEvent,
   SubagentCardGridMember,
