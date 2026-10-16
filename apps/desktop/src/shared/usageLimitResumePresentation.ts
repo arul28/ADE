@@ -439,7 +439,8 @@ export function isUsageLimitFailureText(text: string | null | undefined): boolea
   if (identity.includes("usagelimit")
     || identity.includes("ratelimit")
     || identity.includes("quotaexceeded")
-    || identity.includes("quotaexhausted")) {
+    || identity.includes("quotaexhausted")
+    || identity.includes("outofusage")) {
     return true;
   }
   if (!identity.includes("429")) return false;

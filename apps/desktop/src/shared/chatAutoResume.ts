@@ -138,7 +138,8 @@ export function isUsageLimitChatError(event: {
   const identity = usageLimitTextIdentity(
     `${typeof errorInfo === "string" ? errorInfo : ""} ${event.message ?? ""}`,
   );
-  return identity.includes("usagelimit") || identity.includes("ratelimit");
+  // "outofusage": Cursor's "You're out of usage" carries neither phrase.
+  return identity.includes("usagelimit") || identity.includes("ratelimit") || identity.includes("outofusage");
 }
 
 /**

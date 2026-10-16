@@ -1114,7 +1114,7 @@ implements a two-layer transform:
      answer: subagent spawn, result, and stopped-group cards and their
      side-by-side grids; `ade_card` rows
      (PR/CI/review/merge/conflict, proof, quota, and any variant this build
-     does not know); errors (with `ProviderFailureRecoveryCard` /
+     does not know); errors (`TurnFailureBanner` /
      `AgentCliAuthCard`); continuity-recovery and reset-credit notices; error,
      sign-in (`auth`), provider-health, thread-error, and limit-reached usage
      notices; interrupt receipts and queue-recovery cards; model-switch/handoff

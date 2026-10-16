@@ -1402,6 +1402,7 @@ import {
 import {
   CURSOR_SDK_STALE_ACCESS_TOKEN_TEXT,
   classifyCursorSdkErrorText,
+  isCursorSdkUsageExhaustedText,
   isCursorSdkStaleAccessTokenText,
   readCursorSdkStaleTokenFailure,
   type CursorSdkStaleTokenFailure,
@@ -6732,8 +6733,11 @@ function classifyProviderHostError(
     || combinedLower.includes("back off")
   ) {
     const rateLimitDetail = rawDetail || rawMessage;
+    const usageExhausted = isCursorSdkUsageExhaustedText(combinedLower);
     return {
-      message: `Rate limited by ${providerLabel}. Wait a moment and retry, or switch to a different model if this keeps happening.`,
+      message: usageExhausted
+        ? `Your ${providerLabel} plan has no usage left for ${modelDisplayName}. Choose another model to continue.`
+        : `Rate limited by ${providerLabel}. Wait a moment and retry, or switch to a different model if this keeps happening.`,
       ...(rateLimitDetail ? { detail: rateLimitDetail } : {}),
       errorInfo: { category: "rate_limit", provider: providerLabel, model: modelDisplayName },
     };

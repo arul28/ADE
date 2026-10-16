@@ -495,6 +495,20 @@ export function isCursorSdkBackoffErrorText(text: string | null | undefined): bo
 }
 
 /**
+ * Cursor's plan has no usage left for the chosen model ("You're out of usage.
+ * Switch to Auto, or ask your admin to increase your limit"). It is a usage
+ * limit, not a backoff: retrying the same model fails again at once, so it is
+ * kept out of `isCursorSdkBackoffErrorText`, which the worker retries on.
+ */
+export function isCursorSdkUsageExhaustedText(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase().replace(/[\u2018\u2019]/g, "'");
+  return lower.includes("out of usage")
+    || lower.includes("increase your limit")
+    || lower.includes("usage limits exceeded");
+}
+
+/**
  * The exact text the Cursor SDK surfaces for an expired short-lived access
  * token. Kept here so the matcher, the bridge's fallback and the terminal
  * copy all read one greppable literal.
@@ -590,7 +604,7 @@ export function classifyCursorSdkErrorText(
   ) {
     return "busy";
   }
-  if (isCursorSdkBackoffErrorText(joined)) return "rate_limit";
+  if (isCursorSdkBackoffErrorText(joined) || isCursorSdkUsageExhaustedText(joined)) return "rate_limit";
   if (isCursorSdkTransportErrorText(joined)) return "network";
   if (
     joined.includes("agent_not_found")

@@ -202,12 +202,11 @@ import { buildDrawnRowKeyIndex, resolveDrawnRowKey } from "./chatDrawnRowIndex";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
 import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
 import { VoiceSessionCard } from "./VoiceSessionCard";
-import { classifyProviderFailure, ProviderFailureRecoveryCard } from "./ProviderFailureRecoveryCard";
+import { classifyProviderFailure, TurnFailureBanner } from "./TurnFailureBanner";
 import {
   isUsageLimitTurn,
   usageLimitTurnFooterLabel,
 } from "../../../shared/usageLimitResumePresentation";
-import { InstructionErrorCard } from "../shared/InstructionErrorCard";
 import { chatErrorKindFromCategory, presentChatFailure, readChatErrorPresentation } from "../../../shared/chatErrorPresentation";
 import {
   CHAT_TIMELINE_ROW_GAP_PX,
@@ -3995,41 +3994,19 @@ function renderEvent(
       );
     }
     return (
-      <div className={cn(GLASS_CARD_CLASS, "group border-border/50 p-0")} style={SURFACE_INLINE_CARD_STYLE}>
-        <div className="p-3">
-          <InstructionErrorCard
-            presentation={presentation}
-            disabled={Boolean(options?.sessionTurnActive)}
-            onRetry={options?.onRetryProviderFailure && !recovery
-              ? () => { void options.onRetryProviderFailure!(event.turnId ?? null); }
-              : undefined}
-          />
-          {recovery ? (
-            <ProviderFailureRecoveryCard
-              recovery={recovery}
-              disabled={Boolean(options?.sessionTurnActive)}
-              onRetry={options?.onRetryProviderFailure
-                ? () => options.onRetryProviderFailure!(event.turnId ?? null)
-                : undefined}
-              onChooseModel={options?.onChooseProviderFailureModel}
-            />
-          ) : null}
-          {renderAgentCliAuthCard()}
-          {/* Names the failure class ("Provider capacity", "Usage limit") or the
-              raw provider/model identity. The instruction card above says what
-              to do; this says which thing went wrong, and dropping it would
-              lose the only place a Codex usage limit is distinguishable from a
-              generic stop. */}
-          {event.errorInfo && !agentCliInfo ? (
-            <div
-              className="mt-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/40"
-              title={typeof event.errorInfo === "string" ? event.errorInfo : undefined}
-            >
-              {recovery?.label
-                ?? (typeof event.errorInfo === "string" ? event.errorInfo : `${event.errorInfo.provider ? `${event.errorInfo.provider}` : ""}${event.errorInfo.model ? ` / ${event.errorInfo.model}` : ""}`)}
-            </div>
-          ) : null}
-        </div>
+      <div className="flex flex-col gap-2">
+        <TurnFailureBanner
+          id={`turn-failure:${event.turnId ?? event.message}`}
+          presentation={presentation}
+          recovery={recovery}
+          provider={errorProvider}
+          disabled={Boolean(options?.sessionTurnActive)}
+          onRetry={options?.onRetryProviderFailure
+            ? () => options.onRetryProviderFailure!(event.turnId ?? null)
+            : undefined}
+          onChooseModel={options?.onChooseProviderFailureModel}
+        />
+        {renderAgentCliAuthCard()}
       </div>
     );
   }
