@@ -822,3 +822,50 @@ describe("createEventBuffer", () => {
     expect(scanCapped.hasMore).toBe(true);
   });
 });
+
+describe("project database open failure", () => {
+  /**
+   * A directory where the database belongs, so SQLite answers "unable to open
+   * database file" — a failure `classifySqliteOpenError` has no bucket for.
+   * The code the recovery UI reads is then `unknown` and the sentence every
+   * caller gets is the generic one, which is correct: raw platform text must
+   * not cross to a renderer or a phone. The platform's own words must still be
+   * reported somewhere, or "ADE could not open the project" reaches every
+   * surface with nothing that says why — the state that made this failure
+   * class unreadable.
+   */
+  it("reports the cause behind the generic project-open sentence", async () => {
+    vi.stubEnv("ADE_HOME", makeTempRoot());
+    const projectRoot = makeTempRoot();
+    fs.mkdirSync(path.join(projectRoot, ".ade", "ade.db"), { recursive: true });
+
+    const failure = await createAdeRuntime({
+      projectRoot,
+      workspaceRoot: projectRoot,
+      runtimeProfile: "embedded",
+      chatRuntime: "headless-stub",
+    }).then(
+      () => null,
+      (error: unknown) => error as Error & { code?: string; detail?: string },
+    );
+
+    expect(failure?.message).toBe("ADE could not open the project data store.");
+    expect(failure?.code).toBe("unknown");
+    expect(failure?.detail).toContain("unable to open database file");
+
+    const logPath = path.join(projectRoot, ".ade", "transcripts", "logs", "ade-cli.jsonl");
+    await vi.waitFor(() => {
+      expect(fs.readFileSync(logPath, "utf8")).toContain("unable to open database file");
+    }, { timeout: 10_000 });
+    const line = fs.readFileSync(logPath, "utf8")
+      .split("\n")
+      .find((entry) => entry.includes("project.db_open_failed"));
+    const meta = JSON.parse(line ?? "{}").meta ?? {};
+    expect(meta.code).toBe("unknown");
+    expect(meta.detail).toContain("unable to open database file");
+    // The raw Error travels as a live object so `logBridge` titles the Sentry
+    // issue by it. `JSON.stringify` drops an Error's non-enumerable name and
+    // message, so the line shows `{}`; the key is what proves it was passed.
+    expect(meta).toHaveProperty("error");
+  }, 60_000);
+});
