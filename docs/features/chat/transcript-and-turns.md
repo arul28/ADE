@@ -997,7 +997,9 @@ implements a two-layer transform:
    action of the same turn printed — the screenshot it took, the picture its
    observation saved — joins that action's line instead of drawing a row
    (`foldImageViewIntoAction` in `chatTranscriptRows.ts`; the match allows
-   macOS `/private` and Windows slash spellings). A screenshot line then moves
+   macOS `/private` and Windows slash spellings, and compares a Windows drive or
+   UNC path case-insensitively, as a tool may print `c:\users\…` where the event
+   says `C:\Users\…`). A screenshot line then moves
    on: "Taking a screenshot", "Took a screenshot", "Viewing a screenshot" while
    the agent opens it, "Viewed a screenshot". A line with pictures — the proof
    it filed, else the images its actions wrote — is a button with a small

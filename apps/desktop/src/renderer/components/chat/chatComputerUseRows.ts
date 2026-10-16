@@ -18,6 +18,7 @@ import {
 } from "../../../shared/computerUseActionPresentation";
 import { imageViewHasPicture } from "../../../shared/chatImageUrls";
 import { readRecord } from "../../../shared/readRecord";
+import { isWindowsAbsolutePath } from "../../lib/pathUtils";
 import { isShellToolName } from "./toolPresentation";
 import type { ChatWorkLogEntry, ChatWorkLogGroupEvent, CodexImageViewRenderEvent } from "./chatTranscriptRows";
 
@@ -162,12 +163,20 @@ function imagePathSpellings(path: string): string[] {
   return [...spellings];
 }
 
-/** `text` names `path` whole, not as the tail or the head of a longer path. */
+/**
+ * `text` names `path` whole, not as the tail or the head of a longer path.
+ * Windows paths are case-insensitive, so a drive or UNC path (either slash
+ * shape) is compared case-folded — the rule `normalizePathForComparison` uses,
+ * since a tool can print `c:\users\…` where the event says `C:\Users\…`.
+ */
 function namesPath(text: string, path: string): boolean {
-  for (let at = text.indexOf(path); at >= 0; at = text.indexOf(path, at + 1)) {
-    const before = text[at - 1] ?? "";
-    const after = text[at + path.length] ?? "";
-    const startsHere = !/[\w\-./\\]/.test(before) || text.slice(Math.max(0, at - 7), at).toLowerCase() === "file://";
+  const windows = isWindowsAbsolutePath(path);
+  const haystack = windows ? text.toLowerCase() : text;
+  const needle = windows ? path.toLowerCase() : path;
+  for (let at = haystack.indexOf(needle); at >= 0; at = haystack.indexOf(needle, at + 1)) {
+    const before = haystack[at - 1] ?? "";
+    const after = haystack[at + needle.length] ?? "";
+    const startsHere = !/[\w\-./\\]/.test(before) || haystack.slice(Math.max(0, at - 7), at).toLowerCase() === "file://";
     if (startsHere && !/[\w\-/\\]/.test(after)) return true;
   }
   return false;
