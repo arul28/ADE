@@ -386,3 +386,56 @@ tab with dozens of chats mounts more of this per switch, not less.
   measured 62 ms against 60 ms unpromoted, inside run-to-run variance. Electron
   is already compositing the transform; the draw loop is the cost.
 
+
+---
+
+## Project open: the WAL conversion was the lock (2026-10-16)
+
+The "one brain per project database" rule above still holds for *writes*, but a
+second process is not the whole story: opening a project has its own exclusive
+lock, and it was being taken the one way the rule above says not to take one —
+with a single synchronous wait that stopped the event loop for all of it.
+
+Two Sentry issues (`ADE-DESKTOP-2D`, `ADE-DESKTOP-2B`; one Windows user, one
+project on a WSL share, 1.2.104) both report `ERR_SQLITE_ERROR: database is
+locked` on a project open, and both carry the same stack:
+
+```
+at db2.exec
+at openRawDatabase          <- the PRAGMA block
+at openKvDb
+at initRuntimeBackedProjectContext
+at async switchProjectFromDialog
+```
+
+`PRAGMA journal_mode = WAL` is the only statement in that block that takes a
+lock, and it takes an **EXCLUSIVE** one; an ordinary write needs only the write
+lock. Two `DatabaseSync` connections, the peer holding one open read transaction
+on a database not yet in WAL, reproduce it exactly:
+
+| peer state | conversion | result |
+|---|---|---|
+| no transaction, connection open | 0 ms | `wal` |
+| open read transaction, 3,000 ms `busy_timeout` | 3,125 ms | `database is locked` (errcode 5) |
+| open write transaction | 0 ms | `database is locked` |
+
+So the 5,000 ms wait was the `busy_timeout`, spent inside one synchronous native
+call, and the project open then failed with it. Nothing in the desktop is a
+misconfiguration: `initRuntimeBackedProjectContext` runs `ensureProject` and
+then opens the *same* file itself, `apps/ade-cli` imports this same `kvDb`, and
+the brain and the desktop main process each write `runtime_processes` on a
+5-second timer. Two openers on one database is the design.
+
+Both issues are the same defect. 2B's channel is `ade.project.openRepo` and 2D's
+is `ade.project.switchToPath` — two entry points to the same open, for the same
+user and the same WSL project, 90 seconds apart. Neither is a local-disk case.
+
+Applied: the conversion moved out of `openRawDatabase` into an awaited step that
+skips a database already in WAL (the steady state, since the mode lives in the
+file), and otherwise retries with a 150 ms per-attempt `busy_timeout` and a
+macrotask between attempts, up to an 8 s budget. The event loop is never stopped
+for more than one attempt, and the peer gets the turns it needs to finish — the
+one blocked call was also what sustained the stall. Giving up after the budget
+leaves the database in its current mode rather than failing the open; that is a
+last resort, because without WAL a peer's read transaction blocks every write
+(measured: 5,314 ms, then `database is locked`).

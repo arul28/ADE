@@ -313,6 +313,155 @@ function guardDatabasePath(db: DatabaseSyncType, dbPath: string): void {
   };
 }
 
+/** The write-lock wait a connection keeps for the rest of its life. */
+const DEFAULT_BUSY_TIMEOUT_MS = 5000;
+
+/**
+ * The journal-mode conversion's wait, per attempt, and the wall-clock budget it
+ * may spread those attempts over.
+ *
+ * `PRAGMA journal_mode = WAL` is the ONE statement in the open path that needs
+ * an EXCLUSIVE lock; an ordinary write only needs the write lock. A sibling ADE
+ * process holding the same project database — the brain and the desktop main
+ * process both open `<project>/.ade/ade.db` (`initRuntimeBackedProjectContext`
+ * runs `ensureProject`, then `openKvDb`), and `apps/ade-cli` imports this very
+ * module — can refuse that lock for longer than the 5,000 ms write timeout.
+ * The conversion then threw `database is locked` and failed the project open
+ * (ADE-DESKTOP-2D/2B: `at db.exec` → `openRawDatabase` → `openKvDb` →
+ * `initRuntimeBackedProjectContext`).
+ *
+ * The wait cannot simply be lengthened: `node:sqlite` is synchronous, so one
+ * long wait stops this process's event loop for all of it — which is also what
+ * sustains the stall, because the peer needs its own turns to finish and release.
+ * So the wait is cut into short attempts with a macrotask between them: this
+ * process never blocks for more than `WAL_CONVERSION_ATTEMPT_BUSY_TIMEOUT_MS`,
+ * the peer gets the room to finish, and the conversion still wins.
+ *
+ * Measured (two `DatabaseSync` connections, the peer holding one open read
+ * transaction on a database not yet in WAL): the conversion waited 3,125 ms of a
+ * 3,000 ms timeout and threw `ERR_SQLITE_ERROR: database is locked`, while the
+ * same conversion with no peer transaction returned in 0 ms.
+ */
+const WAL_CONVERSION_ATTEMPT_BUSY_TIMEOUT_MS = 150;
+const WAL_CONVERSION_RETRY_DELAY_MS = 150;
+const WAL_CONVERSION_BUDGET_MS = 8000;
+
+function currentJournalMode(db: DatabaseSyncType): string {
+  const row = getRow<{ journal_mode?: unknown }>(db, "pragma journal_mode");
+  return String(row?.journal_mode ?? "").trim().toLowerCase();
+}
+
+/**
+ * `PRAGMA synchronous` is per connection and reads the schema, so a peer's
+ * exclusive lock refuses it like any read. A refused set leaves this connection
+ * at FULL, which is slower but never less safe, so it must not fail the open.
+ */
+function trySetSynchronousNormal(db: DatabaseSyncType): void {
+  try {
+    withAttemptBusyTimeout(db, () => runStatement(db, "PRAGMA synchronous = NORMAL"));
+  } catch (error) {
+    if (!isSqliteBusyOrLockedError(error)) throw error;
+  }
+}
+
+/**
+ * Whether the database predates cr-sqlite, read on the attempt timeout. A read a
+ * peer's lock refuses is treated as "no metadata", so the migration backup is
+ * still taken: that backup is idempotent and is the safety net for the migration.
+ */
+function hasCrsqlMetadataBeforeOpen(db: DatabaseSyncType): boolean {
+  try {
+    return withAttemptBusyTimeout(db, () => hasCrsqlMetadata(db));
+  } catch (error) {
+    if (!isSqliteBusyOrLockedError(error)) throw error;
+    return false;
+  }
+}
+
+/**
+ * The journal mode for a log line only. The deferral is logged on the attempt
+ * timeout, so this read can be refused by the same peer that caused it; the
+ * deferral must not turn into a failed open because of its own log field.
+ */
+function currentJournalModeForLog(db: DatabaseSyncType): string {
+  try {
+    return withAttemptBusyTimeout(db, () => currentJournalMode(db));
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * Runs one read on the short attempt timeout, so a peer's commit can hold this
+ * thread for at most one attempt before the read gives up. The connection keeps
+ * its 5,000 ms default timeout for everything after the open.
+ */
+function withAttemptBusyTimeout<T>(db: DatabaseSyncType, read: () => T): T {
+  runStatement(db, `pragma busy_timeout = ${WAL_CONVERSION_ATTEMPT_BUSY_TIMEOUT_MS}`);
+  try {
+    return read();
+  } finally {
+    runStatement(db, `pragma busy_timeout = ${DEFAULT_BUSY_TIMEOUT_MS}`);
+  }
+}
+
+/** A macrotask turn, so the peer can make progress while this process waits. */
+const waitForWalConversionRetry = (): Promise<void> =>
+  new Promise((resolve) => { setTimeout(resolve, WAL_CONVERSION_RETRY_DELAY_MS); });
+
+/**
+ * Put the database in WAL mode without ever holding the event loop for long.
+ *
+ * A database already in WAL — every project after its first successful open,
+ * since the mode is a property of the file — is left alone, so the steady-state
+ * open never asks for the exclusive lock at all. Only a conversion into WAL
+ * takes it, and only a lock failure is retried; any other error is the platform
+ * refusing the write outright and still fails the open.
+ *
+ * Giving up after the budget leaves the database in its current journal mode
+ * rather than failing the open. That is a deliberate last resort, not a
+ * preference: without WAL a peer's read transaction blocks this process's
+ * writes, so the conversion is worth waiting for.
+ */
+async function ensureWalJournalMode(db: DatabaseSyncType, logger?: Logger): Promise<void> {
+  // A peer holding its lock can refuse even this read. That is not a reason to
+  // fail the open: an unknown mode goes through the same retry loop below.
+  let journalMode: string | null = null;
+  try {
+    journalMode = withAttemptBusyTimeout(db, () => currentJournalMode(db));
+  } catch (error) {
+    if (!isSqliteBusyOrLockedError(error)) throw error;
+  }
+  if (journalMode === "wal") return;
+
+  const deadline = Date.now() + WAL_CONVERSION_BUDGET_MS;
+  runStatement(db, `pragma busy_timeout = ${WAL_CONVERSION_ATTEMPT_BUSY_TIMEOUT_MS}`);
+  try {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        db.exec("PRAGMA journal_mode = WAL");
+        if (attempt > 1) {
+          logger?.info("db.wal_conversion_settled", { attempt });
+        }
+        return;
+      } catch (error) {
+        if (!isSqliteBusyOrLockedError(error)) throw error;
+        if (Date.now() >= deadline) {
+          logger?.warn("db.wal_conversion_deferred", {
+            attempts: attempt,
+            journalMode: currentJournalModeForLog(db),
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return;
+        }
+      }
+      await waitForWalConversionRetry();
+    }
+  } finally {
+    runStatement(db, `pragma busy_timeout = ${DEFAULT_BUSY_TIMEOUT_MS}`);
+  }
+}
+
 function openRawDatabase(dbPath: string): DatabaseSyncType {
   reapRestoredDatabaseClosures();
   ensureParentDir(dbPath);
@@ -325,10 +474,11 @@ function openRawDatabase(dbPath: string): DatabaseSyncType {
   }
   // Allow concurrent access from multiple ADE processes (e.g. dogfooding).
   // Without this, a second instance gets SQLITE_BUSY immediately on writes.
+  // The journal mode is settled separately, after the open, so its exclusive
+  // lock is never waited for on this thread.
   try {
-    db.exec("PRAGMA busy_timeout = 5000");
-    db.exec("PRAGMA journal_mode = WAL");
-    db.exec("PRAGMA synchronous = NORMAL");
+    db.exec(`PRAGMA busy_timeout = ${DEFAULT_BUSY_TIMEOUT_MS}`);
+    trySetSynchronousNormal(db);
   } catch (error) {
     closeDatabase(db);
     throw error;
@@ -4638,9 +4788,13 @@ export async function openKvDb(
     getDb: () => db,
     isCrsqliteLoaded: () => crsqliteLoaded,
   });
-  const hadCrsqlMetadataBeforeOpen = hasCrsqlMetadata(db);
+  const hadCrsqlMetadataBeforeOpen = hasCrsqlMetadataBeforeOpen(db);
 
   try {
+    // Inside the try so a conversion error that is not a lock still closes the
+    // handle and logs `db.init_failed`, exactly as it did from the open.
+    await ensureWalJournalMode(db, logger);
+
     if (existedBeforeOpen && !hadCrsqlMetadataBeforeOpen) {
       writeMigrationBackupIfNeeded(dbPath);
     }
@@ -4698,6 +4852,7 @@ export async function openKvDb(
     if (retrofittedLegacyPrimaryKeySchema) {
       closeDatabase(db);
       db = openRawDatabase(dbPath);
+      await ensureWalJournalMode(db, logger);
       crsqliteLoaded = false;
       loadCrsqliteIfAvailable();
       if (hasCrsqlMetadata(db) && !crsqliteLoaded) {
@@ -4716,6 +4871,7 @@ export async function openKvDb(
     if (retrofittedForeignKeySchema) {
       closeDatabase(db);
       db = openRawDatabase(dbPath);
+      await ensureWalJournalMode(db, logger);
       crsqliteLoaded = false;
       loadCrsqliteIfAvailable();
       if (hasCrsqlMetadata(db) && !crsqliteLoaded) {
@@ -4736,6 +4892,7 @@ export async function openKvDb(
       if (readCurrentSiteId(db) !== desiredSiteId) {
         closeDatabase(db);
         db = openRawDatabase(dbPath);
+        await ensureWalJournalMode(db, logger);
         crsqliteLoaded = false;
         loadCrsqliteIfAvailable();
         if (hasCrsqlMetadata(db) && !crsqliteLoaded) {
