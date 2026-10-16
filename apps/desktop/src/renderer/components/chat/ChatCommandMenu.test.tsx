@@ -13,13 +13,13 @@ describe("ChatCommandMenu @ ranking", () => {
   it("groups rows under kind sections with the best match leading", async () => {
     render(
       <ChatCommandMenu
-        trigger={{ type: "at", query: "chat", start: 0 }}
+        trigger={{ type: "at", query: "readme", start: 0 }}
         slashCommands={[]}
-        onFileSearch={async () => [{ path: "apps/desktop/src/shared/chatMentions.ts" }]}
+        onFileSearch={async () => [{ path: "apps/desktop/src/shared/readme.md" }]}
         onMentionSearch={async () => [{
           kind: "chat",
           id: "c1",
-          title: "chat",
+          title: "readme",
           lastActivityAt: 1,
         }]}
         anchor={{ top: 200, left: 20, bottom: 220 }}
@@ -28,13 +28,15 @@ describe("ChatCommandMenu @ ranking", () => {
       />,
     );
 
-    await screen.findByText("chat");
-    await screen.findByText("chatMentions.ts");
+    await screen.findByText("readme");
+    await screen.findByText("readme.md");
 
-    // The better-matching chat is still first, and each kind is now a section.
+    // The exact-match chat still leads, and each kind is its own section. The
+    // query is deliberately not a kind word: `@chat` narrows to the Chats
+    // section and would not search files at all.
     const rows = Array.from(document.querySelectorAll<HTMLElement>("[data-menu-index]"));
-    expect(rows[0]?.textContent).toContain("chat");
-    expect(rows[0]?.textContent).not.toContain("chatMentions.ts");
+    expect(rows[0]?.textContent).toContain("readme");
+    expect(rows[0]?.textContent).not.toContain("readme.md");
     expect(screen.getByText("Chats")).toBeTruthy();
     expect(screen.getByText("Files")).toBeTruthy();
   });

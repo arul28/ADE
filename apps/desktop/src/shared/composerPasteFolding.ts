@@ -20,17 +20,9 @@
  */
 
 import {
-  PASTED_TEXT_FILE_MIN_CHARS_EXCLUSIVE,
-  PASTED_TEXT_FILE_MIN_LINES_EXCLUSIVE,
   pastedTextFilename,
   shouldPasteTextAsFile,
 } from "./pastedTextAttachment";
-
-/** Pasted text at or below this length stays draft text. */
-export const PASTE_FOLD_CHAR_THRESHOLD = PASTED_TEXT_FILE_MIN_CHARS_EXCLUSIVE;
-
-/** Pasted text at or below this many lines stays draft text. */
-export const PASTE_FOLD_LINE_THRESHOLD = PASTED_TEXT_FILE_MIN_LINES_EXCLUSIVE;
 
 /** Pasted text's media type, so the host stages it as a plain text file. */
 export const PASTED_TEXT_ATTACHMENT_MIME = "text/plain";

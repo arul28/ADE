@@ -9,12 +9,36 @@ import {
   formatChatMentionToken,
   isChatMentionTokenBody,
   parseChatMentions,
+  parseChatMentionKindFilter,
   rankChatMentionSuggestions,
   renderChatMentionBlock,
   renderUnresolvedChatMentionBlock,
   truncateMentionPreview,
   chatMentionKindFromToken,
 } from "./chatMentions";
+
+describe("parseChatMentionKindFilter", () => {
+  it.each([
+    ["pr", "pr", ""],
+    ["mac", "machine", ""],
+    ["machine", "machine", ""],
+    ["chat", "chat", ""],
+    ["lane", "lane", ""],
+    ["term", "terminal", ""],
+    ["terminal", "terminal", ""],
+    // The rest of the query is the text to search inside the chosen section.
+    ["pr 1234", "pr", "1234"],
+    // A word that merely starts with a kind name is an ordinary search, so
+    // `@prService` still searches files instead of narrowing to pull requests.
+    ["prService", null, "prService"],
+    ["lanefoo", null, "lanefoo"],
+    ["chatter", null, "chatter"],
+    ["mypr", null, "mypr"],
+    ["", null, ""],
+  ])("reads %j as kind %j with rest %j", (query, kind, rest) => {
+    expect(parseChatMentionKindFilter(query)).toEqual({ kind, rest });
+  });
+});
 
 describe("chat mention grammar", () => {
   it("serializes each kind to its documented token form", () => {

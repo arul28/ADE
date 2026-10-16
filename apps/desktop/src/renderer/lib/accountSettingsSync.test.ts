@@ -172,6 +172,9 @@ describe("accountSettingsSync (renderer)", () => {
       "chatChromeTint",
       "chatShellGeometry",
       "harnessPresets",
+      // The Star on GitHub pill: its snooze and "already starred" flags must
+      // follow the account, or a second machine re-asks after the user starred.
+      "starPill",
       "apple.realisticBody",
       "apple.recordingOverlays.tapRings",
       "apple.recordingOverlays.keyBadges",
