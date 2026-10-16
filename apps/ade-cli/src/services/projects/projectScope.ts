@@ -39,16 +39,42 @@ const SYNC_HOST_ADOPT_POLL_MS = 250;
 const FAILED_SCOPE_BACKOFF_BASE_MS = 1_000;
 export const FAILED_SCOPE_BACKOFF_MAX_MS = 30_000;
 
-type FailedScopeBoot = {
+type FailedAttempt = {
   /** The failure itself, rethrown verbatim so callers keep their coded error. */
   error: unknown;
-  /** When the boot failed. */
+  /** When the attempt failed. */
   atMs: number;
-  /** How many boots have failed in a row. */
+  /** How many attempts have failed in a row. */
   attempts: number;
 };
 
+/**
+ * The sync-host phases whose failure is remembered and replayed for a backoff
+ * window, keyed by project and phase.
+ *
+ * `activation` is the phase every sync-host caller re-enters, and its budget is
+ * the whole shared role-refresh drain (host bring-up, listener validation and a
+ * full status snapshot). On 2026-10-16 a brain whose project could not activate
+ * re-ran that drain for every roster, lane-list and status poll: 48 attempts
+ * over an hour, each one paying a 10-second activation timeout AND the rollback
+ * that undid it. `initialization` has the same shape — it awaits the same
+ * drain, so it times out the same way (one such timeout is in the same log).
+ *
+ * The corrective phases are deliberately NOT backed off. The two rollbacks, the
+ * previous-host deactivation and `deactivation` exist to put state back, so a
+ * replay must never stand in for one. They are rate-limited by this set instead:
+ * `performSyncHostSwitch` consults the target's activation before it touches the
+ * previous host, so a replay never reaches a rollback at all. `cold boot` is not
+ * backed off either: `get()` owns that failure keyed by project alone.
+ */
+const BACKOFF_SYNC_HOST_PHASES = new Set(["initialization", "activation"]);
+
 class SyncHostPhaseTimeoutError extends Error {}
+
+/** One key space for the phase backoff, so the separator has a single home. */
+function syncHostPhaseKey(projectId: ProjectId, phase: string): string {
+  return `${projectId}\u0000${phase}`;
+}
 
 /** What a client is told when it asks to open a project that follows another machine. */
 export function describeSyncHostBlocker(blocker: SyncHostBlocker): string {
@@ -71,7 +97,7 @@ export function getSyncHostBlocker(scope: ProjectScope): SyncHostBlocker | null 
   return scope.runtime.syncService?.getHostBlocker?.() ?? null;
 }
 
-async function runSyncHostPhase<T>(
+async function runSyncHostPhaseWithTimeout<T>(
   phase: string,
   projectId: ProjectId,
   timeoutMs: number,
@@ -116,7 +142,15 @@ export class ProjectScope {
 
 export class ProjectScopeRegistry {
   private readonly scopes = new Map<ProjectId, Promise<ProjectScope>>();
-  private readonly failedScopes = new Map<ProjectId, FailedScopeBoot>();
+  private readonly failedScopes = new Map<ProjectId, FailedAttempt>();
+  /**
+   * Failed sync-host phases, keyed by {@link syncHostPhaseKey}. Same shape and
+   * same windows as {@link failedScopes}: a phase that just failed is very
+   * likely to fail the same way again, and here it is not merely expensive but
+   * self-defeating, because the retry's rollback tears down whatever the
+   * previous attempt had started.
+   */
+  private readonly failedSyncHostPhases = new Map<string, FailedAttempt>();
   private readonly disposeListeners = new Set<(projectId: ProjectId) => void>();
   private syncHostProjectId: ProjectId | null = null;
   private syncHostTransitionTail: Promise<void> = Promise.resolve();
@@ -175,6 +209,91 @@ export class ProjectScopeRegistry {
     );
   }
 
+  /**
+   * The recorded failure a backoff is still holding, or null when the attempt
+   * may run. Entries outlive their window so repeated failures keep lengthening
+   * the backoff; only a success clears one.
+   */
+  private heldBackoff(failed: FailedAttempt | undefined): FailedAttempt | null {
+    if (!failed) return null;
+    return this.nowMs() - failed.atMs < this.failedScopeBackoffMs(failed.attempts)
+      ? failed
+      : null;
+  }
+
+  /** Record one more consecutive failure for a key, lengthening its window. */
+  private recordFailure<T>(map: Map<T, FailedAttempt>, key: T, error: unknown): void {
+    map.set(key, {
+      error,
+      atMs: this.nowMs(),
+      attempts: (map.get(key)?.attempts ?? 0) + 1,
+    });
+  }
+
+  /** The failure a backed-off phase is holding for this project, or null. */
+  private heldSyncHostPhase(projectId: ProjectId, phase: string): FailedAttempt | null {
+    if (!BACKOFF_SYNC_HOST_PHASES.has(phase)) return null;
+    return this.heldBackoff(this.failedSyncHostPhases.get(syncHostPhaseKey(projectId, phase)));
+  }
+
+  /**
+   * Forget the recorded sync-host phase failures, for one project or for all.
+   *
+   * Called on a deliberate start or repair: the brain's startup loop, "Fix
+   * connection", "Start sync" and "Reconnect this computer" are all deliberate
+   * retries, so they must re-run activation rather than be served the failure
+   * the backoff is still holding.
+   */
+  clearSyncHostPhaseBackoff(projectId?: ProjectId): void {
+    if (!projectId) {
+      this.failedSyncHostPhases.clear();
+      return;
+    }
+    // The map's key space is exactly this project's backed-off phases, so there
+    // is nothing to scan for.
+    for (const phase of BACKOFF_SYNC_HOST_PHASES) {
+      this.failedSyncHostPhases.delete(syncHostPhaseKey(projectId, phase));
+    }
+  }
+
+  /**
+   * One sync-host phase, with the failed-boot backoff applied to the phases
+   * that a repeated caller re-enters (see {@link BACKOFF_SYNC_HOST_PHASES}).
+   *
+   * The work itself is not cancelled and not retried here — the caller still
+   * gets the recorded failure, verbatim, exactly as a failed cold boot gives it
+   * — so a phase that is still running in the background keeps its chance to
+   * finish and be picked up by the next real attempt. Rethrowing verbatim, and
+   * not invoking the operation at all, is what lets the caller keep the coded
+   * error (`code`, `errno`, `path`) its own error handling keys on.
+   */
+  private async runSyncHostPhase<T>(
+    phase: string,
+    projectId: ProjectId,
+    timeoutMs: number,
+    operation: () => T | Promise<T>,
+  ): Promise<T> {
+    const phaseKey = syncHostPhaseKey(projectId, phase);
+    const backedOff = BACKOFF_SYNC_HOST_PHASES.has(phase);
+    if (backedOff) {
+      const held = this.heldSyncHostPhase(projectId, phase);
+      if (held) throw held.error;
+    }
+    try {
+      const value = await runSyncHostPhaseWithTimeout(phase, projectId, timeoutMs, operation);
+      if (backedOff) {
+        this.failedSyncHostPhases.delete(phaseKey);
+        // An activated scope is hosting again, so every failure recorded for
+        // this project describes a host that no longer exists.
+        if (phase === "activation") this.clearSyncHostPhaseBackoff(projectId);
+      }
+      return value;
+    } catch (error) {
+      if (backedOff) this.recordFailure(this.failedSyncHostPhases, phaseKey, error);
+      throw error;
+    }
+  }
+
   onDispose(listener: (projectId: ProjectId) => void): () => void {
     this.disposeListeners.add(listener);
     return () => {
@@ -204,12 +323,9 @@ export class ProjectScopeRegistry {
     // again, and a full boot is expensive: it opens the project database and
     // constructs every runtime service. Serve the recorded failure until the
     // backoff expires, so a room full of pollers costs one boot per window
-    // instead of one boot per call. The entry survives the expired window so
-    // repeated failures keep lengthening the backoff; only a success clears it.
-    const failed = this.failedScopes.get(projectId);
-    if (failed && this.nowMs() - failed.atMs < this.failedScopeBackoffMs(failed.attempts)) {
-      throw failed.error;
-    }
+    // instead of one boot per call.
+    const held = this.heldBackoff(this.failedScopes.get(projectId));
+    if (held) throw held.error;
 
     const record = this.projectRegistry.get(projectId);
     if (!record) {
@@ -275,11 +391,7 @@ export class ProjectScopeRegistry {
         if (this.syncHostProjectId === projectId) {
           this.syncHostProjectId = null;
         }
-        this.failedScopes.set(projectId, {
-          error,
-          atMs: this.nowMs(),
-          attempts: (this.failedScopes.get(projectId)?.attempts ?? 0) + 1,
-        });
+        this.recordFailure(this.failedScopes, projectId, error);
       }
       throw error;
     }
@@ -288,8 +400,11 @@ export class ProjectScopeRegistry {
   async dispose(projectId: ProjectId): Promise<void> {
     // Disposing is how a repair asks for a clean slate, so it also drops the
     // failed-boot backoff: the next `get` must boot rather than replay the
-    // failure the repair was meant to fix.
+    // failure the repair was meant to fix. The sync-host phases go with it, for
+    // the same reason: a repair that drops the scope must also re-run the
+    // activation this project failed.
     this.failedScopes.delete(projectId);
+    this.clearSyncHostPhaseBackoff(projectId);
     const cached = this.scopes.get(projectId);
     if (!cached) return;
     this.scopes.delete(projectId);
@@ -310,6 +425,7 @@ export class ProjectScopeRegistry {
     // Projects that only ever failed to boot hold no scope, so the loop above
     // never reaches them.
     this.failedScopes.clear();
+    this.clearSyncHostPhaseBackoff();
   }
 
   async ensureSyncHost(
@@ -402,7 +518,7 @@ export class ProjectScopeRegistry {
     const scopePromise = this.scopes.get(projectId) ?? scopePromiseBeforeBoot;
     let scope: ProjectScope;
     try {
-      scope = await runSyncHostPhase(
+      scope = await this.runSyncHostPhase(
         "cold boot",
         projectId,
         SYNC_HOST_COLD_BOOT_TIMEOUT_MS,
@@ -421,7 +537,7 @@ export class ProjectScopeRegistry {
     if (transitionId !== this.latestSyncHostTransitionId) return null;
 
     try {
-      await runSyncHostPhase(
+      await this.runSyncHostPhase(
         "initialization",
         projectId,
         SYNC_HOST_INITIALIZE_TIMEOUT_MS,
@@ -435,6 +551,12 @@ export class ProjectScopeRegistry {
       ) {
         this.abandonTransitionScope(projectId, scopePromise);
       }
+      // A superseded transition reports "superseded" (null), never a failure:
+      // that is what tells the caller to adopt the winner instead of retrying.
+      // A real initialization run lasts long enough for the check after the
+      // phase to see the newer transition, but a backed-off one is refused
+      // instantly, so it has to ask the same question before it reports.
+      if (transitionId !== this.latestSyncHostTransitionId) return null;
       throw error;
     }
     if (transitionId !== this.latestSyncHostTransitionId) return null;
@@ -474,6 +596,13 @@ export class ProjectScopeRegistry {
       const blocker = getSyncHostBlocker(scope);
       if (blocker) throw new SyncHostRoleBlockedError(blocker);
     }
+    // Consulted before the previous host is touched, for the same reason the
+    // blocker is: a target whose activation a backoff is still holding cannot
+    // take over, so replaying it must cost nothing and change nothing rather
+    // than deactivate the current host and then put it back. This is also what
+    // rate-limits the corrective phases, which are not backed off themselves.
+    const heldActivation = this.heldSyncHostPhase(projectId, "activation");
+    if (heldActivation) throw heldActivation.error;
 
     let previousDeactivationAttempted = false;
     let targetActivationAttempted = false;
@@ -509,8 +638,14 @@ export class ProjectScopeRegistry {
         return null;
       }
 
-      targetActivationAttempted = true;
-      await this.configureSyncHostWithTimeout(scope, true, "activation");
+      // The flag is raised from inside the operation, which the phase wrapper
+      // only invokes once it has let the attempt through. A backoff that starts
+      // holding between the check above and this call therefore leaves the flag
+      // down, and `rollback` knows there is nothing of ours on the target to
+      // undo — only the previous host, if this switch already let it go.
+      await this.configureSyncHostWithTimeout(scope, true, "activation", () => {
+        targetActivationAttempted = true;
+      });
       if (transitionId !== this.latestSyncHostTransitionId) {
         await rollback();
         return null;
@@ -537,6 +672,10 @@ export class ProjectScopeRegistry {
   ): void {
     if (!pending || this.scopes.get(projectId) !== pending) return;
     this.scopes.delete(projectId);
+    // The scope this project failed to boot is gone, so the phases recorded
+    // against it describe a host that no longer exists. Same reason `dispose`
+    // clears them.
+    this.clearSyncHostPhaseBackoff(projectId);
     void pending.then(
       (scope) => scope.dispose(),
       () => undefined,
@@ -546,7 +685,7 @@ export class ProjectScopeRegistry {
   private async getCachedScopeWithinTimeout(projectId: ProjectId): Promise<ProjectScope | null> {
     const cached = this.scopes.get(projectId);
     if (!cached) return null;
-    return await runSyncHostPhase(
+    return await this.runSyncHostPhase(
       "cached-scope lookup",
       projectId,
       SYNC_HOST_CONFIGURE_TIMEOUT_MS,
@@ -569,7 +708,7 @@ export class ProjectScopeRegistry {
   ): Promise<void> {
     const cached = this.scopes.get(projectId);
     if (!cached) return;
-    const scope = await runSyncHostPhase(
+    const scope = await this.runSyncHostPhase(
       "cached-scope lookup",
       projectId,
       SYNC_HOST_CONFIGURE_TIMEOUT_MS,
@@ -584,16 +723,25 @@ export class ProjectScopeRegistry {
     }
   }
 
+  /**
+   * Runs one phase against a scope under the configure budget. `onAttempt`
+   * fires from inside the operation, so a caller can record that the phase
+   * really ran without also recording a refusal by the backoff.
+   */
   private async configureSyncHostWithTimeout(
     scope: ProjectScope,
     enabled: boolean,
     phase: string,
+    onAttempt?: () => void,
   ): Promise<void> {
-    await runSyncHostPhase(
+    await this.runSyncHostPhase(
       phase,
       scope.registryProjectId,
       SYNC_HOST_CONFIGURE_TIMEOUT_MS,
-      () => this.configureSyncHost(scope, enabled, { initialize: false }),
+      () => {
+        onAttempt?.();
+        return this.configureSyncHost(scope, enabled, { initialize: false });
+      },
     );
   }
 
