@@ -66,7 +66,8 @@ enum CrashReporting {
       options.beforeBreadcrumb = { crumb in ADECrashScrubber.scrub(crumb) }
       // The budget decides first, on the raw event; the scrubber only cleans.
       options.beforeSend = { event in
-        ADECrashEventLimiter.shared.admit(ADECrashScrubber.fingerprint(for: event))
+        if isSuspendedAppHang(event) { return nil }
+        return ADECrashEventLimiter.shared.admit(ADECrashScrubber.fingerprint(for: event))
           ? ADECrashScrubber.scrub(event)
           : nil
       }
@@ -117,6 +118,22 @@ enum CrashReporting {
     let user = Sentry.User()
     user.userId = userId
     SentrySDK.setUser(user)
+  }
+
+  /// A non-fatal hang longer than iOS lets a foreground app block was measured
+  /// across a suspension (the main thread sat idle in its run loop). A real
+  /// block that long ends in a watchdog kill, which arrives as a fatal hang and
+  /// is kept.
+  private static let maxNonFatalHangSeconds = 60.0
+
+  private static func isSuspendedAppHang(_ event: Sentry.Event) -> Bool {
+    guard let exception = event.exceptions?.last,
+          exception.type?.hasPrefix("App Hang") == true,
+          let value = exception.value else { return false }
+    // "App hanging between 124.1 and 124.9 seconds."
+    let words = value.split(separator: " ")
+    guard words.count > 3, let shortest = Double(words[3]) else { return false }
+    return shortest >= maxNonFatalHangSeconds
   }
 
   // MARK: - Configuration helpers
