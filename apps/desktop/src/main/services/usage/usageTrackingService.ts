@@ -5555,7 +5555,10 @@ export function createUsageTrackingService({
         return published;
       } catch (err) {
         const msg = getErrorMessage(err);
-        logger.error("usage.poll.unexpected_error", { error: msg });
+        // The Error itself, so `logBridge` lifts it into the Sentry event and
+        // the issue groups by the real failure; `errorText` keeps the sentence
+        // on disk, which `JSON.stringify` writes an Error without.
+        logger.error("usage.poll.unexpected_error", { error: err, errorText: msg });
         errors.push(`unexpected: ${msg}`);
 
         // Published, not merely returned. This snapshot carries a fresher
@@ -6100,7 +6103,10 @@ export function createUsageTrackingService({
     } catch (error) {
       const rotationChanged = setBalanceRotationState(provider, undefined);
       const message = getErrorMessage(error);
-      logger.error("usage.account_balance_resolve_failed", { error: message, provider });
+      // The Error itself, so `logBridge` lifts it into the Sentry event and the
+      // issue groups by the real failure; `errorText` keeps the sentence on
+      // disk, which `JSON.stringify` writes an Error without.
+      logger.error("usage.account_balance_resolve_failed", { error, errorText: message, provider });
       const issueChanged = setBalancePickIssue(provider, {
         provider,
         kind: "error",

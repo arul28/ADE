@@ -6871,7 +6871,11 @@ export function createPtyService({
           envShell: process.env.SHELL ?? "",
           envPath: process.env.PATH ?? "",
           resourcesPath: process.resourcesPath ?? "",
-          err: String(err),
+          // The Error itself, so `logBridge` lifts it into the Sentry event and
+          // the issue groups by the real failure; `errorText` keeps the
+          // sentence on disk, which `JSON.stringify` writes an Error without.
+          error: err,
+          errorText: String(err),
         });
         piSessionLease?.release();
         piSessionLease = null;

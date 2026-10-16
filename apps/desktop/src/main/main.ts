@@ -1092,7 +1092,11 @@ async function createWindow(args: {
             windowId: win.id,
             reason: details.reason,
             attempt,
-            err: toErrorMessage(error),
+            // The Error itself, so `logBridge` lifts it into the Sentry event
+            // and the issue groups by the real failure; `errorText` keeps the
+            // sentence on disk, which `JSON.stringify` writes an Error without.
+            error,
+            errorText: toErrorMessage(error),
           });
           reportRecovery(false);
         },
@@ -1104,7 +1108,11 @@ async function createWindow(args: {
     args.logger?.error("window.preload_error", {
       windowId: win.id,
       preloadPath,
-      err: toErrorMessage(error),
+      // The Error itself, so `logBridge` lifts it into the Sentry event and the
+      // issue groups by the real failure; `errorText` keeps the sentence on
+      // disk, which `JSON.stringify` writes an Error without.
+      error,
+      errorText: toErrorMessage(error),
     });
   });
 
@@ -1308,7 +1316,11 @@ async function createWindow(args: {
     args.logger?.error("window.load_url_failed", {
       windowId: win.id,
       url: rendererUrl,
-      err: toErrorMessage(error),
+      // The Error itself, so `logBridge` lifts it into the Sentry event and the
+      // issue groups by the real failure; `errorText` keeps the sentence on
+      // disk, which `JSON.stringify` writes an Error without.
+      error,
+      errorText: toErrorMessage(error),
     });
     const fallbackHtml = encodeURIComponent(
       `<html><body style="margin:0;background:#0f0d14;color:#f8f8f2;font-family:Geist,-apple-system,BlinkMacSystemFont,sans-serif;padding:24px;">` +
@@ -6680,7 +6692,11 @@ app.whenReady().then(async () => {
       } catch (error) {
         ctx.logger.error("app.staged_board_move_flush_failed", {
           projectRoot: ctx.project?.rootPath ?? null,
-          error: error instanceof Error ? error.message : String(error),
+          // The Error itself, so `logBridge` lifts it into the Sentry event and
+          // the issue groups by the real failure; `errorText` keeps the
+          // sentence on disk, which `JSON.stringify` writes an Error without.
+          error,
+          errorText: error instanceof Error ? error.message : String(error),
         });
       }
     }
@@ -8011,7 +8027,11 @@ app.whenReady().then(async () => {
       } catch (error) {
         shutdownLogger.error("app.staged_board_move_flush_failed", {
           reason: args.reason,
-          error: error instanceof Error ? error.message : String(error),
+          // The Error itself, so `logBridge` lifts it into the Sentry event and
+          // the issue groups by the real failure; `errorText` keeps the
+          // sentence on disk, which `JSON.stringify` writes an Error without.
+          error,
+          errorText: error instanceof Error ? error.message : String(error),
         });
       }
 
@@ -8030,7 +8050,11 @@ app.whenReady().then(async () => {
       } catch (error) {
         shutdownLogger.error("app.browser_storage_flush_failed", {
           reason: args.reason,
-          error: error instanceof Error ? error.message : String(error),
+          // The Error itself, so `logBridge` lifts it into the Sentry event and
+          // the issue groups by the real failure; `errorText` keeps the
+          // sentence on disk, which `JSON.stringify` writes an Error without.
+          error,
+          errorText: error instanceof Error ? error.message : String(error),
         });
       }
       try {
@@ -8058,7 +8082,11 @@ app.whenReady().then(async () => {
       } catch (error) {
         shutdownLogger.error("app.shutdown_cleanup_failed", {
           reason: args.reason,
-          error: error instanceof Error ? error.message : String(error),
+          // The Error itself, so `logBridge` lifts it into the Sentry event and
+          // the issue groups by the real failure; `errorText` keeps the
+          // sentence on disk, which `JSON.stringify` writes an Error without.
+          error,
+          errorText: error instanceof Error ? error.message : String(error),
         });
       } finally {
         // Stop the producers, then let what is already in flight settle, then

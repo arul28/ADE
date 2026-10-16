@@ -41129,7 +41129,11 @@ export function createAgentChatService(args: {
       logger.error("Failed to resolve Codex executable for spawn in agentChatService (resolveCodexExecutable)", {
         sessionId: managed.session.id,
         cwd: managed.laneWorktreePath,
-        error: error instanceof Error ? error.message : String(error),
+        // The Error itself, so `logBridge` lifts it into the Sentry event and
+        // the issue groups by the real failure; `errorText` keeps the sentence
+        // on disk, which `JSON.stringify` writes an Error without.
+        error,
+        errorText: error instanceof Error ? error.message : String(error),
       });
       throw error;
     }

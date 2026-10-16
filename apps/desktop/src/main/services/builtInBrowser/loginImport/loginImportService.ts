@@ -323,7 +323,11 @@ export function createBrowserLoginImportService(args: BrowserLoginImportServiceA
     } catch (error) {
       logger()?.error("built_in_browser.login_import.session_unavailable", {
         sourceId: input.sourceId,
-        error: error instanceof Error ? error.message : String(error),
+        // The Error itself, so `logBridge` lifts it into the Sentry event and
+        // the issue groups by the real failure; `errorText` keeps the sentence
+        // on disk, which `JSON.stringify` writes an Error without.
+        error,
+        errorText: error instanceof Error ? error.message : String(error),
       });
       return failure(input.sourceId, "read_failed", "ADE's browser profile is not available right now.");
     }

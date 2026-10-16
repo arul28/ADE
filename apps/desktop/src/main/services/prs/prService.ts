@@ -8282,7 +8282,11 @@ export function createPrService({
       logger.error("prs.post_merge_cleanup_failed", {
         prId: row.id,
         mergeCommitSha: args.mergeCommitSha,
-        error: cleanupMsg,
+        // The Error itself, so `logBridge` lifts it into the Sentry event and
+        // the issue groups by the real failure; `errorText` keeps the sentence
+        // on disk, which `JSON.stringify` writes an Error without.
+        error: cleanupError,
+        errorText: cleanupMsg,
       });
       if (args.operationId) {
         try {
