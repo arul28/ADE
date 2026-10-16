@@ -41,7 +41,10 @@ function subscribeToChannel(periodMs: number, listener: () => void): () => void 
   // is reading costs nothing.
   if (channel.timer == null) {
     channel.timer = window.setInterval(() => {
-      // Copy: a listener may unsubscribe itself while we are notifying.
+      // Copy: a listener may unsubscribe itself while we are notifying. There is
+      // deliberately no per-listener isolation — every listener is a bare
+      // setState, which cannot throw. Keep it that way: one throw here would
+      // abort the loop and freeze every later subscriber's clock, silently.
       for (const notify of [...channel.listeners]) notify();
     }, periodMs);
   }
@@ -66,6 +69,8 @@ export function useTicker(periodMs: number, enabled = true): number {
   const [reading, setReading] = useState(() => Date.now());
   useEffect(() => {
     if (!enabled) return undefined;
+    // Re-enabling: the reading froze while disabled, so refresh it before
+    // subscribing rather than waiting for the first tick.
     setReading(Date.now());
     return subscribeToChannel(periodMs, () => setReading(Date.now()));
   }, [enabled, periodMs]);

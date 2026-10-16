@@ -1418,8 +1418,8 @@ as `reasoning` events, so one presentation covers all of them
   preview.
 - **Performance.** The header's elapsed leaf subscribes to the renderer's shared
   1s timer (one timer for every subscriber), so a tick never re-renders the
-  text. The paced reveal re-renders only
-  the `LiveThoughtText` leaf. Tail-following is at most one `scrollTop` write
+  text. The paced reveal re-renders only the `LiveThoughtText` leaf.
+  Tail-following is at most one `scrollTop` write
   per frame, coalesced through a ref and `requestAnimationFrame`. A layout
   effect triggers it when the text changes, and a `ResizeObserver` on the
   content triggers it as the reveal grows the text between deltas. The same
