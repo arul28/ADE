@@ -12106,6 +12106,18 @@ export function createAgentChatService(args: {
   let crossMachineHandoff: CrossMachineHandoffOrchestrator | null = null;
   let crossMachineHandoffSweepTimer: ReturnType<typeof setTimeout> | null = null;
   /**
+   * True from the first step of `beginDispose`, and forever after.
+   *
+   * Shutdown is one synchronous block that ends by closing the project
+   * database, and that block emits a turn's `done` event for every chat it
+   * interrupts (see `teardownRuntime`). The turn-settled path defers the
+   * cross-machine check to a microtask, and a microtask queued inside that
+   * block runs only once the block has finished — after the store is closed.
+   * The callback reads this flag when it actually runs, so a disposed service
+   * never reaches for a store it no longer owns.
+   */
+  let serviceDisposed = false;
+  /**
    * When each chat's latest turn started. `currentTurnStartedAt` clears when
    * the turn settles, and the proof broker still needs the time afterwards to
    * tell a fresh video from an older one. An entry goes when its session ends
@@ -21108,7 +21120,12 @@ export function createAgentChatService(args: {
     }
     // A move queued "when this turn ends" goes now, after the done commits.
     const settledSessionId = managed.session.id;
-    queueMicrotask(() => crossMachineHandoff?.onTurnSettled(settledSessionId));
+    queueMicrotask(() => {
+      // Checked at run time, not at queue time: the dispose that closes the
+      // store can come later in this same tick, after this was queued.
+      if (serviceDisposed) return;
+      crossMachineHandoff?.onTurnSettled(settledSessionId);
+    });
     try {
       recordTurnUsage(managed, event);
     } catch (error) {
@@ -63615,6 +63632,9 @@ export function createAgentChatService(args: {
    * copies and every new piece of per-service state had to be remembered twice.
    */
   const beginDispose = (): void => {
+    // First, before anything in the drain can emit a turn's `done` event:
+    // whatever the turn-settled path defers from here on must not run.
+    serviceDisposed = true;
     runtimeBudget.unregister(runtimeBudgetParticipant);
     clearTimeout(mcpAppOrphanSweepTimer);
     if (crossMachineHandoffSweepTimer) clearTimeout(crossMachineHandoffSweepTimer);
