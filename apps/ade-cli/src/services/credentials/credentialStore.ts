@@ -18,6 +18,7 @@ import {
   readJsonObjectAsync,
   unlinkIfExists,
   withCredentialFileLock,
+  withCredentialFileLockAsync,
   withOptionalCredentialFileLock,
   writeFileAtomic,
 } from "./credentialFileIo";
@@ -752,7 +753,9 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private lastReadSettled = false;
   /** See {@link readSettledCache}. */
   private settledRead: {
-    stat: NonNullable<CredentialFileStatSnapshot>;
+    /** `null` when the credential file did not exist at read time. */
+    stat: CredentialFileStatSnapshot;
+    state: CredentialStoreReadState;
     values: Record<string, string>;
     expiresAt: number;
   } | null = null;
@@ -836,11 +839,24 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   async set(key: string, value: string): Promise<void> {
-    this.setSync(key, value);
+    const normalized = normalizeCredentialKey(key);
+    const nextValue = value.trim();
+    if (!nextValue.length) return this.delete(normalized);
+    await this.withLockAsync(() => {
+      const values = this.readAll({ forWrite: true });
+      values[normalized] = nextValue;
+      this.writeAll(values);
+    });
   }
 
   async delete(key: string): Promise<void> {
-    this.deleteSync(key);
+    const normalized = normalizeCredentialKey(key);
+    await this.withLockAsync(() => {
+      const values = this.readAll({ forWrite: true });
+      if (!(normalized in values)) return;
+      delete values[normalized];
+      this.writeAll(values);
+    });
   }
 
   getSync(key: string): string | null {
@@ -880,21 +896,31 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     const stat = Date.now() < entry.expiresAt
       ? readCredentialFileStatSnapshot(this.credentialsPath)
       : undefined;
-    if (!stat || !isSameCredentialFileStat(stat, entry.stat)) {
+    if (stat === undefined || !isSameCredentialFileStat(stat, entry.stat)) {
       this.settledRead = null;
       return null;
     }
-    this.lastReadState = "available";
+    this.lastReadState = entry.state;
     this.lastReadFailureReason = null;
     return entry.values;
   }
 
   private rememberSettledRead(values: Record<string, string>): void {
     this.settledRead = null;
-    if (this.lastReadState !== "available" || !this.lastReadSettled) return;
+    if (!this.lastReadSettled) return;
+    if (this.lastReadState !== "available" && this.lastReadState !== "missing") return;
+    // A missing file is cached too: a signed-out store is read several times a
+    // second, and without this every one of those reads took the write lock
+    // just to learn that nothing is there. Creating the file changes the stat
+    // from `null`, so the cache misses and the next read is a locked one.
     const stat = readCredentialFileStatSnapshot(this.credentialsPath);
-    if (!stat) return;
-    this.settledRead = { stat, values, expiresAt: Date.now() + QUARANTINE_PROBE_INTERVAL_MS };
+    if (stat === undefined) return;
+    this.settledRead = {
+      stat,
+      state: this.lastReadState,
+      values,
+      expiresAt: Date.now() + QUARANTINE_PROBE_INTERVAL_MS,
+    };
   }
 
   getLastReadState(): CredentialStoreReadState {
@@ -1417,6 +1443,10 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private withLock<T>(fn: () => T, options: { timeoutMs?: number } = {}): T {
     return withCredentialFileLock(this.lockPath, fn, options);
   }
+
+  private withLockAsync<T>(fn: () => T | Promise<T>): Promise<T> {
+    return withCredentialFileLockAsync(this.lockPath, fn);
+  }
 }
 
 export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
@@ -1472,11 +1502,27 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   }
 
   async set(key: string, value: string): Promise<void> {
-    this.setSync(key, value);
+    const normalized = normalizeCredentialKey(key);
+    const nextValue = value.trim();
+    if (!nextValue.length) return this.delete(normalized);
+    if (isFileBackedCredentialKey(normalized)) {
+      throw fileBackedCredentialWriteError(normalized);
+    }
+    await this.withLockAsync(() => {
+      const values = this.readAll({ safeLockHeld: true });
+      values[normalized] = nextValue;
+      this.writeAll(values);
+    });
   }
 
   async delete(key: string): Promise<void> {
-    this.deleteSync(key);
+    const normalized = normalizeCredentialKey(key);
+    await this.withLockAsync(() => {
+      const values = this.readAll({ safeLockHeld: true });
+      if (!(normalized in values)) return;
+      delete values[normalized];
+      this.writeAll(values);
+    });
   }
 
   getSync(key: string): string | null {
@@ -1714,6 +1760,10 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
 
   private withLock<T>(fn: () => T): T {
     return withCredentialFileLock(this.lockPath, fn);
+  }
+
+  private withLockAsync<T>(fn: () => T | Promise<T>): Promise<T> {
+    return withCredentialFileLockAsync(this.lockPath, fn);
   }
 }
 
