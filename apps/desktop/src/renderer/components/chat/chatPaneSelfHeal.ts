@@ -102,7 +102,18 @@ export function selfHealSubagentSnapshots(
       const settledChildId = snapshot.childSessionId?.trim();
       if (!settledChildId || statuses?.get(settledChildId) !== "active") return snapshot;
       changed = true;
-      return { ...snapshot, status: "running" as const, summary: null, finalSummary: null };
+      return {
+        ...snapshot,
+        status: "running" as const,
+        elapsedStartAt: null,
+        summary: null,
+        finalSummary: null,
+        lastToolName: undefined,
+        workflowName: undefined,
+        workflowProgress: undefined,
+        resourceLinks: undefined,
+        usage: undefined,
+      };
     }
     const childSessionId = paneRowChildSessionId(snapshot);
     const childState = paneChildState(
