@@ -830,7 +830,7 @@ describe("createAgentChatService", () => {
 
     it("does not wait for the best-effort HEAD lookup before creating a chat", async () => {
       let finishGit!: (result: { stdout: string; stderr: string; exitCode: number }) => void;
-      vi.mocked(runGit).mockImplementation(() => new Promise((resolve) => {
+      vi.mocked(runGit).mockImplementation(() => new Promise<Awaited<ReturnType<typeof runGit>>>((resolve) => {
         finishGit = resolve;
       }));
 
