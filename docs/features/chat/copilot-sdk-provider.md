@@ -88,17 +88,50 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
 
 ## Permission modes
 
-ADE's four levels map onto Copilot's permission model:
+ADE's five levels map onto Copilot's permission model:
 
 | ADE level | Copilot behavior |
 |---|---|
 | Plan | Session mode `plan` (`rpc.mode.set`). When the agent asks to leave plan mode, the request goes through `onExitPlanModeRequest` to ADE's plan-approval prompt. |
 | Ask (default) | `onPermissionRequest` goes to ADE's approval prompt. The prompt shows the write diff and the full shell command. Approve once, approve for the session, or deny. |
-| Auto edit | Reads and writes inside the lane worktree are approved. Everything else asks. |
-| Full access | Each request is approved once. A request that managed policy marks `managedApprovalRequired` still asks. |
+| Assisted | Session mode `assisted`. Permission requests the runtime resolves itself (`decisionSource: "assisted_approval"`) raise no ADE prompt. A request that still reaches ADE's handler shows the normal approval prompt. |
+| Auto-edit | Reads and writes inside the lane worktree are approved. Everything else asks. |
+| Full-auto | Each request is approved once. A request that managed policy marks `managedApprovalRequired` still asks. |
 
 Questions from the agent go to ADE's ask-user UI through `onUserInputRequest`.
 The legacy `ask_user` form is used. Elicitation is not enabled.
+
+## Context tier and Auto profile
+
+- **Context tier.** `copilotContextTier` is `default` or `long_context`. A missing
+  or invalid value means `default`. The toggle appears only for models whose
+  catalog row lists `long_context` in `supportedContextTiers`. It is labeled with
+  the catalog's window size, for example `300k` or `1M`, or `Long` when that size
+  cannot be determined. Its tooltip says long context costs more. A change calls
+  `session.setModel(current, { contextTier })` on the live session.
+- **Auto profile.** On an Auto model, `copilotAutoTier` is `efficiency`,
+  `balance` or `intelligence`. Unset means the SDK's default routing. The profile
+  goes out on session create and resume as `capi: { autoTier }`. A profile-only
+  change calls `session.setAutoTier(tier)`.
+- **Pending.** The runtime can answer a profile change with `status: "pending"`.
+  ADE keeps `copilotAutoTierPending` true and labels the choice "applies from the
+  next message". `session.model_change` with the new `autoTier` confirms it.
+  `session.auto_tier_switch_failed` rejects it and restores the last confirmed
+  profile.
+
+## Goals (`/goal`)
+
+`/goal` is a desktop chat command. `/goal <objective>` stores `copilotGoal` and
+sends the turn with `agentMode: "autopilot"`. `/goal` alone shows the current
+goal. `/goal clear` clears it and interrupts a running turn.
+
+Plan and Ask refuse a goal with "Copilot goals need Auto-edit or higher."
+Assisted, Auto-edit and Full-auto accept one.
+
+A goal ends when `session.task_complete` arrives, which posts `goal_reached` if
+the task succeeded and `goal_blocked` if it did not. A run that aborts with
+`autopilot_credit_limit` posts `goal_blocked`. `/goal clear` ends it without a
+notice. The CLI TUI has no `/goal` command, and the phone shows no goal state yet.
 
 ## Turns, steering and queueing
 
@@ -126,6 +159,9 @@ Steer and queue are both available. Interrupt does not resend the message.
 | `session.compaction_start` / `complete` | Compaction events. |
 | `session.error`, `model.call_failure`, `session.warning` | Errors and notices, with retry classification. |
 | `abort` | The turn is marked interrupted. |
+| `session.model_change` | Confirms the served model and any Auto profile change. |
+| `session.auto_tier_switch_failed` | Rejects a pending Auto profile change and restores the last confirmed one. |
+| `session.task_complete` | Ends the active goal, with `goal_reached` or `goal_blocked`. |
 
 File diffs come from the write permission's `diff`, or from `rpc.workspaces.diff`
 when the diff view needs them. The `fileEdits` on a tool event carry paths only.
@@ -141,8 +177,11 @@ when the diff view needs them. The `fileEdits` on a tool event carry paths only.
   - If the MCP registry already holds a sign-in for that server URL, ADE returns
     `{ kind: "token", accessToken, expiresIn }`.
   - Otherwise ADE returns `{ kind: "cancelled" }` and posts one chat notice for
-    the pair (chat, server): "<server> needs a sign-in". The notice has an
-    action that opens the existing MCP sign-in in Settings.
+    the pair (chat, server). The text depends on the registry. A server that is
+    not in ADE's MCP registry gets: "<server> needs a sign-in. Add it to ADE's MCP
+    servers (Settings → MCP servers → Import) and sign in once — every agent will
+    use it." A server in the registry but signed out gets: "Sign in from Settings →
+    MCP servers". The notice has an action that opens the MCP servers in Settings.
   - ADE never opens a browser on its own. Repeated requests for the same pair
     are de-duplicated.
 
@@ -178,9 +217,33 @@ Titles, summaries and commit messages run on a utility session, not on a chat:
   usage.
 - `session.usage_info` (`currentTokens`, `tokenLimit`) drives the context meter.
 - `usage.getMetrics().totalPremiumRequestCost` gives premium requests.
+- The usage projection carries used and entitlement counts, plan tier, reset date
+  and unlimited status when the runtime reports them. A turn's premium cost is part
+  of that turn's usage record, and the account history scanner does not count it
+  again.
 - The account-level history scanner still reads Copilot's session store for
   account totals. Per-turn usage comes from the SDK events, so totals are not
   counted twice.
+
+## Fork and rewind
+
+Native fork and rewind use the SDK's session and event IDs. A forked chat keeps
+the Copilot session ID the SDK returns in its existing Copilot session pointer,
+so no new field is stored. Native forks stay on the machine that owns the SDK
+session, so cross-machine fork is not offered for Copilot. Same-machine handoff
+fork is offered.
+
+## CLI and TUI
+
+`ade chat create` and `ade new chat` take three Copilot flags. Passing one with
+another provider is an error.
+
+- `--copilot-permission-mode`: `plan`, `ask`, `assisted`, `auto-edit` or `full-auto`.
+- `--copilot-context-tier`: `default` or `long_context`.
+- `--copilot-auto-tier`: `efficiency`, `balance` or `intelligence`.
+
+The TUI setup pane shows the same five permission modes, the context-tier toggle
+and the Auto profile row.
 
 ## Legacy chats
 
@@ -204,10 +267,6 @@ error, and the user can start a new Copilot chat.
 
 These are deliberately not built yet. The data is kept so they are cheap to add:
 
-- Context tier (`contextTier`, `long_context`) picker. The model's
-  `supportedContextTiers` is stored on the catalog row.
-- Auto tier picker (`autoTier`, `setAutoTier`).
-- Autopilot mode.
 - Per-chat AI-credit budget (`sessionLimits`).
 - Fleet (sub-agent fleet), memory, citations, canvases and workflows.
 - Remote and cloud sessions.
@@ -218,8 +277,11 @@ These are deliberately not built yet. The data is kept so they are cheap to add:
 - **"Update Copilot CLI."** The installed CLI speaks an older SDK protocol. Run
   `copilot update`, then retry.
 - **Only "Auto" in the model list.** Expected on an Auto-only plan.
-- **"<server> needs a sign-in."** Open the MCP server's sign-in from Settings, then
-  retry the chat.
+- **"<server> needs a sign-in."** If the notice asks you to add the server, add it
+  to ADE's MCP servers and sign in once. Otherwise open the server's sign-in from
+  Settings → MCP servers. Then retry the chat.
+- **"Copilot goals need Auto-edit or higher."** Change the permission mode, then
+  set the goal again.
 - **A chat cannot resume.** Its Copilot session is gone. Start a new Copilot chat.
 
 ## Related
