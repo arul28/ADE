@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createSentryEventHooks, setSentryUserResolver } from "./eventFilter";
+import { isExpectedOutcome } from "./expectedFailure";
 
 type TestEvent = Record<string, any>;
 
@@ -108,6 +109,15 @@ describe("createSentryEventHooks", () => {
     ["a desktop driver that crashed", "MAC_DESKTOP_DRIVER_CRASHED: helper exited", false],
     ["a remote machine that is slow to answer", "Remote ADE service timed out waiting for method ade/actions/call pr.refresh (30000ms).", true],
     ["a Mac-only surface asked for before the runtime connected", "Mac Desktop is not available on this machine.", true],
+    ["the brain restarting for an update", "ADE is applying an update. The background service is restarting.", true],
+    ["a paired machine slow to answer an action", "IPC handler for 'ade.remoteRuntime.callAction' timed out after 75000ms (callId=12593)", true],
+    ["a local call that hangs, which is ADE's", "IPC handler for 'ade.accountSettings.sync' timed out after 30000ms (callId=40553)", false],
+    ["GitHub auth missing, desktop wording", "GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.", true],
+    ["GitHub auth missing, CLI wording", "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.", true],
+    ["a Windows private screen another session holds", "WINDOWS_DESKTOP_HELD: Another lane holds the private screen.", true],
+    ["a Windows sign-in that failed", "WINDOWS_DESKTOP_SIGN_IN_FAILED: LogonUser returned 1326", false],
+    ["an agent pointing App Control at a closed port", "APP_CONTROL_DEBUG_PORT_CLOSED: Nothing is listening at http://127.0.0.1:9222/json/list.", true],
+    ["a local service refusing a connection", "connect ECONNREFUSED 127.0.0.1:64540", false],
   ])("drops expected outcomes: %s", (_label, value, dropped) => {
     const hooks = createSentryEventHooks();
     expect(hooks.beforeSend(errorEvent(value)) === null).toBe(dropped);
@@ -124,5 +134,35 @@ describe("createSentryEventHooks", () => {
     };
     expect(hooks.beforeSend(crash)).not.toBeNull();
     expect(hooks.beforeSend({ level: "fatal", message: "Lane not found: 6f2c0b1e" })).toBeNull();
+  });
+
+  // undici reports every network failure as "fetch failed" and names the
+  // reason only in its causes. Offline, or a network blocking ADE's relays, is
+  // a state; a loopback target is a local ADE service that stopped answering.
+  const relayTimeout = "Connect Timeout Error (attempted addresses: 108.160.167.158:443, timeout: 10000ms)";
+  it.each([
+    ["a relay connect timeout", [["ConnectTimeoutError", relayTimeout]], true],
+    ["every relay address unreachable", [["Error", "connect ENETUNREACH 104.21.35.163:443"], ["Error", "connect EHOSTUNREACH 2606:4700:3037::ac43:b1a3:443"], ["AggregateError", ""]], true],
+    ["a local service refusing the connection", [["Error", "connect ECONNREFUSED 127.0.0.1:64540"]], false],
+    ["a local service on IPv6 loopback", [["Error", "connect ECONNREFUSED ::1:4096"]], false],
+    ["a reset that names no address", [["Error", "read ECONNRESET"]], false],
+    ["no cause at all", [], false],
+  ])("fetch failed: %s", (_label, causes, dropped) => {
+    const hooks = createSentryEventHooks();
+    const values = [...causes.map(([type, value]) => ({ type, value })), { type: "TypeError", value: "fetch failed" }];
+    expect(hooks.beforeSend({ exception: { values } }) === null).toBe(dropped);
+  });
+
+  it.each([
+    ["a relay connect timeout", () => Object.assign(new Error(relayTimeout), { name: "ConnectTimeoutError", code: "UND_ERR_CONNECT_TIMEOUT" }), true],
+    ["every relay address unreachable", () => new AggregateError([Object.assign(new Error("connect ENETUNREACH 104.21.35.163:443"), { code: "ENETUNREACH" })]), true],
+    ["a loopback socket closed mid-request", () => Object.assign(new Error("other side closed"), { name: "SocketError", code: "UND_ERR_SOCKET", socket: { remoteAddress: "127.0.0.1" } }), false],
+    ["a local service refusing the connection", () => Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:64540"), { code: "ECONNREFUSED" }), false],
+    ["more causes than are read", () => new AggregateError(Array.from({ length: 40 }, () => new Error("connect ENETUNREACH 1.2.3.4:443"))), false],
+  ])("a thrown fetch failed is an expected outcome only when offline: %s", (_label, cause, expected) => {
+    const error = new TypeError("fetch failed", { cause: cause() });
+    expect(isExpectedOutcome(error)).toBe(expected);
+    // The same causes under any other message are never expected.
+    expect(isExpectedOutcome(new TypeError("Cannot read properties of undefined", { cause: cause() }))).toBe(false);
   });
 });

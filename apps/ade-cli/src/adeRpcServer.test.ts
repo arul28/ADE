@@ -9,6 +9,7 @@ import {
   resolveComputerUseOwners,
 } from "./adeRpcServer";
 import { JsonRpcError, JsonRpcErrorCode } from "./jsonrpc";
+import { connectSentry, type SentryApi } from "../../desktop/src/shared/sentry/capture";
 import type { EventBufferDrainOptions } from "./eventBuffer";
 import { USER_BROWSER_ROUTE_PARAM } from "./services/builtInBrowser/userBrowserRouting";
 import { ADE_BUNDLED_AGENT_SKILLS_DIR_ENV } from "../../desktop/src/shared/agentSkillRoots";
@@ -1006,6 +1007,47 @@ describe("adeRpcServer", () => {
       const kept = fs.readdirSync(dir).filter((name) => name.startsWith("scene-") && name.endsWith(".png"));
       expect(kept).toHaveLength(20);
     });
+  });
+
+  it("reports each failed run_ade_action as its own Sentry issue, named by domain.action", async () => {
+    const captured: Array<{ error: unknown; tags: Record<string, string>; fingerprint: string[] }> = [];
+    connectSentry({
+      withScope(callback) {
+        const entry = { error: null as unknown, tags: {} as Record<string, string>, fingerprint: [] as string[] };
+        captured.push(entry);
+        callback({
+          setTag: (key, value) => { entry.tags[key] = value; },
+          setExtras: () => undefined,
+          setFingerprint: (value) => { entry.fingerprint = value; },
+          setLevel: () => undefined,
+        });
+      },
+      captureException: (error) => { captured[captured.length - 1]!.error = error; },
+      addBreadcrumb: () => undefined,
+      logger: { warn: () => undefined, error: () => undefined },
+    });
+    try {
+      const { runtime } = createRuntime();
+      runtime.fileService = {
+        watchWorkspace: vi.fn(async () => { throw new Error("watcher exploded"); }),
+        stopWatching: vi.fn(() => { throw new Error("watcher refused to stop"); }),
+      } as any;
+      const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+      await initialize(handler, { role: "cto" });
+
+      const watch = await callTool(handler, "run_ade_action", { domain: " file ", action: "watchWorkspace ", args: { workspaceId: "ws-1" } });
+      const stop = await callTool(handler, "run_ade_action", { domain: "file", action: "stopWatching", args: { workspaceId: "ws-1" } });
+
+      expect(watch.isError, "setup: watchWorkspace failed").toBe(true);
+      expect(stop.isError, "setup: stopWatching failed").toBe(true);
+      expect(captured.map(({ tags, fingerprint }) => [tags["runtime.action"], fingerprint])).toEqual([
+        ["file.watchWorkspace", ["runtime-action", "file.watchWorkspace", "Error"]],
+        ["file.stopWatching", ["runtime-action", "file.stopWatching", "Error"]],
+      ]);
+      expect((captured[1]!.error as Error).message).toBe("watcher refused to stop");
+    } finally {
+      connectSentry(null as unknown as SentryApi);
+    }
   });
 
   it("stops the file watches a connection still holds when that connection closes", async () => {
