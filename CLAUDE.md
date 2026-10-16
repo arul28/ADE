@@ -118,8 +118,9 @@ defect, even when it passes.
    `/test`, after that validation, and they pin the behavior you proved.
    - When the user asks for tests directly, write them; this rule covers tests
      that nobody asked for.
-   - Run existing tests during the work as often as you want. This rule stops
-     writing new tests, not running old ones.
+   - Run existing tests during the work when you need the signal, not after
+     every edit. See **Running checks**: the full check pass happens once, at
+     the end of `/quality`.
    - When an existing test breaks because you changed behavior on purpose,
      leave it for `/test`. Do not bend it during the work.
    - **The one exception:** the behavior can only be validated by a test (a
@@ -165,7 +166,36 @@ defect, even when it passes.
 12. **One contract, one owner.** A second test of the same contract needs a
     failure the owner cannot reach, such as a transport or lifecycle break.
     Otherwise extend the owner.
+13. **New tests are the exception.** The default outcome of `/test` is zero
+    new tests. A new test must guard a critical contract — data loss or
+    corruption, security or privacy, a race or process/lifecycle seam, a
+    cross-machine, IPC or sync contract a caller depends on — and no existing
+    test may already catch its failure. UI layout, copy, wiring, render-only
+    checks, and one past bug instance do not qualify. Most branches add none.
+    The suite already has about 1,600 test files; it should shrink, not grow.
 
 `/quality` records a coverage gap. It does not add the test. `/test` adds one
 only when it can name the behavior, the failure that turns the test red, and
 why no existing test already catches that.
+
+## Running checks
+
+Claude Code does not load `AGENTS.md`, so this is a copy of its **Running
+checks** section. Keep the two the same.
+
+Typecheck, lint, and tests cost real agent time. One desktop typecheck is
+15–60 seconds, and agents have run typecheck about 5,800 times and tests
+about 12,000 times across ADE threads, mostly re-runs after tiny edits. These
+rules apply to every agent and every skill.
+
+1. **One check pass, at the end of `/quality`.** After every review fix is
+   in, run typecheck for each package the branch touched and the test files
+   that cover the touched code (colocated `*.test.ts(x)` and the tests that
+   import it). Not the full suite and not all shards.
+2. **Never check after every edit.** Batch the edits, then check once. After a
+   failure, re-run only the files that failed.
+3. **CI is the full gate.** Never run the full sharded suite locally unless
+   the user asks or you are running `/finalize`.
+4. **Later fixes re-check only their delta.** In `/test` and `/ship`, a fix
+   re-runs only the failing CI file, or the tests and typecheck of the package
+   that fix touched, once, before the push.

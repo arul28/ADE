@@ -550,7 +550,16 @@ jobs:
 
   # Native Windows source gate for the filesystem, process, IPC, SQLite, and
   # capability contracts that Linux-hosted unit jobs cannot exercise.
+  #
+  # Runs on every push to main and on dispatch, but on a pull request only
+  # when the PR carries the `windows` label. It was the slowest job by ~12
+  # minutes on every PR, and over 1,000 runs its failures were almost all
+  # flaky tests that also failed on unrelated branches and on main; its
+  # typecheck never caught an error the Linux typecheck jobs missed, so that
+  # step is gone. A Windows-relevant PR adds the label (then pushes, or
+  # re-runs CI) so the job gates it before merge.
   windows-foundation:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'windows')
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
@@ -568,11 +577,6 @@ jobs:
 
       - name: Install desktop dependencies
         run: npm --prefix apps/desktop ci
-
-      - name: Typecheck Windows runtime foundations
-        run: |
-          npm --prefix apps/ade-cli run typecheck
-          npm --prefix apps/desktop run typecheck
 
       - name: Test Windows service, layout, and IPC contracts
         run: >-
@@ -920,6 +924,7 @@ jobs:
           # `needs:` and forgotten in the loop was never skip-checked, silently
           # and forever. Deriving the list means it cannot drift.
           NEEDS_JSON: ${{ toJSON(needs) }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           # Read the results ONCE into a variable rather than streaming jq
@@ -935,6 +940,13 @@ jobs:
           fi
           failed=0
           while IFS='=' read -r job result; do
+            # windows-foundation is the one opt-in job: on a pull request it
+            # runs only with the `windows` label, so skipped is its expected
+            # result there. Every other event still requires it to succeed.
+            if [[ "$job" == "windows-foundation" && "$result" == "skipped" && "$EVENT_NAME" == "pull_request" ]]; then
+              echo "windows-foundation skipped: pull request has no windows label"
+              continue
+            fi
             # 'skipped' means failure too: every job in needs is unconditional,
             # so a conditional job added later cannot start passing green while
             # dead. Installers are NOT built here -- release-core.yml builds

@@ -1,6 +1,6 @@
 ---
 name: test
-description: 'Prove the new code works: enforce the logging/PostHog ground truth, prune dead tests, consolidate fragments, add only tests that prove new contracts or close a real coverage gap (no tautological, change-detector, or duplicate regression tests), then run CI-mirrored shards and harvest the early PR. Also keeps docs/mobile/CLI/TUI parity in lockstep, and syncs the published @ade-dev SDK packages when a mirrored ADE surface changes (mirror-sync only, never scope expansion).'
+description: 'Prove the new code works: enforce the logging/PostHog ground truth, prune dead tests, consolidate fragments, add only tests that prove new contracts or close a real coverage gap (no tautological, change-detector, or duplicate regression tests; the default is zero new tests), then run only the touched test files and harvest the early PR. Also keeps docs/mobile/CLI/TUI parity in lockstep, and syncs the published @ade-dev SDK packages when a mirrored ADE surface changes (mirror-sync only, never scope expansion).'
 ---
 
 # /test — Test Suite Steward
@@ -52,7 +52,7 @@ Handle the rest of the "For /test" list too:
 List both groups in the summary with their outcome. No quality result available → derive
 the findings from the diff and say that quality evidence was unavailable.
 
-**Run the way CI would.** After the suite work, run only the affected shards, never the full suite (that's `/finalize`'s local gate and `/ship`'s remote CI). Verify every new/edited test file matches a vitest workspace glob so CI actually picks it up.
+**Run only what you touched.** After the suite work, run the new and edited test files once — never a shard and never the full suite (CI is the full gate; `/quality` already ran the branch's one check pass). Verify every new/edited test file matches a vitest workspace glob so CI actually picks it up.
 
 ---
 
@@ -93,6 +93,12 @@ skill enforces them on the branch.
   that.
 - **Combine before you add.** Trivial cases of one contract are one
   `it.each` table. Extend an existing test before you write a new one.
+- **New tests are the exception.** The default outcome of this skill is zero
+  new tests. A new test must guard a critical contract — data loss or
+  corruption, security or privacy, a race or process/lifecycle seam, a
+  cross-machine, IPC or sync contract a caller depends on — and no existing
+  test may already catch its failure. UI layout, copy, wiring, render-only
+  checks, and one past bug instance do not qualify. Most branches add none.
 - **Double-check every test you wrote.** Revert the fix locally or break the
   behavior on purpose and confirm the test fails. A test that still passes
   proves nothing — delete it.
@@ -264,7 +270,7 @@ Spot files where 20+ tests assert constants exist, enum keys are defined, or for
 
 `*.test.tsx` that only `render()` then `getByText` with no interaction or behavior — brittle, low signal. Delete or rewrite as a behavior test.
 
-**At end of Pass 1:** record what was deleted (file + reason) for the summary. Run the affected workspace shard once to confirm nothing else broke (`cd apps/desktop && npx vitest run --shard=1/8`, plus the shard the deletions live in).
+**At end of Pass 1:** record what was deleted (file + reason) for the summary. Deleting a test file cannot break another test unless something imports from it: `rg` for imports of each deleted path, and run only the files that import it. Do not run a shard.
 
 ---
 
@@ -326,7 +332,7 @@ Identify the *contracts* the new feature introduces:
 ### 3b. Hard caps (override only with a one-line justification in the summary)
 
 - **Max 1 new test file per feature.** Prefer extending an existing file. If extending would push that file past 300 `it(` blocks, that file itself needs consolidation review — flag it but still extend.
-- **Max 15 new `it(` blocks total** for the whole feature. If you want more, you're testing internals.
+- **Max 5 new `it(` blocks total** for the whole branch, and only for critical contracts (see **New tests are the exception**). If you want more, you're testing internals.
 - **Min 3 meaningful assertions per test** (not `toBeDefined` × 3).
 - **No test of a private/internal helper** unless it has non-obvious branching that the public API can't easily reach.
 - **No render-only React tests.** If the change is purely visual, do not add a test — say so in the summary.
@@ -810,14 +816,11 @@ named helper whose contract a test can pin.
 
 After the passes that applied:
 
-1. **Run the affected shards**, not the full suite (`/finalize` runs everything):
+1. **Run the new and edited test files once**, never a shard or the full suite (CI is the full gate):
    ```bash
    cd apps/desktop && npx vitest run <new + edited test files>
    ```
-   Plus rerun the shard(s) containing files you deleted from, in case a helper was depending on them:
-   ```bash
-   cd apps/desktop && npx vitest run --shard=<n>/8
-   ```
+   For deleted files, run only the files that imported them (Pass 1).
 
 2. **CI coverage check** — vitest workspace + CI are glob-based and shard 8-way (`.github/workflows/ci.yml` runs `npx vitest run --shard=${{ matrix.shard }}/8`). Any colocated `*.test.{ts,tsx}` file inside these globs is auto-picked-up; consolidating or deleting test files NEVER requires CI/workspace edits:
    - `unit-main`: `src/main/**/*.test.{ts,tsx}`
@@ -930,7 +933,6 @@ Parity:
 
 Verification:
 - Affected files: PASS (<N> tests)
-- Shard re-run: PASS
 
 Notes / assumptions:
 - <anything non-obvious>
