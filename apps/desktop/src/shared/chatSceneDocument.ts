@@ -8,6 +8,7 @@ import {
   type SceneTheme,
 } from "./chatScene";
 import { SCENE_CHART_SOURCE, SCENE_CHART_STYLES } from "./chatSceneChart";
+import { SCENE_THREE_HELPER_SOURCE } from "./chatSceneThree";
 
 /**
  * Assembling the document a scene frame loads: the CSP, the frame's base
@@ -70,7 +71,11 @@ const SCENE_SDK_SOURCE = String.raw`
     var body = document.body;
     if (!body) return 0;
     var style = window.getComputedStyle(body);
-    return Math.ceil(body.scrollHeight + parseFloat(style.marginTop || "0") + parseFloat(style.marginBottom || "0"));
+    // scrollHeight is rounded; a body 399.4px tall reports 399, and the frame
+    // sized to that overflows by a fraction of a pixel and grows a scrollbar.
+    // The layout box keeps the fraction, so take the larger and round up.
+    var height = Math.max(body.scrollHeight, body.getBoundingClientRect().height);
+    return Math.ceil(height + parseFloat(style.marginTop || "0") + parseFloat(style.marginBottom || "0"));
   }
 
   // Every message carries the nonce of the document it was sent from. The host
@@ -702,6 +707,11 @@ export type SceneDocumentArgs = {
    * fonts from `data:` only). Empty means the system fallbacks in the theme.
    */
   fontFaceCss?: string;
+  /**
+   * three.js as one classic script (`window.THREE`), for a scene that uses it
+   * (`sceneUsesThree`). Absent for every other scene: it is most of a megabyte.
+   */
+  threeSource?: string;
 };
 
 /**
@@ -754,6 +764,7 @@ export function buildSceneDocument(args: SceneDocumentArgs): string {
     "</script>",
     `<script>${SCENE_SDK_SOURCE}</script>`,
     `<script>${SCENE_CHART_SOURCE}</script>`,
+    ...(args.threeSource ? [`<script>${args.threeSource}</script>`, `<script>${SCENE_THREE_HELPER_SOURCE}</script>`] : []),
     `</head><body${args.scopeKey ? ` data-scene-scope="${sceneScopeAttribute(args.scopeKey)}"` : ""}>`,
     args.html,
     "</body></html>",

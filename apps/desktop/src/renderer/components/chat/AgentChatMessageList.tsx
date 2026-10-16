@@ -77,7 +77,9 @@ import { AssistantTextBody } from "./AssistantTextBody";
 import { SceneAnswerContext } from "./SceneFrame";
 import { canHostMcpApps, McpAppCard } from "./McpAppFrame";
 import { MCP_APP_CARD_VARIANT } from "../../../shared/mcpApp";
-import { latestScenePreviewOutput, readScenePreviewPath, ScenePreviewThumb } from "./ScenePreviewThumb";
+import { latestScenePreviewOutput, ScenePreviewThumb } from "./ScenePreviewThumb";
+import { SCENE_FENCE_LANGUAGE } from "../../../shared/chatScene";
+import { userMessageStartsTurn } from "../../../shared/chatTranscript";
 import { MarkdownBlock } from "./chatMarkdownBlock";
 import { splitChatOutputContextSegments } from "../../../shared/chatOutputContext";
 import {
@@ -301,6 +303,14 @@ import { ChatProofCount } from "./chatCardPrimitives";
 import { proofDrawerFocus, type ProofDrawerFocus } from "../../../shared/proofDrawerModel";
 import { useChatComposerOverlayInset } from "./chatComposerOverlayInset";
 import { ChatJumpToLatestPill } from "./ChatJumpToLatestPill";
+
+/**
+ * A line that opens a scene fence, as `chatScene.ts`'s scanner reads one: up to
+ * three spaces, ``` or ~~~, and the scene language as the info string's first
+ * token (more info may follow; CRLF endings count). See
+ * `activeTurnReplyWritesScene`.
+ */
+const SCENE_FENCE_OPENER = new RegExp(`(?:^|\n) {0,3}(?:\`{3,}|~{3,})${SCENE_FENCE_LANGUAGE}(?=\\s|$)`, "i");
 
 /** Stable empty array so a proof-free turn never re-renders the divider. */
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
@@ -1792,7 +1802,7 @@ function WorkingIndicator({
   activity,
   startedAt,
   toolEntries,
-  shownImagePaths,
+  replyWritesScene,
   onNavigateSuggestion,
   onInsertDraft,
   onRevealChatTerminal,
@@ -1801,8 +1811,8 @@ function WorkingIndicator({
   activity: string | null;
   startedAt: number | null;
   toolEntries: ChatWorkLogEntry[];
-  /** Image paths the active turn already shows (image-view rows). */
-  shownImagePaths?: ReadonlySet<string>;
+  /** The reply has started its own scene fence, whose box now stands in for the draft. */
+  replyWritesScene?: boolean;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
@@ -1839,13 +1849,10 @@ function WorkingIndicator({
     tick();
     return () => window.clearTimeout(handle);
   }, [startedAt]);
-  const latestScenePreview = useMemo(() => {
-    const output = latestScenePreviewOutput(toolEntries);
-    // An agent that opened the preview image already shows it as an image-view
-    // row; a second copy here would only repeat it.
-    const path = readScenePreviewPath(output);
-    return path && shownImagePaths?.has(path) ? null : output;
-  }, [toolEntries, shownImagePaths]);
+  const scenePreview = useMemo(() => {
+    if (replyWritesScene) return null;
+    return latestScenePreviewOutput(toolEntries);
+  }, [toolEntries, replyWritesScene]);
   const status = (
     <span className="inline-flex min-w-0 items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)]">
       <ThinkingDots toneClass="bg-violet-400/70" />
@@ -1874,9 +1881,6 @@ function WorkingIndicator({
           {status}
         </button>
       ) : status}
-      {/* The agent's latest scene draft, outside the folded activity: the
-          reader watches the scene being checked without opening anything. */}
-      {latestScenePreview ? <ScenePreviewThumb output={latestScenePreview} /> : null}
       <AnimatePresence initial={false}>
         {hasToolActivity && activityOpen ? (
           <motion.div
@@ -1896,6 +1900,8 @@ function WorkingIndicator({
           </motion.div>
         ) : null}
       </AnimatePresence>
+      {/* The scene being drafted, last: the turn's output streams in above it. */}
+      {scenePreview ? <ScenePreviewThumb output={scenePreview} /> : null}
     </div>
   );
 }
@@ -6127,19 +6133,26 @@ function AgentChatMessageListMain({
     showStreamingIndicator,
     sessionEnded,
   });
-  // Images the active turn already shows inline (an agent opening its scene
-  // preview), so the working indicator does not show the same picture twice.
-  const activeTurnImagePaths = useMemo(() => {
-    const paths = new Set<string>();
-    if (!activeTurnId) return paths;
+  // True once the active turn's reply has opened a ```scene fence: from then
+  // on the reply's own drawing box stands for the scene, and the drafting box
+  // under the working indicator goes. Text arrives in fragments, so a short
+  // carry joins each fragment to the start of the one after it.
+  const activeTurnReplyWritesScene = useMemo(() => {
+    if (!activeTurnId) return false;
+    let carry = "";
     // Backwards, stopping at the turn's own start: the active turn is the tail
     // of the transcript, and this runs on every streamed event.
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index]!.event;
-      if (event.type === "user_message") break;
-      if (event.type === "codex_image_view" && event.turnId === activeTurnId && event.path) paths.add(event.path.trim());
+      // A steer the live turn took in belongs to it; only a message that
+      // started a turn ends the scan (the rule the transcript groups by).
+      if (event.type === "user_message" && userMessageStartsTurn(event, activeTurnId)) break;
+      if (event.type !== "text" || event.turnId !== activeTurnId) continue;
+      const joined = event.text + carry;
+      if (SCENE_FENCE_OPENER.test(joined)) return true;
+      carry = joined.slice(0, 16);
     }
-    return paths;
+    return false;
   }, [events, activeTurnId]);
   const doneTurnIds = useMemo(() => {
     const ids = new Set<string>();
@@ -8353,7 +8366,7 @@ function AgentChatMessageListMain({
         }
         startedAt={activeTurnStartedAt}
         toolEntries={transcriptToolActivity.activeEntries}
-        shownImagePaths={activeTurnImagePaths}
+        replyWritesScene={activeTurnReplyWritesScene}
         onNavigateSuggestion={handleNavigateSuggestion}
         onInsertDraft={onInsertDraft}
         onRevealChatTerminal={onRevealChatTerminal}

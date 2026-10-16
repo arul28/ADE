@@ -20,6 +20,7 @@ import {
   type ScenePreviewResult,
 } from "../../../shared/scenePreview";
 import { isWoff2, SCENE_FONT_FACES, sceneFontFaceRule } from "../../../shared/sceneFontFaces";
+import { SCENE_THREE_ASSET, sceneUsesThree } from "../../../shared/chatSceneThree";
 import type { Logger } from "../logging/logger";
 
 /**
@@ -85,6 +86,39 @@ function resolveFontFaceCss(roots: { appPath: string; rendererDir: string }): st
   }
   fontFaceCssCache = rules.join("\n");
   return fontFaceCssCache;
+}
+
+let threeSourceCache: string | null = null;
+
+/**
+ * three.js for a 3D scene, the same file the chat inlines. Packaged: the
+ * renderer's assets. Dev: the Vite server, which bundles it on first request.
+ * Empty when neither answers; the preview then reports the scene's own error.
+ */
+async function resolveThreeSource(roots: { rendererDir: string; logger?: Logger | null }): Promise<string> {
+  if (threeSourceCache) return threeSourceCache;
+  try {
+    threeSourceCache = fs.readFileSync(path.join(roots.rendererDir, SCENE_THREE_ASSET), "utf8");
+    return threeSourceCache;
+  } catch {
+    // Not built here; a dev run serves it.
+  }
+  const devServer = process.env.VITE_DEV_SERVER_URL;
+  if (!devServer) {
+    roots.logger?.warn("scene_preview.three_source_missing", { rendererDir: roots.rendererDir, devServer: null });
+    return "";
+  }
+  try {
+    const response = await fetch(new URL(`/${SCENE_THREE_ASSET}`, devServer));
+    if (response.ok) threeSourceCache = await response.text();
+  } catch {
+    // The dev server is not up; no 3D in this preview.
+  }
+  if (!threeSourceCache) {
+    // The scene will report "THREE is not defined"; this line says why.
+    roots.logger?.warn("scene_preview.three_source_missing", { rendererDir: roots.rendererDir, devServer });
+  }
+  return threeSourceCache ?? "";
 }
 
 /** The page that hosts the scene frame and records what it reports. Ours, not the agent's. */
@@ -220,12 +254,14 @@ async function renderOnce(
   }
   const theme = scenePreviewTheme(request.theme);
   const nonce = randomUUID();
+  const threeSource = sceneUsesThree(parsed.html) ? await resolveThreeSource(deps) : "";
   const sceneDocument = buildSceneDocument({
     html: parsed.html,
     title: parsed.title,
     theme,
     nonce,
     fontFaceCss: resolveFontFaceCss(deps),
+    ...(threeSource ? { threeSource } : {}),
   });
 
   const win = new BrowserWindow({

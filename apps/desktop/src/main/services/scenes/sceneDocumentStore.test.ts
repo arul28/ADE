@@ -68,6 +68,28 @@ describe("scene document store", () => {
     expect(store.respond(fourth.url).status).toBe(200);
   });
 
+  it("evicts the oldest documents past the size budget, but always keeps the newest", () => {
+    let counter = 0;
+    const store = createSceneDocumentStore({ capacity: 64, budgetChars: 100, makeId: () => `big-${counter++}` });
+
+    const first = store.put("a".repeat(40), SCENE_CONTENT_SECURITY_POLICY);
+    const second = store.put("b".repeat(40), SCENE_CONTENT_SECURITY_POLICY);
+    expect(store.size()).toBe(2);
+
+    // 120 characters held: the oldest goes, count cap nowhere near.
+    const third = store.put("c".repeat(40), SCENE_CONTENT_SECURITY_POLICY);
+    expect(store.size()).toBe(2);
+    expect(store.respond(first.url).status).toBe(404);
+    expect(store.respond(second.url).status).toBe(200);
+    expect(store.respond(third.url).status).toBe(200);
+
+    // One document over the whole budget still serves; it is the one a frame is loading.
+    const huge = store.put("d".repeat(500), SCENE_CONTENT_SECURITY_POLICY);
+    expect(store.size()).toBe(1);
+    expect(store.respond(huge.url).body).toBe("d".repeat(500));
+    expect(store.respond(third.url).status).toBe(404);
+  });
+
   it("accepts both the authority and rooted URL spellings", () => {
     expect(parseSceneRequestId("ade-scene://view/abc123")).toBe("abc123");
     expect(parseSceneRequestId("ade-scene:///view/abc123")).toBe("abc123");

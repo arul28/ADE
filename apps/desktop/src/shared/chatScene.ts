@@ -108,10 +108,12 @@ export const SCENE_LIMITS = {
    * but the document store is bounded by document COUNT, so a renderer that
    * skipped that check could pin 64 unbounded strings in main. This is the
    * server-side bound: the fence source plus the fixed template and the two
-   * inlined app fonts (~150 KB as data URLs; see `sceneFonts.ts`), with room
-   * for both rather than a second magic number at the IPC edge.
+   * inlined app fonts (~150 KB as data URLs; see `sceneFonts.ts`), plus
+   * three.js for a 3D scene (~760 KB; see `vite.sceneThree.ts`), with room for
+   * all of them rather than a second magic number at the IPC edge. The store's
+   * size budget, not this, bounds main's memory.
    */
-  maxDocumentBytes: 400_000,
+  maxDocumentBytes: 1_400_000,
   maxTitleLength: 120,
   /** A scene that never reports ready is treated as up after this, so its still is not held over it forever. */
   readyTimeoutMs: 8_000,
@@ -298,6 +300,21 @@ type FenceSpan = {
  */
 function readFenceSpans(markdown: string): FenceSpan[] {
   return scanFences(markdown).spans;
+}
+
+/**
+ * For each line of `markdown`, whether it belongs to a fenced code block (its
+ * opening and closing lines included, and a fence still open at the end). For
+ * passes that must leave code alone, such as the math delimiter rewrite, so
+ * they read fences exactly as this module and the markdown renderer do.
+ */
+export function fencedLineMask(markdown: string): boolean[] {
+  const { spans, open } = scanFences(markdown);
+  const mask = new Array<boolean>(String(markdown ?? "").split("\n").length).fill(false);
+  for (const span of open ? [...spans, open] : spans) {
+    for (let line = span.startLine; line < span.endLineExclusive; line += 1) mask[line] = true;
+  }
+  return mask;
 }
 
 /**

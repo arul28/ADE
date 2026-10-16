@@ -283,6 +283,15 @@ func workSceneSafeThemeValue(_ value: String) -> String {
   })
 }
 
+// MARK: - 3D
+
+/// True when a scene's markup uses three.js and needs it in its document. The
+/// same rule as desktop's `sceneUsesThree` (`apps/desktop/src/shared/chatSceneThree.ts`):
+/// `THREE.`, `ade.three`, `window.THREE`, or `THREE` assigned to a name.
+func workSceneUsesThree(_ html: String) -> Bool {
+  html.range(of: #"\bTHREE\.|\bade\.three\b|\bwindow\.THREE\b|=\s*THREE\b"#, options: .regularExpression) != nil
+}
+
 // MARK: - Document shell
 
 /// The document `buildSceneDocument` produced, cut at the tokens Swift fills.
@@ -297,7 +306,7 @@ struct WorkSceneShell {
   /// Every token the generator writes (`generate-ios-scene-shell.mjs`).
   static let knownTokens: Set<String> = [
     "BODY", "NONCE", "RESTORED", "SCHEME", "FONT_SIZE", "BG", "SURFACE", "BORDER", "FG",
-    "FG_MUTED", "ACCENT", "SUCCESS", "WARNING", "DANGER", "FONT_SANS", "FONT_MONO",
+    "FG_MUTED", "ACCENT", "SUCCESS", "WARNING", "DANGER", "FONT_SANS", "FONT_MONO", "THREE",
   ]
 
   /// Nil when the text holds a token this build does not know, or lacks one it
@@ -323,6 +332,15 @@ struct WorkSceneShell {
     guard seen == Self.knownTokens else { return nil }
     self.pieces = pieces
   }
+
+  /// three.js (`Resources/SceneThree.js`, the bytes desktop inlines), read
+  /// the first time a 3D scene asks. Empty when the build lacks it; the scene
+  /// then reports its own "THREE is not defined" like any other failure.
+  static let threeSource: String = {
+    guard let url = Bundle.main.url(forResource: "SceneThree", withExtension: "js"),
+          let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
+    return text
+  }()
 
   /// The shell in the app bundle, read once.
   static let bundled: WorkSceneShell? = {
@@ -355,9 +373,11 @@ struct WorkSceneShell {
       "DANGER": workSceneSafeThemeValue(theme.danger),
       "FONT_SANS": workSceneSafeThemeValue(theme.fontSans),
       "FONT_MONO": workSceneSafeThemeValue(theme.fontMono),
+      // Most of a megabyte: only for a scene that uses it.
+      "THREE": workSceneUsesThree(html) ? Self.threeSource : "",
     ]
     var out = ""
-    out.reserveCapacity(48_000 + html.utf8.count)
+    out.reserveCapacity(60_000 + html.utf8.count + (values["THREE"]?.utf8.count ?? 0))
     for piece in pieces {
       switch piece {
       case .literal(let text): out += text

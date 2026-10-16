@@ -6,6 +6,7 @@ import { basenameCrossPlatform } from "../../../../shared/pathDisplay";
 import { readAttachmentImageDataUrl } from "../../../lib/attachmentImage";
 import { canOpenInAdeBrowser, openUrlInAdeBrowser } from "../../../lib/openExternal";
 import { chatRunsOnThisComputer, useChatRuntimeScope } from "../ChatRuntimeScope";
+import { isScenePreviewImagePath } from "../ScenePreviewThumb";
 
 type ImageViewEvent = Extract<AgentChatEvent, { type: "codex_image_view" }>;
 
@@ -169,7 +170,31 @@ function PreviewImage({ src, name }: { src: string; name: string }) {
   return <img src={src} alt={name} loading="lazy" draggable={false} className="max-h-40 max-w-full rounded object-contain" />;
 }
 
+/** True when every image in the run is an agent looking at its own scene preview. */
+function onlyScenePreviews(events: ReadonlyArray<Extract<AgentChatEvent, { type: "codex_image_view" }>>): boolean {
+  // Providers name the file in different fields: Codex in `path` (or a
+  // file:// `url`), OpenCode in `title` with the image inlined and omitted.
+  return events.every((item) => [item.path, item.url, item.title].some(isScenePreviewImagePath));
+}
+
 export function CodexImageViewLine({ event, siblings }: CodexImageViewLineProps) {
+  // An agent opening the screenshot of a scene it is drafting is checking its
+  // work, not showing the reader anything: one line, no picture. A still of
+  // the scene in the transcript reads as the scene itself, frozen, and the
+  // live one arrives in the reply.
+  if (onlyScenePreviews([event, ...(siblings ?? [])])) {
+    const count = 1 + (siblings?.length ?? 0);
+    return (
+      <div className="flex items-center gap-2 pl-6 text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5] text-fg/45">
+        <span aria-hidden className="select-none text-fg/30">{"↳"}</span>
+        <span>{count === 1 ? "Checked the scene preview" : `Checked the scene preview ${count} times`}</span>
+      </div>
+    );
+  }
+  return <ImageViewLine event={event} siblings={siblings} />;
+}
+
+function ImageViewLine({ event, siblings }: CodexImageViewLineProps) {
   const target = imageViewTarget(event, chatRunsOnThisComputer(useChatRuntimeScope()));
   const previewSrc = useImageViewSrc(target);
 

@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { sceneThreePlugin } from "./vite.sceneThree";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -127,7 +128,7 @@ const desktopPackageVersion = process.env.ADE_WEB_VERSION?.trim()
 export default defineConfig({
   root: "src/renderer",
   base: "/",
-  plugins: [react(), webClientDevEntry(), cloudflarePagesOutput()],
+  plugins: [react(), webClientDevEntry(), cloudflarePagesOutput(), sceneThreePlugin()],
   server: {
     host: true,
     port: 5174,

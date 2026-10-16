@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { sceneUsesThree } from "./chatSceneThree";
 import {
   hasOpenSceneFence,
   openFence,
@@ -282,5 +283,20 @@ describe("the settle watcher in the injected SDK", () => {
       expect(sceneScopeKeyFor("row-1", "<p>a</p>")).toBe(sceneScopeKeyFor("row-1", "<p>a</p>"));
       expect(sceneScopeKeyFor("row-1", "<p>a</p>").startsWith("row-1:")).toBe(true);
     });
+  });
+});
+
+/** Which scenes get three.js inlined: the ones that use it, and no others. */
+describe("sceneUsesThree", () => {
+  it.each([
+    ["THREE.Mesh", "<script>new THREE.Mesh()</script>", true],
+    ["the ade.three helper", "<script>ade.three.view('#m')</script>", true],
+    ["window.THREE", "<script>var lib = window.THREE;</script>", true],
+    ["an alias of the global", "<script>var T = THREE; new T.Scene();</script>", true],
+    ["the word in prose", "<p>THREE planets and three moons</p>", false],
+    ["a plain 2D scene", "<div id=\"c\"></div><script>ade.chart('#c', {})</script>", false],
+    ["a lookalike name", "<script>var THREEJS_OFF = 1; myTHREE.x = 2;</script>", false],
+  ])("%s → %s", (_name, html, expected) => {
+    expect(sceneUsesThree(html)).toBe(expected);
   });
 });

@@ -1,17 +1,15 @@
-import { useEffect, useState } from "react";
-import { Sparkle, WarningCircle } from "@phosphor-icons/react";
-
-import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
-import { COLORS } from "../lanes/laneDesignTokens";
-import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { SceneDrawingBox } from "./SceneDrawingBox";
 
 /**
- * The picture an agent took of its own scene with `ade scene preview`, shown
- * under the command that took it.
+ * The scene an agent is drafting with `ade scene preview`, held at the bottom
+ * of the active turn while it works: the same "drawing" box a scene shows
+ * while its fence arrives, with the agent's new output streaming in above it.
+ * It goes when the reply starts writing the scene itself, whose own box takes
+ * over in place (see `WorkingIndicator`), or when the turn ends.
  *
- * The preview is the agent checking its work before it puts a scene in its
- * reply. Without this the reader saw a shell row with a file path; with it they
- * can watch the scene being drafted and fixed. Read-only and small: the real
+ * Never the preview's screenshot. A still of a scene in the transcript read
+ * as the scene itself, frozen: it could not be dragged, hovered or played,
+ * and an agent that previews eight times stamped eight of them. The live
  * scene arrives in the reply.
  */
 
@@ -32,6 +30,11 @@ function decodeIfJson(text: string): string {
   const head = text.trimStart()[0];
   if (head !== "{" && head !== "[" && head !== '"') return text;
   return text.replace(/\\(["\\/bfnrt])/g, (_match, char: string) => JSON_ESCAPES[char] ?? char);
+}
+
+/** True when `path` is a screenshot `ade scene preview` wrote. */
+export function isScenePreviewImagePath(path: string | null | undefined): boolean {
+  return typeof path === "string" && PREVIEW_PATH.test(path);
 }
 
 /** The preview PNG an `ade scene preview` output names, if any. */
@@ -84,40 +87,7 @@ export function latestScenePreviewOutput(entries: ReadonlyArray<ScenePreviewEntr
   return null;
 }
 
-/** True when the preview reported problems (its first line, or `"ok": false`). */
-function previewHadProblems(output: string): boolean {
-  return /problems found/.test(output) || /"ok"\s*:\s*false/.test(output);
-}
-
 export function ScenePreviewThumb({ output }: { output: string | null | undefined }) {
-  const path = readScenePreviewPath(output);
-  const { pin } = useChatRuntimeScope();
-  // Stamped with the path it was read for: a newer preview reuses this
-  // component, and its first render must not show the previous picture.
-  const [loaded, setLoaded] = useState<{ path: string; src: string } | null>(null);
-  useEffect(() => {
-    if (!path) return;
-    let cancelled = false;
-    void readAttachmentImageDataUrl(path, pin)
-      .then(({ dataUrl }) => { if (!cancelled) setLoaded({ path, src: dataUrl }); })
-      .catch(() => { if (!cancelled) setLoaded(null); });
-    return () => { cancelled = true; };
-  }, [path, pin]);
-  if (!path || !loaded || loaded.path !== path) return null;
-  const problems = previewHadProblems(output ?? "");
-  return (
-    <div className="mt-1 mb-1 w-fit max-w-full" data-testid="chat-scene-preview-thumb">
-      <img
-        src={loaded.src}
-        alt="Scene preview"
-        className="block max-h-40 max-w-[360px] rounded-md object-contain object-left-top"
-        style={{ border: `1px solid ${COLORS.borderMuted}` }}
-        draggable={false}
-      />
-      <div className="mt-1 inline-flex items-center gap-1 text-[11px]" style={{ color: problems ? COLORS.warning : COLORS.textMuted }}>
-        {problems ? <WarningCircle size={11} weight="bold" /> : <Sparkle size={10} weight="fill" style={{ color: COLORS.accent }} />}
-        {problems ? "Scene preview: problems found" : "Scene preview"}
-      </div>
-    </div>
-  );
+  if (!output || !readScenePreviewPath(output)) return null;
+  return <SceneDrawingBox testId="chat-scene-preview-thumb" status="drafting" height={88} />;
 }

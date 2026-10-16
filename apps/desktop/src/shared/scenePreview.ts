@@ -118,6 +118,12 @@ export function lintSceneSource(source: string): ScenePreviewProblem[] {
   if (/<(?:iframe|object|embed)\b/i.test(source)) {
     add("Nested frames and plugins are blocked.");
   }
+  if (/\bimport\b[^;\n]*["']three(?:\/[^"']*)?["']/.test(source)) {
+    add("three.js cannot be imported in a scene. It is already loaded as the global THREE (OrbitControls is THREE.OrbitControls).");
+  }
+  if (/\bnew\s+THREE\.WebGLRenderer\b/.test(source)) {
+    add("Use ade.three.view(el) instead of a WebGLRenderer of your own: it draws only when something changes and idles with the scene, where a hand-made render loop redraws every frame forever.");
+  }
   // The two mistakes that make a scene look wrong rather than break. Run
   // `ade scene guide` for the rules behind them.
   const drawsAxesByHand = (source.match(/<(?:rect|line|path|polyline)\b/gi)?.length ?? 0) >= 8

@@ -198,6 +198,7 @@
 		E20000000000000000005CE9 /* WorkSceneContainerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE9 /* WorkSceneContainerView.swift */; };
 		E20000000000000000005CE8 /* WorkSandboxedWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE8 /* WorkSandboxedWebView.swift */; };
 		E20000000000000000005CE3 /* SceneShell.html in Resources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE3 /* SceneShell.html */; };
+		E20000000000000000005CE4 /* SceneThree.js in Resources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE4 /* SceneThree.js */; };
 		E10000000000000000000F0B /* WorkUsageLimitResume.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0B /* WorkUsageLimitResume.swift */; };
 		E10000000000000000000F0C /* WorkUsageLimitResumeViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */; };
 		E10000000000000000000F82 /* SyncService+SessionHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F82 /* SyncService+SessionHandoff.swift */; };
@@ -615,6 +616,7 @@
 		D20000000000000000005CE9 /* WorkSceneContainerView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSceneContainerView.swift; path = ADE/Views/Work/WorkSceneContainerView.swift; sourceTree = "<group>"; };
 		D20000000000000000005CE8 /* WorkSandboxedWebView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSandboxedWebView.swift; path = ADE/Views/Work/WorkSandboxedWebView.swift; sourceTree = "<group>"; };
 		D20000000000000000005CE3 /* SceneShell.html */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.html; name = SceneShell.html; path = ADE/Resources/SceneShell.html; sourceTree = "<group>"; };
+		D20000000000000000005CE4 /* SceneThree.js */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.javascript; name = SceneThree.js; path = ADE/Resources/SceneThree.js; sourceTree = "<group>"; };
 		D10000000000000000000F0B /* WorkUsageLimitResume.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageLimitResume.swift; path = ADE/Views/Work/WorkUsageLimitResume.swift; sourceTree = "<group>"; };
 		D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageLimitResumeViews.swift; path = ADE/Views/Work/WorkUsageLimitResumeViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000F82 /* SyncService+SessionHandoff.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+SessionHandoff.swift"; path = "ADE/Services/SyncService+SessionHandoff.swift"; sourceTree = "<group>"; };
@@ -1526,6 +1528,7 @@
 				2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */,
 				781DE0B3C61717AE3057B82D /* VoiceGlossary.json */,
 				D20000000000000000005CE3 /* SceneShell.html */,
+				D20000000000000000005CE4 /* SceneThree.js */,
 			);
 			name = Resources;
 			sourceTree = "<group>";
@@ -1826,6 +1829,7 @@
 				6E32ED1BF961DFEFCA12EF52 /* DatabaseBootstrap.sql in Resources */,
 				CF71F8756A9A432A433D5E33 /* VoiceGlossary.json in Resources */,
 				E20000000000000000005CE3 /* SceneShell.html in Resources */,
+				E20000000000000000005CE4 /* SceneThree.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

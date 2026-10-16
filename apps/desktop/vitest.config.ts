@@ -6,6 +6,12 @@ const emojiDataStub = path.resolve(
   "src/test/__mocks__/emoji-mart-data.js",
 );
 
+// Tests never run a scene frame; the real module is a build-time bundle.
+const sceneThreeStub = path.resolve(
+  __dirname,
+  "src/test/__mocks__/ade-scene-three.js",
+);
+
 const lobeIconsStub = path.resolve(
   __dirname,
   "src/test/__mocks__/lobehub-icons.js",
@@ -16,6 +22,7 @@ export default defineConfig({
     alias: [
       { find: /^@emoji-mart\/data(?:\/.*)?$/, replacement: emojiDataStub },
       { find: "@lobehub/icons", replacement: lobeIconsStub },
+      { find: "virtual:ade-scene-three", replacement: sceneThreeStub },
         ],
   },
   test: {

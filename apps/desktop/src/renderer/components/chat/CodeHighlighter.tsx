@@ -6,34 +6,9 @@ import { codeThemeFingerprint, shikiThemeData, shikiThemeName, usesStockCodeColo
 import { useActiveResolvedTheme } from "../../theme/useActiveTheme";
 import type { Element as HastElement, Root as HastRoot } from "hast";
 import type { GrammarState as ShikiGrammarState } from "shiki";
+import { LRUCache } from "./lruCache";
 
 /* ── LRU cache for highlighted HTML ── */
-
-class LRUCache<K, V> {
-  private map = new Map<K, V>();
-  constructor(private maxSize: number) {}
-
-  get(key: K): V | undefined {
-    const value = this.map.get(key);
-    if (value !== undefined) {
-      // Move to end (most recently used)
-      this.map.delete(key);
-      this.map.set(key, value);
-    }
-    return value;
-  }
-
-  set(key: K, value: V): void {
-    if (this.map.has(key)) {
-      this.map.delete(key);
-    } else if (this.map.size >= this.maxSize) {
-      // Delete the oldest (first) entry
-      const firstKey = this.map.keys().next().value;
-      if (firstKey !== undefined) this.map.delete(firstKey);
-    }
-    this.map.set(key, value);
-  }
-}
 
 const highlightCache = new LRUCache<string, string>(300);
 

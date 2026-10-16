@@ -2,6 +2,7 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { sceneThreePlugin } from "./vite.sceneThree";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -38,7 +39,7 @@ function skipBrowserMockSnapshotForAppWindow(): Plugin {
 export default defineConfig({
   root: "src/renderer",
   base: "./",
-  plugins: [react(), skipBrowserMockSnapshotForAppWindow()],
+  plugins: [react(), skipBrowserMockSnapshotForAppWindow(), sceneThreePlugin()],
   optimizeDeps: {
     // Loaded lazily by the first terminal, so the dep scan misses it; found at
     // runtime, Vite re-optimizes and the open page's import fails with
