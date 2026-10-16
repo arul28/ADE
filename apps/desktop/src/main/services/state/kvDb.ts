@@ -4757,7 +4757,10 @@ export async function openKvDb(
     } catch {
       // best effort cleanup
     }
-    logger.error("db.init_failed", { dbPath, err: String(err) });
+    // The Error itself, so `logBridge` lifts it into the Sentry event and the
+    // issue groups by the real failure; `errorText` keeps the sentence on disk,
+    // which `JSON.stringify` writes an Error without.
+    logger.error("db.init_failed", { dbPath, error: err, errorText: String(err) });
     throw err;
   }
 

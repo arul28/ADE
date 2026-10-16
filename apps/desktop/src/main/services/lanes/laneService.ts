@@ -5224,7 +5224,12 @@ export function createLaneService({
         laneId: args.laneId,
         branchRef: args.branchRef,
         worktreePath: args.worktreePath,
-        error: originalMessage,
+        // The Error itself, so `logBridge` lifts it into the Sentry event and
+        // the issue groups by the real failure; `errorText` keeps the sentence
+        // on disk, which `JSON.stringify` writes an Error without. The cause is
+        // `unknown`, so only an `Error` cause becomes the captured exception.
+        error: args.cause instanceof Error ? args.cause : undefined,
+        errorText: originalMessage,
         cleanupErrors,
       });
       throw new Error(`${originalMessage} Cleanup after failed lane creation also failed: ${cleanupErrors.join("; ")}`);
@@ -8148,7 +8153,11 @@ export function createLaneService({
           temporaryBranch,
           targetRef,
           rollbackSucceeded: rollback.exitCode === 0,
-          error: error instanceof Error ? error.message : String(error),
+          // The Error itself, so `logBridge` lifts it into the Sentry event and
+          // the issue groups by the real failure; `errorText` keeps the
+          // sentence on disk, which `JSON.stringify` writes an Error without.
+          error,
+          errorText: error instanceof Error ? error.message : String(error),
         });
         if (rollback.exitCode !== 0) {
           db.run("update lanes set branch_ref = ? where id = ? and project_id = ?", [
