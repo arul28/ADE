@@ -15470,6 +15470,30 @@ export function AgentChatPane({
     // re-subscribes when the chat's machine resolves or changes.
   }, [selectedSessionId, chatRuntimePinKey, shellsReloadNonce]);
 
+  const cursorCloudSessionActive = cursorCloudMode || cursorRuntime === "cloud";
+  const devinCloudSessionActive = devinCloudMode || devinRuntime === "cloud";
+  // Held while its five flags hold: an inline object here is a fresh prop on
+  // every pane render, which would defeat the composer's memo boundary.
+  // Above the early return below: hooks must run in the same order every render.
+  const composerCloudLaunch = useMemo<ComposerCloudLaunch>(
+    () => ({
+      provider: devinCloudSessionActive ? "devin" : "cursor",
+      canLaunch: devinCloudMode ? devinCloudCanLaunch : cursorCloudCanLaunch,
+      modelReady: devinCloudSessionActive ? true : cursorCloudModelReady,
+      hasEligibleModels: devinCloudSessionActive ? true : cursorCloudModelIds.length > 0,
+      active: cursorCloudSessionActive || devinCloudSessionActive,
+    }),
+    [
+      cursorCloudCanLaunch,
+      cursorCloudModelIds.length,
+      cursorCloudModelReady,
+      cursorCloudSessionActive,
+      devinCloudCanLaunch,
+      devinCloudMode,
+      devinCloudSessionActive,
+    ],
+  );
+
   // A personal pane has no lane by design; everything below handles that.
   if (!laneId && !personalScope) {
     return (
@@ -16593,8 +16617,6 @@ export function AgentChatPane({
     : null;
 
   const composerMachineBinding = activeComposerRuntimeBinding;
-  const cursorCloudSessionActive = cursorCloudMode || cursorRuntime === "cloud";
-  const devinCloudSessionActive = devinCloudMode || devinRuntime === "cloud";
   const composerAvailableModelIds = cursorCloudSessionActive ? cursorCloudModelIds : effectiveAvailableModelIds;
   const composerConstrainModelSelection = modelSelectionConstrained || cursorCloudSessionActive;
 
@@ -16632,26 +16654,6 @@ export function AgentChatPane({
     : sessionRoutePick?.sessionId === selectedSessionId
       ? sessionRoutePick.presetId
       : selectedSession?.presetId ?? null;
-  // Held while its five flags hold: an inline object here is a fresh prop on
-  // every pane render, which would defeat the composer's memo boundary.
-  const composerCloudLaunch = useMemo<ComposerCloudLaunch>(
-    () => ({
-      provider: devinCloudSessionActive ? "devin" : "cursor",
-      canLaunch: devinCloudMode ? devinCloudCanLaunch : cursorCloudCanLaunch,
-      modelReady: devinCloudSessionActive ? true : cursorCloudModelReady,
-      hasEligibleModels: devinCloudSessionActive ? true : cursorCloudModelIds.length > 0,
-      active: cursorCloudSessionActive || devinCloudSessionActive,
-    }),
-    [
-      cursorCloudCanLaunch,
-      cursorCloudModelIds.length,
-      cursorCloudModelReady,
-      cursorCloudSessionActive,
-      devinCloudCanLaunch,
-      devinCloudMode,
-      devinCloudSessionActive,
-    ],
-  );
   const composerElement = (
       <AgentChatComposer
             scheduledSendContext={scheduledSendContext}
