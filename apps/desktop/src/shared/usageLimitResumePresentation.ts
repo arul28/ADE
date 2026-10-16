@@ -332,9 +332,9 @@ export function usageLimitChip(resume: AgentChatUsageLimitResume, nowMs: number)
  * `paused` still holds the row — the chat is stopped on a limit, not on a bug —
  * but it earns the attention tone because it needs a decision.
  *
- * `opted_out` and `no_reset` return `null`: neither is waiting for anything, so
- * the row falls back to its ordinary failed/idle presentation and a genuinely
- * failed turn keeps reading failed.
+ * `opted_out` and `no_reset` read `Usage limit` in the attention tone: the chat
+ * is stopped on a limit, not broken, and nothing will restart it on its own, so
+ * it wants a decision (wait, switch model, or turn auto-resume on).
  */
 export function usageLimitResumeRowStatus(
   resume: AgentChatUsageLimitResume | null | undefined,
@@ -360,6 +360,9 @@ export function usageLimitResumeRowStatus(
     }
     case "paused":
       return { label: "Paused · limit", tone: "attention", glyph: "waiting" };
+    case "opted_out":
+    case "no_reset":
+      return { label: "Usage limit", tone: "attention", glyph: "waiting" };
     default:
       return null;
   }

@@ -332,9 +332,8 @@ export function sessionStatusPresentation(
   // its own, or that is holding on a limit. A live limit outranks it; a chat
   // that failed for any other reason has no resume state and still reads red.
   //
-  // `usageLimitResumeRowStatus` returns null for `opted_out`/`no_reset`: those
-  // states are not waiting for anything, so the row keeps its ordinary
-  // failed/idle presentation rather than being quieted into "Limit".
+  // `opted_out`/`no_reset` read "Usage limit" in amber: nothing will restart
+  // the chat on its own, but it is stopped on a limit, not broken.
   if (phase === "ready" || phase === "idle" || phase === "failed") {
     const nowMs = activity.nowMs ?? Date.now();
     const resume = resolveUsageLimitResumeState(activity.usageLimitResume, nowMs);

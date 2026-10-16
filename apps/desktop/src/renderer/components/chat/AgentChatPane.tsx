@@ -17508,7 +17508,12 @@ export function AgentChatPane({
                           : turnActive && selectedSession?.status !== "ended"}
                         sessionTurnActive={turnActive}
                         usageLimitResumeActive={usageLimitResume != null}
-                        usageLimitResumeTurnId={usageLimitResume?.turnId ?? null}
+                        // Only a limit ADE is waiting out reads "Paused"; one with no
+                        // reset or with auto-resume off reads "Usage limit".
+                        usageLimitResumeTurnId={usageLimitResume
+                          && (usageLimitResume.state === "armed" || usageLimitResume.state === "resuming" || usageLimitResume.state === "paused")
+                          ? usageLimitResume.turnId ?? null
+                          : null}
                         // Subagent transcripts are a secondary, plain surface:
                         // they keep the cheap paint-on-arrival render so only
                         // the user's own prose pays for the paced reveal.
