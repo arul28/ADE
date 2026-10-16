@@ -334,8 +334,11 @@ import {
 import {
   CODEX_PRESETS,
   CLAUDE_PERMISSION_OPTIONS,
+  COPILOT_AUTO_TIERS,
+  COPILOT_PERMISSION_OPTIONS,
   DROID_PERMISSION_OPTIONS,
   MUSE_PERMISSION_OPTIONS,
+  isCopilotAutoModel,
   OPENCODE_PERMISSION_OPTIONS,
   applyProviderPermissionMode,
   buildSetupRows,
@@ -1243,6 +1246,9 @@ export function chatSessionToOptimisticSummary(
     ...(session.opencodePermissionMode ? { opencodePermissionMode: session.opencodePermissionMode } : {}),
     ...(session.droidPermissionMode ? { droidPermissionMode: session.droidPermissionMode } : {}),
     ...(session.musePermissionMode ? { musePermissionMode: session.musePermissionMode } : {}),
+    ...(session.copilotPermissionMode ? { copilotPermissionMode: session.copilotPermissionMode } : {}),
+    ...(session.copilotContextTier ? { copilotContextTier: session.copilotContextTier } : {}),
+    ...(session.copilotAutoTier ? { copilotAutoTier: session.copilotAutoTier } : {}),
     ...(session.cursorModeSnapshot ? { cursorModeSnapshot: session.cursorModeSnapshot } : {}),
     ...(session.cursorModeId !== undefined ? { cursorModeId: session.cursorModeId } : {}),
     ...(session.cursorConfigValues ? { cursorConfigValues: session.cursorConfigValues } : {}),
@@ -8733,6 +8739,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           opencodePermissionMode: configSession.opencodePermissionMode ?? prev.opencodePermissionMode,
           droidPermissionMode: configSession.droidPermissionMode ?? prev.droidPermissionMode,
           musePermissionMode: configSession.musePermissionMode ?? prev.musePermissionMode,
+          copilotPermissionMode: configSession.copilotPermissionMode ?? prev.copilotPermissionMode,
+          copilotContextTier: configSession.copilotContextTier ?? prev.copilotContextTier,
+          copilotAutoTier: configSession.copilotAutoTier !== undefined ? configSession.copilotAutoTier : prev.copilotAutoTier,
+          copilotAutoTierPending: configSession.copilotAutoTierPending ?? false,
           ...resolveLaunchIdentity(configSession),
           // `null` is an intentional clear for the legacy permission-only
           // paths. Only an omitted field should fall back to the snapshot or
@@ -8909,6 +8919,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       opencodePermissionMode: runtimeProviderForUiProvider(normalized.provider) === "opencode" ? normalized.opencodePermissionMode : undefined,
       droidPermissionMode: normalized.provider === "droid" ? normalized.droidPermissionMode : undefined,
       musePermissionMode: normalized.provider === "muse" ? normalized.musePermissionMode : undefined,
+      copilotPermissionMode: normalized.provider === "copilot" ? normalized.copilotPermissionMode : undefined,
+      copilotContextTier: normalized.provider === "copilot" ? normalized.copilotContextTier : undefined,
+      copilotAutoTier: normalized.provider === "copilot" ? normalized.copilotAutoTier : undefined,
       cursorModeId: normalized.provider === "cursor" ? normalized.cursorModeId : undefined,
       cursorConfigValues: normalized.provider === "cursor" ? normalized.cursorConfigValues : undefined,
     });
@@ -9577,6 +9590,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             ...(meta.opencodePermissionMode !== undefined ? { opencodePermissionMode: meta.opencodePermissionMode } : {}),
             ...(meta.droidPermissionMode !== undefined ? { droidPermissionMode: meta.droidPermissionMode } : {}),
             ...(meta.musePermissionMode !== undefined ? { musePermissionMode: meta.musePermissionMode } : {}),
+            ...(meta.copilotPermissionMode !== undefined ? { copilotPermissionMode: meta.copilotPermissionMode } : {}),
+            ...(meta.copilotContextTier !== undefined ? { copilotContextTier: meta.copilotContextTier } : {}),
+            ...(meta.copilotAutoTier !== undefined ? { copilotAutoTier: meta.copilotAutoTier } : {}),
             ...("cursorModeId" in meta || meta.cursorModeSnapshot !== undefined
               ? {
                   // An explicit cursorModeId (present in the event) is
@@ -10060,6 +10076,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       opencodePermissionMode: normalized.opencodePermissionMode,
       droidPermissionMode: normalized.droidPermissionMode,
       musePermissionMode: normalized.musePermissionMode,
+      copilotPermissionMode: normalized.copilotPermissionMode,
+      copilotContextTier: normalized.copilotContextTier,
+      copilotAutoTier: normalized.copilotAutoTier,
       cursorModeId: normalized.cursorModeId,
       cursorConfigValues: normalized.cursorConfigValues,
     });
@@ -14357,6 +14376,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           opencodePermissionMode: normalized.opencodePermissionMode,
           droidPermissionMode: normalized.droidPermissionMode,
           musePermissionMode: normalized.musePermissionMode,
+          copilotPermissionMode: normalized.copilotPermissionMode,
+          copilotContextTier: normalized.copilotContextTier,
+          copilotAutoTier: normalized.copilotAutoTier,
           cursorModeId: normalized.cursorModeId,
           cursorConfigValues: normalized.cursorConfigValues,
         });
@@ -14672,6 +14694,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [applyModelState, modelState.modelId, modelState.provider, models]);
 
   const cycleReasoning = useCallback((delta: number) => {
+    if (modelState.provider === "copilot" && isCopilotAutoModel(modelState.modelId)) {
+      const index = Math.max(0, COPILOT_AUTO_TIERS.findIndex((entry) => entry === modelState.copilotAutoTier));
+      const next = COPILOT_AUTO_TIERS[(index + delta + COPILOT_AUTO_TIERS.length) % COPILOT_AUTO_TIERS.length] ?? "balance";
+      applyModelState((prev) => ({ ...prev, copilotAutoTier: next, copilotAutoTierPending: true }));
+      return;
+    }
     const efforts = modelReasoningEfforts(modelState, models);
     if (!efforts.length) return;
     const index = Math.max(0, efforts.findIndex((effort) => effort === modelState.reasoningEffort));
@@ -14733,6 +14761,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       applyModelState((prev) => ({ ...prev, ...musePermissionPatch(next) }));
       return;
     }
+    if (modelState.provider === "copilot") {
+      const index = Math.max(0, COPILOT_PERMISSION_OPTIONS.findIndex((entry) => entry === modelState.copilotPermissionMode));
+      const next = COPILOT_PERMISSION_OPTIONS[(index + delta + COPILOT_PERMISSION_OPTIONS.length) % COPILOT_PERMISSION_OPTIONS.length] ?? "ask";
+      applyModelState((prev) => ({ ...prev, copilotPermissionMode: next }));
+      return;
+    }
     const modeIds = cursorModeIdsForState(modelState);
     const index = Math.max(0, modeIds.findIndex((entry) => entry === modelState.cursorModeId));
     const next = modeIds[(index + delta + modeIds.length) % modeIds.length] ?? "agent";
@@ -14786,6 +14820,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     if (row.kind === "permission") {
       cyclePermission(direction);
+      return;
+    }
+    if (row.kind === "copilot-context") {
+      applyModelState((prev) => ({ ...prev, copilotContextTier: prev.copilotContextTier === "long_context" ? "default" : "long_context" }));
       return;
     }
     if (row.kind === "codex-fast") {

@@ -30,6 +30,9 @@ import type {
   AgentChatDispatchSteerMode,
   AgentChatDispatchSteerResult,
   AgentChatDroidPermissionMode,
+  AgentChatCopilotAutoTier,
+  AgentChatCopilotContextTier,
+  AgentChatCopilotPermissionMode,
   AgentChatMusePermissionMode,
   AgentChatEventEnvelope,
   AgentChatMainTranscriptArgs,
@@ -913,6 +916,9 @@ export async function createChatSession(args: {
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
   musePermissionMode?: AgentChatMusePermissionMode;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
+  copilotContextTier?: AgentChatCopilotContextTier;
+  copilotAutoTier?: AgentChatCopilotAutoTier | null;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
 }): Promise<CreatedChat> {
@@ -952,6 +958,9 @@ export async function createChatSession(args: {
     ...(provider === "opencode" && args.opencodePermissionMode ? { opencodePermissionMode: args.opencodePermissionMode } : {}),
     ...(provider === "droid" && args.droidPermissionMode ? { droidPermissionMode: args.droidPermissionMode } : {}),
     ...(provider === "muse" && args.musePermissionMode ? { musePermissionMode: args.musePermissionMode } : {}),
+    ...(provider === "copilot" && args.copilotPermissionMode ? { copilotPermissionMode: args.copilotPermissionMode } : {}),
+    ...(provider === "copilot" && args.copilotContextTier ? { copilotContextTier: args.copilotContextTier } : {}),
+    ...(provider === "copilot" && args.copilotAutoTier ? { copilotAutoTier: args.copilotAutoTier } : {}),
     ...(provider === "cursor" && args.cursorModeId !== undefined ? { cursorModeId: args.cursorModeId } : {}),
     ...(provider === "cursor" && args.cursorConfigValues ? { cursorConfigValues: args.cursorConfigValues } : {}),
     surface: "work",
@@ -1393,6 +1402,9 @@ export async function updateChatModel(args: {
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
   musePermissionMode?: AgentChatMusePermissionMode;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
+  copilotContextTier?: AgentChatCopilotContextTier;
+  copilotAutoTier?: AgentChatCopilotAutoTier | null;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
 }): Promise<AgentChatSession> {
@@ -1410,6 +1422,9 @@ export async function updateChatModel(args: {
     ...(args.opencodePermissionMode !== undefined ? { opencodePermissionMode: args.opencodePermissionMode } : {}),
     ...(args.droidPermissionMode !== undefined ? { droidPermissionMode: args.droidPermissionMode } : {}),
     ...(args.musePermissionMode !== undefined ? { musePermissionMode: args.musePermissionMode } : {}),
+    ...(args.copilotPermissionMode !== undefined ? { copilotPermissionMode: args.copilotPermissionMode } : {}),
+    ...(args.copilotContextTier !== undefined ? { copilotContextTier: args.copilotContextTier } : {}),
+    ...(args.copilotAutoTier !== undefined ? { copilotAutoTier: args.copilotAutoTier } : {}),
     ...(args.cursorModeId !== undefined ? { cursorModeId: args.cursorModeId } : {}),
     ...(args.cursorConfigValues !== undefined ? { cursorConfigValues: args.cursorConfigValues } : {}),
   });

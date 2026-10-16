@@ -1311,6 +1311,11 @@ function parseFastForwardCrossMachineHandoffLaneArgs(
  * model and its settings, the mode and whether changes travel. `action`
  * names the command in error messages.
  */
+/** Copilot's round-3 chat fields, as the contract spells them. */
+const COPILOT_PERMISSION_MODE_VALUES = ["plan", "ask", "assisted", "auto-edit", "full-auto"] as const;
+const COPILOT_CONTEXT_TIER_VALUES = ["default", "long_context"] as const;
+const COPILOT_AUTO_TIER_VALUES = ["efficiency", "balance", "intelligence"] as const;
+
 function parseCrossMachineTargetArgs(
   value: Record<string, unknown>,
   action: string,
@@ -1372,6 +1377,9 @@ function parseCrossMachineTargetArgs(
   const opencodePermissionMode = parseEnum("opencodePermissionMode", ["plan", "edit", "full-auto", "config-toml"] as const);
   const droidPermissionMode = parseEnum("droidPermissionMode", AGENT_CHAT_DROID_PERMISSION_MODE_VALUES);
   const musePermissionMode = parseEnum("musePermissionMode", AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES);
+  const copilotPermissionMode = parseEnum("copilotPermissionMode", COPILOT_PERMISSION_MODE_VALUES);
+  const copilotContextTier = parseEnum("copilotContextTier", COPILOT_CONTEXT_TIER_VALUES);
+  const copilotAutoTier = parseEnum("copilotAutoTier", COPILOT_AUTO_TIER_VALUES);
   const permissionMode = parseEnum("permissionMode", ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const);
   const cursorModeId = parseNullableString("cursorModeId");
   const cursorConfigValues = parseConfigValues();
@@ -1398,6 +1406,9 @@ function parseCrossMachineTargetArgs(
     ...(opencodePermissionMode !== undefined ? { opencodePermissionMode } : {}),
     ...(droidPermissionMode !== undefined ? { droidPermissionMode } : {}),
     ...(musePermissionMode !== undefined ? { musePermissionMode } : {}),
+    ...(copilotPermissionMode !== undefined ? { copilotPermissionMode } : {}),
+    ...(copilotContextTier !== undefined ? { copilotContextTier } : {}),
+    ...(copilotAutoTier !== undefined ? { copilotAutoTier } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(cursorModeId !== undefined ? { cursorModeId } : {}),
     ...(cursorConfigValues !== undefined ? { cursorConfigValues } : {}),
@@ -1720,6 +1731,9 @@ async function summarizeChatSessionForRemote(
     ...(session.piSessionFile ? { piSessionFile: session.piSessionFile } : {}),
     ...(session.droidPermissionMode ? { droidPermissionMode: session.droidPermissionMode } : {}),
     ...(session.musePermissionMode ? { musePermissionMode: session.musePermissionMode } : {}),
+    ...(session.copilotPermissionMode ? { copilotPermissionMode: session.copilotPermissionMode } : {}),
+    ...(session.copilotContextTier ? { copilotContextTier: session.copilotContextTier } : {}),
+    ...(session.copilotAutoTier ? { copilotAutoTier: session.copilotAutoTier } : {}),
     ...(session.cursorModeSnapshot ? { cursorModeSnapshot: session.cursorModeSnapshot } : {}),
     ...(session.cursorModeId !== undefined ? { cursorModeId: session.cursorModeId } : {}),
     ...(session.cursorConfigValues ? { cursorConfigValues: session.cursorConfigValues } : {}),
@@ -3172,6 +3186,10 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
   if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatUpdateSessionArgs["opencodePermissionMode"];
   if ("droidPermissionMode" in value) parsed.droidPermissionMode = value.droidPermissionMode == null ? undefined : asTrimmedString(value.droidPermissionMode) as AgentChatUpdateSessionArgs["droidPermissionMode"];
   if ("musePermissionMode" in value) parsed.musePermissionMode = value.musePermissionMode == null ? undefined : asTrimmedString(value.musePermissionMode) as AgentChatUpdateSessionArgs["musePermissionMode"];
+  if ("copilotPermissionMode" in value) parsed.copilotPermissionMode = value.copilotPermissionMode == null ? undefined : asTrimmedString(value.copilotPermissionMode) as AgentChatUpdateSessionArgs["copilotPermissionMode"];
+  if ("copilotContextTier" in value) parsed.copilotContextTier = value.copilotContextTier == null ? undefined : asTrimmedString(value.copilotContextTier) as AgentChatUpdateSessionArgs["copilotContextTier"];
+  // A cleared Auto profile is an explicit null: it returns the chat to SDK routing.
+  if ("copilotAutoTier" in value) parsed.copilotAutoTier = value.copilotAutoTier == null ? null : asTrimmedString(value.copilotAutoTier) as AgentChatUpdateSessionArgs["copilotAutoTier"];
   if ("cursorModeId" in value) parsed.cursorModeId = value.cursorModeId == null ? null : asTrimmedString(value.cursorModeId) ?? null;
   if ("cursorConfigValues" in value) {
     parsed.cursorConfigValues = parseCursorConfigValues(value.cursorConfigValues);
