@@ -720,6 +720,13 @@ describe("ProjectScopeRegistry", () => {
     expect(firstSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(false);
     expect(secondSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(true);
 
+    await expect(scopeRegistry.switchSyncHost(second.projectId, { purpose: "serve" }))
+      .resolves.toMatchObject({ registryProjectId: second.projectId });
+    expect(secondSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(true);
+    await expect(scopeRegistry.switchSyncHost(second.projectId, { purpose: "serve" }))
+      .resolves.toMatchObject({ registryProjectId: second.projectId });
+    expect(secondSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(true);
+
     await scopeRegistry.disposeAll();
   });
 
@@ -843,7 +850,6 @@ describe("ProjectScopeRegistry", () => {
         runtimeKind: "daemon",
       },
     });
-    await scopeRegistry.get(second.projectId);
     const file = JSON.parse(fs.readFileSync(registry.path, "utf8")) as {
       projects: Array<{ projectId: string; lastOpenedAt: number; addedAt: number }>;
     };
@@ -854,14 +860,13 @@ describe("ProjectScopeRegistry", () => {
     }));
     fs.writeFileSync(registry.path, JSON.stringify(file, null, 2));
 
-    // Every status, roster and document read reaches this project's scope
-    // through here. A laptop following a desktop is a supported configuration,
-    // and whether its peer is up is not what decides this — the blocker is the
-    // project's own record — so a reader gets the scope either way.
+    // A cold `serve` lookup must be bounded too: the saved viewer peer may be
+    // offline, and initialization is where the unbounded dial used to happen.
     const active = await scopeRegistry.resolveActiveSyncHost();
 
     expect(active?.registryProjectId).toBe(second.projectId);
     expect(await active?.runtime.syncService?.getStatus()).toEqual(viewerStatus);
+    expect(secondSyncService.initialize).not.toHaveBeenCalled();
     // And no host is started for it: there is none here to start, and starting
     // one is what dials the other machine and blows the activation budget.
     expect(secondSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(true);
@@ -1264,6 +1269,10 @@ describe("ProjectScopeRegistry sync-host phase backoff", () => {
     const { scopeRegistry, first } = createSyncHostRegistry(clock);
 
     await expect(scopeRegistry.ensureSyncHost(first.projectId)).rejects.toBe(probe.failure);
+    expect(probe.counts.activated).toBe(1);
+    expect(scopeRegistry.getMostRecentFailingSyncHostProjectId()).toBe(first.projectId);
+    const booted = await scopeRegistry.resolveBootedSyncScope();
+    expect(booted?.registryProjectId).toBe(first.projectId);
     expect(probe.counts.activated).toBe(1);
 
     // The shape of the 2026-10-16 storm: forty callers inside the backoff

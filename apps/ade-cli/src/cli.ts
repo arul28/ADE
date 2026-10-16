@@ -25661,27 +25661,22 @@ async function runServe(
   // connection" and "Reconnect this computer": a repair that lands mid-attempt
   // joins it instead of racing a second start against the same lease.
   let startSyncHostInFlight: ReturnType<typeof startSyncHostOnce> | null = null;
-  const startSyncHost = (): ReturnType<typeof startSyncHostOnce> => {
+  const startSyncHost = (deliberateRepair = false): ReturnType<typeof startSyncHostOnce> => {
+    if (deliberateRepair) scopeRegistry.clearSyncHostPhaseBackoff();
     startSyncHostInFlight ??= startSyncHostOnce().finally(() => {
       startSyncHostInFlight = null;
     });
     return startSyncHostInFlight;
   };
   const startSyncHostOnce = async () => {
-    // Every deliberate start — the startup loop's own retry, "Fix connection",
-    // "Start sync", "Reconnect this computer", a phone's repair — comes through
-    // here, and each of them is asking for a real attempt now. Drop the
-    // sync-host phase failures a backoff is holding so the attempt below runs
-    // instead of being refused. One site on purpose: the repairs reach the
-    // registry by different closures, and a second clear beside any of them
-    // would drift. A caller that JOINS an attempt already in flight is not a
-    // fresh attempt and clears nothing; the next one does.
-    scopeRegistry.clearSyncHostPhaseBackoff();
     let activeScope: Awaited<
       ReturnType<InstanceType<typeof ProjectScopeRegistry>["resolveActiveSyncHost"]>
     >;
     if (preferredSyncProjectId) {
-      activeScope = await scopeRegistry.switchSyncHost(preferredSyncProjectId);
+      // ADE_PROJECT_ROOT selects the project whose sync scope this brain
+      // should serve. It may already follow another machine, so resolve it as
+      // a reader and let the scope's blocker determine whether it is a viewer.
+      activeScope = await scopeRegistry.switchSyncHost(preferredSyncProjectId, { purpose: "serve" });
     } else {
       activeScope = await scopeRegistry.resolveActiveSyncHost();
     }
@@ -25756,7 +25751,7 @@ async function runServe(
     // authoritative while a newly selected project boots on demand.
     return activeScope ?? null;
   };
-  startSyncHostForRepair = startSyncHost;
+  startSyncHostForRepair = () => startSyncHost(true);
   const disposeServeResources = async () => {
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
@@ -25915,7 +25910,7 @@ async function runServe(
       const { configureSyncHostRecovery } = await import("./services/sync/syncHostRecovery");
       configureSyncHostRecovery({
         startSyncHost: async () => {
-          await startSyncHost();
+          await startSyncHost(true);
         },
         prove: async () => {
           await machineProjectCatalogProvider.listProjects();

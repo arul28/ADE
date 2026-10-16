@@ -154,6 +154,7 @@ function makeRuntime(label: string) {
     },
     syncService: {
       getStatus: vi.fn(async () => ({ role: "brain", label })),
+      disconnectFromBrain: vi.fn(async () => ({ disconnected: true })),
       listDevices: vi.fn(async () => [{ deviceId: `${label}-device` }]),
     },
     eventBuffer: createEventBuffer(),
@@ -162,6 +163,61 @@ function makeRuntime(label: string) {
 }
 
 describe("multi-project RPC server", () => {
+  it("targets the failing project's booted scope for sync recovery", async () => {
+    const { root, registry, projectRoot } = createRegistry();
+    const projectA = registry.add(projectRoot);
+    const projectBRoot = path.join(root, "project-b");
+    fs.mkdirSync(projectBRoot, { recursive: true });
+    const projectB = registry.add(projectBRoot);
+    const runtimeA = makeRuntime("most-recently-opened-a");
+    const runtimeB = makeRuntime("failing-b");
+    const scopeA = { registryProjectId: projectA.projectId, record: projectA, runtime: runtimeA, dispose: vi.fn() };
+    const scopeB = { registryProjectId: projectB.projectId, record: projectB, runtime: runtimeB, dispose: vi.fn() };
+    const scopeRegistry = {
+      getActiveSyncHostProjectId: vi.fn(() => null),
+      getMostRecentFailingSyncHostProjectId: vi.fn(() => projectB.projectId),
+      getIfReady: vi.fn((id: string) => id === projectA.projectId ? scopeA : scopeB),
+      resolveActiveSyncHost: vi.fn(async () => {
+        throw new Error("Sync host activation timed out");
+      }),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    await expect(handler({ jsonrpc: "2.0", id: 3, method: "sync.disconnectFromBrain", params: {} }))
+      .resolves.toEqual({ disconnected: true });
+    expect(runtimeA.syncService.disconnectFromBrain).not.toHaveBeenCalled();
+    expect(runtimeB.syncService.disconnectFromBrain).toHaveBeenCalledOnce();
+    expect(scopeRegistry.resolveActiveSyncHost).not.toHaveBeenCalled();
+    handler.dispose();
+  });
+
+  it("keeps healthy sync status on the active-host resolver", async () => {
+    const { registry, projectRoot } = createRegistry();
+    const record = registry.add(projectRoot);
+    const runtime = makeRuntime("healthy-active");
+    const scopeRegistry = {
+      getActiveSyncHostProjectId: vi.fn(() => null),
+      getMostRecentFailingSyncHostProjectId: vi.fn(() => null),
+      getIfReady: vi.fn(() => null),
+      resolveActiveSyncHost: vi.fn(async () => ({ registryProjectId: record.projectId, record, runtime, dispose: vi.fn() })),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({ serverVersion: "test", projectRegistry: registry, scopeRegistry });
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+    await expect(handler({ jsonrpc: "2.0", id: 2, method: "sync.getStatus", params: {} }))
+      .resolves.toEqual({ role: "brain", label: "healthy-active" });
+    expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledOnce();
+    handler.dispose();
+  });
+
   it("serves account Attention from the machine scope without a project id", async () => {
     const runtime = makeRuntime("attention") as ReturnType<typeof makeRuntime> & {
       pushPublisherService: Record<string, ReturnType<typeof vi.fn>>;
@@ -2390,8 +2446,11 @@ describe("multi-project RPC server", () => {
     fs.mkdirSync(otherRoot, { recursive: true });
     const other = registry.add(otherRoot);
     const activeRuntime = makeRuntime("active");
+    const requestedRuntime = makeRuntime("requested-project");
+    const requestedScope = { registryProjectId: other.projectId, record: other, runtime: requestedRuntime, dispose: vi.fn() };
     const scopeRegistry = {
       get: vi.fn(),
+      getIfReady: vi.fn((id: string) => id === other.projectId ? requestedScope : null),
       ensureSyncHost: vi.fn(),
       switchSyncHost: vi.fn(),
       resolveActiveSyncHost: vi.fn(async () => ({
@@ -2421,7 +2480,7 @@ describe("multi-project RPC server", () => {
       id: 2,
       method: "sync.getStatus",
       params: { projectId: other.projectId },
-    })).toEqual({ role: "brain", label: "active" });
+    })).toEqual({ role: "brain", label: "requested-project" });
 
     expect(await handler({
       jsonrpc: "2.0",
@@ -2430,7 +2489,7 @@ describe("multi-project RPC server", () => {
       params: { projectId: other.projectId },
     })).toEqual([{ deviceId: "active-device" }]);
 
-    expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledTimes(2);
+    expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledTimes(1);
     expect(scopeRegistry.switchSyncHost).not.toHaveBeenCalled();
     expect(scopeRegistry.ensureSyncHost).not.toHaveBeenCalled();
 
