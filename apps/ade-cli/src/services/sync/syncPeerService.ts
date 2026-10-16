@@ -48,6 +48,9 @@ type PendingChangesetBatch = {
 };
 
 const CHANGESET_ACK_TIMEOUT_MS = 10_000;
+// Keep role refresh inside its 10s activation budget; 5s leaves time for
+// stale-host recovery and local listener startup after a dead TCP dial.
+const VIEWER_CONNECT_TIMEOUT_MS = 5_000;
 const MAX_CHANGESET_SEND_ATTEMPTS = 6;
 const MAX_OUTBOUND_CHANGESET_BATCH_BYTES = DEFAULT_MAX_CHANGESET_BATCH_BYTES;
 const MAX_OUTBOUND_CHANGESET_BATCH_ROWS = DEFAULT_MAX_CHANGESET_BATCH_ROWS;
@@ -574,8 +577,18 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         const socket = new WebSocket(`ws://${status.host}:${String(status.port)}`);
         ws = socket;
         pendingConnect = { resolve, reject };
+        const connectTimeout = setTimeout(() => {
+          const error = Object.assign(
+            new Error(`Connection to ${status.host}:${String(status.port)} timed out after ${VIEWER_CONNECT_TIMEOUT_MS}ms.`),
+            { code: "ETIMEDOUT" },
+          );
+          pendingConnect?.reject(error);
+          pendingConnect = null;
+          disconnectInternal("error", null, error.message);
+        }, VIEWER_CONNECT_TIMEOUT_MS);
 
         const cleanup = () => {
+          clearTimeout(connectTimeout);
           socket.removeListener("open", onOpen);
           socket.removeListener("error", onError);
         };

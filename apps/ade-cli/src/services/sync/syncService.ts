@@ -422,7 +422,10 @@ const LOCAL_LANE_PRESENCE_HEARTBEAT_MS = 30_000;
 const CANONICAL_SYNC_PORT_MIGRATE_FIRST_MS = 2_000;
 const CANONICAL_SYNC_PORT_MIGRATE_MS = 15_000;
 const TRANSFER_READINESS_CACHE_MS = 15_000;
-const STALE_BRAIN_LAST_SEEN_MS = 5 * 60_000;
+// A remote laptop can be offline for hours without being stale. Only reclaim
+// after three days without a registry heartbeat; same-hostname ghosts are
+// handled separately after their transport dial has failed.
+const STALE_BRAIN_LAST_SEEN_MS = 3 * 24 * 60 * 60_000;
 
 /**
  * This project follows another machine's sync brain, so this machine cannot
@@ -1274,10 +1277,10 @@ export function createSyncService(args: SyncServiceArgs) {
   ): boolean => {
     if (cluster.brainDeviceId === localDeviceId) return false;
     const brain = deviceRegistryService.getDevice(cluster.brainDeviceId);
-    if (!brain) return true;
-    const lastSeenRaw = brain.lastSeenAt ?? brain.updatedAt;
+    if (!brain?.lastSeenAt) return false;
+    const lastSeenRaw = brain.lastSeenAt;
     const lastSeenMs = Date.parse(lastSeenRaw);
-    if (!Number.isFinite(lastSeenMs)) return true;
+    if (!Number.isFinite(lastSeenMs)) return false;
     return Date.now() - lastSeenMs > STALE_BRAIN_LAST_SEEN_MS;
   };
 
@@ -1289,7 +1292,18 @@ export function createSyncService(args: SyncServiceArgs) {
   }): boolean => {
     if (!hostStartupEnabled || !isCrdtSyncAvailable()) return false;
     if (!isViewerDraftTransportError(argsIn.error)) return false;
-    if (!isDraftTargetLocalDevice(argsIn.draft, argsIn.localDevice)) return false;
+    const brain = argsIn.cluster
+      ? deviceRegistryService.getDevice(argsIn.cluster.brainDeviceId)
+      : null;
+    const localHostname = normalizeHostKey(
+      typeof argsIn.localDevice.metadata?.hostname === "string"
+        ? argsIn.localDevice.metadata.hostname
+        : null,
+    );
+    const brainHostname = normalizeHostKey(
+      typeof brain?.metadata.hostname === "string" ? brain.metadata.hostname : null,
+    );
+    if (localHostname && brainHostname && localHostname === brainHostname) return true;
     return !argsIn.cluster || isStaleNonLocalBrainCluster(argsIn.cluster, argsIn.localDevice.deviceId);
   };
 
