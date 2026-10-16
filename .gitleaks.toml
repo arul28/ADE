@@ -42,6 +42,13 @@ regexes = [
   # secret. Same generic-api-key false positive: `STAR_PILL_STORAGE_KEY` ends in
   # KEY and the namespaced value has mild entropy. Regex for the same reason.
   '''ade\.starPill\.v1''',
+  # Synthetic token tail in homeClipboardHistory.test.ts, used to build fake
+  # ghp_/sk-proj- strings that prove clipboard history redacts them.
+  '''a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8''',
+  # Clerk OAuth application CLIENT ID in apps/webhook-relay/wrangler.jsonc
+  # (CLERK_EXTRA_OAUTH_CLIENT_IDS). Public by design: it appears in every
+  # authorize URL; the client secret is never in the repo.
+  '''Az7TbviBocyXjZk1''',
 ]
 paths = [
   '''\.env\.example$''',
