@@ -5246,13 +5246,14 @@ function parseCliArgs(argv: string[]): ParsedCli {
       command.push(token, ...rest);
       break;
     }
-    // `ade secrets list --project-root <dir>` reads naturally, and silently
-    // ignoring the flag there answered with another project's secrets. Only
-    // the secrets family takes root flags after the command: elsewhere
-    // (app-control, the iOS simulator) the command reads them as its own.
+    // `ade secrets list --project-root <dir>` and `ade chat send <id>
+    // --project-root <dir>` read naturally, and silently ignoring the flag
+    // there answered from the session's own project: another project's
+    // secrets, or "chat not found" for a chat in another project.
+    const trailingValueFlags = inGlobalPrefix ? null : TRAILING_ROOT_FLAG_COMMANDS.get(command[0] ?? "");
     const valueFlag = inGlobalPrefix
       ? readGlobalValueFlag(argv, index)
-      : (command[0] === "secrets" || command[0] === "secret") && !SECRETS_VALUE_FLAGS.has(argv[index - 1] ?? "")
+      : trailingValueFlags && !trailingValueFlags.has(argv[index - 1] ?? "")
         ? readRootValueFlag(argv, index)
         : null;
     if (valueFlag) {
@@ -5309,11 +5310,25 @@ function parseCliArgs(argv: string[]): ParsedCli {
 }
 
 /**
- * `ade secrets` flags whose next token is a value. A secret or reason that
- * happens to read `--project-root` stays the value, not a root flag.
+ * Command families that take `--project-root` / `--workspace-root` after the
+ * command too, each with the flags whose next token is a value: a secret, a
+ * prompt or a note that happens to read `--project-root` stays the value, not
+ * a root flag. Elsewhere (app-control, the iOS simulator) the command reads
+ * the root flags as its own.
  */
 const SECRETS_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "--name", "--value", "--value-file", "--secret", "--secret-file", "--reason", "--session", "--timeout",
+]);
+const CHAT_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "--text", "--prompt", "--kickoff", "--kickoff-prompt", "--note", "--handoff-note", "--message",
+  "--question", "--objective", "--goal", "--set", "--title", "--reason", "--steer",
+]);
+const TRAILING_ROOT_FLAG_COMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["secrets", SECRETS_VALUE_FLAGS],
+  ["secret", SECRETS_VALUE_FLAGS],
+  ["chat", CHAT_VALUE_FLAGS],
+  ["chats", CHAT_VALUE_FLAGS],
+  ["work", CHAT_VALUE_FLAGS],
 ]);
 
 /** `--project-root` / `--workspace-root` at `argv[index]`, else null. */

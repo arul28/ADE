@@ -859,8 +859,9 @@ describe("ADE CLI", () => {
     ]);
   });
 
-  // `ade secrets list --project-root <dir>` used to drop the flag silently and
-  // answer with the session's project. Other commands read the flag as their own.
+  // `ade secrets list --project-root <dir>` and `ade chat send <id>
+  // --project-root <dir>` used to drop the flag silently and answer from the
+  // session's project. Other commands read the flag as their own.
   it.each([
     { argv: ["secrets", "list", "--project-root", "/tmp/crumb"], root: "/tmp/crumb", command: ["secrets", "list"] },
     { argv: ["secret", "get", "API_KEY", "--project-root=/tmp/crumb"], root: "/tmp/crumb", command: ["secret", "get", "API_KEY"] },
@@ -868,6 +869,17 @@ describe("ADE CLI", () => {
       argv: ["secrets", "set", "WEIRD", "--value", "--project-root"],
       root: null,
       command: ["secrets", "set", "WEIRD", "--value", "--project-root"],
+    },
+    {
+      argv: ["chat", "send", "chat-1", "--project-root", "/tmp/other", "--text", "go"],
+      root: "/tmp/other",
+      command: ["chat", "send", "chat-1", "--text", "go"],
+    },
+    { argv: ["chats", "list", "--project-root=/tmp/other"], root: "/tmp/other", command: ["chats", "list"] },
+    {
+      argv: ["chat", "create", "--lane", "l1", "--prompt", "--project-root"],
+      root: null,
+      command: ["chat", "create", "--lane", "l1", "--prompt", "--project-root"],
     },
     {
       argv: ["app-control", "launch", "--project-root", "/tmp/app"],
