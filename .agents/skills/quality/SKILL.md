@@ -197,6 +197,11 @@ Before the review starts, follow **Early PR and harvests → Open** in
 review (not a draft), and write the ship state with `status: "prepping"`. Then
 start Phase 1 immediately — do not wait for CI or the bots.
 
+When the diff touches Windows-specific code (named pipes, PowerShell, the
+Windows service manager or installer, path/drive handling, `win32` branches),
+open the PR with `--label windows` so CI runs the native Windows job; other PRs
+skip it.
+
 Skip this step only when the branch is `main`, the tree holds changes that do
 not belong to this lane, or the user asked for no PR. Say which one applied.
 When a PR already exists, push the checkpoint only if HEAD is ahead of the

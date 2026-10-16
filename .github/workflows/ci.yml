@@ -556,8 +556,9 @@ jobs:
   # minutes on every PR, and over 1,000 runs its failures were almost all
   # flaky tests that also failed on unrelated branches and on main; its
   # typecheck never caught an error the Linux typecheck jobs missed, so that
-  # step is gone. A Windows-relevant PR adds the label (then pushes, or
-  # re-runs CI) so the job gates it before merge.
+  # step is gone. A Windows-relevant PR adds the label; the next push runs
+  # the job (a re-run replays the old event and its old labels, so push --
+  # an empty commit works).
   windows-foundation:
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'windows')
     runs-on: windows-latest

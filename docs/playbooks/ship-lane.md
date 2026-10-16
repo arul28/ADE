@@ -1160,8 +1160,10 @@ and disclose deferred findings afterwards.
 
 For a Windows-relevant diff, the bound head must have a terminal-green native
 `windows-foundation` check. That job runs on a pull request only with the
-`windows` label: add it (`gh pr edit <n> --add-label windows`), then push or
-re-run CI so the check exists. Other PRs skip it; it still runs on `main`. Also require the packaged Windows job when the diff
+`windows` label: add it (`gh pr edit <n> --add-label windows`) when you open
+the PR, so the first push runs it. Added later, it takes effect on the next
+push; a re-run replays the old event and its old labels, so push (an empty
+commit works). Other PRs skip the job; it still runs on every push to `main`. Also require the packaged Windows job when the diff
 changes packaging, native bundle contents, or release-contract inputs. Record
 Computer Use evidence by capability: native screenshot/video/OS GUI control
 may be explicitly unavailable on Windows while App Control and proof-file

@@ -91,7 +91,11 @@ describe("createAdeRuntime dispose", () => {
 
   // A runtime that outlives its dispose keeps the database handle and every
   // started service alive; the sync-host retry loop builds one per attempt.
-  it.each(["embedded", "chat", "full"] as const)(
+  // Skipped on Windows: the check counts every pipe in the process, and on a
+  // Windows runner unrelated pipes outlive the window (and a cold build can
+  // pass the timeout), so it failed there on unrelated branches. The Linux
+  // job runs the same contract.
+  it.skipIf(process.platform === "win32").each(["embedded", "chat", "full"] as const)(
     "releases the database and everything a %s runtime started",
     async (runtimeProfile) => {
       vi.stubEnv("ADE_HOME", makeTempRoot());
