@@ -110,10 +110,18 @@ export function useLatestCallback<F extends (...args: never[]) => unknown>(fn: F
  * renders only when a non-function prop changes. A handler that is absent
  * stays absent, so controls gated on its presence behave as before. Plain
  * callbacks only: a component type or render prop must not go through here.
+ *
+ * `options.keepIdentityFor` names handlers whose *identity* is itself an input:
+ * an effect keyed on one re-runs when it changes (the composer's attachment
+ * search refetches when the search source changes). A proxy would freeze that
+ * signal, so those pass through untouched — and the component then re-renders
+ * whenever they change, exactly as it did before the memo.
  */
 export function memoWithLatestHandlers<P extends object>(
   Component: ComponentType<P>,
+  options?: { keepIdentityFor?: readonly string[] },
 ): FunctionComponent<P> {
+  const keepIdentity = new Set(options?.keepIdentityFor ?? []);
   const Inner = memo(Component) as unknown as ComponentType<P>;
   function WithLatestHandlers(props: P) {
     const latest = useRef(props);
@@ -121,7 +129,7 @@ export function memoWithLatestHandlers<P extends object>(
     const proxies = useRef(new Map<string, (...args: unknown[]) => unknown>());
     const forwarded: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(props)) {
-      if (typeof value !== "function") {
+      if (typeof value !== "function" || keepIdentity.has(key)) {
         forwarded[key] = value;
         continue;
       }

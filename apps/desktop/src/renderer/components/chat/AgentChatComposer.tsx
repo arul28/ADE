@@ -6,6 +6,7 @@ import { openIssueRef } from "../../lib/issueNavigation";
 import { jiraIssueRef, linearIssueRef } from "../../../shared/issueRefs";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
+import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { toneText } from "../lanes/laneDesignTokens";
 import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, CircleNotch, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, LockKey, MagnifyingGlass, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
@@ -2280,7 +2281,7 @@ function JiraIssueSelectModal({
   );
 }
 
-export function AgentChatComposer({
+function AgentChatComposerImpl({
   surfaceMode = "standard",
   surfaceProfile = "standard",
   layoutVariant = "standard",
@@ -9067,3 +9068,18 @@ export function AgentChatComposer({
     </>
   );
 }
+
+/**
+ * The pane re-renders once per streamed event, and the composer is its largest
+ * subtree (about 40 components). Its handler props are inline closures rebuilt
+ * on every pane render, so a plain `memo` would never skip it; the pane also
+ * hands it fresh arrays/objects whose contents rarely move. `memoWithLatestHandlers`
+ * keeps the handlers stable (always calling the latest), and the pane hands the
+ * data props a stable identity while their contents hold (see `useStableIdentity`
+ * at the call site), so the composer renders only when something it shows moves.
+ */
+export const AgentChatComposer = memoWithLatestHandlers(AgentChatComposerImpl, {
+  // The at-mention file search refetches when this handler changes (the search
+  // source moved), so its identity has to stay visible to the component.
+  keepIdentityFor: ["onSearchAttachments"],
+});
