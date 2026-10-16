@@ -57,6 +57,27 @@ function makeChange(dbVersion: number, siteId: string): CrsqlChangeRow {
 }
 
 describe("createSyncPeerService", () => {
+  it("fails a dead viewer dial within the bounded connect window", async () => {
+    const peerService = createSyncPeerService({
+      db: { sync: { getDbVersion: () => 0, exportChangesSince: () => [], applyChanges: vi.fn() } } as unknown as AdeDb,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any,
+      deviceRegistryService: {
+        getLocalSiteId: () => "local-site",
+        getLocalDeviceId: () => "local-device",
+        ensureLocalDevice: () => ({
+          deviceId: "local-device", name: "Local", platform: "macOS", deviceType: "desktop",
+          siteId: "local-site", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+          lastSeenAt: "2026-01-01T00:00:00.000Z", lastHost: null, lastPort: null,
+          tailscaleIp: null, ipAddresses: [], metadata: {},
+        }),
+      } as any,
+    });
+    disposers.push(async () => peerService.dispose());
+    const startedAt = Date.now();
+    await expect(peerService.connect({ host: "192.0.2.1", port: 8788, token: "token" })).rejects.toThrow();
+    expect(Date.now() - startedAt).toBeLessThan(6_000);
+  }, 8_000);
+
   it("uses a two-interval heartbeat only as the peer fallback", () => {
     expect(peerHeartbeatFallbackDelayMs(30_000)).toBe(60_000);
     expect(peerHeartbeatFallbackDelayMs(60_000)).toBe(120_000);

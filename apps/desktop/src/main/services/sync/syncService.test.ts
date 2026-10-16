@@ -539,7 +539,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(fs.existsSync(path.join(appPairingDir, "sync-peer-draft.json"))).toBe(false);
   }, 30_000);
 
-  it("keeps a stale unreachable viewer draft when the draft target is not local", async () => {
+  it("reclaims a stale unreachable viewer draft when the draft target is remote", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-stale-remote-draft-");
     const appPairingDir = fs.mkdtempSync(
       path.join(os.tmpdir(), "ade-sync-service-stale-remote-draft-app-"),
@@ -616,17 +616,11 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     await service.initialize();
 
     const status = await service.getStatus();
-    expect(status.role).toBe("viewer");
-    expect(status.clusterState?.brainDeviceId).toBe("stale-remote-brain");
-    expect(status.pairingConnectInfo).toBeNull();
-    expect(fs.existsSync(draftPath)).toBe(true);
-    // The pre-switch guard must agree: a project whose cluster record and
-    // draft both point at another machine reports the blocker without dialing.
-    expect(service.getHostBlocker()).toEqual({
-      reason: "saved_connection",
-      host: "not-local.invalid",
-      port: 8789,
-    });
+    expect(status.role).toBe("brain");
+    expect(status.clusterState?.brainDeviceId).not.toBe("stale-remote-brain");
+    expect(status.pairingConnectInfo).not.toBeNull();
+    expect(fs.existsSync(draftPath)).toBe(false);
+    expect(service.getHostBlocker()).toBeNull();
   }, 30_000);
 
   it("hosts a project that ignores a viewer draft another project wrote", async () => {
