@@ -15401,9 +15401,13 @@ export function AgentChatPane({
     }
     const unsubscribe = subscribe((event: TerminalSessionChangedEvent) => {
       const changedId = event?.sessionId ?? null;
-      // Unknown ids (a bulk change) and anything touching this chat or one of
-      // its shells reload; everything else is somebody else's news.
-      if (changedId && changedId !== sessionId && !shellIdsRef.current.has(changedId)) return;
+      // Anything touching this chat or one of its shells reloads, and a bulk
+      // change (no id) does too. So does a newly CREATED session: this read is
+      // the only way to learn whether it is one of this chat's shells, and the
+      // ids we hold cannot answer for a row that did not exist a moment ago.
+      // Everything else is somebody else's news.
+      const isNewSession = event?.reason === "created";
+      if (changedId && !isNewSession && changedId !== sessionId && !shellIdsRef.current.has(changedId)) return;
       void load();
     }, chatRuntimePinRef.current ?? undefined);
     return () => {

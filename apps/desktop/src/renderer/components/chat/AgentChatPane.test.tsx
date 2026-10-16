@@ -2935,8 +2935,13 @@ describe("AgentChatPane companion drawers", () => {
     act(() => mocks.emitSessionChanged({ sessionId: "session-elsewhere", reason: "meta-updated" }));
     expect(mocks.listShells).toHaveBeenCalledTimes(1);
 
-    act(() => mocks.emitSessionChanged({ sessionId: "shell-1", reason: "meta-updated" }));
+    // A session that did not exist a moment ago can be this chat's shell, and
+    // the ids this pane holds cannot say either way — only a read can.
+    act(() => mocks.emitSessionChanged({ sessionId: "shell-new", reason: "created" }));
     await waitFor(() => expect(mocks.listShells).toHaveBeenCalledTimes(2));
+
+    act(() => mocks.emitSessionChanged({ sessionId: "shell-1", reason: "meta-updated" }));
+    await waitFor(() => expect(mocks.listShells).toHaveBeenCalledTimes(3));
   });
 
 describe("AgentChatPane durable recovery actions", () => {
