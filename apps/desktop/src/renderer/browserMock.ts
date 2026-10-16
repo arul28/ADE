@@ -4877,6 +4877,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     // only as "held" flags, as the real bridge never hands one back either.
     mcpRegistry: (() => {
       const held = new Set<string>();
+      const signedIn = new Map<string, string>();
       const secretKey = (ref: { server: string; field: string; name: string }) =>
         mcpSecretVaultKey(ref.server, ref.field === "header" ? "header" : "env", ref.name);
       const found = [
@@ -4900,8 +4901,26 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             missingCommands: args.servers
               .filter((server) => server.transport === "stdio" && server.command === "missing-command")
               .map((server) => server.name),
+            // Every HTTP / SSE server without a header asks for a sign-in here.
+            signIns: args.servers
+              .filter((server) => server.transport !== "stdio" && (signedIn.has(server.name) || !server.headerNames.length))
+              .map((server) => ({
+                server: server.name,
+                state: signedIn.has(server.name) ? "valid" as const : "needed" as const,
+                expiresAt: signedIn.get(server.name) ?? null,
+              })),
           },
         }),
+        signIn: async (args: { server: { name: string } }) => {
+          const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+          signedIn.set(args.server.name, expiresAt);
+          return { ok: true as const, value: { server: args.server.name, state: "valid" as const, expiresAt } };
+        },
+        cancelSignIn: async () => false,
+        signOut: async (args: { server: string }) => {
+          signedIn.delete(args.server);
+          return { ok: true as const, value: null };
+        },
         setSecret: async (args: { server: string; field: string; name: string; value: string }) => {
           held.add(secretKey(args));
           return { ok: true as const, value: null };

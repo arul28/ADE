@@ -18,9 +18,11 @@ export type McpRegistryLaunch = {
   missing: string[];
   /** Servers left out because this provider has no client for their transport. */
   unsupported: string[];
+  /** Servers whose browser sign-in has run out: they start signed out. */
+  signInExpired: string[];
 };
 
-const NONE: McpRegistryLaunch = { servers: null, missing: [], unsupported: [] };
+const NONE: McpRegistryLaunch = { servers: null, missing: [], unsupported: [], signInExpired: [] };
 
 export function resolveMcpRegistryForLaunch(args: {
   adeHome: string;
@@ -40,7 +42,7 @@ export function resolveMcpRegistryForLaunch(args: {
   const unsupported = all.filter((server) => blockedTransports.includes(server.transport)).map((server) => server.name);
   const deliverable = all.filter((server) => !blockedTransports.includes(server.transport));
   const resolved = mcpRegistryToCallerServers(deliverable, off, args.readSecret);
-  return { servers: resolved.servers, missing: resolved.missing, unsupported };
+  return { servers: resolved.servers, missing: resolved.missing, unsupported, signInExpired: resolved.signInExpired };
 }
 
 /**
@@ -54,6 +56,9 @@ export function mcpRegistryLaunchNotices(registry: McpRegistryLaunch): string[] 
       : []),
     ...(registry.unsupported.length
       ? [`This provider cannot connect to these MCP servers, so they were left out: ${registry.unsupported.join(", ")}.`]
+      : []),
+    ...(registry.signInExpired.length
+      ? [`The sign-in for these MCP servers has run out, so they started signed out (sign in again in Settings > MCP servers): ${registry.signInExpired.join(", ")}.`]
       : []),
   ];
 }

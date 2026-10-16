@@ -21,11 +21,14 @@ import {
   MCP_SECRET_VAULT_KIND,
   isValidMcpFieldName,
   isValidMcpRegistryName,
+  mcpOAuthTokenState,
+  mcpOAuthVaultKey,
   mcpSecretVaultKey,
   mcpSecretVaultKeyPrefix,
   mcpSecretVaultKeys,
   normalizeMcpRegistry,
   normalizeMcpRegistryServer,
+  parseMcpOAuthToken,
   type McpRegistryServer,
 } from "../../../shared/mcpRegistry";
 import type { AccountVaultItem, AccountVaultResult } from "../../../shared/types/accountVault";
@@ -36,10 +39,12 @@ import type {
   McpRegistryResult,
   McpRegistryScan,
   McpRegistrySecretRef,
+  McpServerSignIn,
 } from "../../../shared/types/mcpRegistry";
 import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 import { readCachedMcpRegistry } from "./mcpRegistryCache";
 import { scanProviderMcpConfigs, toFoundServers, type ProviderMcpScan } from "./mcpProviderConfigScan";
+import { createMcpOAuthSignIns, probeMcpAuth, refreshMcpOAuthToken, type McpFetch } from "./mcpOAuth";
 
 /** The four vault calls this service makes. `createAccountVaultBridge` satisfies it. */
 export type McpRegistryVault = {
@@ -57,7 +62,15 @@ export type McpRegistryServiceOptions = {
   scan?: (args: { projectRoot: string | null }) => ProviderMcpScan;
   /** Replaceable so a test need not depend on what this computer has installed. */
   commandExists?: (command: string) => boolean;
+  /** Opens the browser for a sign-in. On this computer: the loopback redirect is here. */
+  openUrl?: (url: string) => Promise<void>;
+  fetch?: McpFetch;
 };
+
+/** Renew a sign-in this close to running out, when the server gave a way to. */
+const REFRESH_WITHIN_MS = 24 * 60 * 60 * 1000;
+/** How long one "does this server want a sign-in" answer is reused. */
+const PROBE_TTL_MS = 10 * 60 * 1000;
 
 const INVALID_SECRET: McpRegistryResult<null> = {
   ok: false,
@@ -94,6 +107,45 @@ export function createMcpRegistryService(options: McpRegistryServiceOptions) {
   const { vault } = options;
   const scanConfigs = options.scan ?? ((args) => scanProviderMcpConfigs(args));
   const commandExists = options.commandExists ?? defaultCommandExists;
+  const fetchImpl = options.fetch ?? fetch;
+  const signIns = createMcpOAuthSignIns({
+    openUrl: options.openUrl ?? (async () => { throw new Error("No browser is available here."); }),
+    fetch: fetchImpl,
+  });
+  // Keyed by URL: the answer is about the server, not about its name here.
+  const probes = new Map<string, { at: number; needsSignIn: boolean }>();
+
+  const needsSignIn = async (url: string): Promise<boolean> => {
+    const cached = probes.get(url);
+    if (cached && Date.now() - cached.at < PROBE_TTL_MS) return cached.needsSignIn;
+    const probe = await probeMcpAuth(url, fetchImpl);
+    // Unreachable is not "needs a sign-in": the row must not offer one it can't do.
+    const answer = probe.kind === "sign-in";
+    if (probe.kind !== "unknown") probes.set(url, { at: Date.now(), needsSignIn: answer });
+    return answer;
+  };
+
+  /** One server's sign-in as the page shows it, renewing it first when it is about to run out. */
+  const signInStatus = async (server: McpRegistryServer): Promise<McpRegistryResult<McpServerSignIn | null>> => {
+    if (server.transport === "stdio" || !server.url) return { ok: true, value: null };
+    const key = mcpOAuthVaultKey(server.name);
+    const stored = await vault.get(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, key);
+    if (!stored.ok) return stored;
+    let token = parseMcpOAuthToken(stored.value);
+    if (token && mcpOAuthTokenState(token, server) !== "none" && token.refreshToken && token.expiresAt
+      && Date.parse(token.expiresAt) - Date.now() < REFRESH_WITHIN_MS) {
+      const renewed = await refreshMcpOAuthToken(token, fetchImpl);
+      if (typeof renewed !== "string") {
+        const saved = await vault.set(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, key, JSON.stringify(renewed));
+        if (saved.ok) token = renewed;
+      }
+    }
+    const state = mcpOAuthTokenState(token, server);
+    if (state !== "none") return { ok: true, value: { server: server.name, state, expiresAt: token?.expiresAt ?? null } };
+    // A server with a header of its own already says how it signs in.
+    if (server.headerNames.length) return { ok: true, value: null };
+    return { ok: true, value: (await needsSignIn(server.url)) ? { server: server.name, state: "needed", expiresAt: null } : null };
+  };
 
   /** Removes every vault item under one server, except the keys named. */
   const removeServerSecrets = async (server: string, keep: readonly string[] = []): Promise<McpRegistryResult<null>> => {
@@ -129,7 +181,42 @@ export function createMcpRegistryService(options: McpRegistryServiceOptions) {
       const missingCommands = servers
         .filter((server) => server.transport === "stdio" && !commandExists(server.command ?? ""))
         .map((server) => server.name);
-      return { ok: true, value: { heldSecretKeys, missingCommands } };
+      const statuses = await Promise.all(servers.map(signInStatus));
+      const failed = statuses.find((status) => !status.ok);
+      if (failed && !failed.ok) return failed;
+      const signInList = statuses.flatMap((status) => (status.ok && status.value ? [status.value] : []));
+      return { ok: true, value: { heldSecretKeys, missingCommands, signIns: signInList } };
+    },
+
+    /**
+     * Signs one server in through the browser and keeps the token in the
+     * account vault. Resolves when the browser comes back, is cancelled, or
+     * times out.
+     */
+    async signIn(rawServer: unknown): Promise<McpRegistryResult<McpServerSignIn>> {
+      const server = normalizeMcpRegistryServer(rawServer);
+      if (!server || server.transport === "stdio" || !server.url) {
+        return { ok: false, rejected: true, message: "Only an HTTP or SSE server can be signed in to." };
+      }
+      const outcome = await signIns.signIn({ name: server.name, url: server.url });
+      if (!outcome.ok) return { ok: false, rejected: true, message: outcome.message };
+      const saved = await vault.set(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, mcpOAuthVaultKey(server.name), JSON.stringify(outcome.token));
+      if (!saved.ok) return saved;
+      probes.delete(server.url);
+      return { ok: true, value: { server: server.name, state: "valid", expiresAt: outcome.token.expiresAt } };
+    },
+
+    cancelSignIn(server: string): boolean {
+      return signIns.cancel(server);
+    },
+
+    async signOut(server: string): Promise<McpRegistryResult<null>> {
+      if (!isValidMcpRegistryName(server)) return INVALID_SECRET;
+      return await vault.remove(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, mcpOAuthVaultKey(server));
+    },
+
+    dispose(): void {
+      signIns.dispose();
     },
 
     async setSecret(ref: McpRegistrySecretRef, value: unknown): Promise<McpRegistryResult<null>> {
@@ -150,7 +237,9 @@ export function createMcpRegistryService(options: McpRegistryServiceOptions) {
      */
     async pruneSecrets(server: string, keep?: McpRegistryServer | null): Promise<McpRegistryResult<null>> {
       const kept = keep ? normalizeMcpRegistryServer(keep) : null;
-      return await removeServerSecrets(server, kept && kept.name === server ? mcpSecretVaultKeys(kept) : []);
+      // An edit keeps the sign-in; it is dropped only with the server. One for
+      // an old URL is ignored at launch, and the next sign-in replaces it.
+      return await removeServerSecrets(server, kept && kept.name === server ? [...mcpSecretVaultKeys(kept), mcpOAuthVaultKey(server)] : []);
     },
 
     /** The servers the provider CLIs have here. Names only. */

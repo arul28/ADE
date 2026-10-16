@@ -944,6 +944,7 @@ import type {
   McpRegistryResult,
   McpRegistryScan,
   McpRegistrySecretRef,
+  McpServerSignIn,
 } from "../../../shared/types/mcpRegistry";
 import {
   createAccountMigrationRunner,
@@ -12335,6 +12336,7 @@ export function registerIpc({
   const mcpRegistryService = createMcpRegistryService({
     vault: accountVaultBridge,
     adeHome: harnessPresetsAdeDir,
+    openUrl: async (url) => await openExternalUrl(url),
   });
   ipcMain.handle(
     IPC.mcpRegistryContext,
@@ -12370,6 +12372,23 @@ export function registerIpc({
     IPC.mcpRegistryImport,
     async (_event, args: { name: string; projectRoot?: string | null }): Promise<McpRegistryImportResult> =>
       await mcpRegistryService.importServer(String(args?.name ?? ""), args?.projectRoot ?? null),
+  );
+  // The sign-in opens a browser and listens for its redirect on this
+  // computer, so it is never routed to a remote machine. The token lands in
+  // the account vault, which every computer of the account reads.
+  ipcMain.handle(
+    IPC.mcpRegistrySignIn,
+    async (_event, args: { server?: McpRegistryServer }): Promise<McpRegistryResult<McpServerSignIn>> =>
+      await mcpRegistryService.signIn(args?.server),
+  );
+  ipcMain.handle(
+    IPC.mcpRegistryCancelSignIn,
+    (_event, args: { server?: string }): boolean => mcpRegistryService.cancelSignIn(String(args?.server ?? "")),
+  );
+  ipcMain.handle(
+    IPC.mcpRegistrySignOut,
+    async (_event, args: { server?: string }): Promise<McpRegistryResult<null>> =>
+      await mcpRegistryService.signOut(String(args?.server ?? "")),
   );
 
   const accountMigrationRunner = createAccountMigrationRunner({
