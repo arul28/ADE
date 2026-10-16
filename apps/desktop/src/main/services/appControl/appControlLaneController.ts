@@ -343,7 +343,18 @@ function httpGetJson<T>(url: string, timeoutMs = 2_000): Promise<T> {
     req.on("timeout", () => {
       req.destroy(new Error(`Timed out reading ${url}`));
     });
-    req.on("error", reject);
+    req.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code !== "ECONNREFUSED") {
+        reject(error);
+        return;
+      }
+      // An agent pointing App Control at a port nothing listens on: say so,
+      // instead of a bare socket error.
+      reject(Object.assign(
+        new Error(`APP_CONTROL_DEBUG_PORT_CLOSED: Nothing is listening at ${url}. Launch the app with a debug port, or connect to the port it uses.`, { cause: error }),
+        { code: error.code },
+      ));
+    });
   });
 }
 

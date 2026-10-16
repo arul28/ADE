@@ -43,8 +43,6 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /Runtime RPC channel fell behind the sync connection/,
   /^Sync WebSocket is not open\.$/,
   /^IPC handler for 'ade\.remoteRuntime\.callAction' timed out after/,
-  // No network, or a network that blocks the relays (undici names the cause, never the request).
-  /^fetch failed$/,
   /push relay \w+ failed: (account owner changed|HTTP 5\d\d)/,
   // Git states the user is told about and resolves themselves.
   /\bDIRTY_WORKTREE:/,
@@ -64,14 +62,15 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // Answers to an agent driving a browser or a desktop: it fixes its call and retries.
   /Invalid element selector: /,
   /\b(MAC|WINDOWS)_DESKTOP_(NO_DISPLAY|NO_WINDOW|WINDOW_NOT_FOUND|HANDLE_EXPIRED|CONSENT_REQUIRED|OUT_PATH_OUTSIDE_ROOT|INPUT_LEASE_REQUIRED|PERMISSION_REQUIRED|UNSUPPORTED_PLATFORM):/,
+  // Windows host states the user resolves (set up, unlock, free the screen, sign in again).
+  /\bWINDOWS_DESKTOP_(SETUP_REQUIRED|HELD|LOCKED|NOT_CONSOLE_SESSION|WRONG_PASSWORD|CANCELLED):/,
   /is not on this lane's display/,
   /already has an active writer/,
   /^No matching element was found\.$/,
   /Timed out waiting for the App Control condition after/,
   /\bAPP_CONTROL_RECORDING_NOT_RUNNING:/,
   /^Artifact file not found: /,
-  // Pointed at a debug port nothing listens on.
-  /^connect ECONNREFUSED (127\.0\.0\.1|::1):\d+$/,
+  /\bAPP_CONTROL_DEBUG_PORT_CLOSED:/,
   // A PR, review thread or PR creation GitHub refuses; the agent is told why.
   /^PR not found: /,
   /\bdoes not belong to PR \d+/,
@@ -84,6 +83,35 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /GitHub API request failed \(HTTP 5\d\d\)/,
 ];
 
+const NETWORK_FAILURE = /\b(ConnectTimeoutError|Connect Timeout Error|ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_SOCKET|UND_ERR_CONNECT_TIMEOUT)\b/;
+const LOOPBACK_ADDRESS = /(^|[\s(\[,])(127\.\d+\.\d+\.\d+|::1|localhost)(?=[\s:)\],]|$)/;
+
+/**
+ * `fetch failed` because there is no network, or one that blocks ADE's relays.
+ * undici names the reason only in the causes. A loopback cause is kept as an
+ * issue: that is a local service that stopped answering, not the network.
+ */
+export function isOfflineFetchFailure(message: string, causes: readonly string[]): boolean {
+  if (message !== "fetch failed") return false;
+  return causes.some((cause) => NETWORK_FAILURE.test(cause))
+    && !causes.some((cause) => LOOPBACK_ADDRESS.test(cause));
+}
+
+/** The text of each error under `error`: its `cause` chain and an AggregateError's members. */
+function causeTexts(error: unknown): string[] {
+  const texts: string[] = [];
+  const pending: unknown[] = error instanceof Error ? [error.cause] : [];
+  while (pending.length > 0 && texts.length < 16) {
+    const next = pending.shift();
+    if (!(next instanceof Error)) continue;
+    const { code, errors } = next as Error & { code?: unknown; errors?: unknown };
+    texts.push(`${next.name}: ${next.message}${typeof code === "string" ? ` (${code})` : ""}`);
+    pending.push(next.cause);
+    if (Array.isArray(errors)) pending.push(...errors);
+  }
+  return texts;
+}
+
 function failureText(error: unknown): string {
   if (error instanceof Error) return error.message;
   return typeof error === "string" ? error : "";
@@ -95,7 +123,8 @@ export function isExpectedOutcomeText(text: string): boolean {
 
 /** An answer the caller gets, worth a Sentry Log but not an issue. */
 export function isExpectedOutcome(error: unknown): boolean {
-  return isExpectedOutcomeText(failureText(error));
+  const text = failureText(error);
+  return isExpectedOutcomeText(text) || isOfflineFetchFailure(text, causeTexts(error));
 }
 
 export function isExpectedFailure(error: unknown): boolean {
