@@ -77,7 +77,8 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       if (result && typeof result === "object") emitLifecycle(lifecycleFromLane("lane-created", result));
       return result;
     },
-    importBranch: async (args: unknown) => {
+    importBranch: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("importBranch", pin);
       const result = await call("lanes.importBranch", args, null, false);
       if (result && typeof result === "object") emitLifecycle(lifecycleFromLane("lane-created", result));
       return result;
