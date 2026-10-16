@@ -137,6 +137,44 @@ Any selection-entry that is no longer present in the rendered session
 list is pruned from `selectedSessionIds` automatically so stale ids
 don't leak across filter changes.
 
+## Keyboard shortcuts
+
+The page is driven with a small set of ⌘-chords, declared in
+`shared/keybindings.ts` and dispatched by `useWorkShortcuts`
+(`components/work/workShortcuts.ts`), which `TerminalsPage` mounts:
+
+- `⌘↑` / `⌘↓` move the session selection through the visible rows and keep the
+  row on screen. The move **presses the row's control** rather than re-running
+  the selection callback, so it goes through exactly what a click does: the
+  range/toggle modifiers, and — for a session whose machine is not this tab's —
+  the runtime pin that keeps later commands on the owning machine.
+- `⌘I` puts the caret in the prompt box — the chat's own, or the terminal's
+  input for a CLI session — and pressing it again leaves the box (the page gets
+  the keyboard back). `⌘⇧A` opens the chat's actions and progress drawer
+  through its own `ade:chat:open-info` event; `⌘⇧N` starts a new chat draft.
+- `⌘T` opens the tools pane and puts the keyboard inside it, and closes it when
+  it is already open; `Esc` is the same "back out" when focus is elsewhere.
+  `?` opens the shortcut sheet and closes it again (it only fires when the
+  keyboard is not in a typable field, so it is a character everywhere else).
+- `⌃⇥` / `⇧⌃⇥` cycle the project tabs from any page
+  (`components/app/useProjectTabShortcuts.ts`): the cycle follows the tab strip
+  on screen (`aria-current` marks the active tab, DOM order is the visual order,
+  remote tabs sit in the same strip as local ones) and the switch **presses the
+  tab element**, so the busy guard, leaving a machine route, the local-vs-remote
+  dispatch and the error handling are the tab's own, not a second copy. With
+  only one project open there is nothing to cycle, so the key opens the
+  palette's project picker instead of doing nothing.
+
+  On the hosted web client the browser keeps `⌘T` (new tab) and `⌘⇧N` (new
+  private window), so those two chords never reach the page there. Both actions
+  stay reachable: the tools pane from the palette's `Tools: …` rows, and a new
+  chat from a lane entry's own "New chat" action.
+
+Chords fire while a text field has focus — that is what makes them fast — except
+`⌘↑`/`⌘↓`, which a text field or a terminal keeps for caret movement. The full
+contract, including the mnemonic rules and repeat behaviour, is in
+`docs/design/keyboard.md`.
+
 ## Session sidebar: `SessionListPane.tsx`
 
 The pane renders one of two views, chosen by `workViewMode` (`"list"` or

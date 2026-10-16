@@ -26,7 +26,6 @@ import {
   type CrossMachineLaneMarker,
   type CrossMachineLaneRow,
 } from "../../state/crossMachineLanes";
-import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
 import { LaneCloudMarker, LaneMachineMarker } from "./LaneMachineMarker";
@@ -102,7 +101,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
-import { getEffectiveBinding } from "../../lib/keybindings";
+import { bindingChipLabel, fireBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { laneRailTint, laneSurfaceTint, toneText, fgTint } from "../lanes/laneDesignTokens";
 import { canBulkDeleteSession, canBulkStopSession, isChatToolType, primarySessionLabel } from "../../lib/sessions";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
@@ -201,55 +200,13 @@ const SHELF_BODY_STACK_CLASS = ROW_STACK_CLASS;
 const SHELF_EXPANDED_ROW_CLASS = "my-[7px] first:mt-0 last:mb-0";
 
 
-type PaletteCombo = { key: string; ctrl: boolean; meta: boolean; alt: boolean; shift: boolean };
-
 /**
- * First alternative of a keybinding string ("Mod+K", "Mod+K,Ctrl+P"), resolved
- * against the platform the way `lib/keybindings` resolves it when matching.
- * Parsed here rather than imported because that module exposes only a matcher
- * and a resolver — nothing that hands back the combo itself.
+ * The palette's own binding, for the search button: what it prints and what it
+ * re-plays both come from `lib/keybindings`, so this pane and every other
+ * surface cannot disagree about a chord. `shortcutChipLabel` is the name the
+ * pane's tests know it by.
  */
-function parsePrimaryCombo(binding: string): PaletteCombo | null {
-  const first = binding.split(",")[0]?.trim();
-  if (!first) return null;
-  const mac = isMacPlatform();
-  const combo: PaletteCombo = { key: "", ctrl: false, meta: false, alt: false, shift: false };
-  for (const raw of first.split("+")) {
-    const token = raw.trim().toLowerCase();
-    if (!token) continue;
-    if (token === "mod") {
-      if (mac) combo.meta = true;
-      else combo.ctrl = true;
-      continue;
-    }
-    if (token === "ctrl" || token === "control") { combo.ctrl = true; continue; }
-    if (token === "meta" || token === "cmd" || token === "command") { combo.meta = true; continue; }
-    if (token === "alt" || token === "option") { combo.alt = true; continue; }
-    if (token === "shift") { combo.shift = true; continue; }
-    combo.key = raw.trim();
-  }
-  return combo.key ? combo : null;
-}
-
-/** `⌘K` on macOS, `Ctrl+K` elsewhere — display only. Exported for tests. */
-export function shortcutChipLabel(binding: string): string | null {
-  const combo = parsePrimaryCombo(binding);
-  if (!combo) return null;
-  const mac = isMacPlatform();
-  const parts: string[] = [];
-  if (combo.ctrl) parts.push(mac ? "⌃" : modifierKeyLabel);
-  if (combo.alt) parts.push(mac ? "⌥" : "Alt");
-  if (combo.shift) parts.push(mac ? "⇧" : "Shift");
-  // Off macOS there is no Meta key on the keyboard. A binding that spells the
-  // modifier out ("Cmd+K", "Meta+K") resolves to the same key "Mod" does, so
-  // it has to print as that key — the chip used to read "Meta+K". Skipped when
-  // Ctrl already claimed the slot so "Ctrl+Cmd+K" isn't printed twice.
-  if (combo.meta && !(!mac && combo.ctrl)) {
-    parts.push(mac ? "⌘" : modifierKeyLabel);
-  }
-  parts.push(combo.key.length === 1 ? combo.key.toUpperCase() : combo.key);
-  return mac ? parts.join("") : parts.join("+");
-}
+export const shortcutChipLabel = bindingChipLabel;
 
 function bucketByTime(sessions: TerminalSessionSummary[]) {
   const now = new Date();
@@ -1191,17 +1148,7 @@ export const SessionListPane = React.memo(function SessionListPane({
    * user's OWN binding, so a rebound palette still opens from here.
    */
   const openCommandPalette = useCallback(() => {
-    const combo = parsePrimaryCombo(commandPaletteBinding);
-    if (!combo) return;
-    window.dispatchEvent(new KeyboardEvent("keydown", {
-      key: combo.key,
-      ctrlKey: combo.ctrl,
-      metaKey: combo.meta,
-      altKey: combo.alt,
-      shiftKey: combo.shift,
-      bubbles: true,
-      cancelable: true,
-    }));
+    fireBinding(commandPaletteBinding);
   }, [commandPaletteBinding]);
   // The Work sidebar is a union across every connected machine, always —
   // independent of which machine this tab is bound to. That is the whole point:

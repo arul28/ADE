@@ -1455,6 +1455,23 @@ Renderer surfaces:
   - `WorkHeaderPaneToggles.tsx` exports `WORK_HEADER_ICON_BUTTON_CLASS`, the
     white bold header glyph that the Tools toggle and the icons beside it
     (browser presence, open terminal, chat progress) share.
+- `apps/desktop/src/renderer/components/work/workShortcuts.ts` — the Work page's
+  ⌘-chords (`⌘↑`/`⌘↓` chat selection, `⌘I` in and out of the prompt box, `⌘⇧A`
+  chat actions, `⌘⇧N` new chat, `⌘T` tools pane, `Esc` back out). The ids live
+  in `shared/keybindings.ts`; the page moves by **pressing the control** (the
+  row's `data-session-row-action` face) rather than re-running the selection
+  callback, so a cross-machine row keeps its runtime pin.
+  - `WorkShortcutSheet.tsx` is the `?` sheet. It reads the same constants the
+    dispatcher resolves, so a listed chord always has a handler.
+  - `lib/keyboardClaims.ts` answers the two questions every page chord asks:
+    is a modal/menu/popper in front (`keyChordIsClaimed`), and is the caret in
+    a field or terminal (`caretChordIsClaimed`).
+  - `components/app/useProjectTabShortcuts.ts` cycles the project tabs with
+    `⌃⇥`/`⇧⌃⇥`: it presses the next `[data-project-tab-key]` element, so the
+    busy guard, leaving a machine route, the local-vs-remote dispatch and the
+    error handling are the tab's own. One project → the palette's picker.
+  - The contract (toggle-on-the-same-key, the claim order, Windows labels) is
+    in `docs/design/keyboard.md`.
 - `apps/desktop/src/renderer/components/work/ClaudeLoginPromptButton.tsx` —
   dismissible Claude auth recovery CTA. Chat headers render it after a
   Claude SDK auth error; CLI headers render it when a Claude terminal

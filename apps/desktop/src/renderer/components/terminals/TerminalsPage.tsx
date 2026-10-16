@@ -12,6 +12,8 @@ import { WorkGridView } from "./WorkGridView";
 import { WorkFocusGridEmpty, WorkFocusRoster } from "./WorkFocusGrid";
 import { useWorkFocusGrid } from "./useWorkFocusGrid";
 import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
+import { WorkShortcutSheet } from "../work/WorkShortcutSheet";
+import { useWorkShortcuts } from "../work/workShortcuts";
 import { Banner } from "../ui/notice/Banner";
 import { WorkSidebar } from "./WorkSidebar";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "../app/projectSidebar/ProjectSidebarSlot";
@@ -1974,6 +1976,24 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const listSelectedSessionId = focus.selectedSessionId ?? work.selectedSessionId;
 
   /**
+   * The Work page's shortcuts: ⌘↑/⌘↓ move the chat selection, ⌘I goes to the
+   * prompt box, ⌘⇧A opens the chat's actions, ⌘⇧N starts a chat, ⌘T toggles
+   * the tools pane, Esc backs out of it. See `workShortcuts.ts` for the rules
+   * (a text field keeps its own keys; these are chords, so they are never
+   * typing).
+   */
+  const keybindings = useAppStore((s) => s.keybindings);
+  const workShortcuts = useWorkShortcuts({
+    active,
+    keybindings,
+    selectedSessionId: listSelectedSessionId,
+    onNewChat: () => listShowDraftKind("chat"),
+    onToggleTools: () => work.setWorkSidebarOpen(!work.workSidebarOpen),
+    onCloseTools: () => work.setWorkSidebarOpen(false),
+    toolsOpen: () => work.workSidebarOpen,
+  });
+
+  /**
    * The session roster. It lives in the project sidebar in list mode, stays
    * there beside the board in board mode, and fills the main area only when
    * the board has no sidebar to sit next to.
@@ -2141,6 +2161,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       {hasProjectSidebar && (!boardMode || boardBesideList) ? (
         <ProjectSidebarSlot active={active}>{sessionListPane}</ProjectSidebarSlot>
       ) : null}
+
+      <WorkShortcutSheet open={workShortcuts.keysOpen} onOpenChange={workShortcuts.setKeysOpen} />
 
       <SessionContextMenu
         menu={contextMenu}

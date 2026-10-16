@@ -4,12 +4,13 @@ import { AccountSignedOutBanner } from "../account/AccountSignedOutBanner";
 import { IssueSheetHost } from "../issues/IssueSheetHost";
 import { IssueCreateHost } from "../issues/IssueCreateHost";
 import { IssueLaunchHost } from "./IssueLaunchHost";
-import { CommandPalette } from "./CommandPalette";
+import { CommandPalette, type CommandPaletteIntent } from "./CommandPalette";
 import { IntegrationBanners } from "./IntegrationBanners";
 import { isCssZoomedBrowserSurface } from "../../lib/webClientMode";
 import { TopBar } from "./TopBar";
 import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 import { useProjectSidebarShortcuts } from "./projectSidebar/useProjectSidebarShortcuts";
+import { useProjectTabShortcuts } from "./useProjectTabShortcuts";
 import { ProjectTransitionErrorAlert } from "./ProjectTransitionErrorAlert";
 import { TabBackground } from "../ui/TabBackground";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
@@ -278,6 +279,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const closeProject = useAppStore((s) => s.closeProject);
   const [commandOpen, setCommandOpen] = useState(false);
+  /**
+   * Which mode the palette opens in. `⌃Tab` with one project open asks for
+   * `project-browse`, so the key that switches projects also starts the flow
+   * to add one; every other opener resets it to `default`.
+   */
+  const [commandIntent, setCommandIntent] = useState<CommandPaletteIntent>("default");
   const visitedTabsRef = useRef(new Set<string>());
   const isFirstVisit = !visitedTabsRef.current.has(location.pathname);
   const [aiStatus, setAiStatus] = useState<AiSettingsStatus | null>(null);
@@ -993,10 +1000,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     navigate,
   });
 
+  /** `⌃Tab` with nothing to cycle: open the palette on its project picker. */
+  const openProjectPicker = useCallback(() => {
+    setCommandIntent("project-browse");
+    setCommandOpen(true);
+  }, []);
+
+  // ⇧⌃Tab / ⌃Tab switch project tabs from any page, the way tabs switch
+  // everywhere else. The projects are the window's top level, so this one is
+  // not scoped to a route.
+  useProjectTabShortcuts({
+    enabled: Boolean(project?.rootPath),
+    keybindings,
+    onOpenProjectPicker: openProjectPicker,
+  });
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!eventMatchesBinding(e, commandPaletteBinding)) return;
       e.preventDefault();
+      // A plain open always starts in the palette's default mode; only the
+      // project picker's own entry points ask for browse mode.
+      setCommandIntent("default");
       setCommandOpen((prev) => !prev);
     };
     window.addEventListener("keydown", onKeyDown);
@@ -1112,7 +1137,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <ActivityPane open={activityPaneOpen} onClose={() => setActivityPaneOpen(false)} />
 
-      <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
+      <CommandPalette
+        open={commandOpen}
+        intent={commandIntent}
+        onOpenChange={(open) => {
+          setCommandOpen(open);
+          if (!open) setCommandIntent("default");
+        }}
+      />
       <IssueSheetHost />
       <IssueCreateHost />
       <IssueLaunchHost />
