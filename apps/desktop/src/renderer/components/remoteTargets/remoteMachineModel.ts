@@ -474,6 +474,12 @@ export function formatRemoteTargetError(error: unknown): string {
   // No word-boundary: camelCase IPC names embed `Ssh` without `\b` edges.
   const sshHint = /ssh|sshd|remote login/i.test(raw);
 
+  // The main process answers with a named, timed message well inside the IPC
+  // ceiling, so this only shows when that answer was lost to the ceiling itself.
+  if (/IPC handler for 'ade\.account\.pairMachine' timed out/i.test(message)) {
+    return "ADE stopped waiting for that computer before it finished connecting. Make sure ADE is open on it, then try again.";
+  }
+
   if (/ECONNRESET/i.test(message)) {
     return sshHint
       ? "SSH server closed the connection before ADE could finish the SSH handshake. Check that Remote Login/sshd is enabled on the remote machine and try again."

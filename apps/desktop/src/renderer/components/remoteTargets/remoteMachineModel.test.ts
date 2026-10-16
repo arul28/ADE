@@ -449,6 +449,14 @@ describe("formatRemoteTargetError", () => {
       ),
     ).toMatch(/SSH server closed the connection before ADE could finish the SSH handshake/);
   });
+
+  it("replaces a raw pairMachine IPC timeout with human copy", () => {
+    const message = formatRemoteTargetError(
+      "Error invoking remote method 'ade.account.pairMachine': Error: IPC handler for 'ade.account.pairMachine' timed out after 30000ms (callId=23714)",
+    );
+    expect(message).not.toMatch(/IPC handler|callId/);
+    expect(message).toMatch(/stopped waiting for that computer/);
+  });
 });
 
 describe("describeMachineUpdateAttempt", () => {
