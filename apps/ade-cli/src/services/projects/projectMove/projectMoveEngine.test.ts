@@ -132,7 +132,7 @@ function commonDir(checkout: string): string {
 // only), and no macOS runner executes the ade-cli vitest suites.
 describe.skipIf(process.platform !== "darwin")("runProjectMove", () => {
   it("moves the project with its lanes, tracked dependencies and data, and keeps the original parked", async () => {
-    const source = path.join(tmp, "Proj");
+    const source = path.join(tmp, "Proj#;");
     const { outsideLane } = await makeProject(source);
     const destination = path.join(tmp, "drive", "Proj");
     const codexConfig = writeCodexConfig(`model = "gpt-5"\n\n[projects."${source}"]\ntrust_level = "trusted"\n`);
