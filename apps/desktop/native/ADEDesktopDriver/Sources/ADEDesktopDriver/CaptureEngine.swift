@@ -261,7 +261,7 @@ final class CaptureEngine {
     // -----------------------------------------------------------------------
 
     @available(macOS 12.3, *)
-    private func shareableContent() throws -> SCShareableContent {
+    private func shareableContent(deadline: Date? = nil) throws -> SCShareableContent {
         let box = ValueBox<Result<SCShareableContent, Error>>()
         SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: false) { content, error in
             if let content {
@@ -270,7 +270,7 @@ final class CaptureEngine {
                 box.set(.failure(error ?? CaptureError.failed("ScreenCaptureKit returned no content.")))
             }
         }
-        RunLoopPump.wait(until: { box.value != nil }, timeout: 10)
+        RunLoopPump.wait(until: { box.value != nil }, timeout: Self.waitWithin(10, deadline))
         switch box.value {
         case .success(let content):
             return content
@@ -282,8 +282,12 @@ final class CaptureEngine {
     }
 
     @available(macOS 12.3, *)
-    private func filter(displayId: CGDirectDisplayID, windowId: CGWindowID?) throws -> (SCContentFilter, Int, Int) {
-        let content = try shareableContent()
+    private func filter(
+        displayId: CGDirectDisplayID,
+        windowId: CGWindowID?,
+        deadline: Date? = nil
+    ) throws -> (SCContentFilter, Int, Int) {
+        let content = try shareableContent(deadline: deadline)
         if let windowId, let window = content.windows.first(where: { $0.windowID == windowId }) {
             let filter = SCContentFilter(desktopIndependentWindow: window)
             return (filter, Int(window.frame.width), Int(window.frame.height))
@@ -318,19 +322,21 @@ final class CaptureEngine {
     private func retryingFilter(
         displayId: CGDirectDisplayID,
         windowId: CGWindowID?,
-        label: String
+        label: String,
+        deadline: Date? = nil
     ) throws -> (SCContentFilter, Int, Int) {
         var attempt = 0
         while true {
             do {
-                return try filter(displayId: displayId, windowId: windowId)
+                return try filter(displayId: displayId, windowId: windowId, deadline: deadline)
             } catch {
                 guard displayId != 0 || windowId != nil,
                       attempt < Self.startBackoffs.count,
+                      !Self.budgetSpent(deadline),
                       Self.isRetryableStartFailure(error)
                 else { throw error }
                 log("\(label) has no capture surface yet (\(Self.describe(error))); retrying in \(Int(Self.startBackoffs[attempt] * 1000))ms")
-                RunLoopPump.wait(until: { false }, timeout: Self.startBackoffs[attempt])
+                RunLoopPump.wait(until: { false }, timeout: Self.waitWithin(Self.startBackoffs[attempt], deadline))
                 attempt += 1
             }
         }
@@ -354,6 +360,38 @@ final class CaptureEngine {
     /// made against a stale content snapshot.
     static let startBackoffs: [TimeInterval] = [0.25, 0.5, 1.0, 2.0]
 
+    /// How long one `screenshot` may spend, retries and content lookups
+    /// included.
+    ///
+    /// Derived from the driver's other clocks, not chosen. `observe` is the only
+    /// caller on the agent path: its accessibility walk is bounded at
+    /// `AXTimeouts.observeWalk` (5 s), the driver's watchdog answers at 15 s and
+    /// the service gives up at 20 s. The capture half had no bound of its own —
+    /// a 10 s wait per `SCScreenshotManager` attempt, up to five attempts
+    /// (`startBackoffs`), each re-resolving the content filter with its own
+    /// 10 s `SCShareableContent` wait — so one stalled ScreenCaptureKit call ran
+    /// for the better part of a minute and the watchdog answered `observe` on
+    /// its behalf ("observe did not complete within 15s") while the handler was
+    /// alive and pumping the run loop. That is the failure this bounds, at the
+    /// walk's own 5 s: this plus the walk plus the window list is what has to
+    /// fit under the watchdog's 15 s and the service's 20 s. A frame that does
+    /// not arrive is not a failure of the observation — the element tree is
+    /// what an agent acts on, and `observe` already reports a capture that
+    /// produced no frame.
+    static let screenshotBudget: TimeInterval = 5
+
+    /// How long one wait may run: its own ceiling, or what is left of a budget
+    /// handed down when that is less. `nil` is a caller with no budget.
+    static func waitWithin(_ ceiling: TimeInterval, _ deadline: Date?) -> TimeInterval {
+        guard let deadline else { return ceiling }
+        return max(0.05, min(ceiling, deadline.timeIntervalSinceNow))
+    }
+
+    /// Whether a budget handed down is spent. `nil` is a caller with none.
+    static func budgetSpent(_ deadline: Date?) -> Bool {
+        guard let deadline else { return false }
+        return Date() >= deadline
+    }
 
     /// The `SCStreamError` codes worth trying again.
     ///
@@ -499,6 +537,9 @@ final class CaptureEngine {
     // -----------------------------------------------------------------------
 
     /// One PNG on disk. Returns its pixel size.
+    ///
+    /// Bounded by `screenshotBudget`, retries and all: see that constant for
+    /// why the caller of this one may not wait for it indefinitely.
     func screenshot(
         laneId: String,
         displayId: CGDirectDisplayID,
@@ -508,17 +549,26 @@ final class CaptureEngine {
         guard #available(macOS 12.3, *) else {
             throw CaptureError.failed("ScreenCaptureKit needs macOS 12.3 or newer.")
         }
-        let image = try captureImage(displayId: displayId, windowId: windowId)
+        let image = try captureImage(
+            displayId: displayId,
+            windowId: windowId,
+            deadline: Date().addingTimeInterval(Self.screenshotBudget)
+        )
         try Self.writePNG(image, to: path)
         return (image.width, image.height)
     }
 
     @available(macOS 12.3, *)
-    private func captureImage(displayId: CGDirectDisplayID, windowId: CGWindowID?) throws -> CGImage {
+    private func captureImage(
+        displayId: CGDirectDisplayID,
+        windowId: CGWindowID?,
+        deadline: Date? = nil
+    ) throws -> CGImage {
         let (contentFilter, width, height) = try retryingFilter(
             displayId: displayId,
             windowId: windowId,
-            label: "screenshot"
+            label: "screenshot",
+            deadline: deadline
         )
         let configuration = SCStreamConfiguration()
         configuration.width = max(1, width)
@@ -534,7 +584,7 @@ final class CaptureEngine {
                 // same stale list.
                 let attemptFilter = attempt == 0
                     ? contentFilter
-                    : (try filter(displayId: displayId, windowId: windowId)).0
+                    : (try filter(displayId: displayId, windowId: windowId, deadline: deadline)).0
                 let box = ValueBox<Result<CGImage, Error>>()
                 SCScreenshotManager.captureImage(
                     contentFilter: attemptFilter,
@@ -546,7 +596,7 @@ final class CaptureEngine {
                         box.set(.failure(error ?? CaptureError.failed("ScreenCaptureKit returned no image.")))
                     }
                 }
-                RunLoopPump.wait(until: { box.value != nil }, timeout: 10)
+                RunLoopPump.wait(until: { box.value != nil }, timeout: Self.waitWithin(10, deadline))
                 switch box.value {
                 case .success(let image):
                     if attempt > 0 { log("screenshot succeeded on attempt \(attempt + 1)") }
@@ -556,13 +606,16 @@ final class CaptureEngine {
                 case nil:
                     lastError = CaptureError.failed("The screenshot did not arrive in time.")
                 }
-                guard attempt < Self.startBackoffs.count, Self.isRetryableStartFailure(lastError) else {
+                guard attempt < Self.startBackoffs.count,
+                      !Self.budgetSpent(deadline),
+                      Self.isRetryableStartFailure(lastError)
+                else {
                     throw CaptureError.failed(
                         "The screenshot failed after \(attempt + 1) attempts: \(Self.describe(lastError))"
                     )
                 }
                 log("screenshot failed (\(Self.describe(lastError))); retrying in \(Int(Self.startBackoffs[attempt] * 1000))ms")
-                RunLoopPump.wait(until: { false }, timeout: Self.startBackoffs[attempt])
+                RunLoopPump.wait(until: { false }, timeout: Self.waitWithin(Self.startBackoffs[attempt], deadline))
                 attempt += 1
             }
         }
@@ -585,7 +638,7 @@ final class CaptureEngine {
             sink: sink,
             label: "screenshot"
         )
-        RunLoopPump.wait(until: { captured.value != nil || streamFailure.value != nil }, timeout: 10)
+        RunLoopPump.wait(until: { captured.value != nil || streamFailure.value != nil }, timeout: Self.waitWithin(10, deadline))
         stream.stopCapture { _ in }
         if let image = captured.value { return image }
         if let error = streamFailure.value { throw error }

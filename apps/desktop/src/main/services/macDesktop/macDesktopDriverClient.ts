@@ -93,8 +93,25 @@ export const MAC_DESKTOP_GESTURE_IN_FLIGHT_CODE = "gesture_in_flight" as const;
 
 export type MacDesktopDriverOp = (typeof MAC_DESKTOP_DRIVER_OPS)[keyof typeof MAC_DESKTOP_DRIVER_OPS];
 
-/** Restarts inside the unstable window before the helper is declared dead. */
-const MAX_RESTART_ATTEMPTS = 4;
+/**
+ * Restarts inside the unstable window before the helper is called a crash loop,
+ * and the window it is measured against.
+ *
+ * The attempt budget is derived from the window, not chosen: a budget that ends
+ * inside the window can never tell a burst of transient failures — the binary
+ * being replaced under an app update (the ETXTBSY case below), a window-server
+ * hiccup, a ScreenCaptureKit stall a fresh process clears — from a helper that
+ * dies on sight. Four attempts at a 400 ms doubling backoff span
+ * 400+800+1600+3200 = 6 s, a fifth of the window, so the budget was always
+ * spent inside one episode and the fifth failure was called a crash loop while
+ * its cause was still clearing.
+ *
+ * With the delay capped at {@link MAX_RESTART_DELAY_MS} the budget needs seven
+ * attempts to span the window (0.4+0.8+1.6+3.2+6.4+10+10 = 32.4 s). The first
+ * four delays are unchanged and every later one is *longer* than the four
+ * attempts it replaces: this is a slower restart, never a faster one.
+ */
+const MAX_RESTART_ATTEMPTS = 7;
 /** A helper that lives this long is considered healthy again. */
 const STABLE_AFTER_MS = 30_000;
 const BASE_RESTART_DELAY_MS = 400;
@@ -126,6 +143,28 @@ export class MacDesktopDriverError extends Error {
     this.name = "MacDesktopDriverError";
     this.code = code;
   }
+}
+
+/**
+ * The driver's "I gave up waiting" answer.
+ *
+ * `PendingRequestTracker.swift` answers a request whose handler is still
+ * running with this code and this phrasing. It is neither a refusal nor a
+ * crash: the process answered, the work may yet finish, and this sentence is
+ * the only thing that says so. Callers that must not lose the work — a
+ * recording that installs itself late — ask for it by name here rather than
+ * re-deriving the wording, the same way the gesture refusal above is matched
+ * on its code.
+ */
+export const MAC_DESKTOP_DRIVER_GAVE_UP_CODE = "internal_error" as const;
+
+export function isMacDesktopDriverStillRunning(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!/did not complete within \d+s/.test(message)) return false;
+  // Either the error this client minted, or one a caller re-raised from it: the
+  // code prefix survives a re-wrap, and it is how these are spelled on the wire.
+  return (error as { code?: unknown } | null | undefined)?.code === MAC_DESKTOP_DRIVER_GAVE_UP_CODE
+    || message.startsWith(`${MAC_DESKTOP_DRIVER_GAVE_UP_CODE}:`);
 }
 
 export type MacDesktopDriverEvent = { event: string } & Record<string, unknown>;
@@ -268,11 +307,16 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
         version,
       };
     }
-    if (!child && restartAttempts >= MAX_RESTART_ATTEMPTS && !restartTimer) {
+    // Past the budget, not `>=` it: the last in-budget attempt is still a
+    // scheduled restart, and `scheduleRestart` keeps a slow one pending from
+    // then on, so this state is reached while a retry is in flight. The state
+    // is honest — the helper is not up — and the retry is what keeps it from
+    // being a dead end.
+    if (!child && restartAttempts > MAX_RESTART_ATTEMPTS) {
       return {
         state: "crash_loop",
         title: `${driverLabel} stopped`,
-        message: "The native desktop driver repeatedly exited. Restart ADE; if it happens again, reinstall or update the app.",
+        message: "The native desktop driver repeatedly exited. ADE keeps retrying; if it does not recover, restart ADE, then reinstall or update the app.",
         recovery: "reinstall_or_update",
         version,
       };
@@ -453,15 +497,8 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     }
   };
 
-  const scheduleRestart = (): void => {
-    if (disposed || restartTimer) return;
-    restartAttempts += 1;
-    if (restartAttempts > MAX_RESTART_ATTEMPTS) {
-      deps.logger.error("mac_desktop.driver_crash_loop", { attempts: restartAttempts - 1 });
-      publishHealth();
-      return;
-    }
-    const delay = Math.min(MAX_RESTART_DELAY_MS, BASE_RESTART_DELAY_MS * 2 ** (restartAttempts - 1));
+  /** One restart, this far from now. The only place a restart is armed. */
+  const armRestart = (delay: number): void => {
     deps.logger.info("mac_desktop.driver_restart_scheduled", { attempt: restartAttempts, delayMs: delay });
     restartTimer = setTimeout(() => {
       restartTimer = null;
@@ -472,6 +509,26 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     }, delay);
     restartTimer.unref?.();
     publishHealth();
+  };
+
+  const scheduleRestart = (): void => {
+    if (disposed || restartTimer) return;
+    restartAttempts += 1;
+    if (restartAttempts > MAX_RESTART_ATTEMPTS) {
+      // The budget is spent and the helper is still not up. What stops here is
+      // the *backoff*, not the trying: at the cap this is one spawn every ten
+      // seconds, and the alternative — no driver for the rest of this process,
+      // with every lane's screen gone and nothing that can bring one back —
+      // is the one state here that nothing can leave. Reported once, on the
+      // transition, so the event keeps meaning "it started looping" instead of
+      // repeating every ten seconds.
+      if (restartAttempts === MAX_RESTART_ATTEMPTS + 1) {
+        deps.logger.error("mac_desktop.driver_crash_loop", { attempts: restartAttempts - 1 });
+      }
+      armRestart(MAX_RESTART_DELAY_MS);
+      return;
+    }
+    armRestart(Math.min(MAX_RESTART_DELAY_MS, BASE_RESTART_DELAY_MS * 2 ** (restartAttempts - 1)));
   };
 
   /**
