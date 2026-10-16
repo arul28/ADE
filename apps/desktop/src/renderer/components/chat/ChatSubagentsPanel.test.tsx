@@ -5,7 +5,11 @@ import type * as React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope, OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { SUBAGENT_CAPABILITIES } from "../../../shared/subagentCapabilities";
-import type { ChatScheduledWorkSnapshot, ChatSubagentSnapshot } from "./chatExecutionSummary";
+import {
+  deriveChatSubagentSnapshots,
+  type ChatScheduledWorkSnapshot,
+  type ChatSubagentSnapshot,
+} from "./chatExecutionSummary";
 import { ChatSubagentsPanel, type SubagentSelection } from "./ChatSubagentsPanel";
 import { deriveChatWorkflowRuns } from "./ChatWorkflowActiveCard";
 
@@ -1144,15 +1148,34 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     const sessionId = "pane-persistence";
     window.localStorage.removeItem(`ade.chat.paneUi.v1:${sessionId}`);
     window.localStorage.removeItem(`ade.chat.paneCleared.v1:${sessionId}`);
-    const completed = ["done-1", "done-2"].map((taskId): ChatSubagentSnapshot => ({
-      ...baseSnapshot,
-      taskId,
-      description: taskId,
-      status: "completed",
-      background: false,
-    }));
+    const childEvents: AgentChatEventEnvelope[] = [
+      {
+        sessionId,
+        timestamp: "2026-10-01T12:00:30.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "chat:child-1",
+          agentId: "child-1",
+          status: "completed",
+          summary: "Finished the first turn",
+          finalSummary: "Finished the first turn",
+        },
+      },
+    ];
+    const [completedChild] = deriveChatSubagentSnapshots(childEvents);
+    expect(completedChild).toMatchObject({ status: "completed", summary: "Finished the first turn" });
+    const completed: ChatSubagentSnapshot[] = [
+      completedChild!,
+      {
+        ...baseSnapshot,
+        taskId: "done-2",
+        description: "done-2",
+        status: "completed",
+        background: false,
+      },
+    ];
 
-    render(
+    const { rerender } = render(
       <ChatSubagentsPanel
         sessionId={sessionId}
         snapshots={completed}
@@ -1168,12 +1191,48 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
     expect(screen.getByText("Subagents · all clear")).toBeTruthy();
     expect(JSON.parse(window.localStorage.getItem(`ade.chat.paneCleared.v1:${sessionId}`) ?? "null")).toEqual({
-      subagents: ["done-1", "done-2"],
+      subagents: ["chat:child-1", "done-2"],
       background: [],
       schedule: [],
     });
-    fireEvent.click(screen.getAllByRole("button", { name: "Restore (2)" })[0]);
-    expect(screen.getByRole("button", { name: "Completed (2)" })).toBeTruthy();
+
+    const resumedEvents: AgentChatEventEnvelope[] = [
+      ...childEvents,
+      {
+        sessionId,
+        timestamp: "2026-10-01T12:01:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "chat:child-1",
+          agentId: "child-1",
+          description: "Spawned chat",
+          spawnKind: "subagent",
+          resumed: true,
+        },
+      },
+    ];
+    const [resumedChild] = deriveChatSubagentSnapshots(resumedEvents);
+    expect(resumedChild).toMatchObject({
+      status: "running",
+      startedAt: "2026-10-01T12:01:00.000Z",
+      summary: null,
+      finalSummary: null,
+    });
+
+    rerender(
+      <ChatSubagentsPanel
+        sessionId={sessionId}
+        snapshots={[resumedChild!, completed[1]!]}
+        events={[]}
+        variant="pane"
+        runtimeAlive={false}
+        childChatStatuses={new Map([["child-1", "active" as const]])}
+      />,
+    );
+    expect(screen.getByText("running")).toBeTruthy();
+    expect(screen.queryByText("Subagents · all clear")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Restore (1)" }));
+    expect(screen.getByRole("button", { name: "Completed (1)" })).toBeTruthy();
   });
 
   // A spawned ADE child chat row navigates to that chat instead of taking over
