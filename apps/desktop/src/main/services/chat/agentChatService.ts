@@ -42517,11 +42517,21 @@ export function createAgentChatService(args: {
     runtime: ClaudeRuntime,
     reason: "interrupt" | "teardown" | "session_reset" | "timeout",
   ): void => {
+    // A warm query outlives its warmup once the warmup settles, so it must be
+    // discarded here even when no warmup is still in flight. Otherwise a reset
+    // (effort, fast mode, directive) reuses the stale warm query.
+    try { runtime.warmQuery?.close(); } catch { /* ignore */ }
+    runtime.warmQuery = null;
+    // Its thread was never written, so the id it was given is not resumable.
+    // Drop it the way a cancelled in-flight warmup does.
+    if (runtime.unwrittenWarmSessionId && runtime.sdkSessionId === runtime.unwrittenWarmSessionId) {
+      runtime.sdkSessionId = null;
+      runtime.unwrittenWarmSessionId = null;
+      persistChatState(managed);
+    }
     if (!runtime.warmupDone) return;
     runtime.warmupCancelled = true;
     runtime.warmupCancel?.();
-    try { runtime.warmQuery?.close(); } catch { /* ignore */ }
-    runtime.warmQuery = null;
     logger.info("agent_chat.claude_prewarm_cancel", {
       sessionId: managed.session.id,
       reason,
@@ -45745,10 +45755,15 @@ export function createAgentChatService(args: {
     );
     managedSessions.set(sessionId, managed);
 
-    const headStart = await computeHeadShaBestEffort(laneId).catch(() => null);
-    if (headStart) {
-      sessionService.setHeadShaStart(sessionId, headStart);
-    }
+    // This SHA is best-effort session metadata. Do not hold chat creation (and
+    // the first user message) on a git subprocess that can take seconds on a
+    // remote or busy worktree. The first turn captures its own before-SHA when
+    // it starts; this session-level baseline can land independently.
+    void computeHeadShaBestEffort(laneId)
+      .then((headStart) => {
+        if (headStart) sessionService.setHeadShaStart(sessionId, headStart);
+      })
+      .catch(() => {});
 
     if (effectiveProvider === "claude") {
       ensureClaudeSessionRuntime(managed);
