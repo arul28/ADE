@@ -74,6 +74,7 @@ import {
 } from "../editors/openPathInEditor";
 import { resolveKnownProjectRoot } from "./knownProjectRoots";
 import type { AttemptedProjectRoots } from "./knownProjectRoots";
+import { resolveWithinAllowedDirs } from "./allowedRendererPath";
 import { redactIpcArgsForChannel, shouldRedactIpcKey } from "./ipcChannelRedaction";
 import type {
   AttentionItem,
@@ -3841,26 +3842,16 @@ export function registerIpc({
     if (!raw) throw new Error("Missing path.");
     const ctx = getCtx();
     const normalized = resolveRendererSuppliedPath(raw, ctx.project.rootPath);
-    const allowedDirs = getAllowedDirs(getCtx);
     // resolvePathWithinRoot follows symlinks via fs.realpath while validating
     // containment, so we both reject symlinks pointing outside the allowlist
     // *and* return the canonical real path for callers to read from. Returning
     // the lexical path would still be safe because the check resolved real
     // paths, but handing back the realpath avoids any TOCTOU-adjacent surprises
     // and keeps file I/O pinned to the validated target.
-    let resolved: string | null = null;
-    for (const dir of allowedDirs) {
-      try {
-        resolved = resolvePathWithinRoot(dir, normalized);
-        break;
-      } catch {
-        // try next allowed dir
-      }
-    }
-    if (!resolved) {
-      throw new Error("Path is outside allowed directories.");
-    }
-    return resolved;
+    // `resolveWithinAllowedDirs` owns the allowlist loop and, crucially, which
+    // failure earns which message: only a containment failure is "outside
+    // allowed directories"; a missing file keeps the resolver's own reason.
+    return resolveWithinAllowedDirs(getAllowedDirs(getCtx), normalized);
   };
 
   /**
