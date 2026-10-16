@@ -929,6 +929,21 @@ export async function createAdeRuntime(args: {
       projectRoot,
       component: "project_db_open" as const,
     };
+    // Report the cause before the authored sentence replaces it. The layers
+    // below keep raw platform text off the wire on purpose — the code travels
+    // in the message's place — so an open failure the classifier has no bucket
+    // for reached every surface as `unknown: ADE could not open the project
+    // data store.`, with nothing anywhere saying why. `detail` is the
+    // platform's own words and the raw error carries the stack: the log file
+    // keeps both, `forwardLogToSentry` turns this line into an issue named by
+    // the real error, and `ade report-issue` bundles them.
+    logger.error("project.db_open_failed", {
+      code,
+      detail,
+      dbPath: paths.dbPath,
+      projectRoot,
+      error,
+    });
     recordLastFailure({ kind: "project", projectRoot }, failure);
     recordLastFailure({ kind: "machine" }, failure);
     // Rethrowing the raw error discarded the classification computed one line
