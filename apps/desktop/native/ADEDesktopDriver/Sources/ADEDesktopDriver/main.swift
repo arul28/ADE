@@ -767,7 +767,8 @@ final class DriverRuntime: NSObject {
                 laneId: laneId,
                 displayId: handle.displayId,
                 windowId: requestedWindowId ?? (handle.displayId == 0 ? parked.first?.id : nil),
-                path: screenshotPath
+                path: screenshotPath,
+                budget: CaptureEngine.observeScreenshotBudget
             )
         } catch {
             // An observation without a frame is still worth returning: the
@@ -883,7 +884,8 @@ final class DriverRuntime: NSObject {
             laneId: laneId,
             displayId: handle.displayId,
             windowId: windowId,
-            path: path
+            path: path,
+            budget: CaptureEngine.explicitScreenshotBudget
         )
         touch(laneId)
         return [

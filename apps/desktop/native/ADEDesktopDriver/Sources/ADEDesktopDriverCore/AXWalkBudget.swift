@@ -52,7 +52,7 @@ public enum AXTimeouts {
     /// 20. `observe` also takes a screenshot and may draw an element map, so
     /// the walk gets 5 seconds and the rest keeps a wide margin under both —
     /// which only holds while the capture half is bounded too
-    /// (`CaptureEngine.screenshotBudget`, the same 5 seconds). The two are one
+    /// (`CaptureEngine.observeScreenshotBudget`, the same 5 seconds). The two are one
     /// sum: a walk with an unbounded capture beside it is what the watchdog
     /// used to answer for.
     public static let observeWalk: TimeInterval = 5

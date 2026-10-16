@@ -116,6 +116,19 @@ const MAX_RESTART_ATTEMPTS = 7;
 const STABLE_AFTER_MS = 30_000;
 const BASE_RESTART_DELAY_MS = 400;
 const MAX_RESTART_DELAY_MS = 10_000;
+/**
+ * Past the budget, a helper that still will not stay up is retried this often,
+ * and only while something wants it: see {@link DRIVER_DEMAND_WINDOW_MS}.
+ */
+const CRASH_LOOP_RETRY_DELAY_MS = 120_000;
+/**
+ * How long after the last request the driver still counts as wanted. A request
+ * is the only signal the client has that someone needs the helper (lanes, a
+ * session, an agent call all end in one), so past this window an unasked-for
+ * exit parks the restart instead of respawning every few minutes for the life
+ * of the process. The next real request still spawns at once.
+ */
+const DRIVER_DEMAND_WINDOW_MS = 300_000;
 /** A reply that never arrives must not wedge the caller's promise forever. */
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 /** A single NDJSON line longer than this is a protocol fault, not a message. */
@@ -251,6 +264,8 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   let stderrBuffer = "";
   let nextRequestId = 0;
   let restartAttempts = 0;
+  /** When a caller last asked for the driver (a request, an ensure, a restart). */
+  let lastDemandAt: number | null = null;
   let restartTimer: ReturnType<typeof setTimeout> | null = null;
   let stableTimer: ReturnType<typeof setTimeout> | null = null;
   let startPromise: Promise<void> | null = null;
@@ -309,14 +324,14 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     }
     // Past the budget, not `>=` it: the last in-budget attempt is still a
     // scheduled restart, and `scheduleRestart` keeps a slow one pending from
-    // then on, so this state is reached while a retry is in flight. The state
-    // is honest — the helper is not up — and the retry is what keeps it from
-    // being a dead end.
+    // then on while the driver is wanted, so this state is reached while a
+    // retry is in flight. The state is honest — the helper is not up — and the
+    // next request is what brings it back when no retry is pending.
     if (!child && restartAttempts > MAX_RESTART_ATTEMPTS) {
       return {
         state: "crash_loop",
         title: `${driverLabel} stopped`,
-        message: "The native desktop driver repeatedly exited. ADE keeps retrying; if it does not recover, restart ADE, then reinstall or update the app.",
+        message: "The native desktop driver repeatedly exited. ADE retries when a screen is next needed; if it does not recover, restart ADE, then reinstall or update the app.",
         recovery: "reinstall_or_update",
         version,
       };
@@ -511,21 +526,28 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     publishHealth();
   };
 
+  /** Whether a request reached the driver recently enough that someone may still want it. */
+  const driverWanted = (): boolean => lastDemandAt !== null && Date.now() - lastDemandAt <= DRIVER_DEMAND_WINDOW_MS;
+
   const scheduleRestart = (): void => {
     if (disposed || restartTimer) return;
     restartAttempts += 1;
     if (restartAttempts > MAX_RESTART_ATTEMPTS) {
-      // The budget is spent and the helper is still not up. What stops here is
-      // the *backoff*, not the trying: at the cap this is one spawn every ten
-      // seconds, and the alternative — no driver for the rest of this process,
-      // with every lane's screen gone and nothing that can bring one back —
-      // is the one state here that nothing can leave. Reported once, on the
-      // transition, so the event keeps meaning "it started looping" instead of
-      // repeating every ten seconds.
+      // The budget is spent and the helper is still not up. Reported once, on
+      // the transition, so the event keeps meaning "it started looping".
       if (restartAttempts === MAX_RESTART_ATTEMPTS + 1) {
         deps.logger.error("mac_desktop.driver_crash_loop", { attempts: restartAttempts - 1 });
       }
-      armRestart(MAX_RESTART_DELAY_MS);
+      // Nobody has asked for the driver lately, so nothing is waiting on a
+      // screen: no timer. A helper that dies on sight must not respawn every
+      // few seconds for the life of the process. The next real request calls
+      // `start()` and spawns at once.
+      if (!driverWanted()) {
+        deps.logger.info("mac_desktop.driver_restart_parked", { attempts: restartAttempts - 1 });
+        publishHealth();
+        return;
+      }
+      armRestart(CRASH_LOOP_RETRY_DELAY_MS);
       return;
     }
     armRestart(Math.min(MAX_RESTART_DELAY_MS, BASE_RESTART_DELAY_MS * 2 ** (restartAttempts - 1)));
@@ -731,6 +753,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     if (disposed) {
       throw new MacDesktopDriverError("MAC_DESKTOP_DRIVER_UNAVAILABLE", "The desktop driver client is disposed.");
     }
+    lastDemandAt = Date.now();
     await start();
     const active = child;
     if (!active || !childReady) {
@@ -788,6 +811,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
 
     /** Starts the helper if it is not already up. Idempotent. */
     async ensureStarted(): Promise<void> {
+      lastDemandAt = Date.now();
       await start();
     },
 
@@ -805,6 +829,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       if (disposed) {
         throw new MacDesktopDriverError("MAC_DESKTOP_DRIVER_UNAVAILABLE", "The desktop driver client is disposed.");
       }
+      lastDemandAt = Date.now();
       if (restartTimer) {
         clearTimeout(restartTimer);
         restartTimer = null;
