@@ -1231,6 +1231,46 @@ describe("ProjectScopeRegistry sync-host phase backoff", () => {
     await scopeRegistry.disposeAll();
   });
 
+  it("serves a failed initialization from the backoff and keeps the booted scope", async () => {
+    const clock = fakeClock();
+    const initializeFailure = Object.assign(new Error("initialization failed"), { code: "EIO" });
+    const syncService = {
+      initialize: vi.fn(async () => {
+        throw initializeFailure;
+      }),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+    };
+    createAdeRuntimeMock.mockResolvedValue({ dispose: vi.fn(), syncService });
+    const { scopeRegistry, first } = createSyncHostRegistry(clock);
+
+    await expect(scopeRegistry.ensureSyncHost(first.projectId)).rejects.toBe(initializeFailure);
+    expect(syncService.initialize).toHaveBeenCalledTimes(1);
+    // The scope booted, so this switch failed on a live scope rather than a cold
+    // one — which is the shape `initialization` earns its place in the backoff
+    // set for. It awaits the same role-refresh drain `activation` does, so a
+    // room full of pollers re-runs it the same way.
+    expect(scopeRegistry.getIfBooted(first.projectId)).not.toBeNull();
+
+    // A caller inside the window is served the recorded failure, code and all,
+    // without paying for another `initialize`.
+    clock.advance(20);
+    await expect(scopeRegistry.ensureSyncHost(first.projectId)).rejects.toBe(initializeFailure);
+    expect(syncService.initialize).toHaveBeenCalledTimes(1);
+
+    // A replay refuses the switch before `initialize` runs, and it is not a
+    // phase timeout, so the scope this project just booted is kept rather than
+    // abandoned: the next real attempt reuses it instead of booting a second
+    // runtime.
+    expect(scopeRegistry.getIfBooted(first.projectId)).not.toBeNull();
+    clock.advance(FAILED_SCOPE_BACKOFF_MAX_MS);
+    await expect(scopeRegistry.ensureSyncHost(first.projectId)).rejects.toBe(initializeFailure);
+    expect(syncService.initialize).toHaveBeenCalledTimes(2);
+    expect(createAdeRuntimeMock).toHaveBeenCalledTimes(1);
+
+    await scopeRegistry.disposeAll();
+  });
+
   it("lets a deliberate start re-run an activation the backoff is still holding", async () => {
     const clock = fakeClock();
     const probe = createActivationProbe();
