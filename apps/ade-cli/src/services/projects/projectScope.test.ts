@@ -671,7 +671,7 @@ describe("ProjectScopeRegistry", () => {
     await scopeRegistry.disposeAll();
   });
 
-  it("refuses a required-host switch to a project that follows another machine before deactivating the current host", async () => {
+  it("refuses a switch to a project that follows another machine before deactivating the current host", async () => {
     const { registry, first, second } = createRegistry();
     const blocker = {
       reason: "saved_connection" as const,
@@ -709,10 +709,9 @@ describe("ProjectScopeRegistry", () => {
 
     const failure = await scopeRegistry.switchSyncHost(second.projectId, {
       deactivatePreviousHost: true,
-      requireHostRole: true,
     }).catch((error: unknown) => error);
 
-    // The client gets a refusal naming the machine it would follow, and the
+    // The caller gets a refusal naming the machine it would follow, and the
     // previous host keeps its lease: deactivation is checked but never run.
     expect(failure).toBeInstanceOf(SyncHostRoleBlockedError);
     expect(String((failure as Error).message)).toContain("192.168.1.240");
@@ -724,7 +723,7 @@ describe("ProjectScopeRegistry", () => {
     await scopeRegistry.disposeAll();
   });
 
-  it("completes a required-host switch when the target does not follow another machine", async () => {
+  it("activates a switch to a project that does not follow another machine", async () => {
     const { registry, first, second } = createRegistry();
     const firstSyncService = {
       initialize: vi.fn(async () => undefined),
@@ -757,7 +756,6 @@ describe("ProjectScopeRegistry", () => {
 
     const switched = await scopeRegistry.switchSyncHost(second.projectId, {
       deactivatePreviousHost: true,
-      requireHostRole: true,
     });
 
     expect(switched?.registryProjectId).toBe(second.projectId);
@@ -769,7 +767,7 @@ describe("ProjectScopeRegistry", () => {
     await scopeRegistry.disposeAll();
   });
 
-  it("still switches to a following project when the host role is not required", async () => {
+  it("reports the blocker for a switch to a following project, without paying the activation drain", async () => {
     const { registry, first, second } = createRegistry();
     const firstSyncService = {
       initialize: vi.fn(async () => undefined),
@@ -800,14 +798,73 @@ describe("ProjectScopeRegistry", () => {
     firstSyncService.setHostDiscoveryEnabled.mockClear();
     firstSyncService.setHostStartupEnabled.mockClear();
 
-    // Brain startup deliberately omits requireHostRole: it must keep the
-    // previous behavior of adopting whatever project it was told to host.
-    const switched = await scopeRegistry.switchSyncHost(second.projectId);
+    // The brain's startup loop is this caller: it asks for no host role, and
+    // that is how a project following another machine used to reach the
+    // activation drain. The drain dials that machine with no connect timeout,
+    // so the attempt ran to the OS SYN timeout and was reported as the 10-second
+    // activation budget instead of the reason. The switch must name the
+    // blocker, and must not start the target's host to find that out.
+    const failure = await scopeRegistry.switchSyncHost(second.projectId)
+      .catch((error: unknown) => error);
 
-    expect(switched?.registryProjectId).toBe(second.projectId);
-    expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(second.projectId);
-    expect(firstSyncService.setHostStartupEnabled).toHaveBeenCalledWith(false);
-    expect(secondSyncService.setHostStartupEnabled).toHaveBeenCalledWith(true);
+    expect(failure).toBeInstanceOf(SyncHostRoleBlockedError);
+    expect(String((failure as Error).message)).toContain("remote.invalid");
+    expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(first.projectId);
+    expect(secondSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(true);
+    expect(firstSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(false);
+
+    await scopeRegistry.disposeAll();
+  });
+
+  it("serves a project that follows another machine to a reader, without starting a host for it", async () => {
+    const { registry, second } = createRegistry();
+    const viewerStatus = { role: "viewer", viewerReason: "saved_connection" };
+    const secondSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+      getHostBlocker: vi.fn(() => ({
+        reason: "saved_connection" as const,
+        host: "192.168.1.240",
+        port: 8787,
+      })),
+      getStatus: vi.fn(async () => viewerStatus),
+    };
+    createAdeRuntimeMock.mockResolvedValueOnce({
+      dispose: vi.fn(),
+      syncService: secondSyncService,
+    });
+    const scopeRegistry = new ProjectScopeRegistry(registry, {
+      syncRuntime: {
+        enabled: true,
+        hostStartupEnabled: true,
+        hostDiscoveryEnabled: true,
+        forceHostRole: false,
+        runtimeKind: "daemon",
+      },
+    });
+    await scopeRegistry.get(second.projectId);
+    const file = JSON.parse(fs.readFileSync(registry.path, "utf8")) as {
+      projects: Array<{ projectId: string; lastOpenedAt: number; addedAt: number }>;
+    };
+    file.projects = file.projects.map((project) => ({
+      ...project,
+      lastOpenedAt: project.projectId === second.projectId ? 2_000 : 1_000,
+      addedAt: project.projectId === second.projectId ? 2_000 : 1_000,
+    }));
+    fs.writeFileSync(registry.path, JSON.stringify(file, null, 2));
+
+    // Every status, roster and document read reaches this project's scope
+    // through here. A laptop following a desktop is a supported configuration,
+    // and whether its peer is up is not what decides this — the blocker is the
+    // project's own record — so a reader gets the scope either way.
+    const active = await scopeRegistry.resolveActiveSyncHost();
+
+    expect(active?.registryProjectId).toBe(second.projectId);
+    expect(await active?.runtime.syncService?.getStatus()).toEqual(viewerStatus);
+    // And no host is started for it: there is none here to start, and starting
+    // one is what dials the other machine and blows the activation budget.
+    expect(secondSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(true);
 
     await scopeRegistry.disposeAll();
   });

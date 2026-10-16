@@ -8,13 +8,20 @@ import type { ProjectId, ProjectRecord, ProjectRegistry } from "./projectRegistr
 type SwitchSyncHostOptions = {
   deactivatePreviousHost?: boolean;
   /**
-   * Refuse a target that would follow another machine's brain instead of
-   * hosting. Deactivating the current host releases the machine-wide sync
-   * lease, so switching to such a target would drop every connected client
-   * and leave nothing hosting. Client project switches set this; brain
-   * startup does not, because it already treats a chosen viewer as intended.
+   * What the caller is asking this machine to do with the project.
+   *
+   * `"host"` (the default) is "make this project the sync host here". A project
+   * that follows another machine cannot do that, so the switch is refused with
+   * {@link SyncHostRoleBlockedError} before any drain is paid.
+   *
+   * `"serve"` is "hand me the scope that owns sync here" — status, roster and
+   * document reads. A project that follows another machine already owns sync
+   * here, as a viewer, and a laptop following a desktop is a supported,
+   * working configuration; refusing it would break reads that work today. So
+   * it is adopted as-is: nothing is refused and no host is brought up for it,
+   * because there is no host to bring up.
    */
-  requireHostRole?: boolean;
+  purpose?: "host" | "serve";
 };
 
 const SYNC_HOST_COLD_BOOT_TIMEOUT_MS = 60_000;
@@ -496,7 +503,9 @@ export class ProjectScopeRegistry {
         const openedDelta = right.lastOpenedAt - left.lastOpenedAt;
         return openedDelta !== 0 ? openedDelta : right.addedAt - left.addedAt;
       })[0];
-    return record ? this.switchSyncHost(record.projectId) : null;
+    // This caller reads: it wants whatever owns sync on this machine, and a
+    // project that follows another machine is a legitimate answer to that.
+    return record ? this.switchSyncHost(record.projectId, { purpose: "serve" }) : null;
   }
 
   async switchSyncHost(
@@ -536,6 +545,25 @@ export class ProjectScopeRegistry {
     }
     if (transitionId !== this.latestSyncHostTransitionId) return null;
 
+    // Read once, here: the scope is in hand and nothing has dialed yet, because
+    // BOTH phases below await the same role-refresh drain. For a project that
+    // follows another machine that drain DIALS the other machine, and the dial
+    // has no connect timeout of its own, so an unanswered connect runs to the
+    // macOS SYN timeout (75s) and lands inside whichever budget runs first —
+    // which is why a brain retried one project 670 times over 18 hours and
+    // every attempt was reported as "Sync host activation ... timed out after
+    // 10000ms": the drain's budget, never the reason. `getHostBlocker()` mirrors
+    // the decision the drain would make without dialing anything, so the answer
+    // costs nothing and arrives before the wait.
+    //
+    // Checked before the previous host is touched: deactivating it releases the
+    // machine-wide sync lease, so refusing here leaves the current host, its
+    // lease, and every connected client as they were.
+    const blocker = getSyncHostBlocker(scope);
+    if (blocker && options.purpose !== "serve") {
+      throw new SyncHostRoleBlockedError(blocker);
+    }
+
     try {
       await this.runSyncHostPhase(
         "initialization",
@@ -563,10 +591,10 @@ export class ProjectScopeRegistry {
 
     const work = this.syncHostTransitionTail.then(
       () => transitionId === this.latestSyncHostTransitionId
-        ? this.performSyncHostSwitch(scope, options, transitionId)
+        ? this.performSyncHostSwitch(scope, options, transitionId, blocker)
         : null,
       () => transitionId === this.latestSyncHostTransitionId
-        ? this.performSyncHostSwitch(scope, options, transitionId)
+        ? this.performSyncHostSwitch(scope, options, transitionId, blocker)
         : null,
     );
     this.syncHostTransitionTail = work.then(
@@ -580,6 +608,10 @@ export class ProjectScopeRegistry {
     scope: ProjectScope,
     options: SwitchSyncHostOptions,
     transitionId: number,
+    // Why this project follows another machine, or null when it can host here.
+    // {@link switchSyncHost} read it before either phase, so that the drain is
+    // never paid to find out.
+    blocker: SyncHostBlocker | null,
   ): Promise<ProjectScope | null> {
     const projectId = scope.registryProjectId;
     const previousHostId = this.syncHostProjectId;
@@ -587,20 +619,20 @@ export class ProjectScopeRegistry {
 
     if (transitionId !== this.latestSyncHostTransitionId) return null;
     if (previousHostId === projectId) {
+      // Re-activating the project that already hosts. Both `setHostDiscovery-
+      // Enabled(true)` and `setHostStartupEnabled(true)` return at once when
+      // their flag is already set — which it is for the active host — so this
+      // pays no drain. (The rollback paths below call
+      // `configureSyncHostWithTimeout` directly, never through here.)
       await this.configureSyncHostWithTimeout(scope, true, "activation");
       return scope;
     }
-    if (options.requireHostRole) {
-      // Checked before the previous host is touched: refusing here leaves the
-      // current host, its lease, and every connected client as they were.
-      const blocker = getSyncHostBlocker(scope);
-      if (blocker) throw new SyncHostRoleBlockedError(blocker);
-    }
     // Consulted before the previous host is touched, for the same reason the
-    // blocker is: a target whose activation a backoff is still holding cannot
-    // take over, so replaying it must cost nothing and change nothing rather
-    // than deactivate the current host and then put it back. This is also what
-    // rate-limits the corrective phases, which are not backed off themselves.
+    // refusal above is: a target whose activation a backoff is still holding
+    // cannot take over, so replaying it must cost nothing and change nothing
+    // rather than deactivate the current host and then put it back. This is
+    // also what rate-limits the corrective phases, which are not backed off
+    // themselves.
     const heldActivation = this.heldSyncHostPhase(projectId, "activation");
     if (heldActivation) throw heldActivation.error;
 
@@ -643,9 +675,18 @@ export class ProjectScopeRegistry {
       // holding between the check above and this call therefore leaves the flag
       // down, and `rollback` knows there is nothing of ours on the target to
       // undo — only the previous host, if this switch already let it go.
-      await this.configureSyncHostWithTimeout(scope, true, "activation", () => {
-        targetActivationAttempted = true;
-      });
+      //
+      // Skipped when this project follows another machine: "activation" is
+      // `setHostStartupEnabled(true)`, and there is no host here to start. The
+      // caller asked for "serve", so it wants the scope that owns sync — which
+      // a viewer already is — and skipping the call is what keeps the 75-second
+      // dial out of this switch entirely. Nothing is reported as hosting that
+      // is not: a project with a blocker is a viewer by its own record.
+      if (!blocker) {
+        await this.configureSyncHostWithTimeout(scope, true, "activation", () => {
+          targetActivationAttempted = true;
+        });
+      }
       if (transitionId !== this.latestSyncHostTransitionId) {
         await rollback();
         return null;

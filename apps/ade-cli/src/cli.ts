@@ -24977,9 +24977,11 @@ async function runServe(
         // The mobile handoff already succeeded; a stale registry touch should
         // not fail the sync protocol completion.
       }
+      // `switchSyncHost` refuses a project that follows another machine before
+      // it touches the current host, so this handoff cannot drop every client
+      // for a target that never takes over.
       await scopeRegistry.switchSyncHost(projectId, {
         deactivatePreviousHost: true,
-        requireHostRole: true,
       });
       await scopeRegistry.deactivateInactiveSyncHosts();
     },
