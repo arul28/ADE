@@ -3787,8 +3787,46 @@ export function AgentChatComposer({
     const editor = useRichComposer && ultrathinkReadable ? richEditorRef.current : null;
     paintUltrathinkHighlights(ultrathinkHighlightOwner, editor);
     if (!editor) return;
-    const observer = new MutationObserver(() => paintUltrathinkHighlights(ultrathinkHighlightOwner, editor));
-    observer.observe(editor, { childList: true, characterData: true, subtree: true });
+    const observer = new MutationObserver((records) => {
+      const textChangesAffectHighlights = (previous: string, current: string): boolean => {
+        const previousRanges = ultrathinkKeywordRanges(previous);
+        const currentRanges = ultrathinkKeywordRanges(current);
+        if (previousRanges.length !== currentRanges.length) return true;
+        if (previousRanges.some((range, index) =>
+          range.start !== currentRanges[index]?.start || range.end !== currentRanges[index]?.end
+        )) return true;
+        if (!previousRanges.length || previous === current) return false;
+
+        // DOM Ranges adjust themselves when text is inserted before or after a
+        // highlighted word. Only rebuild the shared registry when an edit
+        // touches a word; typing elsewhere in the same text node needs no work.
+        let prefix = 0;
+        while (prefix < previous.length && prefix < current.length && previous[prefix] === current[prefix]) prefix += 1;
+        let suffix = 0;
+        while (
+          suffix < previous.length - prefix && suffix < current.length - prefix &&
+          previous[previous.length - suffix - 1] === current[current.length - suffix - 1]
+        ) suffix += 1;
+        const oldEnd = previous.length - suffix;
+        const newEnd = current.length - suffix;
+        return previousRanges.some((range) => prefix <= range.end && oldEnd >= range.start) ||
+          currentRanges.some((range) => prefix <= range.end && newEnd >= range.start);
+      };
+      const nodeContainsKeyword = (node: Node): boolean => {
+        if (node instanceof Element && node.closest("[contenteditable='false']")) return false;
+        return hasUltrathinkKeyword(node.textContent ?? "");
+      };
+      const needsRepaint = records.some((record) => {
+        if (record.type === "characterData") {
+          const text = record.target as Text;
+          if (text.parentElement?.closest("[contenteditable='false']")) return false;
+          return textChangesAffectHighlights(record.oldValue ?? "", text.data);
+        }
+        return [...record.addedNodes, ...record.removedNodes].some(nodeContainsKeyword);
+      });
+      if (needsRepaint) paintUltrathinkHighlights(ultrathinkHighlightOwner, editor);
+    });
+    observer.observe(editor, { childList: true, characterData: true, characterDataOldValue: true, subtree: true });
     return () => {
       observer.disconnect();
       paintUltrathinkHighlights(ultrathinkHighlightOwner, null);
