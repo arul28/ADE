@@ -599,7 +599,7 @@ import type {
   McpRegistryResult,
   McpRegistryScan,
   McpRegistrySecretRef,
-  McpServerSignIn,
+  McpRegistrySignInResult,
   AccountSettingsWriteOptions,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
@@ -4402,7 +4402,7 @@ declare global {
          * Browser sign-in, run on this computer; the token goes to the account
          * vault. Resolves when the browser comes back, or on cancel / timeout.
          */
-        signIn: (args: { server: McpRegistryServer }) => Promise<McpRegistryResult<McpServerSignIn>>;
+        signIn: (args: { server: McpRegistryServer }) => Promise<McpRegistrySignInResult>;
         cancelSignIn: (args: { server: string }) => Promise<boolean>;
         signOut: (args: { server: string }) => Promise<McpRegistryResult<null>>;
       };

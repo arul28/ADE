@@ -39,6 +39,7 @@ import type {
   McpRegistryResult,
   McpRegistryScan,
   McpRegistrySecretRef,
+  McpRegistrySignInResult,
   McpServerSignIn,
 } from "../../../shared/types/mcpRegistry";
 import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
@@ -65,6 +66,7 @@ export type McpRegistryServiceOptions = {
   /** Opens the browser for a sign-in. On this computer: the loopback redirect is here. */
   openUrl?: (url: string) => Promise<void>;
   fetch?: McpFetch;
+  logger?: { warn: (event: string, meta?: Record<string, unknown>) => void } | null;
 };
 
 /** Renew a sign-in this close to running out, when the server gave a way to. */
@@ -135,9 +137,14 @@ export function createMcpRegistryService(options: McpRegistryServiceOptions) {
     if (token && mcpOAuthTokenState(token, server) !== "none" && token.refreshToken && token.expiresAt
       && Date.parse(token.expiresAt) - Date.now() < REFRESH_WITHIN_MS) {
       const renewed = await refreshMcpOAuthToken(token, fetchImpl);
-      if (typeof renewed !== "string") {
+      // The sign-in keeps working until it runs out, and the row then asks
+      // for a new one, so a failed renewal is logged rather than shown.
+      if (typeof renewed === "string") {
+        options.logger?.warn("mcp_registry.oauth_refresh_failed", { reason: renewed });
+      } else {
         const saved = await vault.set(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, key, JSON.stringify(renewed));
         if (saved.ok) token = renewed;
+        else options.logger?.warn("mcp_registry.oauth_refresh_not_saved", { reason: saved.message });
       }
     }
     const state = mcpOAuthTokenState(token, server);
@@ -193,13 +200,17 @@ export function createMcpRegistryService(options: McpRegistryServiceOptions) {
      * account vault. Resolves when the browser comes back, is cancelled, or
      * times out.
      */
-    async signIn(rawServer: unknown): Promise<McpRegistryResult<McpServerSignIn>> {
+    async signIn(rawServer: unknown): Promise<McpRegistrySignInResult> {
       const server = normalizeMcpRegistryServer(rawServer);
       if (!server || server.transport === "stdio" || !server.url) {
         return { ok: false, rejected: true, message: "Only an HTTP or SSE server can be signed in to." };
       }
       const outcome = await signIns.signIn({ name: server.name, url: server.url });
-      if (!outcome.ok) return { ok: false, rejected: true, message: outcome.message };
+      if (!outcome.ok) {
+        return outcome.cancelled
+          ? { ok: false, rejected: true, cancelled: true, message: outcome.message }
+          : { ok: false, rejected: true, message: outcome.message };
+      }
       const saved = await vault.set(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, mcpOAuthVaultKey(server.name), JSON.stringify(outcome.token));
       if (!saved.ok) return saved;
       probes.delete(server.url);

@@ -520,7 +520,7 @@ import type {
   McpRegistryResult,
   McpRegistryScan,
   McpRegistrySecretRef,
-  McpServerSignIn,
+  McpRegistrySignInResult,
   AccountSettingsWriteOptions,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
@@ -12595,7 +12595,7 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.mcpRegistryScan, args),
     import: (args: { name: string; projectRoot: string | null }): Promise<McpRegistryImportResult> =>
       ipcRenderer.invoke(IPC.mcpRegistryImport, args),
-    signIn: (args: { server: McpRegistryServer }): Promise<McpRegistryResult<McpServerSignIn>> =>
+    signIn: (args: { server: McpRegistryServer }): Promise<McpRegistrySignInResult> =>
       ipcRenderer.invoke(IPC.mcpRegistrySignIn, args),
     cancelSignIn: (args: { server: string }): Promise<boolean> =>
       ipcRenderer.invoke(IPC.mcpRegistryCancelSignIn, args),

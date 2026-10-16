@@ -69,3 +69,8 @@ export type McpRegistrySecretRef = { server: string; field: McpSecretField; name
 export type McpRegistryResult<T> = AccountStoreResult<T>;
 
 export type McpRegistryImportResult = McpRegistryResult<McpRegistryServer>;
+
+/** A sign-in's answer. `cancelled` marks one stopped by Cancel or a newer sign-in. */
+export type McpRegistrySignInResult =
+  | McpRegistryResult<McpServerSignIn>
+  | { ok: false; rejected: true; cancelled: true; message: string };

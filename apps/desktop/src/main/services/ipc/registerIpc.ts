@@ -944,7 +944,7 @@ import type {
   McpRegistryResult,
   McpRegistryScan,
   McpRegistrySecretRef,
-  McpServerSignIn,
+  McpRegistrySignInResult,
 } from "../../../shared/types/mcpRegistry";
 import {
   createAccountMigrationRunner,
@@ -954,7 +954,7 @@ import {
 import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
-import { captureAutomationTestAnalytics, capturePresetAnalytics, captureProviderCliUpdateAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import { captureAutomationTestAnalytics, captureMcpServerSignInAnalytics, capturePresetAnalytics, captureProviderCliUpdateAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
   AccountSettingsResult,
@@ -12337,6 +12337,7 @@ export function registerIpc({
     vault: accountVaultBridge,
     adeHome: harnessPresetsAdeDir,
     openUrl: async (url) => await openExternalUrl(url),
+    logger: { warn: (event, meta) => getCtx().logger.warn(event, meta) },
   });
   ipcMain.handle(
     IPC.mcpRegistryContext,
@@ -12378,8 +12379,15 @@ export function registerIpc({
   // the account vault, which every computer of the account reads.
   ipcMain.handle(
     IPC.mcpRegistrySignIn,
-    async (_event, args: { server?: McpRegistryServer }): Promise<McpRegistryResult<McpServerSignIn>> =>
-      await mcpRegistryService.signIn(args?.server),
+    async (_event, args: { server?: McpRegistryServer }): Promise<McpRegistrySignInResult> => {
+      const result = await mcpRegistryService.signIn(args?.server);
+      captureMcpServerSignInAnalytics({
+        analytics: productAnalyticsService,
+        surface: "desktop",
+        outcome: result.ok ? "completed" : "cancelled" in result && result.cancelled ? "cancelled" : "failed",
+      });
+      return result;
+    },
   );
   ipcMain.handle(
     IPC.mcpRegistryCancelSignIn,

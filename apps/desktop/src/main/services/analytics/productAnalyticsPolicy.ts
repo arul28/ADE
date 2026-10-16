@@ -391,6 +391,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "home",
     // Find (⌘F) in a chat or a diff, and the ⌘K hand-off into a chat's find bar.
     "find",
+    // Settings › MCP servers: a browser sign-in to a registry server.
+    "mcp_servers",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",

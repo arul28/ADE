@@ -22,7 +22,8 @@ export type FeatureAnalyticsName =
   | "automations"
   | "updates"
   | "attention"
-  | "home";
+  | "home"
+  | "mcp_servers";
 
 export type FeatureAnalyticsAction =
   | "account_created"
@@ -275,6 +276,18 @@ export function captureProviderCliUpdateAnalytics(args: {
   outcome: Extract<FeatureAnalyticsOutcome, "completed" | "failed">;
 }): void {
   captureFeatureUsedAnalytics({ ...args, feature: "updates", action: "provider_cli_updated" });
+}
+
+/**
+ * How a browser sign-in to an MCP server ended. Never the server's name, its
+ * URL, the authorization server, or the token.
+ */
+export function captureMcpServerSignInAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  outcome: Extract<FeatureAnalyticsOutcome, "completed" | "cancelled" | "failed">;
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "mcp_servers", action: "sign_in" });
 }
 
 /** A private webhook URL was made (with or without its automation). */

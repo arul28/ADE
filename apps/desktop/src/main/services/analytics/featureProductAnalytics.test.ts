@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { sanitizeProductAnalyticsProperties } from "./productAnalyticsPolicy";
 import {
+  captureMcpServerSignInAnalytics,
   captureChatAccountSwitchedAnalytics,
   captureFeatureUsedAnalytics,
   captureNewLaneLaunchAnalytics,
@@ -210,6 +211,8 @@ describe("webhook, secret-card, provider CLI update, and custom notification ana
     ["custom notification sent", (analytics: FeatureAnalytics) => captureNotificationSentAnalytics({ analytics, surface: "api", outcome: "completed" }), "attention", "notification_sent", "completed"],
     ["custom notification over the hourly cap", (analytics: FeatureAnalytics) => captureNotificationSentAnalytics({ analytics, surface: "api", outcome: "skipped_budget" }), "attention", "notification_sent", "skipped_budget"],
     ["custom notification failed", (analytics: FeatureAnalytics) => captureNotificationSentAnalytics({ analytics, surface: "api", outcome: "failed" }), "attention", "notification_sent", "failed"],
+    ["MCP server signed in", (analytics: FeatureAnalytics) => captureMcpServerSignInAnalytics({ analytics, surface: "desktop", outcome: "completed" }), "mcp_servers", "sign_in", "completed"],
+    ["MCP server sign-in cancelled", (analytics: FeatureAnalytics) => captureMcpServerSignInAnalytics({ analytics, surface: "desktop", outcome: "cancelled" }), "mcp_servers", "sign_in", "cancelled"],
   ] as const)("%s survives the allowlist with only closed values", (_label, capture, feature, action, outcome, provider?: string) => {
     const { analytics, captured } = recorder();
     capture(analytics);
