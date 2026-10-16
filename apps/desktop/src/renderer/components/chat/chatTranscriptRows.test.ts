@@ -3112,8 +3112,8 @@ describe("spawn_completed notice folding", () => {
       expect(rows.some((row) => row.event.type === "codex_image_view"), printed).toBe(false);
       const action = rows.find((row) => row.event.type === "work_log_entry");
       expect(action, printed).toBeTruthy();
-      const entry = (action!.event as Extract<AgentChatEventEnvelope["event"], { type: "work_log_entry" }>).entry;
-      expect(entry.imageViews?.map((view) => view.path), printed).toEqual([viewed]);
+      if (action?.event.type !== "work_log_entry") throw new Error("Expected work_log_entry");
+      expect(action.event.entry.imageViews?.map((view) => view.path), printed).toEqual([viewed]);
     }
 
     // An image no action of the turn printed keeps its own row: the fold is not
