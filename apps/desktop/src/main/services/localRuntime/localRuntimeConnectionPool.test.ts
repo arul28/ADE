@@ -6,6 +6,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { signalChildProcessTree } from "../shared/utils";
+import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { realpathIfExists } from "../../../../../ade-cli/src/services/projects/projectRoots";
 import { recordLastFailure } from "../runtime/lastFailureStore";
@@ -268,6 +269,85 @@ function runningTestServiceStatus() {
 
 function removeTempDir(dir: string): void {
   fs.rmSync(dir, { recursive: true, force: true });
+}
+
+function restoreEnvVar(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
+/**
+ * A socket that accepts and then answers nothing.
+ *
+ * This parks a connect inside its `initialize` handshake for as long as the
+ * test needs — the same place a quit lands on a brain that is slow to answer,
+ * and the only way to hold the pool mid-connect without stubbing it.
+ */
+async function listenAnswerlessSocket(
+  socketPath: string,
+): Promise<{ accepted: net.Socket[]; close: () => Promise<void> }> {
+  const accepted: net.Socket[] = [];
+  const server = net.createServer((socket) => {
+    accepted.push(socket);
+  });
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  return {
+    accepted,
+    close: async () => {
+      for (const socket of accepted) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+/**
+ * Point the pool at a temp socket and a fake runtime CLI for the duration of
+ * `run`, then put the environment back.
+ *
+ * `ADE_RUNTIME_SOCKET_PATH` and `ADE_CLI_JS` are the pool's own seams: the
+ * first keeps `createConnection` off the machine's real endpoint (so it goes
+ * straight to the spawn), and the second is the child it would spawn, which the
+ * test can make prove whether it ran.
+ *
+ * The endpoint is DERIVED, never spelled: on Windows the runtime's endpoint is
+ * a named pipe and a filesystem path is not a connectable address, so a
+ * hand-written `<tempDir>/ade.sock` listens on POSIX only (see
+ * `machineRuntimeSocketPath` above). `ADE_HOME` is a different temp dir from
+ * the endpoint's own, which is what keeps the endpoint off the machine-layout
+ * path — otherwise the pool treats it as the primary machine socket and never
+ * reaches the spawn this test is about.
+ */
+async function withFakeRuntimeCli(
+  cliSource: (paths: { tempDir: string; socketPath: string; cliPath: string }) => string,
+  run: (paths: { tempDir: string; socketPath: string; cliPath: string }) => Promise<void>,
+): Promise<void> {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pool-lifecycle-"));
+  const endpointHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pool-endpoint-"));
+  const layoutHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pool-layout-"));
+  const socketPath = machineRuntimeSocketPath(endpointHome);
+  const cliPath = path.join(tempDir, "cli.cjs");
+  fs.writeFileSync(cliPath, cliSource({ tempDir, socketPath, cliPath }), "utf8");
+  // A POSIX endpoint is a file inside `<adeHome>/sock`; a Windows one is a pipe
+  // and has no directory to create.
+  if (!isAdeRuntimeNamedPipePath(socketPath)) {
+    fs.mkdirSync(path.dirname(socketPath), { recursive: true });
+  }
+  const originalCli = process.env.ADE_CLI_JS;
+  const originalSocket = process.env.ADE_RUNTIME_SOCKET_PATH;
+  const originalHome = process.env.ADE_HOME;
+  process.env.ADE_CLI_JS = cliPath;
+  process.env.ADE_RUNTIME_SOCKET_PATH = socketPath;
+  process.env.ADE_HOME = layoutHome;
+  try {
+    await run({ tempDir, socketPath, cliPath });
+  } finally {
+    restoreEnvVar("ADE_CLI_JS", originalCli);
+    restoreEnvVar("ADE_RUNTIME_SOCKET_PATH", originalSocket);
+    restoreEnvVar("ADE_HOME", originalHome);
+    removeTempDir(tempDir);
+    removeTempDir(endpointHome);
+    removeTempDir(layoutHome);
+  }
 }
 
 async function shutdownRuntime(socketPath: string): Promise<void> {
@@ -2069,6 +2149,112 @@ describe("local runtime connection pool", () => {
       (pool as unknown as { projectRegistrationsByRoot: Map<string, unknown> }).projectRegistrationsByRoot,
     ).toHaveLength(0);
     expect(client.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops a connection attempt that is in flight when the pool is disposed, before it starts a runtime", async () => {
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+    } as never, { disableSync: true });
+    let markerPath = "";
+    let accepted: net.Socket[] = [];
+    let closeServer: () => Promise<void> = async () => {};
+
+    try {
+      await withFakeRuntimeCli(
+        // A real child process, so the assertion is about the spawn boundary
+        // rather than about a stubbed helper: if the pool spawns it, the file
+        // appears.
+        ({ tempDir }) => {
+          markerPath = path.join(tempDir, "spawned");
+          return `require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "spawned");\n`;
+        },
+        async ({ socketPath }) => {
+          const server = await listenAnswerlessSocket(socketPath);
+          accepted = server.accepted;
+          closeServer = server.close;
+
+          const connect = pool.ensureRunning();
+          // The pool is now parked inside its `initialize` handshake. A timeout
+          // here means the endpoint is not connectable on this platform, not
+          // that the pool skipped the connect.
+          await vi.waitFor(() => {
+            expect(accepted.length).toBeGreaterThan(0);
+          }, { timeout: 5_000 });
+
+          pool.dispose();
+          accepted[0]!.destroy();
+
+          const failure = await connect.then(
+            () => null,
+            (error: unknown) => error,
+          );
+          await new Promise((resolve) => setImmediate(resolve));
+
+          // The attempt continued past its probe with the pool already torn
+          // down. A runtime started there is one the pool no longer owns
+          // (disposal cleared the slot it would have been recorded in) and
+          // would never reap.
+          expect((pool as unknown as { ownedRuntimeChild: ChildProcess | null }).ownedRuntimeChild).toBeNull();
+          expect(fs.existsSync(markerPath)).toBe(false);
+          // The caller is still told the truth: the pool is gone.
+          expect(failure).toBeInstanceOf(Error);
+          expect((failure as Error).message).toBe("Local runtime connection pool is disposed.");
+        },
+      );
+    } finally {
+      await closeServer();
+      const leaked = (pool as unknown as { ownedRuntimeChild: ChildProcess | null }).ownedRuntimeChild;
+      if (leaked) signalChildProcessTree(leaked, "SIGKILL");
+      pool.dispose();
+    }
+  });
+
+  it("drains the calls already in flight before teardown lands on them", async () => {
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+    } as never, { disableSync: true });
+    let accepted: net.Socket[] = [];
+    let closeServer: () => Promise<void> = async () => {};
+
+    try {
+      await withFakeRuntimeCli(
+        // Exits at once, so the parked attempt settles on its own terms the
+        // moment the probe is released — no daemon to shut down afterwards.
+        () => "process.exit(0);\n",
+        async ({ socketPath }) => {
+          const server = await listenAnswerlessSocket(socketPath);
+          accepted = server.accepted;
+          closeServer = server.close;
+
+          const connect = pool.ensureRunning();
+          // Parked in the same `initialize` handshake; a timeout here is an
+          // endpoint that is not connectable on this platform.
+          await vi.waitFor(() => {
+            expect(accepted.length).toBeGreaterThan(0);
+          }, { timeout: 5_000 });
+
+          let drained = false;
+          const drain = pool.drain({ timeoutMs: 5_000 }).then(() => {
+            drained = true;
+          });
+          // A drain that returned before the in-flight connect settled would
+          // let `dispose()` answer that connect with "the pool is disposed" —
+          // the internal invariant the two Sentry issues are made of.
+          await new Promise((resolve) => setImmediate(resolve));
+          expect(drained).toBe(false);
+
+          accepted[0]!.destroy();
+          await expect(connect).rejects.toThrow();
+          await drain;
+          expect(drained).toBe(true);
+        },
+      );
+    } finally {
+      await closeServer();
+      const leaked = (pool as unknown as { ownedRuntimeChild: ChildProcess | null }).ownedRuntimeChild;
+      if (leaked) signalChildProcessTree(leaked, "SIGKILL");
+      pool.dispose();
+    }
   });
 
   it("single-flights an exact lane delete and keeps its client timeout above daemon work", async () => {

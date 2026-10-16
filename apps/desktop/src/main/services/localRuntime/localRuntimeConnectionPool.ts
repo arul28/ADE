@@ -161,6 +161,16 @@ const LOCAL_RUNTIME_SERVICE_INSTALL_TIMEOUT_MS = RUNTIME_SERVICE_START_WAIT_MS;
  * pending for up to about twice RUNTIME_SERVICE_START_WAIT_MS).
  */
 const LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS = RUNTIME_SERVICE_START_WAIT_MS;
+/**
+ * How long `drain()` waits for work already in flight before teardown.
+ *
+ * Bounded on purpose: the point is to let a call that is already inside a
+ * connect/repair settle instead of being killed by teardown, not to hold quit
+ * hostage to a brain that is never going to answer. Past this the shutdown
+ * sequence proceeds and `dispose()` tears the pool down under whatever is left,
+ * exactly as it did before — so a wedged runtime still costs a bounded delay.
+ */
+const LOCAL_RUNTIME_DRAIN_TIMEOUT_MS = 2_000;
 const LOCAL_RUNTIME_STATUS_REFRESH_TIMEOUT_MS = 2_000;
 // The Windows service probe itself costs ~2.1s (two PowerShell spawns), so the
 // off-thread child needs generous headroom before it is treated as unanswerable.
@@ -2286,6 +2296,50 @@ export class LocalRuntimeConnectionPool {
     }, { timeoutMs: LOCAL_RUNTIME_SYNC_TIMEOUT_MS }) as T;
   }
 
+  /**
+   * Settle the calls that are already in flight, so teardown does not land on
+   * top of them.
+   *
+   * `dispose()` is synchronous and terminal, so a call that was admitted while
+   * the pool was alive and is still parked in a connect or a service repair is
+   * answered with "the pool is disposed" the moment it resumes — an internal
+   * invariant, thrown at a caller that did nothing wrong. The caller cannot act
+   * on it, and in a packaged build it reaches Sentry as a defect. The honest
+   * teardown order is: stop the producers (the renderer's windows, whose polls
+   * are what keep arriving), let what is already in flight finish, and only then
+   * dispose.
+   *
+   * Bounded and never rejecting: a brain that never answers must not hold quit.
+   * Whatever is still running when the budget expires is torn down by the
+   * `dispose()` that follows, exactly as before.
+   */
+  async drain(options: { timeoutMs?: number } = {}): Promise<void> {
+    const inFlight: Array<Promise<unknown>> = [];
+    if (this.connection) inFlight.push(this.connection);
+    for (const registration of this.projectRegistrationsByRoot.values()) {
+      inFlight.push(registration.promise);
+    }
+    for (const call of this.coalescedActionCalls.values()) {
+      inFlight.push(call);
+    }
+    if (inFlight.length === 0) return;
+    const timeoutMs = Math.max(0, options.timeoutMs ?? LOCAL_RUNTIME_DRAIN_TIMEOUT_MS);
+    let timer: NodeJS.Timeout | null = null;
+    try {
+      await Promise.race([
+        // `allSettled` on purpose: a call that fails is still a call that has
+        // settled, and its failure belongs to its own caller.
+        Promise.allSettled(inFlight),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, timeoutMs);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -2772,6 +2826,12 @@ export class LocalRuntimeConnectionPool {
     const socketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || layout.socketPath;
     const existing = await this.tryConnect(socketPath);
     if (existing) return existing;
+    // The probe above can spend seconds on an unreachable endpoint, and a quit
+    // can land inside it. Everything past this point starts a runtime, an
+    // installer child, or both, and neither may outlive the pool: a torn-down
+    // pool that keeps going leaves an orphaned brain nobody will reap, and the
+    // caller learns about the shutdown only after the work was done.
+    this.assertNotDisposed();
 
     // An update deliberately removes the service before swapping the app, so
     // a missing endpoint during the window is the update working, not a
@@ -2986,6 +3046,12 @@ export class LocalRuntimeConnectionPool {
       });
       return null;
     }
+    // A repair is the longest thing this pool does: an install child plus a
+    // connect loop, together about twice RUNTIME_SERVICE_START_WAIT_MS. A quit
+    // that lands on one used to leave it running — reinstalling the login item
+    // and reconnecting a brain the app is no longer there to use. Stop it
+    // before the first side effect rather than after the last.
+    this.assertNotDisposed();
     this.serviceRepairAttempts += 1;
     this.lastServiceRepairAtMs = now;
     this.logger.info("local_runtime.service_repair_attempt", {
@@ -3027,6 +3093,10 @@ export class LocalRuntimeConnectionPool {
     const deadline = Date.now() + LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS;
     let lastError: unknown = null;
     for (;;) {
+      // Outside the `try` on purpose: the catch below exists to absorb connect
+      // failures and keep retrying, so a disposed pool would be retried until
+      // the deadline instead of stopping here.
+      this.assertNotDisposed();
       try {
         await waitForSocket(socketPath, 2_000);
         const client = await this.connectClient(socketPath, { isMachineService: true });
@@ -3385,6 +3455,12 @@ export class LocalRuntimeConnectionPool {
     socketPath: string,
     options: { disableSync?: boolean } = this.options,
   ): ChildProcess {
+    // The one place a brain is started, and the one place a disposed pool must
+    // never reach. Every caller — the primary connect, the app fallback, and
+    // the isolated-recovery tick — can be in flight across a quit, and a child
+    // spawned after `dispose()` has already run is one this pool no longer owns
+    // (its `ownedRuntimeChild` slot was cleared) and will never reap.
+    this.assertNotDisposed();
     const cliPath = resolveCliScriptPath();
     const args = buildLocalRuntimeServeArgs(cliPath, socketPath, options);
     this.logger.info("local_runtime.spawn", { cliPath, socketPath, disableSync: options.disableSync === true });

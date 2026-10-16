@@ -7827,10 +7827,22 @@ app.whenReady().then(async () => {
     } catch {
       // ignore
     }
-    try {
-      localRuntimePool.dispose();
-    } catch {
-      // ignore
+    // Deliberately NOT on the fast-kill prelude. The pool is not a resource to
+    // free first: it is the transport the rest of this teardown still uses —
+    // `replaceDormantContext` and every `closeProjectContext` below reach it
+    // through the machine usage-event bridge, and the renderer is still alive
+    // (its windows are only destroyed in `finalizeAppExit`), polling it over
+    // IPC. Disposing it here answered those calls with "the pool is disposed",
+    // which is an internal invariant, and `ipcCapture` reported each one to
+    // Sentry. The shutdown body's own completion, the force timer, `will-quit`
+    // and `process.once("exit")` all still dispose it, so nothing is leaked by
+    // waiting.
+    if (!reason.startsWith("fast_kill:")) {
+      try {
+        localRuntimePool.dispose();
+      } catch {
+        // ignore
+      }
     }
     const contexts = new Set<AppContext>(projectContexts.values());
     contexts.add(getActiveContext());
@@ -7891,6 +7903,28 @@ app.whenReady().then(async () => {
     terminateLoginImportWorkersBestEffort();
   };
 
+  /**
+   * Stop the renderer before the process's services are torn down.
+   *
+   * A live window is a producer: its runtime event pump, status poll and
+   * attention poll all reach `localRuntimePool` over IPC, and an IPC handler
+   * that rejects is reported to Sentry (`main/sentry/ipcCapture.ts`). Tearing
+   * the pool down under a live renderer therefore turns an ordinary quit into a
+   * reported defect. Every window is destroyed here, while the pool is still
+   * alive, so nothing is left to call it. `app.exit` destroys them anyway; this
+   * only makes that happen first.
+   */
+  const destroyWindowsForExit = (): void => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      try {
+        win.destroy();
+      } catch {
+        // Keep escalating through every window; app.exit is the hard bound.
+      }
+    }
+  };
+
   const finalizeAppExit = (exitCode: number): void => {
     if (shutdownFinalized) return;
     shutdownFinalized = true;
@@ -7898,6 +7932,7 @@ app.whenReady().then(async () => {
       clearTimeout(shutdownForceTimer);
       shutdownForceTimer = null;
     }
+    destroyWindowsForExit();
     runImmediateProcessCleanup("process_exit_finalize");
     if (app.isReady()) {
       app.exit(exitCode);
@@ -8003,6 +8038,17 @@ app.whenReady().then(async () => {
           error: error instanceof Error ? error.message : String(error),
         });
       } finally {
+        // Stop the producers, then let what is already in flight settle, then
+        // dispose. The windows go first: their runtime event pump and status
+        // polls are the calls that keep arriving, and `runImmediateProcessCleanup`
+        // below disposes the pool they reach. What is left in flight is a call
+        // that started before the quit — a `callSync` parked in a connect or a
+        // service repair — and `drain()` lets it finish instead of answering it
+        // with "the pool is disposed", an internal invariant reported to Sentry
+        // as a defect. Bounded, so a brain that never answers still cannot hold
+        // quit past the force timer.
+        destroyWindowsForExit();
+        await localRuntimePool.drain({ timeoutMs: 2_000 });
         // Sentry flushes alongside analytics: a crash that triggered this
         // shutdown is the report that must not be lost to the exit.
         await Promise.all([productAnalyticsService.shutdown(), flushSentry(2_000)]);
