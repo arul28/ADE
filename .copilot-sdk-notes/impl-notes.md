@@ -103,14 +103,15 @@ isolated ADE home. All chat calls below used `--personal`.
   isolated CLI-only runtime and started it again with the same isolated ADE
   home. The same ADE chat accepted `Reply with exactly: after-restart` and
   returned `after-restart`; its transcript contains both turns in order.
-- **e — PASS, SDK resume path.** Read-only inspection found an existing
+- **e — FAIL (partial SDK evidence).** Read-only inspection found an existing
   persisted Copilot chat with an ACP-era `acpSessionId` in the primary cache.
   `CopilotClient.resumeSession` through ADE's built SDK worker returned the
   same session ID and 10 history events. The session was disconnected without
-  sending a message or changing its ADE record. A fresh empty `copilot --acp`
-  session could not resume after its ACP process exited (`Session not found`);
-  that empty-session probe was not treated as the validation because it had no
-  persisted Copilot turn.
+  sending a message or changing its ADE record. This did not exercise the
+  ADE-managed persisted-session path, so it does not fully pass the requested
+  check. A fresh empty `copilot --acp` session could not resume after its ACP
+  process exited (`Session not found`); that empty-session probe was not
+  treated as the validation because it had no persisted Copilot turn.
 - **f — PASS.** The approved `sleep 70; echo approved-and-over-60` shell tool
   started at `21:39:15` and returned at `21:40:26` (71 seconds). Its assistant
   turn ended `completed`, with the shell output visible in the tool result.
