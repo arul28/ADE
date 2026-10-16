@@ -562,6 +562,12 @@ matters here; each step below came from a release that waited on CI.
 - **Do not wait on the notes commit's own CI.** Once the parent's `ci-pass` is
   green, tag. Waiting a second full CI round on a notes-only commit is what
   turned a 30-minute release into an hour.
+- **Never cancel the run the tag depends on.** Know which commit's `ci-pass`
+  the tag will borrow (the last non-notes ancestor of `RELEASE_SHA`) and leave
+  that run alone. v1.2.107 lost 14 minutes by cancelling it a minute before it
+  went green.
+- **Tag only after reading green.** Run the `ci-pass` check above and see
+  `success` before `git tag`. Never chain the tag onto a wait that timed out.
 - **A job fails on a real error:** stop and fix it; never tag past it.
 
 After release docs are committed on `main`:
