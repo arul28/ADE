@@ -30,6 +30,15 @@ export function resolveMachineAdeDir(env: NodeJS.ProcessEnv = process.env): stri
   return path.join(os.homedir(), ".ade");
 }
 
+/** True only when machine state resolves to the user's default ADE home. */
+export function isMachineAdeHome(adeDir: string, machineHome = resolveMachineAdeDir({})): boolean {
+  const actual = path.resolve(adeDir);
+  const expected = path.resolve(machineHome);
+  return process.platform === "darwin" || process.platform === "win32"
+    ? actual.toLowerCase() === expected.toLowerCase()
+    : actual === expected;
+}
+
 function windowsUserIdentity(env: NodeJS.ProcessEnv): string {
   const sid = env.ADE_WINDOWS_USER_SID?.trim() || env.USER_SID?.trim();
   if (sid) return `sid:${sid.toLowerCase()}`;
