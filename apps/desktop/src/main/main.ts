@@ -390,6 +390,7 @@ import {
   createRendererCrashRecoveryBudget,
   isRecoverableRenderProcessGone,
 } from "./rendererCrashRecovery";
+import { isWindowLoadTargetGone } from "./windowLoadTarget";
 import { createLinearClient } from "./services/cto/linearClient";
 import { createLinearIssueTracker, type LinearIssueTracker } from "./services/cto/linearIssueTracker";
 import { createLinearLiveStatusService, type LinearLiveStatusService } from "./services/cto/linearLiveStatusService";
@@ -1282,6 +1283,28 @@ async function createWindow(args: {
   try {
     await win.loadURL(rendererUrl);
   } catch (error) {
+    // The load did not finish because there is no window left to finish it in:
+    // the app is quitting, or the user closed the window while the renderer was
+    // still coming up. Chromium words that exactly like a real failure —
+    // `ERR_FAILED (-2) loading '<url>'` — so it cannot be told apart by message,
+    // and a second launch that loses the single-instance lock reaches here on
+    // every start: `app.quit()` before `ready` does not stop `ready` (Electron
+    // 41.5.0, measured), so the whole boot — this window, its load, and the
+    // built-in browser bridge — runs inside a process that is already leaving
+    // and closes the window under the load (2026-10-16, ADE-DESKTOP-1T).
+    //
+    // A warning, not an error: nothing failed, and the fallback page below has
+    // nobody to be shown to — loading it anyway throws `Object has been
+    // destroyed` out of the un-caught `app.whenReady()` chain, which is how this
+    // line used to cost an unhandled rejection on top of the issue.
+    if (isWindowLoadTargetGone(win)) {
+      args.logger?.warn("window.load_url_abandoned", {
+        windowId: win.id,
+        url: rendererUrl,
+        err: toErrorMessage(error),
+      });
+      return win;
+    }
     args.logger?.error("window.load_url_failed", {
       windowId: win.id,
       url: rendererUrl,

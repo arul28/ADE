@@ -11,7 +11,7 @@ import {
 } from "../../../shared/types/builtInBrowserRemote";
 import type { Logger } from "../logging/logger";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
-import { startBuiltInBrowserDesktopBridgeServer } from "./desktopBridgeServer";
+import { startBuiltInBrowserDesktopBridgeServer, bridgeListenFailureOutcome } from "./desktopBridgeServer";
 import { packRemoteCallFiles, runRemoteAgentBrowserCall } from "./builtInBrowserRemoteCalls";
 import { requestDesktopAppUpdate } from "../../../../../ade-cli/src/services/runtime/desktopAppUpdateBridge";
 import type { RemoteUpdateInstaller } from "../updates/remoteUpdateInstall";
@@ -138,6 +138,54 @@ describe("built-in browser desktop bridge socket ownership", () => {
       }
     },
   );
+});
+
+/**
+ * `EADDRINUSE` is the one bind failure the bridge answers benignly, and which
+ * reading it gets decides between a Sentry issue and a searchable log line.
+ * The Windows rows cannot be reached from this machine's socket, so the
+ * decision they turn on is pinned here rather than through a listening server.
+ */
+describe("bridgeListenFailureOutcome", () => {
+  it.each([
+    [
+      "a Windows pipe another desktop already owns",
+      { code: "EADDRINUSE", isNamedPipe: true, retriedAfterStaleUnlink: false },
+      "already-served",
+    ],
+    [
+      "a Windows pipe that is still taken, which has no stale-file retry",
+      { code: "EADDRINUSE", isNamedPipe: true, retriedAfterStaleUnlink: true },
+      "already-served",
+    ],
+    [
+      "the first Unix collision, which may be a socket a crashed desktop left",
+      { code: "EADDRINUSE", isNamedPipe: false, retriedAfterStaleUnlink: false },
+      "retry-stale-socket",
+    ],
+    [
+      "a Unix collision after the stale socket was replaced, so a live owner took it",
+      { code: "EADDRINUSE", isNamedPipe: false, retriedAfterStaleUnlink: true },
+      "already-served",
+    ],
+    [
+      "a socket directory this user may not write to",
+      { code: "EACCES", isNamedPipe: false, retriedAfterStaleUnlink: false },
+      "server-error",
+    ],
+    [
+      "a socket path longer than the platform allows",
+      { code: "ENAMETOOLONG", isNamedPipe: false, retriedAfterStaleUnlink: true },
+      "server-error",
+    ],
+    [
+      "an error that carries no code at all",
+      { code: undefined, isNamedPipe: true, retriedAfterStaleUnlink: false },
+      "server-error",
+    ],
+  ])("reads %s", (_label, input, expected) => {
+    expect(bridgeListenFailureOutcome(input)).toBe(expected);
+  });
 });
 
 describe("app update over the desktop bridge", () => {
