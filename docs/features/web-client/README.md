@@ -915,7 +915,6 @@ Tests:
 - `apps/desktop/src/renderer/webclient/shell/__tests__/webClientShell.test.tsx` -
   startup shell, retired pairing route, account privacy, welcome-surface boot,
   and StrictMode lifecycle coverage.
-- `apps/desktop/src/shared/webClientUrl.test.ts`.
 - `apps/ade-cli/src/commands/deeplinks.test.ts`.
 - `apps/ade-cli/src/tuiClient/__tests__/deeplinkKeybind.test.ts`.
 - `apps/ade-cli/src/services/sync/syncRemoteCommandService.test.ts`.

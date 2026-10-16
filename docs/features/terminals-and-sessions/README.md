@@ -141,8 +141,6 @@ and in tests.
   the `ade.app.getResourceUsage` handler in `registerIpc.ts`;
   `ptyService.getResourceAttribution()` supplies the live PTY roots + kinds.
   See [pty-and-sessions.md](./pty-and-sessions.md#resource-pressure-attribution).
-- `apps/desktop/src/main/services/pty/resourceUsageSampling.test.ts` —
-  collector coalescing/timeout/bounds and role-classification tests.
 - `apps/desktop/src/main/services/pty/ptyService.test.ts` — PTY behavior
   tests. Branch updated.
 - `apps/desktop/src/main/services/chat/piSessionStore.ts`,

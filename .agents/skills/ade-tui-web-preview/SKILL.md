@@ -130,7 +130,7 @@ When fixing `scripts/tui-web.mjs`:
 | Input / mouse / scroll | `__tests__/appInput.test.ts` |
 | Drawer | `__tests__/Drawer.test.tsx`, `drawerSelection.test.ts` |
 | Chat rendering | `__tests__/ChatView.test.tsx` |
-| Right pane | `__tests__/RightPane.test.tsx` |
+| Right pane | none |
 | Header/footer | `__tests__/HeaderFooter.test.tsx` |
 | Commands | `__tests__/commands.test.ts` |
 
