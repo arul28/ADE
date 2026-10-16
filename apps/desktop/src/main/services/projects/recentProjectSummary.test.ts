@@ -285,8 +285,8 @@ describe("toShallowRecentProjectSummary", () => {
 // inspectRecentProject — the memoized database read
 //
 // The read is memoized on a fingerprint of the project database, but the lane
-// count is recomputed from disk on every call. These cases pin the second
-// half of that split: nothing that changes what the count *is* may be served
+// count is recomputed from disk on every call. These cases pin both halves of
+// that split: nothing that changes what the count *is* may be served
 // from the memo. A wrong-but-fast recent-projects list is worse than a slow
 // one, so each row here is a way the fast path could lie.
 // ---------------------------------------------------------------------------

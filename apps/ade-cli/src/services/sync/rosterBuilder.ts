@@ -179,9 +179,10 @@ function normalizePath(value: string | null | undefined): string | null {
   return trimmed ? path.resolve(trimmed) : null;
 }
 
-// A lane is renderable only if its worktree still exists on disk — mirrors
-// `laneExistsOnDisk` in recentProjectSummary.ts so the roster never advertises
-// lanes whose worktree was deleted out from under ADE.
+// A lane is renderable only if its worktree still exists on disk — mirrors the
+// desktop's recentProjectSummary.ts (its `countedLane` + `laneExistsOnDisk`
+// pair) so the roster never advertises lanes whose worktree was deleted out
+// from under ADE.
 function laneExistsOnDisk(row: LaneRow, projectRoot: string): boolean {
   if ((row.lane_type ?? "").trim() === "primary") {
     return fs.existsSync(projectRoot);

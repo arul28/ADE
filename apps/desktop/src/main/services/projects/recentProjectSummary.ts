@@ -26,8 +26,6 @@ type LaneCountRow = {
   lane_type: string | null;
   worktree_path: string | null;
   attached_root_path: string | null;
-  status: string | null;
-  archived_at: string | null;
 };
 
 function normalizePath(value: string | null | undefined): string | null {
@@ -43,7 +41,8 @@ function normalizePath(value: string | null | undefined): string | null {
  * Keeping the *path* rather than a resolved boolean is what lets the count be
  * recomputed on every call while the database read behind it stays memoized:
  * a lane worktree deleted anywhere on disk still drops out immediately, with
- * no stat of the database involved.
+ * no database open or query involved. (The call still fingerprints the
+ * database first, which is two `statSync` calls.)
  */
 type CountedLane = {
   isPrimary: boolean;
@@ -95,12 +94,15 @@ type AdeProjectMemoEntry = {
   lanes: CountedLane[] | null;
 };
 
-// Recents are re-summarized on every focus and every project change, and
-// `recentProjectInspectionForRoot` inspects every recent to find one, so a
-// user with a few dozen registered projects re-opens every project database
-// several times a minute. The open is the whole cost of a summary (measured
-// ~2.6ms per project with a database, ~0.05ms without); the queries behind it
-// and the per-lane disk checks are noise. Memoize the read, never the count.
+// The database-opening callers are project-context creation (`main.ts`
+// `recentProjectInspectionForRoot`, which inspects every recent to find the one
+// it wants) and the mobile/web project catalog, so a user with a few dozen
+// registered projects opens every project database repeatedly. The window's own
+// recent-projects list is NOT one of them: it goes through `projectListRecent`
+// -> `toShallowRecentProjectSummary` behind a 5s TTL and never opens a
+// database. The open is the whole cost of a summary (measured ~2.6ms per
+// project with a database, ~0.05ms without); the queries behind it and the
+// per-lane disk checks are noise. Memoize the read, never the count.
 const ADE_PROJECT_MEMO_LIMIT = 256;
 const adeProjectMemo = new Map<string, AdeProjectMemoEntry>();
 
@@ -108,6 +110,14 @@ export function clearAdeProjectMemoForTests(): void {
   adeProjectMemo.clear();
 }
 
+/**
+ * Every errno means "treat this file as absent", deliberately and with no log
+ * line: ENOENT is the designed path (most projects have no `.ade/ade.db`) and
+ * fires for every project on every pass, and this module carries no logger. An
+ * unexpected code (EACCES, EIO) degrades exactly the way `readGitOriginUrl`
+ * below already degrades on an unreadable git config — and, like the main-file
+ * stat failing, it can only ever cause a re-read, never a stale answer.
+ */
 function statOrNull(filePath: string): fs.Stats | null {
   try {
     return fs.statSync(filePath);
@@ -134,6 +144,12 @@ function statOrNull(filePath: string): fs.Stats | null {
  *
  * Absence is part of the value rather than a skipped term, so a WAL appearing
  * or vanishing is itself a change.
+ *
+ * (mtime, size) is a heuristic, not a content hash — a hash would require the
+ * database open this memo exists to avoid. It is sufficient on a local
+ * filesystem with sub-second mtime resolution; a coarse or network filesystem
+ * can under-invalidate, which is the same assumption `readGitOriginUrl` below
+ * already makes.
  */
 function adeDatabaseFingerprint(dbPath: string): string | null {
   const main = statOrNull(dbPath);
@@ -199,7 +215,7 @@ function inspectAdeProject(projectRoot: string): AdeProjectInspection {
     const lanes = hasLanesTable
       ? db.prepare(
         `
-          select lane_type, worktree_path, attached_root_path, status, archived_at
+          select lane_type, worktree_path, attached_root_path
           from lanes
           where coalesce(status, 'active') != 'archived'
             and archived_at is null
@@ -215,7 +231,15 @@ function inspectAdeProject(projectRoot: string): AdeProjectInspection {
     };
     // Only successful reads are memoized, so a transient open failure is
     // retried on the next call instead of being pinned for the process.
-    if (adeProjectMemo.size >= ADE_PROJECT_MEMO_LIMIT) adeProjectMemo.clear();
+    // Bounded like the neighbouring caches in this folder, and — unlike them —
+    // evicting the oldest root rather than clearing the map: this memo exists
+    // to avoid database opens, so dropping every entry at once is the one
+    // failure mode it should not have. The key space is already bounded by the
+    // registered projects, so this is a backstop rather than a working limit.
+    if (adeProjectMemo.size >= ADE_PROJECT_MEMO_LIMIT) {
+      const oldestRoot = adeProjectMemo.keys().next().value;
+      if (oldestRoot !== undefined) adeProjectMemo.delete(oldestRoot);
+    }
     adeProjectMemo.set(projectRoot, entry);
     return materializeAdeProject(projectRoot, entry);
   } catch {

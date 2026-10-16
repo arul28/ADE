@@ -26,8 +26,10 @@ function normalizePath(value: string | null | undefined): string | null {
   return trimmed ? path.resolve(trimmed) : null;
 }
 
-// Mirrors `laneExistsOnDisk` in the desktop's recentProjectSummary.ts so the
-// catalog never advertises lanes whose worktree was deleted out from under ADE.
+// Mirrors the desktop's recentProjectSummary.ts so the catalog never advertises
+// lanes whose worktree was deleted out from under ADE. That file splits the
+// same rule into `countedLane` (row -> the path worth testing) and
+// `laneExistsOnDisk`; this one keeps both in a single function.
 function laneExistsOnDisk(row: LaneCountRow, projectRoot: string): boolean {
   if ((row.lane_type ?? "").trim() === "primary") {
     return fs.existsSync(projectRoot);
