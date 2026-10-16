@@ -599,6 +599,7 @@ import type {
   McpRegistryResult,
   McpRegistryScan,
   McpRegistrySecretRef,
+  McpRegistrySignInResult,
   AccountSettingsWriteOptions,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
@@ -4397,6 +4398,13 @@ declare global {
         pruneSecrets: (args: { server: string; keep: McpRegistryServer | null }) => Promise<McpRegistryResult<null>>;
         scan: (args: { projectRoot: string | null }) => Promise<McpRegistryScan>;
         import: (args: { name: string; projectRoot: string | null }) => Promise<McpRegistryImportResult>;
+        /**
+         * Browser sign-in, run on this computer; the token goes to the account
+         * vault. Resolves when the browser comes back, or on cancel / timeout.
+         */
+        signIn: (args: { server: McpRegistryServer }) => Promise<McpRegistrySignInResult>;
+        cancelSignIn: (args: { server: string }) => Promise<boolean>;
+        signOut: (args: { server: string }) => Promise<McpRegistryResult<null>>;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;

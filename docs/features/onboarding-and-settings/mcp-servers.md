@@ -68,9 +68,10 @@ Status on each row is about this computer:
 - **The command was not found.** For a `stdio` server whose program is neither
   on `PATH` nor in a known install folder (`resolveExecutableFromKnownLocations`,
   which honours `PATHEXT` on Windows), or whose path is not a file.
-- **Browser sign-in.** ADE does not sync OAuth tokens. The form says that a
-  server which asks for a browser sign-in is signed in by each provider, on
-  each computer.
+- **Browser sign-in.** An HTTP or SSE server that answers an unauthenticated
+  request with `401` and a Bearer challenge shows **Needs sign-in** and a
+  **Sign in** button. A signed-in one shows when its sign-in runs out, with
+  **Sign in again** and **Sign out**. See [Browser sign-in](#browser-sign-in).
 
 When the background service cannot be asked (it is restarting, or a dev brain
 runs with `--no-sync` and has no account store), the page shows this
@@ -105,6 +106,54 @@ added to the list, so the next chat never starts a server whose values are not
 there yet. Removing a server removes it from the list first, then from the two
 off lists it can reach, then its vault items.
 
+### Browser sign-in
+
+`main/services/mcp/mcpOAuth.ts`. ADE runs the MCP authorization flow itself,
+once, instead of each provider CLI running it into its own credential store:
+
+1. Probe the URL with an MCP `initialize` and no credentials. A `401` with
+   `WWW-Authenticate: Bearer resource_metadata=...` means it wants a sign-in.
+   The answer is cached per URL for ten minutes; an unreachable server is not
+   shown as needing one. A server with a header of its own is not probed.
+2. Read the protected-resource metadata (RFC 9728), then the authorization
+   server's metadata (RFC 8414, then OpenID). Old servers with neither get the
+   spec's fixed `/authorize`, `/token` and `/register` paths.
+3. Register ADE with dynamic client registration for this sign-in's redirect,
+   `http://127.0.0.1:<random port>/callback`. A server with no registration
+   endpoint cannot be signed in to here; the message says to use a header.
+4. Open the browser on the authorize URL (PKCE S256, `state`, `resource`) and
+   wait up to five minutes. A second sign-in for the same server cancels the
+   first.
+5. Exchange the code and keep the result in the account vault as one JSON item,
+   `mcp/<server>/oauth/token` (`mcpOAuthVaultKey`): the token, the refresh
+   token if any, the expiry, the client and the URL it was issued for.
+
+The browser and the redirect listener must be on the same computer, so the
+sign-in always runs in the desktop's own main process, even when the project
+tab is bound to another machine. Because the token goes to the account vault,
+every computer of the account starts its chats signed in.
+
+At launch `mcpRegistryToCallerServers` adds `Authorization: Bearer <token>` to
+the server, which every provider adapter already passes on. A header the user
+set by hand named `Authorization` wins. A token for a different URL (the server
+was edited) is ignored. An expired one is left out and the chat gets a notice
+to sign in again.
+
+A sign-in with a refresh token is renewed when it has less than 15 minutes
+left, or after it ran out: by `check` when the page loads, and every five
+minutes while the desktop app runs (`startRenewal`), so agents stay signed in
+to servers that issue one-hour tokens. One renewal per server runs at a time,
+because a server that rotates refresh tokens can revoke the grant when the old
+one is used twice. Chats on other computers read the renewed token from the
+vault. OpenRouter gives no refresh token, so its sign-in lasts its seven days.
+An edit keeps the sign-in; removing the server deletes it.
+
+Discovery also refuses metadata whose `resource` is not this server's URL (or
+a path above it on the same origin), and every endpoint it names must be HTTPS
+(plain HTTP only from a server on this computer to this computer). Requests
+never follow redirects. The sign-in IPC call is allowed six minutes, longer
+than the five the sign-in waits on the browser.
+
 ## The main process
 
 `window.ade.mcpRegistry` (`main/services/mcp/mcpRegistryService.ts`) is what
@@ -118,6 +167,7 @@ the renderer cannot do itself. No call returns a secret value.
 | `pruneSecrets` | Remove the vault items a server no longer names; all of them when the server is removed. |
 | `scan` | The servers in the provider CLIs' own configs, names only. |
 | `import` | Move one found server's values from the provider's file into the vault, inside the main process, and answer with its definition. The renderer then adds it to the list. |
+| `signIn`, `cancelSignIn`, `signOut` | Run a server's browser sign-in on this computer and keep its token in the vault; stop one that is waiting; remove the token. `check` also answers each HTTP / SSE server's sign-in state (`needed`, `valid`, `expired`), never the token. |
 
 ### What the scan reads
 
@@ -174,7 +224,8 @@ with.
 | `apps/desktop/src/shared/mcpRegistry.ts` | The model: normalizing the list and the off lists, state, vault key names, and the conversion to the shape provider adapters take. |
 | `apps/desktop/src/shared/mcpServerImport.ts` | One provider config entry, or a pasted snippet, as a server definition with its values kept beside it. |
 | `apps/desktop/src/shared/types/mcpRegistry.ts` | The wire types of `window.ade.mcpRegistry`. |
-| `apps/desktop/src/main/services/mcp/mcpRegistryService.ts` | Context, this-computer checks, the vault path, scan and import. |
+| `apps/desktop/src/main/services/mcp/mcpRegistryService.ts` | Context, this-computer checks, the vault path, scan, import and sign-in. |
+| `apps/desktop/src/main/services/mcp/mcpOAuth.ts` | The browser sign-in: the probe, discovery, client registration, the loopback redirect, the token exchange and renewal. |
 | `apps/desktop/src/main/services/mcp/mcpProviderConfigScan.ts` | Reading the five provider configs, including the Codex TOML tables. |
 | `apps/desktop/src/main/services/chat/mcpRegistryLaunch.ts` | The registry as one chat launch sees it. |
 | `apps/desktop/src/renderer/components/settings/mcp/` | The page, the add and edit dialog, the hook and the layout CSS. |

@@ -369,6 +369,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `home` | `widget_added` | `widget_<type>` (one per home widget type) | omitted; never the layout, a preset name, or a widget's settings |
 | `home` | `music_connected` | `completed`, `cancelled`, `failed` | omitted; never the Apple account, storefront, or token |
 | `home` | `spotify_connected` | `completed`, `cancelled`, `failed` | omitted; never the Spotify account, client ID, device, track or token |
+| `mcp_servers` | `sign_in` | `completed`, `cancelled`, `failed` | omitted; never the server's name, its URL, the authorization server, or the token |
 | `find` | `find_opened` | `chat_shortcut`, `chat_palette`, `chat_palette_hit`, `diff_shortcut` | omitted; never the query, the chat, the diff, a file, or a match count |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
@@ -385,6 +386,12 @@ Settings page or the chat warning for a CLI older than ADE supports) records
 It is a rare, deliberate click, deduplicated per outcome and provider family
 for an hour, so the worst case is a few events a day inside the existing
 `ade_feature_used` 140-per-day / 30-per-minute ceilings.
+
+A browser sign-in to an MCP server (Settings › MCP servers) records
+`mcp_servers/sign_in` once when it ends, in the desktop IPC handler that runs
+it (`desktop`). It is a deliberate click that waits on a browser, deduplicated
+per outcome for an hour, so the worst case is three events a day inside the
+existing `ade_feature_used` ceilings.
 
 Making a private webhook URL records `automations/webhook_url_created` where
 the URL is made: the desktop's IPC handler (`desktop`) or the

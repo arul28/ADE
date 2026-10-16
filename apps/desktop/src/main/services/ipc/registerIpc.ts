@@ -944,6 +944,7 @@ import type {
   McpRegistryResult,
   McpRegistryScan,
   McpRegistrySecretRef,
+  McpRegistrySignInResult,
 } from "../../../shared/types/mcpRegistry";
 import {
   createAccountMigrationRunner,
@@ -953,7 +954,7 @@ import {
 import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
-import { captureAutomationTestAnalytics, capturePresetAnalytics, captureProviderCliUpdateAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import { captureAutomationTestAnalytics, captureMcpServerSignInAnalytics, capturePresetAnalytics, captureProviderCliUpdateAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
   AccountSettingsResult,
@@ -12335,6 +12336,13 @@ export function registerIpc({
   const mcpRegistryService = createMcpRegistryService({
     vault: accountVaultBridge,
     adeHome: harnessPresetsAdeDir,
+    openUrl: async (url) => await openExternalUrl(url),
+    logger: { warn: (event, meta) => getCtx().logger.warn(event, meta) },
+  });
+  const stopMcpRenewal = mcpRegistryService.startRenewal();
+  app.once("will-quit", () => {
+    stopMcpRenewal();
+    mcpRegistryService.dispose();
   });
   ipcMain.handle(
     IPC.mcpRegistryContext,
@@ -12370,6 +12378,30 @@ export function registerIpc({
     IPC.mcpRegistryImport,
     async (_event, args: { name: string; projectRoot?: string | null }): Promise<McpRegistryImportResult> =>
       await mcpRegistryService.importServer(String(args?.name ?? ""), args?.projectRoot ?? null),
+  );
+  // The sign-in opens a browser and listens for its redirect on this
+  // computer, so it is never routed to a remote machine. The token lands in
+  // the account vault, which every computer of the account reads.
+  ipcMain.handle(
+    IPC.mcpRegistrySignIn,
+    async (_event, args: { server?: McpRegistryServer }): Promise<McpRegistrySignInResult> => {
+      const result = await mcpRegistryService.signIn(args?.server);
+      captureMcpServerSignInAnalytics({
+        analytics: productAnalyticsService,
+        surface: "desktop",
+        outcome: result.ok ? "completed" : "cancelled" in result && result.cancelled ? "cancelled" : "failed",
+      });
+      return result;
+    },
+  );
+  ipcMain.handle(
+    IPC.mcpRegistryCancelSignIn,
+    (_event, args: { server?: string }): boolean => mcpRegistryService.cancelSignIn(String(args?.server ?? "")),
+  );
+  ipcMain.handle(
+    IPC.mcpRegistrySignOut,
+    async (_event, args: { server?: string }): Promise<McpRegistryResult<null>> =>
+      await mcpRegistryService.signOut(String(args?.server ?? "")),
   );
 
   const accountMigrationRunner = createAccountMigrationRunner({

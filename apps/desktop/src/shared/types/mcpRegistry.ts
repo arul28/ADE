@@ -30,6 +30,16 @@ export type McpRegistryCheck = {
   heldSecretKeys: string[];
   /** Names of `stdio` servers whose command was not found on this computer. */
   missingCommands: string[];
+  /** HTTP / SSE servers with a browser sign-in, or that ask for one. Others are not listed. */
+  signIns: McpServerSignIn[];
+};
+
+/** One server's browser sign-in. Never carries the token. */
+export type McpServerSignIn = {
+  server: string;
+  /** `needed`: the server asks for a sign-in and ADE has none for it. */
+  state: "needed" | "valid" | "expired";
+  expiresAt: string | null;
 };
 
 /** A provider CLI whose own config the scan reads. */
@@ -59,3 +69,8 @@ export type McpRegistrySecretRef = { server: string; field: McpSecretField; name
 export type McpRegistryResult<T> = AccountStoreResult<T>;
 
 export type McpRegistryImportResult = McpRegistryResult<McpRegistryServer>;
+
+/** A sign-in's answer. `cancelled` marks one stopped by Cancel or a newer sign-in. */
+export type McpRegistrySignInResult =
+  | McpRegistryResult<McpServerSignIn>
+  | { ok: false; rejected: true; cancelled: true; message: string };

@@ -1,3 +1,4 @@
+import { MCP_SIGN_IN_TIMEOUT_MS } from "../mcp/mcpOAuth";
 import { IPC } from "../../../shared/ipc";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import {
@@ -163,6 +164,10 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return PI_LOGIN_IPC_TIMEOUT_MS;
     case IPC.aiCursorAuthLogin:
       return CURSOR_LOGIN_IPC_TIMEOUT_MS;
+    // Awaits the user approving an MCP server's sign-in in a browser; the
+    // sign-in gives up on its own first, so the renderer hears why.
+    case IPC.mcpRegistrySignIn:
+      return MCP_SIGN_IN_TIMEOUT_MS + 60_000;
     case IPC.remoteRuntimeConnect:
     case IPC.remoteRuntimeListProjects:
     case IPC.remoteRuntimeAddProject:

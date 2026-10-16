@@ -163,6 +163,72 @@ export function mcpSecretVaultKeyPrefix(serverName: string): string {
   return `mcp/${serverName}/`;
 }
 
+/**
+ * Where a server's browser sign-in is kept: one vault item holding a
+ * {@link McpOAuthToken} as JSON. It is not one of the server's named values,
+ * so the page never asks for it as a missing secret.
+ */
+export function mcpOAuthVaultKey(serverName: string): string {
+  return `mcp/${serverName}/oauth/token`;
+}
+
+/** A browser sign-in ADE did for a server, as the vault keeps it. */
+export type McpOAuthToken = {
+  v: 1;
+  /** The server URL it was issued for. A server whose URL changed is signed out. */
+  url: string;
+  accessToken: string;
+  refreshToken: string | null;
+  /** ISO time, or null when the server did not say. */
+  expiresAt: string | null;
+  scope: string | null;
+  clientId: string;
+  clientSecret: string | null;
+  tokenEndpoint: string;
+  resource: string;
+};
+
+/** A stored sign-in, or null for anything that is not one. */
+export function parseMcpOAuthToken(raw: string | null | undefined): McpOAuthToken | null {
+  if (!raw) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(value) || value.v !== 1) return null;
+  const text = (entry: unknown): string | null => (typeof entry === "string" && entry.length ? entry : null);
+  const url = text(value.url);
+  const accessToken = text(value.accessToken);
+  const clientId = text(value.clientId);
+  const tokenEndpoint = text(value.tokenEndpoint);
+  if (!url || !accessToken || !clientId || !tokenEndpoint) return null;
+  return {
+    v: 1,
+    url,
+    accessToken,
+    refreshToken: text(value.refreshToken),
+    expiresAt: text(value.expiresAt),
+    scope: text(value.scope),
+    clientId,
+    clientSecret: text(value.clientSecret),
+    tokenEndpoint,
+    resource: text(value.resource) ?? url,
+  };
+}
+
+/** Whether a sign-in is for this server as it is defined now, and still in date. */
+export function mcpOAuthTokenState(
+  token: McpOAuthToken | null,
+  server: Pick<McpRegistryServer, "url">,
+  now: number = Date.now(),
+): "none" | "valid" | "expired" {
+  if (!token || token.url !== server.url) return "none";
+  if (token.expiresAt && Date.parse(token.expiresAt) <= now) return "expired";
+  return "valid";
+}
+
 /** Every vault key a server reads at launch, in the order its names are listed. */
 export function mcpSecretVaultKeys(server: McpRegistryServer): string[] {
   return [
@@ -197,9 +263,10 @@ export function mcpRegistryToCallerServers(
   servers: readonly McpRegistryServer[],
   off: { machine: readonly string[]; project: readonly string[] },
   secret: (vaultKey: string) => string | null,
-): { servers: CallerMcpServers | null; missing: string[] } {
+): { servers: CallerMcpServers | null; missing: string[]; signInExpired: string[] } {
   const out: Record<string, AgentChatMcpServerConfig> = {};
   const missing: string[] = [];
+  const signInExpired: string[] = [];
   for (const server of servers) {
     if (mcpRegistryState(server, off) !== "on") continue;
     if (server.transport === "stdio") {
@@ -223,6 +290,15 @@ export function mcpRegistryToCallerServers(
       if (value == null) missing.push(`${server.name}: ${name}`);
       else headers[name] = value;
     }
+    // ADE's own browser sign-in, as the header every provider understands. A
+    // header the user set by hand wins: it is the more deliberate choice.
+    const signIn = parseMcpOAuthToken(secret(mcpOAuthVaultKey(server.name)));
+    const signInState = mcpOAuthTokenState(signIn, server);
+    if (signIn && signInState === "valid" && !Object.keys(headers).some((name) => name.toLowerCase() === "authorization")) {
+      headers.Authorization = `Bearer ${signIn.accessToken}`;
+    } else if (signInState === "expired") {
+      signInExpired.push(server.name);
+    }
     out[server.name] = {
       type: server.transport,
       url: server.url ?? "",
@@ -231,5 +307,5 @@ export function mcpRegistryToCallerServers(
   }
   // The embedder path's own validation is the last word on what a provider
   // can be handed (reserved names, URL shape, the server cap).
-  return { servers: Object.keys(out).length ? normalizeCallerMcpServers(out) : null, missing };
+  return { servers: Object.keys(out).length ? normalizeCallerMcpServers(out) : null, missing, signInExpired };
 }

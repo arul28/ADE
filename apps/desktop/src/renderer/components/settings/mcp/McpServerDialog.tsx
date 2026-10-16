@@ -301,7 +301,7 @@ export function McpServerDialog({
               onChange={(event) => patch({ url: event.target.value })}
             />
             <p className="ade-modern-muted">
-              If it asks you to sign in with a browser, each provider signs in itself on each computer.
+              If it asks you to sign in with a browser, save it, then press Sign in on its row. ADE signs in once for every agent.
             </p>
             <McpSecretWarnings server={{ transport: form.transport, url: form.url }} where="url" />
           </div>

@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from "react";
-import { ArrowsClockwise, PencilSimple, Plus, Trash, Warning } from "@phosphor-icons/react";
+import { ArrowsClockwise, CheckCircle, Key, PencilSimple, Plus, Trash, Warning } from "@phosphor-icons/react";
 import { CALLER_MCP_SUPPORT } from "../../../../shared/callerMcpServers";
 import {
   MCP_TRANSPORT_LABEL,
@@ -8,7 +8,7 @@ import {
   type McpRegistryState,
   type McpSecretField,
 } from "../../../../shared/mcpRegistry";
-import type { McpConfigProvider, McpFoundServer } from "../../../../shared/types/mcpRegistry";
+import type { McpConfigProvider, McpFoundServer, McpServerSignIn } from "../../../../shared/types/mcpRegistry";
 import { useAppStore } from "../../../state/appStore";
 import { showToast } from "../../app/toast/toastStore";
 import { ProviderLogo } from "../../shared/ProviderLogos";
@@ -73,6 +73,9 @@ export function McpServersSection() {
   const projectName = useAppStore((state) => state.project?.displayName?.trim() || null);
   const [dialog, setDialog] = useState<{ editing: McpRegistryServer | null } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // A sign-in waits on the browser for minutes, so it is not `busy`: the rest
+  // of the page stays usable while it runs.
+  const [signingIn, setSigningIn] = useState<string | null>(null);
   const ready = registry.phase === "ready";
 
   /** Runs one change on one row, and says so when it did not take. */
@@ -94,6 +97,25 @@ export function McpServersSection() {
     if (!confirmed) return;
     if (await run(server.name, `Could not remove ${server.name}`, () => registry.removeServer(server.name))) {
       showToast({ tone: "success", title: `Removed ${server.name}` });
+    }
+  }, [registry, run]);
+
+  const handleSignIn = useCallback(async (server: McpRegistryServer) => {
+    setSigningIn(server.name);
+    const result = await registry.signIn(server);
+    setSigningIn((current) => (current === server.name ? null : current));
+    if (!result.ok) {
+      if (!result.cancelled) showToast({ tone: "error", title: `Could not sign in to ${server.name}`, message: result.message });
+      return;
+    }
+    showToast({ tone: "success", title: `Signed in to ${server.name}`, message: "New chats can use its tools, with every provider, on every computer." });
+  }, [registry]);
+
+  const handleCancelSignIn = useCallback((name: string) => registry.cancelSignIn(name), [registry]);
+
+  const handleSignOut = useCallback(async (server: McpRegistryServer) => {
+    if (await run(server.name, `Could not sign out of ${server.name}`, () => registry.signOut(server.name))) {
+      showToast({ tone: "success", title: `Signed out of ${server.name}`, message: "New chats start it signed out. Revoke the key on the server's own site to end it there too." });
     }
   }, [registry, run]);
 
@@ -170,6 +192,10 @@ export function McpServersSection() {
                   onSecret={(field, name, value) => run(server.name, `Could not save ${name}`, () => registry.setSecret(server.name, field, name, value))}
                   onEdit={() => setDialog({ editing: server })}
                   onRemove={() => void handleRemove(server)}
+                  signingIn={signingIn === server.name}
+                  onSignIn={() => void handleSignIn(server)}
+                  onCancelSignIn={() => handleCancelSignIn(server.name)}
+                  onSignOut={() => void handleSignOut(server)}
                 />
               ))}
             </div>
@@ -269,6 +295,10 @@ function ServerRow({
   onSecret,
   onEdit,
   onRemove,
+  signingIn,
+  onSignIn,
+  onCancelSignIn,
+  onSignOut,
 }: {
   server: McpRegistryServer;
   registry: McpRegistryApi;
@@ -280,8 +310,13 @@ function ServerRow({
   onSecret: (field: McpSecretField, name: string, value: string) => Promise<boolean>;
   onEdit: () => void;
   onRemove: () => void;
+  signingIn: boolean;
+  onSignIn: () => void;
+  onCancelSignIn: () => void;
+  onSignOut: () => void;
 }) {
   const state = mcpRegistryState(server, registry.off);
+  const signIn = registry.check?.signIns.get(server.name) ?? null;
   const missingSecrets = registry.check ? missingMcpSecrets(server, registry.check.heldSecretKeys) : [];
   const commandMissing = registry.check?.missingCommands.has(server.name) === true;
   const hasComputer = registry.context.deviceOffKey != null;
@@ -296,6 +331,11 @@ function ServerRow({
         <span className="kit-tag" data-tone={state === "on" ? "ok" : undefined} data-mcp-state={state}>
           {STATE_LABEL[state]}
         </span>
+        {signIn ? (
+          <span className="kit-tag" data-tone={signIn.state === "valid" ? "ok" : "warn"} data-mcp-sign-in-state={signIn.state}>
+            {signIn.state === "valid" ? "Signed in" : signIn.state === "expired" ? "Sign-in ran out" : "Needs sign-in"}
+          </span>
+        ) : null}
         <span className="ade-mcp-head-end">
           <button type="button" className="ade-modern-btn" data-variant="ghost" data-icon="true" aria-label={`Edit ${server.name}`} title="Edit" disabled={readOnly} onClick={onEdit}>
             <PencilSimple size={13} weight="bold" />
@@ -334,6 +374,17 @@ function ServerRow({
         />
       </div>
 
+      {signIn || signingIn ? (
+        <SignInNote
+          name={server.name}
+          signIn={signIn}
+          signingIn={signingIn}
+          disabled={busy || readOnly}
+          onSignIn={onSignIn}
+          onCancel={onCancelSignIn}
+          onSignOut={onSignOut}
+        />
+      ) : null}
       {commandMissing ? (
         <div className="ade-modern-note" data-tone="warn" data-mcp-command-missing="">
           <Warning size={14} weight="fill" />
@@ -377,6 +428,78 @@ function LevelSwitch({
       <SettingsToggle checked={checked} disabled={unavailable} onChange={(on) => { if (!busy) onChange(on); }} label={label} />
       {label}
     </span>
+  );
+}
+
+function expiresLine(expiresAt: string | null): string {
+  if (!expiresAt) return "Every ADE agent uses this sign-in, on every computer you use.";
+  const ms = Date.parse(expiresAt) - Date.now();
+  const days = Math.floor(ms / 86_400_000);
+  const when = days >= 2 ? `in ${days} days` : ms > 3_600_000 ? `in ${Math.round(ms / 3_600_000)} hours` : "soon";
+  return `Every ADE agent uses this sign-in, on every computer you use. It runs out ${when}.`;
+}
+
+/** A server's browser sign-in: the ask, the wait on the browser, or who is signed in. */
+function SignInNote({
+  name,
+  signIn,
+  signingIn,
+  disabled,
+  onSignIn,
+  onCancel,
+  onSignOut,
+}: {
+  name: string;
+  signIn: McpServerSignIn | null;
+  signingIn: boolean;
+  disabled: boolean;
+  onSignIn: () => void;
+  onCancel: () => void;
+  onSignOut: () => void;
+}) {
+  if (signingIn) {
+    return (
+      <div className="ade-modern-note" data-mcp-sign-in="waiting">
+        <Key size={14} weight="fill" />
+        <div className="ade-modern-note-body">
+          <span>Finish signing in to {name} in your browser. ADE is waiting for it.</span>
+          <div className="ade-mcp-secret">
+            <button type="button" className="ade-modern-btn" onClick={onCancel}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (signIn?.state === "valid") {
+    return (
+      <div className="ade-modern-note" data-tone="ok" data-mcp-sign-in="valid">
+        <CheckCircle size={14} weight="fill" />
+        <div className="ade-modern-note-body">
+          <span>{expiresLine(signIn.expiresAt)}</span>
+          <div className="ade-mcp-secret">
+            <button type="button" className="ade-modern-btn" disabled={disabled} onClick={onSignIn}>Sign in again</button>
+            <button type="button" className="ade-modern-btn" data-variant="ghost" disabled={disabled} onClick={onSignOut}>Sign out</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="ade-modern-note" data-tone="warn" data-mcp-sign-in={signIn?.state ?? "needed"}>
+      <Warning size={14} weight="fill" />
+      <div className="ade-modern-note-body">
+        <span>
+          {signIn?.state === "expired"
+            ? `Your sign-in to ${name} ran out. Agents can't use its tools until you sign in again.`
+            : `${name} asks you to sign in before agents can use its tools. Sign in once here and every ADE agent gets it, on every computer.`}
+        </span>
+        <div className="ade-mcp-secret">
+          <button type="button" className="ade-modern-btn" data-tone="primary" disabled={disabled} onClick={onSignIn}>
+            Sign in
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

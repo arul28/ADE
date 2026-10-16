@@ -31,6 +31,13 @@ const openCodeBackgroundWorkGuidance = "**Background work:** `shell` with `backg
  */
 const adeDraftSendGuidance = "**Sending a message later, versus waking yourself later:** these are different mechanisms, so pick deliberately. Use ADE's `ade drafts` when the user wants *a message to arrive at a time* — it delivers their prompt as a real user turn in the target chat, it shows up in their Drafts list where they can read, edit, retime or cancel it, and it survives on whichever machine owns that chat. `ade drafts schedule <id> --in 2h --target <chatId>` (or `--new-chat --lane <laneId> --provider <p> --model <m>`), `ade drafts list`, `ade drafts show <id>`, `ade drafts create --prompt \"…\"`, `ade drafts now <id>`. The target is always explicit and a one-shot time should be expressed with `--in`, which avoids timezone arithmetic. Use your own `ScheduleWakeup` / `CronCreate` / `ade chat scheduled-work create` when *you* need to do work later — it wakes your own session at a turn boundary; it is not a message from the user and does not appear in their drafts. A draft’s send names a machine and only that machine delivers it. An agent may read and manage drafts; do not paste secrets into an unsent draft, and remember a send you arm is indistinguishable from one the user armed.";
 
+/**
+ * What an agent says when the user asks for an MCP server it does not have.
+ * The server list is fixed when the provider process starts, and only the user
+ * can sign in, so the agent's job is to point at the two steps, not to try.
+ */
+const adeMcpServersGuidance = "**MCP servers:** Servers the user adds in Settings › MCP servers reach chats started or restarted after the change; this chat keeps the set it started with. If the user asks for an MCP server you don't have, or one reports it needs authentication, you cannot add or sign in to it yourself. Tell them: if it asks for a sign-in, press **Sign in** on its row in Settings › MCP servers; then right-click this chat in Work and choose **Restart agent session** (the conversation is kept), and send a message to try again.";
+
 const adeIndependentChildChatGuidance = "Use an ADE `--type subagent` chat when the work needs an independent durable transcript, scheduling, cross-provider execution, or separately tracked lifecycle.";
 
 type NativeSubagentFamily = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
@@ -74,6 +81,7 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
         "**Wake-up semantics:** Native `ScheduleWakeup`, `CronCreate`, and `/loop` are automatically mirrored into ADE's durable scheduler. `durable: true` also persists Claude's provider copy, while ADE's delivery guarantee does not depend on that flag. Jobs survive brain restarts and start a new turn at the next turn boundary even if the chat was busy when they became due. The SDK's own `CronList` view is advisory; ADE state wins. Pause schedules in Chat Info or project-wide in Settings. Recurring jobs expire seven days after creation. `CronCreate` always creates a new job, so replace one with `CronList` + `CronDelete` before creating another.",
         adeScheduledWorkGuidance,
         adeDraftSendGuidance,
+        adeMcpServersGuidance,
         "**To wait:** For short bounded waits inside the current turn, a foreground command such as `sleep ... && <one-shot command>` is fine. For longer waits or autonomous follow-up, prefer `ScheduleWakeup`, `CronCreate`, or `/loop` and include a concise reason/prompt so ADE can show the pending work clearly.",
       ];
     case "claude-code-cli":
@@ -82,6 +90,7 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
         adeDraftSendGuidance,
+        adeMcpServersGuidance,
       ];
     case "codex-cli":
       return [
@@ -89,6 +98,7 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
         adeDraftSendGuidance,
+        adeMcpServersGuidance,
       ];
     case "codex-app-server":
       return [
@@ -96,6 +106,7 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
         adeDraftSendGuidance,
+        adeMcpServersGuidance,
       ];
     case "cursor-sdk":
       return [
@@ -103,6 +114,7 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
         adeDraftSendGuidance,
+        adeMcpServersGuidance,
       ];
     case "droid-sdk":
       return [
@@ -110,6 +122,7 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
         adeDraftSendGuidance,
+        adeMcpServersGuidance,
       ];
     case "pi-sdk":
       return [
@@ -124,6 +137,7 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
         adeDraftSendGuidance,
+        adeMcpServersGuidance,
         openCodeBackgroundWorkGuidance,
       ];
   }

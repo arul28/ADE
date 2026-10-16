@@ -30,7 +30,7 @@ import {
   type McpRegistryServer,
   type McpSecretField,
 } from "../../../../shared/mcpRegistry";
-import type { McpFoundServer, McpRegistryContext } from "../../../../shared/types/mcpRegistry";
+import type { McpFoundServer, McpRegistryContext, McpServerSignIn } from "../../../../shared/types/mcpRegistry";
 import { useAppStore } from "../../../state/appStore";
 
 /** The three places a server can be switched off. */
@@ -53,7 +53,12 @@ export type McpRegistryView = {
    * What this computer holds and can start. Null when it could not be checked;
    * the page then shows no warning rather than a wrong one.
    */
-  check: { heldSecretKeys: ReadonlySet<string>; missingCommands: ReadonlySet<string> } | null;
+  check: {
+    heldSecretKeys: ReadonlySet<string>;
+    missingCommands: ReadonlySet<string>;
+    /** Browser sign-in by server name, for servers that have or want one. */
+    signIns: ReadonlyMap<string, McpServerSignIn>;
+  } | null;
   /** Servers in the provider CLIs' own configs here that the registry does not have. */
   found: McpFoundServer[];
   /** Names the scan saw but ADE cannot hold. */
@@ -68,6 +73,10 @@ export type McpRegistryApi = McpRegistryView & {
   setLevel: (name: string, level: McpRegistryLevel, on: boolean) => Promise<string | null>;
   setSecret: (server: string, field: McpSecretField, name: string, value: string) => Promise<string | null>;
   importFound: (name: string) => Promise<string | null>;
+  /** Opens the browser and waits for it. `cancelled` covers Cancel here, a newer sign-in, or another window. */
+  signIn: (server: McpRegistryServer) => Promise<{ ok: true } | { ok: false; cancelled: boolean; message: string }>;
+  cancelSignIn: (name: string) => void;
+  signOut: (name: string) => Promise<string | null>;
 };
 
 const NO_BRIDGE = "MCP servers can't be changed from here.";
@@ -142,7 +151,11 @@ export function useMcpRegistry(): McpRegistryApi {
       },
       context,
       check: check.ok
-        ? { heldSecretKeys: new Set(check.value.heldSecretKeys), missingCommands: new Set(check.value.missingCommands) }
+        ? {
+            heldSecretKeys: new Set(check.value.heldSecretKeys),
+            missingCommands: new Set(check.value.missingCommands),
+            signIns: new Map((check.value.signIns ?? []).map((entry) => [entry.server, entry])),
+          }
         : null,
       found: scan.servers.filter((server) => !known.has(server.name)),
       skipped: scan.skipped,
@@ -326,7 +339,31 @@ export function useMcpRegistry(): McpRegistryApi {
     });
   }), [mutate, projectRoot, writeServers]);
 
-  return { ...view, reload, saveServer, removeServer, setLevel, setSecret, importFound };
+  const signIn = useCallback(async (server: McpRegistryServer) => {
+    let cancelled = false;
+    const message = await mutate(async () => {
+      const registry = window.ade?.mcpRegistry;
+      if (!registry) return NO_BRIDGE;
+      const result = await registry.signIn({ server });
+      if (result.ok) return null;
+      cancelled = "cancelled" in result && result.cancelled === true;
+      return result.message;
+    });
+    return message == null ? { ok: true as const } : { ok: false as const, cancelled, message };
+  }, [mutate]);
+
+  const cancelSignIn = useCallback((name: string) => {
+    void window.ade?.mcpRegistry?.cancelSignIn({ server: name });
+  }, []);
+
+  const signOut = useCallback((name: string) => mutate(async () => {
+    const registry = window.ade?.mcpRegistry;
+    if (!registry) return NO_BRIDGE;
+    const result = await registry.signOut({ server: name });
+    return result.ok ? null : result.message;
+  }), [mutate]);
+
+  return { ...view, reload, saveServer, removeServer, setLevel, setSecret, importFound, signIn, cancelSignIn, signOut };
 }
 
 /** The secret values of one server this computer does not hold, as `field` + `name`. */
