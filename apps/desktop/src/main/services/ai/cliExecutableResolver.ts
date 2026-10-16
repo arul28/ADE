@@ -597,7 +597,12 @@ function readShellPath(
   env?: NodeJS.ProcessEnv,
 ): string | null {
   const source = env ?? process.env;
-  const key = [shellPath, shellFlag, source.PATH ?? "", source.HOME ?? ""].join("\u0000");
+  // Keyed on the shell and HOME (where its rc files live), not on PATH: callers
+  // pass the augmented PATH back in, so a PATH key missed on every such call and
+  // spawned a login shell synchronously. The inherited PATH is still merged in
+  // fresh by augmentProcessPathWithShellAndKnownCliDirs, so a PATH change shows
+  // up at once; only what the shell itself adds waits for the TTL.
+  const key = [shellPath, shellFlag, source.HOME ?? ""].join("\u0000");
   // Once a shell has answered, never wait on it again: an expired answer is
   // returned as is while one background probe replaces it. Re-probing
   // synchronously at expiry spawned a login (and interactive) shell on the
