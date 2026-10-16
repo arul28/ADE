@@ -75,6 +75,7 @@ import {
 import { resolveKnownProjectRoot } from "./knownProjectRoots";
 import type { AttemptedProjectRoots } from "./knownProjectRoots";
 import { resolveWithinAllowedDirs } from "./allowedRendererPath";
+import { resolveWithinAllowedProjectRoots } from "./allowedProjectRoot";
 import { redactIpcArgsForChannel, shouldRedactIpcKey } from "./ipcChannelRedaction";
 import type {
   AttentionItem,
@@ -4541,14 +4542,11 @@ export function registerIpc({
     const raw = typeof rawPath === "string" ? rawPath.trim() : "";
     if (!raw) throw new Error("Missing root path.");
     const normalized = resolveRendererSuppliedPath(raw, getCtx().project.rootPath);
-    for (const dir of getAllowedProjectRoots()) {
-      try {
-        return resolvePathWithinRoot(dir, normalized);
-      } catch {
-        // try next known project root
-      }
-    }
-    throw new Error("rootPath is outside known project roots.");
+    // `resolveWithinAllowedProjectRoots` owns the allowlist loop and, crucially,
+    // which failure earns which message: only a containment failure is "outside
+    // known project roots"; a folder that is simply not there keeps the
+    // resolver's own reason.
+    return resolveWithinAllowedProjectRoots(getAllowedProjectRoots(), normalized);
   };
 
   ipcMain.handle(
