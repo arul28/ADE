@@ -1532,6 +1532,11 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       role="button"
       tabIndex={disabledReason ? -1 : 0}
       aria-disabled={disabledReason ? true : undefined}
+      /* The keyboard's stable anchor for "select this session". `data-session-row`
+         sits on the drag wrapper around this face; the face is the control that
+         actually selects, and a keyboard path that pressed the wrapper would do
+         nothing at all. */
+      data-session-row-action=""
       /* A native <button> cannot legally host the status slot's snooze/settle
          buttons, and the swap only works with those controls in flow. t3code's
          row makes the same trade. */

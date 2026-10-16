@@ -4,6 +4,7 @@ import { bindingChipLabel, getEffectiveBinding } from "../../lib/keybindings";
 import { isMacPlatform } from "../../lib/platform";
 import { Dialog } from "../ui/dialog";
 import { useAppStore } from "../../state/appStore";
+import { WORK_SHORTCUT_FALLBACKS, WORK_TOOLS_BACK_BINDING } from "./workShortcuts";
 
 /**
  * `?` on the Work page: the chords, one row each, with the user's own bindings.
@@ -26,34 +27,50 @@ function chip(
 }
 
 export function buildWorkShortcutSheet(keybindings: KeybindingsSnapshot | null): SheetGroup[] {
+  // One source per row: the binding id and its fallback are stated once, so a
+  // row cannot list a chord its dispatcher does not read. The Work page's own
+  // chords read the constants the dispatcher resolves, so the two cannot drift
+  // apart at all; the app-wide rows below are ids other surfaces own.
+  const row = (id: string, fallback: string, label: string, detail?: string): SheetRow => ({
+    id,
+    label,
+    detail,
+    chips: [chip(keybindings, id, fallback)],
+  });
+  const workRow = (
+    spec: { id: string; fallback: string },
+    label: string,
+    detail?: string,
+  ): SheetRow => row(spec.id, spec.fallback, label, detail);
+
   return [
     {
       id: "chats",
       title: "Chats",
       rows: [
-        { id: "work.chat.prev", label: "Previous chat", chips: [chip(keybindings, "work.chat.prev", "Mod+ArrowUp")] },
-        { id: "work.chat.next", label: "Next chat", chips: [chip(keybindings, "work.chat.next", "Mod+ArrowDown")] },
-        { id: "work.chat.focusComposer", label: "Jump into the prompt box, or leave it", chips: [chip(keybindings, "work.chat.focusComposer", "Mod+I")] },
-        { id: "work.chat.actions", label: "Chat actions and progress", chips: [chip(keybindings, "work.chat.actions", "Mod+Shift+A")] },
-        { id: "work.chat.new", label: "New chat", chips: [chip(keybindings, "work.chat.new", "Mod+Shift+N")] },
+        workRow(WORK_SHORTCUT_FALLBACKS.prevChat, "Previous chat"),
+        workRow(WORK_SHORTCUT_FALLBACKS.nextChat, "Next chat"),
+        workRow(WORK_SHORTCUT_FALLBACKS.focusComposer, "Jump into the prompt box, or leave it"),
+        workRow(WORK_SHORTCUT_FALLBACKS.chatActions, "Chat actions and progress"),
+        workRow(WORK_SHORTCUT_FALLBACKS.newChat, "New chat"),
       ],
     },
     {
       id: "panes",
       title: "Panes and projects",
       rows: [
-        { id: "work.tools.toggle", label: "Open or close the tools pane", chips: [chip(keybindings, "work.tools.toggle", "Mod+T")] },
-        { id: "work.tools.picker", label: "Back out of the tools pane", chips: [chip(keybindings, "work.tools.picker", "Escape")] },
-        { id: "shell.sidebar.toggle", label: "Show or hide the sidebar", chips: [chip(keybindings, "shell.sidebar.toggle", "Mod+B")] },
-        { id: "project.tab.next", label: "Next project tab", detail: "opens the picker with one project", chips: [chip(keybindings, "project.tab.next", "Ctrl+Tab")] },
-        { id: "project.tab.prev", label: "Previous project tab", chips: [chip(keybindings, "project.tab.prev", "Ctrl+Shift+Tab")] },
+        workRow(WORK_SHORTCUT_FALLBACKS.toggleTools, "Open or close the tools pane"),
+        workRow(WORK_TOOLS_BACK_BINDING, "Back out of the tools pane"),
+        row("shell.sidebar.toggle", "Mod+B", "Show or hide the sidebar"),
+        row("project.tab.next", "Ctrl+Tab", "Next project tab", "opens the picker with one project"),
+        row("project.tab.prev", "Ctrl+Shift+Tab", "Previous project tab"),
       ],
     },
     {
       id: "everywhere",
       title: "Everywhere",
       rows: [
-        { id: "commandPalette.open", label: "Search everything", chips: [chip(keybindings, "commandPalette.open", "Mod+K")] },
+        row("commandPalette.open", "Mod+K", "Search everything"),
         {
           id: "shell.tabs",
           label: "Work, Lanes, Files, PRs, Automations",

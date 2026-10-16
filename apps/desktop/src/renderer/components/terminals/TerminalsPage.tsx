@@ -1987,7 +1987,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     active,
     keybindings,
     selectedSessionId: listSelectedSessionId,
-    onSelectSession: (sessionId) => listSelectSession(sessionId),
     onNewChat: () => listShowDraftKind("chat"),
     onToggleTools: () => work.setWorkSidebarOpen(!work.workSidebarOpen),
     onCloseTools: () => work.setWorkSidebarOpen(false),

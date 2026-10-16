@@ -125,7 +125,12 @@ export function SessionInfoPopover({
     }
     outsideDismissReadyRef.current = false;
     const keyHandler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      // Claim it. While this popover is the surface that owns Escape, a
+      // page-level "back out" must not also fire — otherwise one Escape closes
+      // the popover AND the tools pane behind it.
+      e.preventDefault();
+      onClose();
     };
     document.addEventListener("keydown", keyHandler);
 

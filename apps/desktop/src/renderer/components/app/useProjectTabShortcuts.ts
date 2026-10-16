@@ -1,22 +1,32 @@
 import { useEffect, useMemo } from "react";
 import type { KeybindingsSnapshot } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
-import { useAppStore } from "../../state/appStore";
+import { keyChordIsClaimed } from "../../lib/keyboardClaims";
 
 /**
- * `⌃Tab` / `⇧⌃Tab`: the next or previous project tab, from any page.
+ * `⌃⇥` / `⇧⌃⇥`: the next or previous project tab, from any page.
  *
  * Projects open as tabs across the top of the window, so the keys that switch
- * them are the ones people already use for tabs. Like the sidebar's ⌘1–5, this
+ * them are the ones people already use for tabs. Like the sidebar's ⌘1–5 this
  * works while a text field has focus (a chord is never typing), but a dialog or
  * a menu keeps its own keys.
  *
- * The switch itself goes through the same store action a click on a tab uses,
- * so the worktree gate, the tab order and the saved route behave identically.
+ * The switch itself is a **press on the real tab element**, not a re-run of the
+ * switch action. That is what makes the shortcut behave exactly like a click —
+ * the busy guard, leaving a machine route, the local-vs-remote dispatch and the
+ * error handling all live on the tab — and it is also how the cycle follows what
+ * is on screen (`aria-current` marks the active tab, the DOM order is the visual
+ * order, and a remote tab is in the same strip as a local one).
  */
 
 const NEXT_PROJECT_BINDING = { id: "project.tab.next", fallback: "Ctrl+Tab" };
 const PREV_PROJECT_BINDING = { id: "project.tab.prev", fallback: "Ctrl+Shift+Tab" };
+
+/** The project tabs on screen, in the order the top bar shows them. */
+function visibleProjectTabs(root: ParentNode = document): HTMLElement[] {
+  const tabs = Array.from(root.querySelectorAll<HTMLElement>("[data-project-tab-key]"));
+  return tabs.filter((tab) => tab.getClientRects().length > 0);
+}
 
 export function useProjectTabShortcuts(args: {
   enabled: boolean;
@@ -35,11 +45,7 @@ export function useProjectTabShortcuts(args: {
     if (!enabled) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.repeat) return;
-      const target = event.target;
-      if (target instanceof Element
-        && target.closest('[role="alertdialog"], [role="dialog"][aria-modal="true"], [role="menu"], [role="listbox"]')) {
-        return;
-      }
+      if (keyChordIsClaimed(event.target)) return;
       const direction = eventMatchesBinding(event, bindings.next)
         ? 1
         : eventMatchesBinding(event, bindings.prev)
@@ -49,19 +55,18 @@ export function useProjectTabShortcuts(args: {
       event.preventDefault();
       event.stopPropagation();
 
-      const state = useAppStore.getState();
-      const roots = state.openProjectTabRoots;
-      const currentRoot = state.project?.rootPath ?? null;
-      const currentIndex = currentRoot ? roots.indexOf(currentRoot) : -1;
-      if (roots.length < 2 || currentIndex < 0) {
-        // Nothing to switch to. The key is the "projects" key either way, so
-        // it opens the picker that adds a second one instead of doing nothing.
+      const tabs = visibleProjectTabs();
+      if (tabs.length < 2) {
+        // Nothing to switch to. The key is the "projects" key either way, so it
+        // opens the picker that adds a second one instead of doing nothing.
         onOpenProjectPicker();
         return;
       }
-      const nextRoot = roots[(currentIndex + direction + roots.length) % roots.length];
-      if (!nextRoot || nextRoot === currentRoot) return;
-      void state.switchProjectToPath(nextRoot);
+      const activeIndex = tabs.findIndex((tab) => tab.getAttribute("aria-current") === "true");
+      const nextIndex = activeIndex < 0
+        ? (direction > 0 ? 0 : tabs.length - 1)
+        : (activeIndex + direction + tabs.length) % tabs.length;
+      tabs[nextIndex]?.click();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);

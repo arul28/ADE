@@ -101,7 +101,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
-import { bindingChipLabel, getEffectiveBinding, parsePrimaryCombo } from "../../lib/keybindings";
+import { bindingChipLabel, fireBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { laneRailTint, laneSurfaceTint, toneText, fgTint } from "../lanes/laneDesignTokens";
 import { canBulkDeleteSession, canBulkStopSession, isChatToolType, primarySessionLabel } from "../../lib/sessions";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
@@ -1148,17 +1148,7 @@ export const SessionListPane = React.memo(function SessionListPane({
    * user's OWN binding, so a rebound palette still opens from here.
    */
   const openCommandPalette = useCallback(() => {
-    const combo = parsePrimaryCombo(commandPaletteBinding);
-    if (!combo) return;
-    window.dispatchEvent(new KeyboardEvent("keydown", {
-      key: combo.key,
-      ctrlKey: combo.ctrl,
-      metaKey: combo.meta,
-      altKey: combo.alt,
-      shiftKey: combo.shift,
-      bubbles: true,
-      cancelable: true,
-    }));
+    fireBinding(commandPaletteBinding);
   }, [commandPaletteBinding]);
   // The Work sidebar is a union across every connected machine, always —
   // independent of which machine this tab is bound to. That is the whole point:
