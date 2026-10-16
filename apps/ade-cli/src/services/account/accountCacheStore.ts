@@ -74,6 +74,7 @@ export type AccountCachePending = { seq: number; deleted: boolean };
 export type AccountCacheSyncStatus = "ready" | "unavailable" | "failed";
 
 export type AccountCacheSyncListener = (status: AccountCacheSyncStatus) => void;
+export type AccountCacheRemoteRowsAppliedListener = () => void;
 
 /** One Worker page is 500 rows. Fifty pages is far past any real vault. */
 const MAX_PULL_PAGES = 50;
@@ -199,7 +200,11 @@ export type AccountCacheStore<
   syncIfStale(maxAgeMs: number): Promise<AccountCacheSyncStatus>;
   /** Cache keys of local writes that have not reached the Worker yet. */
   pendingKeys(): string[];
-  startPeriodicSync(intervalMs?: number, onSync?: AccountCacheSyncListener): () => void;
+  startPeriodicSync(
+    intervalMs?: number,
+    onSync?: AccountCacheSyncListener,
+    onRemoteRowsApplied?: AccountCacheRemoteRowsAppliedListener,
+  ): () => void;
   /** Empty the cache and write the empty file. */
   reset(): void;
   /** Empty the cache and delete the file, leaving nothing for a later reader. */
@@ -219,6 +224,7 @@ export function createAccountCacheStore<
   let syncInFlight: Promise<AccountCacheSyncStatus> | null = null;
   let syncTimer: ReturnType<typeof setInterval> | null = null;
   const syncListeners = new Set<AccountCacheSyncListener>();
+  const remoteRowsAppliedListeners = new Set<AccountCacheRemoteRowsAppliedListener>();
   /**
    * What the last sync covered: its status, the change mark it pulled up to,
    * when it finished, and for which account. A tick may skip the network only
@@ -674,6 +680,7 @@ export function createAccountCacheStore<
         if (abandoned()) return "unavailable";
         const after = readCache();
         const stillPending = new Set(after.pending.map((entry) => config.pendingKey(entry)));
+        let appliedRemoteRows = false;
         for (const remote of page.rows) {
           const key = config.remoteKey(remote);
           // A key this machine has queued is not the server's to answer yet.
@@ -698,9 +705,21 @@ export function createAccountCacheStore<
           const next = config.toRow(remote, cached);
           if (next === null) continue;
           after.rows[key] = next;
+          appliedRemoteRows = true;
         }
         if (page.cursor) after.cursor = page.cursor;
         if (!persist()) return "failed";
+        if (appliedRemoteRows) {
+          for (const listener of [...remoteRowsAppliedListeners]) {
+            try {
+              listener();
+            } catch (error) {
+              logger.warn(config.events.pullFailed, {
+                error: error instanceof Error ? error.message : String(error ?? ""),
+              });
+            }
+          }
+        }
         if (!page.truncated) return "ready";
         logger.info(config.events.pullTruncated, { cursor: after.cursor, page: pageIndex + 1 });
         if ((page.cursor ?? null) === (cursorAtPull ?? null)) return "unavailable";
@@ -798,9 +817,14 @@ export function createAccountCacheStore<
      * is awake and signed in converges within one beat and an idle one costs a
      * single `since`-filtered query.
      */
-    startPeriodicSync(intervalMs = config.defaultSyncIntervalMs, onSync?: AccountCacheSyncListener): () => void {
+    startPeriodicSync(
+      intervalMs = config.defaultSyncIntervalMs,
+      onSync?: AccountCacheSyncListener,
+      onRemoteRowsApplied?: AccountCacheRemoteRowsAppliedListener,
+    ): () => void {
       syncHolders += 1;
       if (onSync) syncListeners.add(onSync);
+      if (onRemoteRowsApplied) remoteRowsAppliedListeners.add(onRemoteRowsApplied);
       let released = false;
       const release = (): void => {
         // Each caller's stop is its own. Calling it twice must not release a
@@ -808,6 +832,7 @@ export function createAccountCacheStore<
         if (released) return;
         released = true;
         if (onSync) syncListeners.delete(onSync);
+        if (onRemoteRowsApplied) remoteRowsAppliedListeners.delete(onRemoteRowsApplied);
         stopPeriodicSync();
       };
       if (syncTimer) return release;

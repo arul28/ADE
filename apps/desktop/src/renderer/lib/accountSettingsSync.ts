@@ -218,6 +218,8 @@ export type AccountSettingsApi = {
     args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
   ): Promise<AccountSettingsResult<null>>;
   sync(): Promise<AccountSettingsResult<null>>;
+  /** Fired when the brain persists account rows pulled from the relay. */
+  onChanged?(listener: () => void): () => void;
 };
 
 /**
@@ -734,6 +736,10 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     resync();
   });
 
+  const unsubscribeSettingsChanged = options.getApi()?.onChanged?.(() => {
+    if (!stopped && options.getApi() && options.isSignedIn()) void hydrate();
+  });
+
   void pullThenHydrate();
 
   const timer = schedule(() => {
@@ -753,10 +759,9 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     // missing or stale. `sync()` from here bypasses that gate, so an
     // unconditional tick is a second pull of the same cursor from every
     // signed-in machine every 30 seconds — whether or not anything changed, and
-    // whether or not the window is even visible. Reading the brain's local
-    // cache (`hydrate`) is what this side actually needs, and it is what keeps
-    // a change made on another machine arriving here on the same 30-second
-    // beat.
+    // whether or not the window is even visible. The brain signals this
+    // renderer after it persists newly pulled rows; this local-cache read stays
+    // as a safety net for missed events and runtime restarts.
     if (!mergedAccount || hasDirtyKeys()) {
       resync();
       return;
@@ -769,6 +774,7 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     unsubscribeStore();
     unsubscribeAccount?.();
     unsubscribeDevice?.();
+    unsubscribeSettingsChanged?.();
     unschedule(timer);
   };
   // One function, one extra method: a caller that must not read a stale copy

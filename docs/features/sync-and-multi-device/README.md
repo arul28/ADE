@@ -1129,10 +1129,14 @@ Runtime support files outside `services/sync/`:
   account has not been merged yet (the pass that offers this machine's existing
   preferences) or while a local edit is still queued, and otherwise it only
   reads the brain's cache and applies the rows newer than this machine's
-  stamps. The brain's own change-mark-gated tick is what keeps that cache
-  current, so a change made on another machine still lands here on the same
-  30-second beat while an idle machine stops asking the Worker for an answer it
-  already holds.
+  stamps. When the brain persists newer rows from a relay pull, it emits an
+  `account_settings_changed` runtime event and the renderer hydrates its cache
+  as soon as that event arrives. The renderer's 30-second cache read remains a
+  safety net for missed events and runtime restarts. A remote setting therefore
+  waits for the brain's pull trigger (normally the next publisher heartbeat, up
+  to 30 seconds), then only event-delivery and hydration time; it no longer
+  waits for a second renderer beat. An idle machine still stops asking the
+  Worker for an answer its brain already holds.
 - `apps/ade-cli/src/services/account/accountSettingsStore.ts` and
   `accountCacheStore.ts` — the machine's copy and its shared owner/epoch,
   queue, cursor, and encrypted-cache primitives. Reads never touch the

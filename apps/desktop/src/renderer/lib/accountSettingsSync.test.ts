@@ -93,6 +93,7 @@ function row(key: string, value: unknown, updatedAt: string, scope = "all"): Acc
 }
 
 function createApi(rows: AccountSettingRow[] = []) {
+  const eventListeners = new Set<() => void>();
   const api: AccountSettingsApi & {
     list: ReturnType<typeof vi.fn>;
     set: ReturnType<typeof vi.fn>;
@@ -104,7 +105,12 @@ function createApi(rows: AccountSettingRow[] = []) {
     })),
     set: vi.fn(async () => ({ ok: true as const, value: null })),
     sync: vi.fn(async () => ({ ok: true as const, value: null })),
+    onChanged: (listener) => {
+      eventListeners.add(listener);
+      return () => eventListeners.delete(listener);
+    },
   };
+  Object.assign(api, { emitChanged: () => eventListeners.forEach((listener) => listener()) });
   return api;
 }
 
@@ -526,6 +532,25 @@ describe("accountSettingsSync (renderer)", () => {
     // change-mark-gated sync keeps current. The one `sync` is the startup
     // merge; the tick did not ask the relay again.
     expect(api.sync).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it("hydrates a newly pulled brain-cache row on its event without waiting for the renderer tick", async () => {
+    const { store, state } = createStore({ theme: "dark", chatFontSizePx: 14 });
+    const rows: AccountSettingRow[] = [];
+    const api = createApi(rows) as ReturnType<typeof createApi> & { emitChanged: () => void };
+    const stop = startAccountSettingsSync(
+      baseOptions({ store, getApi: () => api, isSignedIn: () => true }),
+    );
+    await settle();
+    rows.push(row("chatFontSizePx", 18, "2030-02-01T00:00:00.000Z"));
+
+    api.emitChanged();
+    await settle();
+
+    expect(state.chatFontSizePx).toBe(18);
+    expect(api.list).toHaveBeenCalledTimes(2);
+    expect(timers).toHaveLength(1);
     stop();
   });
 

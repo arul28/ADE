@@ -304,8 +304,8 @@ export function createAccountSettingsStore(args: {
     },
 
     /** Start (or join) the shared background sync. Refcounted; see the helper. */
-    startPeriodicSync(intervalMs = DEFAULT_SYNC_INTERVAL_MS): () => void {
-      return cache.startPeriodicSync(intervalMs);
+    startPeriodicSync(intervalMs = DEFAULT_SYNC_INTERVAL_MS, onRemoteRowsApplied?: () => void): () => void {
+      return cache.startPeriodicSync(intervalMs, undefined, onRemoteRowsApplied);
     },
 
     /** Test seam; never used in production. */

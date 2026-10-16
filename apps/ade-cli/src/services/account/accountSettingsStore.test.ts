@@ -479,6 +479,24 @@ describe("account settings store", () => {
       vi.useRealTimers();
     });
 
+    it("notifies every settings listener after persisting newly pulled rows", async () => {
+      const store = makeStore();
+      relay.getAccountSettings.mockResolvedValueOnce({
+        settings: [record("all", "chat.font-size", 16, "2026-10-07T10:00:00.000Z")],
+        cursor: "2026-10-07T10:00:00.000Z",
+        truncated: false,
+      });
+      const onRemoteRowsApplied = vi.fn();
+      const stop = store.startPeriodicSync(TICK, onRemoteRowsApplied);
+
+      recordAccountChangeMarks(user, { settings: "2026-10-07T10:00:00.000Z", vault: null });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(store.get("all", "chat.font-size")).toBe(16);
+      expect(onRemoteRowsApplied).toHaveBeenCalledTimes(1);
+      stop();
+    });
+
     it("pulls when the mark moves, skips the network while it holds, and polls again once marks go stale", async () => {
       const store = makeStore();
       const stop = store.startPeriodicSync(TICK);
