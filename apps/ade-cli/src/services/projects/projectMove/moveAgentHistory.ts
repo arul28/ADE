@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -364,11 +365,26 @@ function rewriteOpenCodeSnapshot(gitDir: string, oldSpellings: string[], newRoot
     fs.writeFileSync(temp, next);
     fs.renameSync(temp, file);
   };
-  rewriteLines(path.join(gitDir, "config"), (line) => {
-    const match = line.match(/^(\s*worktree\s*=\s*)(.+?)\s*$/u);
-    const remapped = match ? remapUnderRoot(match[2]!, oldSpellings, newRoot) : null;
-    return remapped === null ? null : `${match![1]}${remapped}`;
-  });
+  const configFile = path.join(gitDir, "config");
+  if (fs.existsSync(configFile)) {
+    let worktree: string | null = null;
+    try {
+      worktree = execFileSync("git", ["config", "--file", configFile, "--get", "core.worktree"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trimEnd();
+    } catch (error) {
+      // Git exits with status 1 when the key is absent. Spawn and parse errors
+      // must reach applyAgentHistoryRenames so they are reported to the caller.
+      if ((error as NodeJS.ErrnoException & { status?: number }).status !== 1) throw error;
+    }
+    const remapped = worktree ? remapUnderRoot(worktree, oldSpellings, newRoot) : null;
+    if (remapped !== null) {
+      execFileSync("git", ["config", "--file", configFile, "--replace-all", "core.worktree", remapped], {
+        stdio: "ignore",
+      });
+    }
+  }
   rewriteLines(path.join(gitDir, "objects", "info", "alternates"), (line) => remapUnderRoot(line, oldSpellings, newRoot));
 }
 
