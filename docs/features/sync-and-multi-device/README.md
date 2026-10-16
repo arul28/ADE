@@ -3213,8 +3213,10 @@ phone flow:
      `resolveActiveSyncHost`) **adopts the scope as-is**. A laptop following a
      desktop is a supported, working configuration and a viewer already owns
      sync here, so refusing it would break reads that work. Nothing is
-     activated for it — there is no host here to start — which is what keeps
-     the 75-second dial out of this path too.
+     activated for it — there is no host here to start — and this explicit
+     switch skips the initialization phase. A cold runtime still initializes
+     sync in the background, however, so its saved peer can still incur the
+     operating system's 75-second connect timeout.
 
 The saved viewer connection (`sync-peer-draft.json`) is in the machine-wide
 pairing directory, but joining another brain is a choice about one project

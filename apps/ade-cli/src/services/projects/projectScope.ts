@@ -64,8 +64,10 @@ type FailedAttempt = {
  * full status snapshot). On 2026-10-16 a brain whose project could not activate
  * re-ran that drain for every roster, lane-list and status poll: 48 attempts
  * over an hour, each one paying a 10-second activation timeout AND the rollback
- * that undid it. `initialization` has the same shape — it awaits the same
- * drain, so it times out the same way (one such timeout is in the same log).
+ * that undid it. `initialization` can await the same drain for a host scope,
+ * so it times out the same way (one such timeout is in the same log). A
+ * `serve` lookup of a viewer skips this explicit phase; cold runtime creation
+ * still initializes sync in the background.
  *
  * The corrective phases are deliberately NOT backed off. The two rollbacks, the
  * previous-host deactivation and `deactivation` exist to put state back, so a
@@ -246,10 +248,10 @@ export class ProjectScopeRegistry {
   /**
    * Forget the recorded sync-host phase failures, for one project or for all.
    *
-   * Called on a deliberate start or repair: the brain's startup loop, "Fix
-   * connection", "Start sync" and "Reconnect this computer" are all deliberate
-   * retries, so they must re-run activation rather than be served the failure
-   * the backoff is still holding.
+   * Called for a user requested repair: "Fix connection", "Start sync" and
+   * "Reconnect this computer" must re-run activation rather than be served
+   * the failure the backoff is still holding. The periodic startup retry keeps
+   * the backoff intact so it cannot turn into a tight retry loop.
    */
   clearSyncHostPhaseBackoff(projectId?: ProjectId): void {
     if (!projectId) {
@@ -508,6 +510,27 @@ export class ProjectScopeRegistry {
     return record ? this.switchSyncHost(record.projectId, { purpose: "serve" }) : null;
   }
 
+  /** Return a cached sync scope without booting it or running host activation. */
+  async resolveBootedSyncScope(): Promise<ProjectScope | null> {
+    if (!this.options.syncRuntime?.enabled) return null;
+    const preferredIds = [
+      this.syncHostProjectId,
+      ...this.projectRegistry.list()
+        .slice()
+        .sort((left, right) => {
+          const openedDelta = right.lastOpenedAt - left.lastOpenedAt;
+          return openedDelta !== 0 ? openedDelta : right.addedAt - left.addedAt;
+        })
+        .map((record) => record.projectId),
+    ];
+    for (const projectId of new Set(preferredIds)) {
+      if (!projectId) continue;
+      const cached = this.getIfBooted(projectId);
+      if (cached) return await cached;
+    }
+    return null;
+  }
+
   async switchSyncHost(
     projectId: ProjectId,
     options: SwitchSyncHostOptions = {},
@@ -546,7 +569,8 @@ export class ProjectScopeRegistry {
     if (transitionId !== this.latestSyncHostTransitionId) return null;
 
     // Read once, here: the scope is in hand and nothing has dialed yet, because
-    // BOTH phases below await the same role-refresh drain. For a project that
+    // host initialization and activation below await the same role-refresh
+    // drain. For a project that
     // follows another machine that drain DIALS the other machine, and the dial
     // has no connect timeout of its own, so an unanswered connect runs to the
     // macOS SYN timeout (75s) and lands inside whichever budget runs first —
@@ -565,12 +589,17 @@ export class ProjectScopeRegistry {
     }
 
     try {
-      await this.runSyncHostPhase(
-        "initialization",
-        projectId,
-        SYNC_HOST_INITIALIZE_TIMEOUT_MS,
-        async () => await scope.runtime.syncService?.initialize(),
-      );
+      // Cold runtime creation starts sync initialization in the background.
+      // Avoid invoking the same unbounded peer dial again in this explicit
+      // phase; the background initialization may still be in flight.
+      if (!(blocker && options.purpose === "serve")) {
+        await this.runSyncHostPhase(
+          "initialization",
+          projectId,
+          SYNC_HOST_INITIALIZE_TIMEOUT_MS,
+          async () => await scope.runtime.syncService?.initialize(),
+        );
+      }
     } catch (error) {
       if (
         error instanceof SyncHostPhaseTimeoutError
@@ -679,9 +708,10 @@ export class ProjectScopeRegistry {
       // Skipped when this project follows another machine: "activation" is
       // `setHostStartupEnabled(true)`, and there is no host here to start. The
       // caller asked for "serve", so it wants the scope that owns sync — which
-      // a viewer already is — and skipping the call is what keeps the 75-second
-      // dial out of this switch entirely. Nothing is reported as hosting that
-      // is not: a project with a blocker is a viewer by its own record.
+      // a viewer already is. This skips host activation, though a cold runtime
+      // may still be initializing its saved peer in the background. Nothing is
+      // reported as hosting that is not: a project with a blocker is a viewer
+      // by its own record.
       if (!blocker) {
         await this.configureSyncHostWithTimeout(scope, true, "activation", () => {
           targetActivationAttempted = true;

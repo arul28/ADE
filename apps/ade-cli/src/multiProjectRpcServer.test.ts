@@ -154,6 +154,7 @@ function makeRuntime(label: string) {
     },
     syncService: {
       getStatus: vi.fn(async () => ({ role: "brain", label })),
+      disconnectFromBrain: vi.fn(async () => ({ disconnected: true })),
       listDevices: vi.fn(async () => [{ deviceId: `${label}-device` }]),
     },
     eventBuffer: createEventBuffer(),
@@ -162,6 +163,40 @@ function makeRuntime(label: string) {
 }
 
 describe("multi-project RPC server", () => {
+  it("keeps status and disconnect available through a booted scope when activation fails", async () => {
+    const { registry, projectRoot } = createRegistry();
+    const runtime = makeRuntime("booted-recovery");
+    const scope = {
+      registryProjectId: "booted-project",
+      record: registry.add(projectRoot),
+      runtime,
+      dispose: vi.fn(),
+    };
+    const scopeRegistry = {
+      resolveBootedSyncScope: vi.fn(async () => scope),
+      resolveActiveSyncHost: vi.fn(async () => {
+        throw new Error("Sync host activation timed out");
+      }),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    await expect(handler({ jsonrpc: "2.0", id: 2, method: "sync.getStatus", params: {} }))
+      .resolves.toEqual({ role: "brain", label: "booted-recovery" });
+    await expect(handler({ jsonrpc: "2.0", id: 3, method: "sync.disconnectFromBrain", params: {} }))
+      .resolves.toEqual({ disconnected: true });
+    expect(runtime.syncService.getStatus).toHaveBeenCalledOnce();
+    expect(runtime.syncService.disconnectFromBrain).toHaveBeenCalledOnce();
+    expect(scopeRegistry.resolveActiveSyncHost).not.toHaveBeenCalled();
+    handler.dispose();
+  });
+
   it("serves account Attention from the machine scope without a project id", async () => {
     const runtime = makeRuntime("attention") as ReturnType<typeof makeRuntime> & {
       pushPublisherService: Record<string, ReturnType<typeof vi.fn>>;
