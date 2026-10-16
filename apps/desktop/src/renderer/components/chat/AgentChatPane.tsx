@@ -7,6 +7,7 @@ import { compareTextInsensitive } from "../../../shared/formatting";
 import { useNavigate } from "react-router-dom";
 import {
   reuseStructurallyEqualArray,
+  sameKeyList,
   sameSetContents,
   useLatestCallback,
   useStableIdentity,
@@ -167,6 +168,7 @@ import {
   AgentChatComposer,
   CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE,
   CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE,
+  type ComposerCloudLaunch,
   type ComposerDraftEditIntent,
   type ComposerMachineChipAction,
   type ParallelComposerControlSlot,
@@ -1021,6 +1023,37 @@ const EMPTY_DRAFT_LAUNCH_JOBS: DraftLaunchJob[] = [];
 // the lane picker's machine derivation re-run on every render.
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
 const EMPTY_REMOTE_PROJECT_TABS: Extract<OpenProjectBinding, { kind: "remote" }>[] = [];
+// Same reason, for the composer's execution-mode list while the model is fixed.
+const EMPTY_EXECUTION_MODE_OPTIONS: ExecutionModeOption[] = [];
+
+/** Same prompts in the same order: `collectAgentChatPromptHistory` rebuilds its rows. */
+function samePromptHistory(
+  previous: readonly AgentChatPromptHistoryEntry[],
+  next: readonly AgentChatPromptHistoryEntry[],
+): boolean {
+  if (previous === next) return true;
+  if (previous.length !== next.length) return false;
+  for (let index = 0; index < next.length; index += 1) {
+    const before = previous[index]!;
+    const after = next[index]!;
+    if (before !== after && (before.text !== after.text || before.eventKey !== after.eventKey)) return false;
+  }
+  return true;
+}
+
+/** Same context-usage numbers: the view model is rebuilt from the transcript each event. */
+function sameUsageViewModel(
+  previous: ContextUsageViewModel | null,
+  next: ContextUsageViewModel | null,
+): boolean {
+  if (previous === next) return true;
+  if (!previous || !next) return false;
+  for (const key of Object.keys(next) as (keyof ContextUsageViewModel)[]) {
+    if (previous[key] !== next[key]) return false;
+  }
+  return true;
+}
+
 function draftLaunchRequestKey(args: {
   kind: DraftLaunchKind;
   mode: DraftLaunchMode;
@@ -5550,9 +5583,12 @@ export function AgentChatPane({
   // Keep keyboard recall scoped to the transcript currently selected in Work.
   // The sidebar contains other sessions, but none of those prompts belong in
   // this composer's history.
-  const promptHistory = useMemo<AgentChatPromptHistoryEntry[]>(
-    () => collectAgentChatPromptHistory(selectedEventsForDisplay),
-    [selectedEventsForDisplay],
+  const promptHistory = useStableIdentity(
+    useMemo<AgentChatPromptHistoryEntry[]>(
+      () => collectAgentChatPromptHistory(selectedEventsForDisplay),
+      [selectedEventsForDisplay],
+    ),
+    samePromptHistory,
   );
   const [killingWorkerIds, setKillingWorkerIds] = useState<ReadonlySet<string>>(() => new Set());
   const killDroidWorker = useCallback(
@@ -6590,7 +6626,9 @@ export function AgentChatPane({
   // Reduce provider telemetry across compaction boundaries before flattening it
   // into the shared dial view-model. Exact post-compaction snapshots win;
   // stale same-turn cumulative counters are ignored.
-  const selectedUsageViewModel = useMemo<ContextUsageViewModel | null>(() => {
+  // Rebuilt per streamed event; the numbers usually hold, and the composer (which
+  // takes this as a prop) is memoized, so hold the identity while they do.
+  const selectedUsageViewModel = useStableIdentity(useMemo<ContextUsageViewModel | null>(() => {
     const provider = sessionProvider ?? selectedSession?.provider ?? "";
     const descriptor = modelId ? (resolveScopedModelDescriptor(modelId, modelCatalogScopeKey) ?? null) : null;
     const fallbackWindow = descriptor?.contextWindow ?? null;
@@ -6598,7 +6636,7 @@ export function AgentChatPane({
       latestContextUsageInput(selectedEventsForDisplay, provider, selectedSession?.codexTokenUsage),
       fallbackWindow,
     );
-  }, [selectedEventsForDisplay, selectedSession?.codexTokenUsage, selectedSession?.provider, sessionProvider, modelId, modelCatalogScopeKey]);
+  }, [selectedEventsForDisplay, selectedSession?.codexTokenUsage, selectedSession?.provider, sessionProvider, modelId, modelCatalogScopeKey]), sameUsageViewModel);
 
   const [contextCompactionPulse, setContextCompactionPulse] = useState(false);
   const compactionPulseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -6976,7 +7014,10 @@ export function AgentChatPane({
   // this surface. Unconstrained sessions keep their active model visible even
   // when it has fallen out of the discovered catalog.
   const modelSelectionConstrained = availableModelIdsOverride != null;
-  const effectiveAvailableModelIds = useMemo(() => {
+  // Rebuilt whenever the transcript grows (`selectedEvents.length` is a dep), so
+  // the identity is held while the ids themselves hold: the composer is memoized
+  // and a fresh array on every streamed event would re-render it for nothing.
+  const effectiveAvailableModelIds = useStableIdentity(useMemo(() => {
     const sourceAvailableModelIds = availableModelIdsOverride ?? availableModelIds;
     const base = filterChatModelIdsForSession({
       availableModelIds: sourceAvailableModelIds,
@@ -6991,7 +7032,7 @@ export function AgentChatPane({
     const merged = new Set(base);
     for (const id of runtimeIds) merged.add(id);
     return filterCursorModelIdsForDraftKind([...merged], workDraftKind, modelCatalogScopeKey);
-  }, [availableModelIds, availableModelIdsOverride, modelCatalogScopeKey, modelSelectionConstrained, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion, workDraftKind]);
+  }, [availableModelIds, availableModelIdsOverride, modelCatalogScopeKey, modelSelectionConstrained, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion, workDraftKind]), sameKeyList);
   const modelPickerProviderAuthStatus = useMemo(
     () => (aiStatus
       ? familiesFromStatus(aiStatus, { allowCliOnlyModels: workDraftKind === "cli" })
@@ -16591,6 +16632,26 @@ export function AgentChatPane({
     : sessionRoutePick?.sessionId === selectedSessionId
       ? sessionRoutePick.presetId
       : selectedSession?.presetId ?? null;
+  // Held while its five flags hold: an inline object here is a fresh prop on
+  // every pane render, which would defeat the composer's memo boundary.
+  const composerCloudLaunch = useMemo<ComposerCloudLaunch>(
+    () => ({
+      provider: devinCloudSessionActive ? "devin" : "cursor",
+      canLaunch: devinCloudMode ? devinCloudCanLaunch : cursorCloudCanLaunch,
+      modelReady: devinCloudSessionActive ? true : cursorCloudModelReady,
+      hasEligibleModels: devinCloudSessionActive ? true : cursorCloudModelIds.length > 0,
+      active: cursorCloudSessionActive || devinCloudSessionActive,
+    }),
+    [
+      cursorCloudCanLaunch,
+      cursorCloudModelIds.length,
+      cursorCloudModelReady,
+      cursorCloudSessionActive,
+      devinCloudCanLaunch,
+      devinCloudMode,
+      devinCloudSessionActive,
+    ],
+  );
   const composerElement = (
       <AgentChatComposer
             scheduledSendContext={scheduledSendContext}
@@ -16690,7 +16751,7 @@ export function AgentChatPane({
             iosElementContextItems={iosElementContextItems}
             appControlContextItems={appControlContextItems}
             builtInBrowserContextItems={builtInBrowserContextItems}
-            executionModeOptions={launchModeEditable ? executionModeOptions : []}
+            executionModeOptions={launchModeEditable ? executionModeOptions : EMPTY_EXECUTION_MODE_OPTIONS}
             modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive || projectTransitionBlocksChat || Boolean(subagentView)}
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy || projectTransitionBlocksChat}
             hideNativeControls={hideNativeControls}
@@ -16991,13 +17052,7 @@ export function AgentChatPane({
                 return next;
               });
             }}
-            cloudLaunch={{
-              provider: devinCloudSessionActive ? "devin" : "cursor",
-              canLaunch: devinCloudMode ? devinCloudCanLaunch : cursorCloudCanLaunch,
-              modelReady: devinCloudSessionActive ? true : cursorCloudModelReady,
-              hasEligibleModels: devinCloudSessionActive ? true : cursorCloudModelIds.length > 0,
-              active: cursorCloudSessionActive || devinCloudSessionActive,
-            }}
+            cloudLaunch={composerCloudLaunch}
             cloudSessionLinked={Boolean(selectedSession?.devinSessionId || selectedSession?.cursorCloudAgentId)}
             cursorCloudPanelAvailable={cursorCloudPanelAvailable}
             onToggleCursorCloudPanel={() => openCloudAgentsPanel("cursor")}
