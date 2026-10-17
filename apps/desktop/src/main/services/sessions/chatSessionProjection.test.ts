@@ -346,10 +346,13 @@ describe("listSessionsWithChatProjection — summarizes only what the page shows
   /**
    * A chat service that, like the real one, filters lists by lane and summarizes
    * only the ids it is asked for. `getSessionSummary` reads by id from every chat.
+   * `outsideWindow` ids are chats the list does not return (older than its
+   * newest-chats window), but a read by id still finds them.
    */
-  function chatService(allChats: AgentChatSessionSummary[]) {
+  function chatService(allChats: AgentChatSessionSummary[], outsideWindow: readonly string[] = []) {
     const calls: Array<readonly string[] | undefined> = [];
     const parentReads: string[] = [];
+    const windowed = new Set(outsideWindow);
     return {
       calls,
       parentReads,
@@ -358,7 +361,9 @@ describe("listSessionsWithChatProjection — summarizes only what the page shows
           calls.push(options?.sessionIds);
           const named = options?.sessionIds ? new Set(options.sessionIds) : null;
           return allChats.filter((summary) =>
-            (!laneId || summary.laneId === laneId) && (!named || named.has(summary.sessionId)));
+            (!laneId || summary.laneId === laneId)
+            && (!named || named.has(summary.sessionId))
+            && !windowed.has(summary.sessionId));
         },
         getSessionSummary: async (sessionId: string) => {
           parentReads.push(sessionId);
@@ -440,6 +445,36 @@ describe("listSessionsWithChatProjection — summarizes only what the page shows
         logger: { warn: () => {} },
       },
       { laneId: "lane-2", limit: 200 },
+    );
+    expect(rows.map((row) => row.id)).toEqual(["child"]);
+    expect(rows[0]?.parentIdentityKey).toBe("cto");
+    expect(chats.parentReads).toEqual(["cto-session"]);
+  });
+
+  it("reads a CTO that is on the page but older than the list window, so the child keeps its marker", async () => {
+    // The CTO row is on the page, yet the list did not return it. It is read by
+    // id, so it is hidden as an identity row and its child keeps the marker.
+    const chats = chatService(
+      [
+        chat({ sessionId: "cto-session", identityKey: "cto" }),
+        chat({ sessionId: "child", orchestrationParentSessionId: "cto-session", spawnKind: "subagent" }),
+      ],
+      ["cto-session"],
+    );
+    const rows = await listSessionsWithChatProjection(
+      {
+        sessionService: {
+          list: () => [
+            { ...session(), id: "cto-session", title: "CTO" },
+            { ...session(), id: "child", title: "Child" },
+          ],
+          get: () => null,
+        },
+        ptyService: null,
+        agentChatService: chats.service,
+        logger: { warn: () => {} },
+      },
+      { limit: 500 },
     );
     expect(rows.map((row) => row.id)).toEqual(["child"]);
     expect(rows[0]?.parentIdentityKey).toBe("cto");

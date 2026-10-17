@@ -22,7 +22,8 @@
 //
 // `--parity-out <file>` writes the projected rows of the timed scenarios plus a
 // few extra shapes (small page, lane page that cuts off the CTO, lane pages whose
-// child's parent sits in another lane, a chat that names itself) as JSON, so two
+// child's parent sits in another lane, an all-rows page whose child's CTO sits
+// outside the newest-500 chat window, a chat that names itself) as JSON, so two
 // checkouts can be diffed byte for byte.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs";
@@ -132,6 +133,11 @@ chatByIndex(4).parentIndex = CTO_INDEX;
 chatByIndex(8).laneId = "lane-3";
 chatByIndex(8).parentIndex = 301;
 chatByIndex(301).laneId = "lane-4";
+// An old CTO, outside the newest-500 chat window, with one child inside that
+// window. The child is outside the 500-row unscoped page, so the timed scenarios
+// do not reach it; the allRowsOldCto parity shape does.
+chatByIndex(600).identityKey = "cto";
+chatByIndex(495).parentIndex = 600;
 chatByIndex(20).surface = "automation";
 chatByIndex(30).archived = true;
 chatByIndex(31).archived = true;
@@ -289,6 +295,7 @@ if (parityOut) {
     laneCutsOffCto: { laneId: "lane-1", limit: 20 },
     crossLaneChildOfCto: { laneId: "lane-2", limit: 200 },
     crossLaneChildOfChat: { laneId: "lane-3", limit: 200 },
+    allRowsOldCto: { limit: null },
     chatNamesItself: { chatSessionId: chatByIndex(2).id, limit: null },
     chatWithNoShells: { chatSessionId: chatByIndex(6).id, limit: null },
   };
