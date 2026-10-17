@@ -141,6 +141,21 @@ describe("pruneStaleCompileCacheTags", () => {
     expect(removed).toEqual([ANCIENT]);
     expect(fs.existsSync(path.join(root, OLD, "blob.bin"))).toBe(true);
   });
+
+  it.each(["EBUSY", "EPERM"])("skips a directory whose removal fails with %s, the code a locked file gives", async (code) => {
+    makeTag(CURRENT);
+    makeTag(NEWER, HOUR);
+    makeTag(OLDER, 2 * HOUR);
+    makeTag(OLD, 40 * DAY);
+    vi.spyOn(fs.promises, "rm").mockImplementation(() =>
+      Promise.reject(Object.assign(new Error(`locked: ${code}`), { code })),
+    );
+
+    const removed = await pruneStaleCompileCacheTags(path.join(root, CURRENT));
+
+    expect(removed).toEqual([]);
+    expect(fs.existsSync(path.join(root, OLD, "blob.bin"))).toBe(true);
+  });
 });
 
 describe("scheduleStaleCompileCachePrune", () => {
