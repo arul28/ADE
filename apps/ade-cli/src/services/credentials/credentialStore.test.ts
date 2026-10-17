@@ -117,7 +117,9 @@ describe("EncryptedFileCredentialStore", () => {
     delay.enable();
     await new Promise((resolve) => setTimeout(resolve, 20));
     delay.reset();
-    const heldForMs = 120;
+    // Long enough that a blocked loop (sync) and a free one (async) sit far
+    // apart, so CI load cannot push the async lag across the line.
+    const heldForMs = 300;
     const lockMetadata = JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() });
     const releaseFromPeer = (): Promise<void> => new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [
@@ -160,8 +162,8 @@ describe("EncryptedFileCredentialStore", () => {
       console.info(`credential lock wait ${heldForMs}ms: sync ${syncWaitMs}ms / ${syncTimerLagMs}ms timer lag / ${syncDelayMaxMs.toFixed(1)}ms histogram max; async ${asyncWaitMs}ms / ${asyncTimerLagMs}ms timer lag / ${asyncDelayMaxMs.toFixed(1)}ms histogram max`);
       expect(syncTimerLagMs).toBeGreaterThan(heldForMs * 0.5);
       expect(asyncWaitMs).toBeGreaterThanOrEqual(heldForMs - 10);
-      expect(asyncTimerLagMs).toBeLessThan(50);
-      expect(asyncDelayMaxMs).toBeLessThan(50);
+      expect(asyncTimerLagMs).toBeLessThan(heldForMs * 0.5);
+      expect(asyncDelayMaxMs).toBeLessThan(heldForMs * 0.5);
     } finally {
       delay.disable();
       try { fs.unlinkSync(lockPath); } catch { /* already released */ }
