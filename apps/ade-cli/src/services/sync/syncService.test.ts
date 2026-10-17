@@ -172,13 +172,12 @@ describe("createSyncService", () => {
     })).toBe(false);
   });
 
-  it("keeps the no-draft five-minute stale-brain failover", async () => {
+  it("leaves a dead brain's cluster record alone when this runtime may not host", async () => {
     const projectRoot = makeTempRoot("ade-sync-service-no-draft-failover-");
     cleanupRoots.push(projectRoot);
     const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
     const service = createService(db, projectRoot, { hostStartupEnabled: false });
     const registry = service.getDeviceRegistryService();
-    const localDevice = registry.ensureLocalDevice();
     registry.upsertPeerMetadata({
       deviceId: "dead-brain",
       deviceName: "Dead brain",
@@ -190,7 +189,10 @@ describe("createSyncService", () => {
     registry.setClusterState({ brainDeviceId: "dead-brain", brainEpoch: 3 });
     try {
       await service.reevaluateHostRole();
-      expect(registry.getClusterState()?.brainDeviceId).toBe(localDevice.deviceId);
+      // A non-host runtime must not take over a dead brain's record: it could
+      // never serve sync, and it would block the host-capable runtime's failover.
+      expect(registry.getClusterState()?.brainDeviceId).toBe("dead-brain");
+      expect(registry.getClusterState()?.brainEpoch).toBe(3);
     } finally {
       await service.dispose();
       db.close();

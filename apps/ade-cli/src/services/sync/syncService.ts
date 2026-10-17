@@ -1416,7 +1416,9 @@ export function createSyncService(args: SyncServiceArgs) {
                 updatedByDeviceId: localDevice.deviceId,
               });
             }
-          } else if (!savedDraft) {
+          } else if (!savedDraft && hostStartupEnabled) {
+            // Only a runtime that may host claims the cluster record. A non-host
+            // runtime that did would make peers follow a brain that never serves sync.
             if (!cluster) {
               cluster = deviceRegistryService.bootstrapLocalBrainIfNeeded();
             } else if (isStaleNonLocalBrainCluster(cluster, localDevice.deviceId)) {
