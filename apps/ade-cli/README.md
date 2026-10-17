@@ -380,6 +380,8 @@ with the command.
 
 The `sync.connectToBrain`, `sync.disconnectFromBrain`, and `sync.transferBrainToLocal` RPC names are legacy wire identifiers. New prose should call this runtime connection, disconnection, and sync authority transfer.
 
+`sync.disconnectFromBrain` is refused unless the request names its project, with `params.projectId` or the `params.projectRoot` of a registered project. It disconnects only that project, and it never falls back to the active or most recently failing project. A named project that is not loaded is refused rather than booted.
+
 ## Credentials
 
 `src/services/credentials/credentialStore.ts` owns the machine-scoped credential store under `~/.ade/secrets/`:
