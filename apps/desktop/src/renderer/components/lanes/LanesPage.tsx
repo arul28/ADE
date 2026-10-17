@@ -31,6 +31,7 @@ import { Dialog } from "../ui/dialog";
 import { showToast } from "../app/toast/toastStore";
 import {
   buildLaneActionClearedSearch,
+  buildLaneTabPrTagsByLaneId,
   laneHasAncestor,
   lanePrTagRoutePath,
   planLaneDeleteBatches,
@@ -483,11 +484,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     [availableLaneIdsKey],
   );
   const lanePrTagsByLaneId = useMemo(() => {
-    const map = new Map<string, LaneTabPrTag[]>();
-    for (const lane of dedupedLanes) {
-      const tags = selectLaneTabPrTags(lane, lanePrTags, laneGithubPrTags);
-      if (tags.length > 0) map.set(lane.id, tags);
-    }
+    const map = buildLaneTabPrTagsByLaneId(dedupedLanes, lanePrTags, laneGithubPrTags);
     // Another machine's lanes match only that machine's own PR rows: the tab's
     // PR list and GitHub snapshot link PRs to the tab machine's lane ids. Its
     // PR ids are rows in that machine's database, so the tags drop them and

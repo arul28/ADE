@@ -551,8 +551,81 @@ export function selectLaneTabPrTags(
   prs: PrSummary[],
   githubPrs: GitHubPrListItem[],
 ): LaneTabPrTag[] {
-  const mappedPrs = selectLanePrs(lane, prs);
-  const laneGithubPrs = selectGithubLanePrTags(lane, githubPrs);
+  return laneTabPrTagsFrom(lane, selectLanePrs(lane, prs), selectGithubLanePrTags(lane, githubPrs), githubPrs);
+}
+
+export type LanePrIndex = {
+  prsByLaneId: Map<string, PrSummary[]>;
+  githubPrsByBranch: Map<string, GitHubPrListItem[]>;
+};
+
+/**
+ * Groups PRs by lane and repo GitHub rows by head branch, once, so a lane's
+ * lookup reads only the PR and GitHub rows that can belong to it. Run the
+ * per-lane selectors on what comes back: they apply their own predicates, so
+ * the answer is unchanged.
+ */
+export function indexLanePrs(
+  prs: PrSummary[],
+  githubPrs: GitHubPrListItem[],
+): LanePrIndex {
+  const prsByLaneId = new Map<string, PrSummary[]>();
+  for (const pr of prs) pushIndexed(prsByLaneId, pr.laneId, pr);
+  const githubPrsByBranch = new Map<string, GitHubPrListItem[]>();
+  for (const pr of githubPrs) {
+    if (pr.scope === "repo") pushIndexed(githubPrsByBranch, normalizeLanePrBranch(pr.headBranch), pr);
+  }
+  return { prsByLaneId, githubPrsByBranch };
+}
+
+/** The rows an index holds for one lane: its PRs, and repo GitHub rows on its branch. */
+export function lanePrIndexCandidates(
+  index: LanePrIndex,
+  lane: Pick<LaneSummary, "id" | "branchRef" | "branchDrift">,
+): { prs: PrSummary[]; githubPrs: GitHubPrListItem[] } {
+  return {
+    prs: index.prsByLaneId.get(lane.id) ?? [],
+    githubPrs: index.githubPrsByBranch.get(normalizeLanePrBranch(effectiveLanePrBranchRef(lane))) ?? [],
+  };
+}
+
+function pushIndexed<T>(map: Map<string, T[]>, key: string, value: T): void {
+  const bucket = map.get(key);
+  if (bucket) bucket.push(value);
+  else map.set(key, [value]);
+}
+
+/**
+ * `selectLaneTabPrTags` for every lane at once, with the same result as calling
+ * it per lane (lanes with no tags left out). Each lane starts from its own rows
+ * in `indexLanePrs` instead of scanning every PR and GitHub row once per lane.
+ */
+export function buildLaneTabPrTagsByLaneId(
+  lanes: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef" | "branchDrift">[],
+  prs: PrSummary[],
+  githubPrs: GitHubPrListItem[],
+): Map<string, LaneTabPrTag[]> {
+  const index = indexLanePrs(prs, githubPrs);
+  const byLane = new Map<string, LaneTabPrTag[]>();
+  for (const lane of lanes) {
+    const candidates = lanePrIndexCandidates(index, lane);
+    const tags = laneTabPrTagsFrom(
+      lane,
+      selectLanePrs(lane, candidates.prs),
+      selectGithubLanePrTags(lane, candidates.githubPrs),
+      githubPrs,
+    );
+    if (tags.length > 0) byLane.set(lane.id, tags);
+  }
+  return byLane;
+}
+
+function laneTabPrTagsFrom(
+  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
+  mappedPrs: PrSummary[],
+  laneGithubPrs: GitHubPrListItem[],
+  githubPrs: GitHubPrListItem[],
+): LaneTabPrTag[] {
   const mappedTags = mappedPrs.map((mappedPr) => {
     const githubPr = laneGithubPrs.find((candidate) => githubPrMatchesAdePr(mappedPr, candidate)) ?? null;
     // The PrSummary carries diff/checks/reviews; the matching GitHub item carries

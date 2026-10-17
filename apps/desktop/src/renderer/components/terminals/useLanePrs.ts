@@ -4,6 +4,8 @@ import { getGitHubSnapshotCoalesced, listPrsCoalesced } from "../../lib/prReadCa
 import { selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import {
+  indexLanePrs,
+  lanePrIndexCandidates,
   selectGithubLanePrTags,
   selectLanePrs,
 } from "../lanes/lanePageModel";
@@ -84,9 +86,11 @@ export function buildLanePrsByLaneId(args: {
   githubPrs: GitHubPrListItem[];
 }): Map<string, PrSummary[]> {
   const byLane = new Map<string, PrSummary[]>();
+  const index = indexLanePrs(args.prs, args.githubPrs);
   for (const lane of args.lanes) {
-    const githubPrs = selectGithubLanePrTags(lane, args.githubPrs);
-    const mapped = selectLanePrs(lane, args.prs)
+    const candidates = lanePrIndexCandidates(index, lane);
+    const githubPrs = selectGithubLanePrTags(lane, candidates.githubPrs);
+    const mapped = selectLanePrs(lane, candidates.prs)
       .map((pr) => ({
         ...pr,
         stack: githubPrs.find((githubPr) => (

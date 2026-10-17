@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildLaneActionClearedSearch,
+  buildLaneTabPrTagsByLaneId,
   githubPrMatchesCurrentBranch,
   laneIsOnBaseBranch,
   laneHasAncestor,
@@ -16,6 +17,7 @@ import {
   selectChatPrs,
   selectLanePrs,
   selectLaneTabPrTag,
+  selectLaneTabPrTags,
   selectLanePrTag,
   selectVisibleLanePrRefreshIds,
   shouldApplyLaneIdsDeepLink,
@@ -712,6 +714,48 @@ describe("selectLaneTabPrTag", () => {
         makeGitHubPr({ headBranch: "main" }),
       ),
     ).toBe(false);
+  });
+});
+
+describe("buildLaneTabPrTagsByLaneId", () => {
+  it("gives each lane the tags selectLaneTabPrTags gives it, and omits lanes with none", () => {
+    const lanes = [
+      makeLane({ id: "lane-1", branchRef: "ade/one" }),
+      makeLane({ id: "lane-2", branchRef: "ade/two" }),
+      makeLane({ id: "lane-3", laneType: "primary", branchRef: "main" }),
+      makeLane({
+        id: "lane-4",
+        branchRef: "ade/four",
+        branchDrift: { expectedBranchRef: "ade/four", headBranchRef: "ade/four-followup" },
+      }),
+      makeLane({ id: "lane-5", branchRef: "ade/five" }),
+      makeLane({ id: "lane-6", branchRef: "ade/six" }),
+    ];
+    const prs = [
+      makePr({ id: "pr-1", laneId: "lane-1", githubPrNumber: 11, githubUrl: "https://github.com/arul28/ADE/pull/11", headBranch: "ade/one" }),
+      makePr({ id: "pr-1b", laneId: "lane-1", githubPrNumber: 12, githubUrl: "https://github.com/arul28/ADE/pull/12", state: "merged", headBranch: "ade/one" }),
+      makePr({ id: "pr-2", laneId: "lane-2", githubPrNumber: 21, githubUrl: "https://github.com/arul28/ADE/pull/21", headBranch: "ade/two" }),
+      makePr({ id: "pr-3", laneId: "lane-3", githubPrNumber: 31, githubUrl: "https://github.com/arul28/ADE/pull/31", headBranch: "main" }),
+      makePr({ id: "pr-4", laneId: "lane-4", githubPrNumber: 41, githubUrl: "https://github.com/arul28/ADE/pull/41", headBranch: "ade/four-followup" }),
+      makePr({ id: "pr-orphan", laneId: "lane-gone", githubPrNumber: 99, githubUrl: "https://github.com/arul28/ADE/pull/99", headBranch: "ade/one" }),
+    ];
+    const githubPrs = [
+      makeGitHubPr({ id: "gh-11", githubPrNumber: 11, githubUrl: "https://github.com/arul28/ADE/pull/11", headBranch: "ade/one", linkedPrId: "pr-1" }),
+      makeGitHubPr({ id: "gh-12", githubPrNumber: 12, githubUrl: "https://github.com/arul28/ADE/pull/12", headBranch: "ade/one", state: "merged", linkedPrId: "pr-1b" }),
+      makeGitHubPr({ id: "gh-21-merged", githubPrNumber: 21, githubUrl: "https://github.com/arul28/ADE/pull/21", headBranch: "ade/two", state: "merged", linkedPrId: "pr-2" }),
+      makeGitHubPr({ id: "gh-41", githubPrNumber: 41, githubUrl: "https://github.com/arul28/ADE/pull/41", headBranch: "ade/four-followup", linkedPrId: "pr-4" }),
+      makeGitHubPr({ id: "gh-51", githubPrNumber: 51, githubUrl: "https://github.com/arul28/ADE/pull/51", headBranch: "ade/five", linkedPrId: null }),
+      makeGitHubPr({ id: "gh-main", githubPrNumber: 32, githubUrl: "https://github.com/arul28/ADE/pull/32", headBranch: "main", linkedPrId: null }),
+      makeGitHubPr({ id: "gh-external", scope: "external", githubPrNumber: 61, githubUrl: "https://github.com/arul28/ADE/pull/61", headBranch: "ade/one" }),
+    ];
+    const byLane = buildLaneTabPrTagsByLaneId(lanes, prs, githubPrs);
+    const perLane = new Map(
+      lanes
+        .map((lane) => [lane.id, selectLaneTabPrTags(lane, prs, githubPrs)] as const)
+        .filter(([, tags]) => tags.length > 0),
+    );
+    expect(byLane).toEqual(perLane);
+    expect([...byLane.keys()]).toEqual(["lane-1", "lane-2", "lane-4", "lane-5"]);
   });
 });
 
