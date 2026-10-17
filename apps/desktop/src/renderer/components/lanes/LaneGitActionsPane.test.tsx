@@ -612,6 +612,24 @@ describe("LaneGitActionsPane rescue action", () => {
     expect((window.ade.diff as any).getBranchChanges).toHaveBeenCalledWith({ laneId: "lane-2" }, null);
   });
 
+  it("clears a revisit's cached Branch summary when the fresh read fails", async () => {
+    mockBranchChanges(() => ["src/alpha.ts"]);
+    const first = renderPane({ laneId: "lane-2" });
+    expect(await screen.findByTitle("src/alpha.ts")).toBeTruthy();
+    first.unmount();
+
+    let rejectRead: (error: Error) => void = () => undefined;
+    (window.ade.diff as any).getBranchChanges = vi.fn(() => new Promise((_resolve, reject) => { rejectRead = reject; }));
+    renderPane({ laneId: "lane-2" });
+    expect(await screen.findByText(/vs main/)).toBeTruthy();
+
+    await act(async () => { rejectRead(new Error("Lane worktree is missing. Restore it.")); });
+
+    expect(await screen.findByText("Lane worktree is missing. Restore it.")).toBeTruthy();
+    expect(screen.queryByText(/vs main/)).toBeNull();
+    expect(screen.queryByTitle("src/alpha.ts")).toBeNull();
+  });
+
   it("ends a revisit with the same Branch rows as a cold read of the same fixture", async () => {
     mockBranchChanges(() => ["src/alpha.ts", "src/beta.ts"]);
     const cold = renderPane({ laneId: "lane-2" });

@@ -859,6 +859,10 @@ export function LaneGitActionsPane({
   // that effect through `branchReadNonce`, so it must not add a second trigger.
   const listCacheTargetRef = useRef({ scope: listScope, branchRef: listBranchRef });
   listCacheTargetRef.current = { scope: listScope, branchRef: listBranchRef };
+  // True while the Branch rows on screen came from the cache and no read has
+  // confirmed them yet. A failed read then clears them instead of leaving
+  // unconfirmed rows beside its error.
+  const branchFromCacheRef = useRef(false);
   const [branchError, setBranchError] = useState<string | null>(null);
   const [branchSupported, setBranchSupported] = useState(() => typeof window.ade?.diff?.getBranchChanges === "function");
   const [amendCommit, setAmendCommit] = useState(false);
@@ -1163,11 +1167,16 @@ export function LaneGitActionsPane({
           return;
         }
         writeLaneGitListCache(scope, epochAtStart, branchRef, { branchChanges: result });
+        branchFromCacheRef.current = false;
         setBranchChanges((prev) => (isSameListResult(prev, result) ? prev : result));
         setBranchError(null);
       })
       .catch((error: unknown) => {
         if (cancelled) return;
+        if (branchFromCacheRef.current) {
+          branchFromCacheRef.current = false;
+          setBranchChanges(null);
+        }
         if (isBranchDiffUnsupported(error)) setBranchSupported(false);
         else setBranchError(stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)));
       });
@@ -1397,6 +1406,7 @@ export function LaneGitActionsPane({
     // The cached Branch diff paints in a transition, so the first commit of a
     // revisit is the same cheap shell a cold mount paints. Fresh data is queued
     // later by the read's own `.then`, so it still lands last.
+    branchFromCacheRef.current = cachedList?.branchChanges != null;
     startTransition(() => setBranchChanges(cachedList?.branchChanges ?? null));
     setStashes(cached?.stashes ?? []);
     setSyncStatus(cached?.syncStatus ?? null);
