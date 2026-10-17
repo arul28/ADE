@@ -508,7 +508,6 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
             avoidCollisions
             className="outline-none"
             style={{ zIndex: Z_LAYERS.popover }}
-            onCloseAutoFocus={(event) => { event.preventDefault(); }}
           >
             <div
               className="relative isolate flex w-[288px] flex-col overflow-hidden rounded-2xl border border-fg/[0.08] bg-(color:--work-popover-bg) p-2.5 shadow-[0_18px_48px_rgba(0,0,0,0.58)] backdrop-blur-md"
