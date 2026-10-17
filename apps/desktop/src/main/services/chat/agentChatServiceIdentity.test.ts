@@ -128,8 +128,8 @@ describe("createAgentChatService", () => {
         text: "Help me organize my week.",
       });
 
-      await vi.waitFor(() => {
-        expect(service.getSlashCommands({ sessionId: session.id }))
+      await vi.waitFor(async () => {
+        expect(await service.getSlashCommands({ sessionId: session.id }))
           .toEqual(expect.arrayContaining([
             expect.objectContaining({ name: "/personal-helper" }),
           ]));
@@ -146,7 +146,7 @@ describe("createAgentChatService", () => {
         forceReload: true,
       });
       expect(JSON.stringify(skillsListPayload?.params)).not.toContain(bundledSkillRoot);
-      expect(service.getSlashCommands({ sessionId: session.id })
+      expect((await service.getSlashCommands({ sessionId: session.id }))
         .some((command) => /^\/ade(?:-|$)/i.test(command.name))).toBe(false);
     });
 

@@ -925,7 +925,7 @@ describe("acp chat runtime", () => {
       expect(eventTypes(harness)).toContain("done");
     });
 
-    const commands = harness.service.getSlashCommands({ sessionId: harness.session.id });
+    const commands = await harness.service.getSlashCommands({ sessionId: harness.session.id });
     const names = commands.map((command) => command.name);
     expect(names.filter((name) => name === "/review")).toHaveLength(1);
     expect(names.filter((name) => name === "/compress")).toHaveLength(1);

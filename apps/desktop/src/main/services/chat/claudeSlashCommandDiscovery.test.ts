@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CLAUDE_SKILL_LISTING_MAX_DESC_CHARS,
   discoverClaudeSlashCommands,
+  discoverClaudeSlashCommandsAsync,
   formatClaudeSlashCommandEntry,
   invalidateClaudeSlashCommandCache,
   planClaudeSlashCommandInjection,
@@ -79,6 +80,81 @@ describe("discovery cache", () => {
       expect(names).not.toContain("/alpha");
     } finally {
       fs.rmSync(other, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("discoverClaudeSlashCommandsAsync", () => {
+  // The asynchronous walk is a second implementation of the same walk. It must
+  // return what the synchronous one returns, in the same order.
+  it("returns the same list, in the same order, as the synchronous walk", async () => {
+    const writeFile = (root: string, rel: string, body: string) => {
+      const file = path.join(root, rel);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, body);
+    };
+    writeFile(tmpRoot, ".claude/commands/alpha.md", "Alpha body.");
+    writeFile(tmpRoot, ".claude/commands/ops/deploy.md", "---\ndescription: Deploy the stack\n---\nDeploy.");
+    writeFile(tmpRoot, ".claude/skills/fix-issue/SKILL.md", "---\nname: fix-issue\ndescription: Project version\n---\nFix.");
+    writeFile(tmpRoot, ".claude/skills/background/SKILL.md", "---\nuser-invocable: false\n---\nHidden.");
+    writeFile(tmpRoot, ".claude/skills/manual-only/SKILL.md", "---\ndisable-model-invocation: true\n---\nManual.");
+    writeFile(homeRoot, ".claude/commands/alpha.md", "Personal alpha.");
+    writeFile(homeRoot, ".claude/skills/fix-issue/SKILL.md", "---\nname: fix-issue\ndescription: Home version\n---\nFix.");
+
+    invalidateClaudeSlashCommandCache();
+    const expected = discoverClaudeSlashCommands(tmpRoot);
+    invalidateClaudeSlashCommandCache();
+    const actual = await discoverClaudeSlashCommandsAsync(tmpRoot);
+
+    expect(actual).toEqual(expected);
+    // The bundled ADE skills are listed too, so the names are checked as a subset.
+    const names = actual.map((command) => command.name);
+    expect(names).toEqual(expect.arrayContaining(["/alpha", "/ops:deploy", "/fix-issue", "/manual-only"]));
+    expect(names).not.toContain("/background");
+    expect(actual.find((command) => command.name === "/fix-issue")?.description).toBe("Project version");
+  });
+
+  it("does not let a walk that started earlier replace a listing stored for the folder since", async () => {
+    const commandsDir = path.join(tmpRoot, ".claude", "commands");
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.writeFileSync(path.join(commandsDir, "alpha.md"), "Alpha body.");
+    invalidateClaudeSlashCommandCache();
+
+    // Hold the walk right after it lists the folder, so it has seen only `alpha`.
+    const originalReaddir = fs.promises.readdir.bind(fs.promises);
+    let holdNextListing = true;
+    let listed!: () => void;
+    const listedFolder = new Promise<void>((resolve) => { listed = resolve; });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const readdirSpy = vi.spyOn(fs.promises, "readdir").mockImplementation((async (
+      dir: fs.PathLike,
+      options?: fs.ObjectEncodingOptions & { withFileTypes?: true },
+    ) => {
+      const entries = await originalReaddir(dir, options as never);
+      if (holdNextListing && String(dir) === commandsDir) {
+        holdNextListing = false;
+        listed();
+        await released;
+      }
+      return entries;
+    }) as typeof fs.promises.readdir);
+
+    try {
+      const walk = discoverClaudeSlashCommandsAsync(tmpRoot);
+      await listedFolder;
+
+      // A newer listing of the same folder is stored while the older walk is still running.
+      fs.writeFileSync(path.join(commandsDir, "beta.md"), "Beta body.");
+      expect(discoverClaudeSlashCommands(tmpRoot).map((c) => c.name)).toContain("/beta");
+
+      release();
+      await walk;
+      // The older walk finishes last. The memo must still serve the newer listing.
+      expect(discoverClaudeSlashCommands(tmpRoot).map((c) => c.name)).toEqual(expect.arrayContaining(["/alpha", "/beta"]));
+    } finally {
+      release();
+      readdirSpy.mockRestore();
     }
   });
 });

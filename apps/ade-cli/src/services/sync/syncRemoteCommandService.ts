@@ -5175,9 +5175,9 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   // Bound the registry sent to a phone: a project can discover hundreds of
   // skill/command files, and the composer only ever renders a prefix list.
   register("chat.getSlashCommands", { viewerAllowed: true }, async (payload) =>
-    requireService(args.agentChatService, "Agent chat service not available.").getSlashCommands(
+    (await requireService(args.agentChatService, "Agent chat service not available.").getSlashCommands(
       parseAgentChatSlashCommandsArgs(payload),
-    ).slice(0, 200));
+    )).slice(0, 200));
   // Composer @-mention suggestions for iOS. Read-only and project-scoped, like
   // the slash-command list; machine rows are read inside the brain, so a
   // viewer never needs the CTO-only account actions.

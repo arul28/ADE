@@ -148,12 +148,14 @@ import {
 } from "./claudeWorkflowProgress";
 import {
   discoverClaudeSlashCommands,
+  discoverClaudeSlashCommandsAsync,
   formatClaudeSlashCommandEntry,
   planClaudeSlashCommandInjection,
   renderClaudeSlashCommandEntries,
 } from "./claudeSlashCommandDiscovery";
 import { buildDroidSkillListing } from "./droidSkillListing";
-import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
+import { discoverCodexSlashCommandsAsync } from "./codexSlashCommandDiscovery";
+import { mergeSlashCommands } from "./markdownSlashCommandDiscovery";
 import { forkCodexThreadInEphemeralAppServer } from "./codexEphemeralFork";
 import { createClaudePluginUiService } from "./claudePluginUiService";
 import type { ClaudePluginUiGetArgs, ClaudePluginUiSnapshot } from "../../../shared/claudePluginUi";
@@ -211,7 +213,7 @@ import {
   mcpElicitationQuestions,
   mcpElicitationSessionPersistScope,
 } from "./codexMcpElicitation";
-import { discoverCursorSlashCommands } from "./cursorSlashCommandDiscovery";
+import { discoverCursorSlashCommandsAsync } from "./cursorSlashCommandDiscovery";
 import { resolveProviderSlashCommandPrompt } from "./slashCommandPromptExpansion";
 import { resolveSmartLinkPreview } from "./smartLinkPreviewService";
 import { buildCanonicalAgentChatRuntimeEvent } from "./runtimeEvents";
@@ -41274,8 +41276,8 @@ export function createAgentChatService(args: {
   };
   const compactionSettingsFor = (managed: ManagedChatSession) => compactionSettingsForSession(managed.session);
   /** OpenCode runs `/compact` only when its server lists the command. */
-  const openCodeCompactListed = (sessionId: string): boolean =>
-    getSlashCommands({ sessionId, provider: "opencode" })
+  const openCodeCompactListed = async (sessionId: string): Promise<boolean> =>
+    (await getSlashCommands({ sessionId, provider: "opencode" }))
       .some((command) => command.name.replace(/^\//, "") === "compact");
   const compactionSignatureFor = (managed: ManagedChatSession) =>
     compactionRuntimeSignature(managed.session.provider ?? "", compactionSettingsFor(managed));
@@ -56552,7 +56554,7 @@ export function createAgentChatService(args: {
         // OpenCode answers `/compact` only when its server lists the command;
         // without it the text would reach the model as a literal prompt, so the
         // brain refuses the same way the client hides the offer.
-        const runnable = managed.session.provider !== "opencode" || openCodeCompactListed(managed.session.id);
+        const runnable = managed.session.provider !== "opencode" || await openCodeCompactListed(managed.session.id);
         const offer = runnable ? compactFirstOffer(await compactFirstArgs(managed)) : null;
         // Checked again: a turn may have started while the history loaded.
         if (offer && isIdleForCompactFirst(managed)) {
@@ -60980,7 +60982,7 @@ export function createAgentChatService(args: {
       laneId: row.laneId,
       provider,
       model,
-      ...(provider === "opencode" ? { manualCompactAvailable: openCodeCompactListed(row.id) } : {}),
+      ...(provider === "opencode" ? { manualCompactAvailable: await openCodeCompactListed(row.id) } : {}),
       ...(compactFirstSupportedProvider(provider)
         ? {
             compactionIdleMode: compactionIdleModeFor({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }),
@@ -66394,7 +66396,7 @@ export function createAgentChatService(args: {
     return deriveSessionCapabilities(managed);
   };
 
-  const getSlashCommands = (args: AgentChatSlashCommandsArgs): AgentChatSlashCommand[] => {
+  const getSlashCommands = async (args: AgentChatSlashCommandsArgs): Promise<AgentChatSlashCommand[]> => {
     const requestedSessionId = args.sessionId?.trim() ?? "";
     const managed = requestedSessionId.length ? managedSessions.get(requestedSessionId) ?? null : null;
     if (requestedSessionId.length && !managed && !args.provider) return [];
@@ -66425,16 +66427,6 @@ export function createAgentChatService(args: {
           ...(provider === "pi" ? [{ name: "/compact", description: "Summarize older context to free tokens.", source: "local" as const, argumentHint: "[instructions]" }] : []),
         ];
 
-    const mergeSlashCommands = (groups: AgentChatSlashCommand[][]): AgentChatSlashCommand[] => {
-      const merged = new Map<string, AgentChatSlashCommand>();
-      for (const group of groups) {
-        for (const command of group) {
-          merged.set(slashCommandKey(command.name), command);
-        }
-      }
-      return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
-    };
-
     // Claude command/skill files carry their kind and where they came from, so
     // the `/` menu can group them (project skills before user/plugin skills).
     const claudeCommandOrigin = (
@@ -66446,8 +66438,8 @@ export function createAgentChatService(args: {
       if (laneWorktreePath && filePath.startsWith(laneWorktreePath)) return "project";
       return "user";
     };
-    const claudeCommandFiles = (): AgentChatSlashCommand[] =>
-      discoverClaudeSlashCommands(laneWorktreePath)
+    const claudeCommandFiles = async (): Promise<AgentChatSlashCommand[]> =>
+      (await discoverClaudeSlashCommandsAsync(laneWorktreePath))
         .filter(isDispatchableClaudeSdkSlashCommand)
         .map((cmd) => ({
           name: cmd.name,
@@ -66458,18 +66450,18 @@ export function createAgentChatService(args: {
           origin: claudeCommandOrigin(cmd),
         }));
 
-    const filesystemBackedCommands = (): AgentChatSlashCommand[] => {
-      const promptCommands: AgentChatSlashCommand[] = discoverCodexSlashCommands(
+    const filesystemBackedCommands = async (): Promise<AgentChatSlashCommand[]> => {
+      const promptCommands: AgentChatSlashCommand[] = (await discoverCodexSlashCommandsAsync(
         laneWorktreePath,
         managed ? sessionProviderLookupEnv(managed) : process.env,
-      )
+      ))
         .map((cmd) => ({
           name: cmd.name,
           description: cmd.description,
           argumentHint: cmd.argumentHint,
           source: "sdk" as const,
         }));
-      const skillAndCommandFiles: AgentChatSlashCommand[] = claudeCommandFiles();
+      const skillAndCommandFiles: AgentChatSlashCommand[] = await claudeCommandFiles();
       return mergeSlashCommands([promptCommands, skillAndCommandFiles]);
     };
 
@@ -66483,7 +66475,7 @@ export function createAgentChatService(args: {
           argumentHint: cmd.argumentHint,
           source: "sdk" as const,
         }));
-      const projectCommands: AgentChatSlashCommand[] = claudeCommandFiles();
+      const projectCommands: AgentChatSlashCommand[] = await claudeCommandFiles();
       return filterClaudeGuiSlashCommands(
         mergeSlashCommands([projectCommands, CLAUDE_BUILT_IN_SLASH_COMMANDS, runtimeCommands]),
         managed?.runtime?.kind === "claude" ? managed.runtime.terminalSlashCommandNames : [],
@@ -66508,12 +66500,12 @@ export function createAgentChatService(args: {
         }));
       const promptCommands = managed && adeSkillCatalogFor(managed.session) === "none"
         ? []
-        : filesystemBackedCommands().filter(isVisibleCodexSlashCommand);
+        : (await filesystemBackedCommands()).filter(isVisibleCodexSlashCommand);
       return mergeSlashCommands([promptCommands, CODEX_BUILT_IN_SLASH_COMMANDS, dynamicCommands]);
     }
 
     if (provider === "cursor") {
-      const cursorCommands: AgentChatSlashCommand[] = discoverCursorSlashCommands(laneWorktreePath)
+      const cursorCommands: AgentChatSlashCommand[] = (await discoverCursorSlashCommandsAsync(laneWorktreePath))
         .map((cmd) => ({
           name: cmd.name,
           description: cmd.description,
@@ -66538,7 +66530,7 @@ export function createAgentChatService(args: {
               source: "sdk" as const,
             }))
           : [];
-      return mergeSlashCommands([filesystemBackedCommands(), localCommands, runtimeCommands]);
+      return mergeSlashCommands([await filesystemBackedCommands(), localCommands, runtimeCommands]);
     }
 
     if (provider === "muse") {
@@ -66563,7 +66555,7 @@ export function createAgentChatService(args: {
 
     // Droid and OpenCode can both use the same filesystem-backed prompt and
     // skill list even when their native runtimes do not auto-list it.
-    return mergeSlashCommands([filesystemBackedCommands(), localCommands]);
+    return mergeSlashCommands([await filesystemBackedCommands(), localCommands]);
   };
 
   const normalizeClaudeSessionTimestamp = (value: unknown): string | null => {

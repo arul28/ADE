@@ -63,7 +63,7 @@ describe("createAgentChatService", () => {
   describe("getSlashCommands", () => {
     it("returns empty array for unknown session", async () => {
       const { service } = createService();
-      const commands = service.getSlashCommands({ sessionId: "unknown-id" });
+      const commands = await service.getSlashCommands({ sessionId: "unknown-id" });
       expect(commands).toEqual([]);
     });
 
@@ -80,7 +80,7 @@ describe("createAgentChatService", () => {
       ].join("\n"));
       const { service } = createService();
 
-      const commands = service.getSlashCommands({ laneId: "lane-1", provider: "claude" });
+      const commands = await service.getSlashCommands({ laneId: "lane-1", provider: "claude" });
       const names = commands.map((command) => command.name);
 
       expect(names).toContain("/agents");
@@ -104,7 +104,7 @@ describe("createAgentChatService", () => {
       fs.writeFileSync(path.join(promptsDir, "audit.md"), "Audit recent work.");
       const { service } = createService();
 
-      const commands = service.getSlashCommands({ laneId: "lane-1", provider: "codex" });
+      const commands = await service.getSlashCommands({ laneId: "lane-1", provider: "codex" });
       const names = commands.map((command) => command.name);
 
       expect(names).toContain("/permissions");
@@ -139,7 +139,7 @@ describe("createAgentChatService", () => {
       fs.writeFileSync(path.join(codexPromptsDir, "triage.md"), "Triage the inbox.");
       const { service } = createService();
 
-      const commands = service.getSlashCommands({ laneId: "lane-1", provider: "droid" });
+      const commands = await service.getSlashCommands({ laneId: "lane-1", provider: "droid" });
       const names = commands.map((command) => command.name);
 
       expect(names).toContain("/clear");
@@ -191,7 +191,7 @@ describe("createAgentChatService", () => {
       ].join("\n"));
       const { service } = createService();
 
-      const commands = service.getSlashCommands({ laneId: "lane-1", provider: "cursor" });
+      const commands = await service.getSlashCommands({ laneId: "lane-1", provider: "cursor" });
       const names = commands.map((command) => command.name);
 
       expect(names).toContain("/clear");
@@ -246,7 +246,7 @@ describe("createAgentChatService", () => {
         expect(warmupComplete).toBe(true);
       });
 
-      const names = service.getSlashCommands({ sessionId: session.id }).map((command) => command.name);
+      const names = (await service.getSlashCommands({ sessionId: session.id })).map((command) => command.name);
       expect(names).toContain("/compact");
       expect(names).not.toContain("/exit");
       expect(names).not.toContain("/quit");
@@ -273,7 +273,7 @@ describe("createAgentChatService", () => {
         model: "sonnet",
       });
 
-      const commands = service.getSlashCommands({ sessionId: session.id });
+      const commands = await service.getSlashCommands({ sessionId: session.id });
       const loginCmd = commands.find((c: any) => c.name === "/login");
       expect(loginCmd).toBeUndefined();
     });
@@ -300,7 +300,7 @@ describe("createAgentChatService", () => {
         model: "gpt-5.4",
       });
 
-      const commands = service.getSlashCommands({ sessionId: session.id });
+      const commands = await service.getSlashCommands({ sessionId: session.id });
       expect(commands.filter((command: any) => command.name.toLowerCase() === "/shiplane")).toHaveLength(1);
       expect(commands).toEqual(expect.arrayContaining([
         expect.objectContaining({
@@ -455,7 +455,7 @@ describe("createAgentChatService", () => {
         agents: [expect.objectContaining({ name: "reviewer", description: "Review code" })],
         errorCount: 0,
       }));
-      expect(service.getSlashCommands({ sessionId: session.id })).toEqual(expect.arrayContaining([
+      expect(await service.getSlashCommands({ sessionId: session.id })).toEqual(expect.arrayContaining([
         expect.objectContaining({ name: "/review-plugin:audit", description: "Audit" }),
       ]));
     });

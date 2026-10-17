@@ -7,12 +7,16 @@ import { isPathInside, pathKey } from "../shared/pathCompare";
 import {
   ancestorConfigRoots,
   discoverMarkdownCommandFiles,
+  discoverMarkdownCommandFilesAsync,
   discoverSkillCommands,
+  discoverSkillCommandsAsync,
   parseSlashCommandInput,
   resolveMarkdownCommandFile,
   resolveMarkdownSlashCommandFromFile,
   resolveSkillCommandFile,
   slashCommandKey,
+  slashCommandNameOrder,
+  type DiscoveredMarkdownSlashCommand,
 } from "./markdownSlashCommandDiscovery";
 
 export type DiscoveredClaudeSlashCommand = {
@@ -72,7 +76,21 @@ function skillRootsByPrecedence(cwd: string): string[] {
  * file someone just edited shows up on the next turn.
  */
 const DISCOVERY_TTL_MS = 5_000;
-const discoveryCache = new Map<string, { at: number; value: DiscoveredClaudeSlashCommand[] }>();
+const discoveryCache = new Map<string, { at: number; stamp: number; value: DiscoveredClaudeSlashCommand[] }>();
+/** Asynchronous walks still running, by key, so concurrent asks share one walk. */
+const discoveryInFlight = new Map<string, Promise<DiscoveredClaudeSlashCommand[]>>();
+/** Bumped on invalidation, so a walk that started before it does not refill the cache. */
+let discoveryGeneration = 0;
+/**
+ * Counts every memo write. An entry's `stamp` is the count at its write, so a walk
+ * can tell whether its folder was written after the walk began.
+ */
+let discoveryWrites = 0;
+
+function storeDiscovery(key: string, value: DiscoveredClaudeSlashCommand[]): void {
+  discoveryWrites += 1;
+  discoveryCache.set(key, { at: Date.now(), stamp: discoveryWrites, value });
+}
 
 /**
  * Drop the memo. Only the tests use this — nothing in the app writes a command
@@ -80,6 +98,8 @@ const discoveryCache = new Map<string, { at: number; value: DiscoveredClaudeSlas
  */
 export function invalidateClaudeSlashCommandCache(): void {
   discoveryCache.clear();
+  discoveryInFlight.clear();
+  discoveryGeneration += 1;
   for (const cache of listingCaches) cache.clear();
 }
 
@@ -108,6 +128,13 @@ export function createSlashCommandListingCache<V>(): (key: string, build: () => 
   };
 }
 
+/** Drops the entries whose TTL has run out; the walk that misses is the slow path, so sweep there. */
+function sweepExpiredDiscovery(now: number): void {
+  for (const [entryKey, entry] of discoveryCache) {
+    if (now - entry.at >= DISCOVERY_TTL_MS) discoveryCache.delete(entryKey);
+  }
+}
+
 export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashCommand[] {
   // Keyed on `pathKey`, not the raw cwd: `C:\proj` and `c:\proj` are the same
   // project, and keying on the spelling gives each of them its own entry and
@@ -118,40 +145,88 @@ export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashC
   if (cached && now - cached.at < DISCOVERY_TTL_MS) return cached.value.slice();
   // Nothing else ever removes an entry, so every cwd asked about once would
   // hold a full command list (22.7MB of files' worth of metadata) for the
-  // process lifetime. A miss is already the slow path; sweep there.
-  for (const [entryKey, entry] of discoveryCache) {
-    if (now - entry.at >= DISCOVERY_TTL_MS) discoveryCache.delete(entryKey);
-  }
+  // process lifetime.
+  sweepExpiredDiscovery(now);
   const value = discoverClaudeSlashCommandsUncached(cwd);
-  discoveryCache.set(key, { at: Date.now(), value });
+  storeDiscovery(key, value);
   // Callers mutate the array (filter/map chains are fine, but nothing stops a
   // sort in place), so never hand out the cached instance itself.
   return value.slice();
 }
 
-function discoverClaudeSlashCommandsUncached(cwd: string): DiscoveredClaudeSlashCommand[] {
-  const byName = new Map<string, DiscoveredClaudeSlashCommand>();
+/**
+ * The same list as `discoverClaudeSlashCommands`, from a walk that yields to the
+ * event loop between folders and files. `chat.getSlashCommands` uses this: a
+ * synchronous walk on a miss stalls every other RPC the brain is serving for as
+ * long as it runs. It shares the memo, the TTL and the key with the synchronous
+ * call, and a second ask while a walk is running waits for that walk.
+ */
+export async function discoverClaudeSlashCommandsAsync(cwd: string): Promise<DiscoveredClaudeSlashCommand[]> {
+  const key = pathKey(cwd);
+  const cached = discoveryCache.get(key);
+  if (cached && Date.now() - cached.at < DISCOVERY_TTL_MS) return cached.value.slice();
+  let walk = discoveryInFlight.get(key);
+  if (!walk) {
+    const generation = discoveryGeneration;
+    const startedStamp = discoveryWrites;
+    sweepExpiredDiscovery(Date.now());
+    const started: Promise<DiscoveredClaudeSlashCommand[]> = discoverClaudeSlashCommandsUncachedAsync(cwd)
+      .then((value) => {
+        // A walk can finish after a newer listing for this folder was stored (a
+        // sync walk, say), and its own listing may be the older one. Keep the newer entry.
+        const stored = discoveryCache.get(key);
+        const storedSinceStart = stored !== undefined && stored.stamp > startedStamp;
+        if (generation === discoveryGeneration && !storedSinceStart) storeDiscovery(key, value);
+        return value;
+      })
+      .finally(() => {
+        if (discoveryInFlight.get(key) === started) discoveryInFlight.delete(key);
+      });
+    discoveryInFlight.set(key, started);
+    walk = started;
+  }
+  return (await walk).slice();
+}
 
+function discoverClaudeSlashCommandsUncached(cwd: string): DiscoveredClaudeSlashCommand[] {
+  return mergeClaudeSlashCommands(
+    claudeRootsByPrecedence(cwd).map((root) => discoverMarkdownCommandFiles(path.join(root, "commands"))),
+    skillRootsByPrecedence(cwd).map((root) => discoverSkillCommands(root)),
+  );
+}
+
+async function discoverClaudeSlashCommandsUncachedAsync(cwd: string): Promise<DiscoveredClaudeSlashCommand[]> {
+  const commandLists: DiscoveredMarkdownSlashCommand[][] = [];
   for (const root of claudeRootsByPrecedence(cwd)) {
-    for (const command of discoverMarkdownCommandFiles(path.join(root, "commands"))) {
-      const key = slashCommandKey(command.name);
-      if (!byName.has(key)) {
-        byName.set(key, { ...command, source: "command" });
-      }
-    }
+    commandLists.push(await discoverMarkdownCommandFilesAsync(path.join(root, "commands")));
   }
+  const skillLists: DiscoveredMarkdownSlashCommand[][] = [];
   for (const root of skillRootsByPrecedence(cwd)) {
-    for (const command of discoverSkillCommands(root)) {
+    skillLists.push(await discoverSkillCommandsAsync(root));
+  }
+  return mergeClaudeSlashCommands(commandLists, skillLists);
+}
+
+/** Command files outrank skills, and within each kind the first root in precedence order wins a name. */
+function mergeClaudeSlashCommands(
+  commandLists: readonly (readonly DiscoveredMarkdownSlashCommand[])[],
+  skillLists: readonly (readonly DiscoveredMarkdownSlashCommand[])[],
+): DiscoveredClaudeSlashCommand[] {
+  const byName = new Map<string, DiscoveredClaudeSlashCommand>();
+  const add = (list: readonly DiscoveredMarkdownSlashCommand[], source: DiscoveredClaudeSlashCommand["source"]): void => {
+    for (const command of list) {
       const key = slashCommandKey(command.name);
       if (!byName.has(key)) {
-        byName.set(key, { ...command, source: "skill" });
+        byName.set(key, { ...command, source });
       }
     }
-  }
+  };
+  for (const list of commandLists) add(list, "command");
+  for (const list of skillLists) add(list, "skill");
 
   return [...byName.values()].sort((a, b) => {
     if (a.source !== b.source) return a.source === "command" ? -1 : 1;
-    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    return slashCommandNameOrder.compare(a.name, b.name);
   });
 }
 
