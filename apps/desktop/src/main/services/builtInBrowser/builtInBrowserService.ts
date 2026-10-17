@@ -7525,12 +7525,15 @@ const ELEMENT_CONTEXT_SNIPPET = String.raw`
           let fiber = host[fiberKey];
           for (let depth = 0; fiber && depth < 60; depth += 1) {
             if (!source && fiber._debugSource && fiber._debugSource.fileName) {
+              // Only the element's own fiber says where it was written; an
+              // ancestor's source is the enclosing JSX, so it is a lead, not exact.
+              const onSelf = hops === 0 && depth === 0;
               source = {
                 file: fiber._debugSource.fileName,
                 line: fiber._debugSource.lineNumber ?? null,
                 column: fiber._debugSource.columnNumber ?? null,
-                confidence: "exact",
-                via: "react _debugSource"
+                confidence: onSelf ? "exact" : "approximate",
+                via: onSelf ? "react _debugSource" : "react _debugSource (enclosing element)"
               };
             }
             // React 19 dropped _debugSource; the JSX call site lives in _debugStack.
