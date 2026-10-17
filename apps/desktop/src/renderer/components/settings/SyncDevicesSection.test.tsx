@@ -32,6 +32,7 @@ import {
 import { accountDirectorySummary } from "./accountDirectorySummary";
 import { resetReconnectFlowForTests } from "../../lib/reconnectThisComputer";
 import { __resetDialogRequestsForTests } from "../ui/dialog/confirm";
+import { useAppStore } from "../../state/appStore";
 
 vi.mock("qrcode.react", () => ({
   QRCodeSVG: ({ value, title }: { value: string; title?: string }) => (
@@ -528,7 +529,15 @@ describe("ThisMacCard", () => {
   describe("Stop following", () => {
     const followerButton = { name: "Stop following Mac Studio" };
 
-    const acknowledgement = { name: /I understand this computer will host sync for this project/ };
+    const acknowledgement = { name: /I understand this computer will host sync for Repo/ };
+
+    // The button needs a project open in this window to act on.
+    beforeEach(() => {
+      useAppStore.setState({ project: { rootPath: "/repo", displayName: "Repo", baseRef: "main" } as any });
+    });
+    afterEach(() => {
+      useAppStore.setState({ project: null });
+    });
 
     function daysAgo(days: number): string {
       return new Date(Date.now() - days * 86_400_000).toISOString();
@@ -570,7 +579,7 @@ describe("ThisMacCard", () => {
       render(<ThisMacCard sync={makeSync({ status: followerStatus() })} sessionState="active" />);
 
       fireEvent.click(screen.getByRole("button", followerButton));
-      expect(screen.getByText(/This computer will start hosting sync for this project\./)).toBeTruthy();
+      expect(screen.getByText(/This computer will start hosting sync for Repo\./)).toBeTruthy();
       expect(screen.getByText(/ADE forgets the saved connection to Mac Studio/)).toBeTruthy();
       expect(screen.getByText(/No chats, lanes, or files are deleted\./)).toBeTruthy();
       expect(screen.getByText(/If Mac Studio is still running, the two will stay separate/)).toBeTruthy();

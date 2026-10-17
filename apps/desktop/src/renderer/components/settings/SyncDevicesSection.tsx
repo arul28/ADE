@@ -404,9 +404,10 @@ export function ThisMacCard({
     : null;
   // Only a viewer offers it, and only for this computer: a remote-bound window
   // would send the disconnect to the machine it is bound to, and the hosted web
-  // client's disconnect does nothing.
+  // client's disconnect does nothing. It also needs a project open in this
+  // window: the disconnect acts on that project, and refuses without one.
   const followedName = !host && status.role === "viewer" ? followedMachineName(status) : null;
-  const canStopFollowing = followedName !== null && sync.canManageDevices && !isWebClientMode();
+  const canStopFollowing = followedName !== null && projectName !== null && sync.canManageDevices && !isWebClientMode();
 
     return (
     <div style={{ ...detailBlockStyle, display: "grid", gap: 12 }}>

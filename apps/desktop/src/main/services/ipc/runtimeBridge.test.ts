@@ -2460,6 +2460,33 @@ describe("registerIpc sync bridge", () => {
     ).rejects.toThrow("Sync service is not available.");
   });
 
+  it("refuses a disconnect from a window with no project, and reaches no sync service", async () => {
+    const callSync = vi.fn(async () => ({ disconnected: true }));
+    const callSyncForRoot = vi.fn(async () => ({ disconnected: true }));
+    const disconnectFromBrain = vi.fn(async () => ({ disconnected: true }));
+    const resolveSyncService = vi.fn(async () => ({ disconnectFromBrain }) as any);
+    const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+
+    registerIpc({
+      getCtx: () => ({ logger }) as any,
+      getSyncService: () => null,
+      resolveSyncService,
+      localRuntimeConnectionPool: { callSync, callSyncForRoot } as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.syncDisconnectFromBrain)?.(eventForSender()),
+    ).rejects.toThrow("This project isn't loaded yet. Open it and try again.");
+    expect(callSync).not.toHaveBeenCalled();
+    expect(callSyncForRoot).not.toHaveBeenCalled();
+    expect(resolveSyncService).not.toHaveBeenCalled();
+    expect(disconnectFromBrain).not.toHaveBeenCalled();
+  });
+
   it("coalesces concurrent Linear OAuth starts within one project credential context", async () => {
     let releaseStart!: () => void;
     const startReleased = new Promise<void>((resolve) => {

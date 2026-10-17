@@ -1531,10 +1531,12 @@ Desktop connection UI:
   disabled until the reader ticks "I understand this computer will host sync for
   <project>". A second click while the confirmation is open does nothing.
   The button is hidden when the window is bound to another machine (the
-  disconnect would reach that machine) and in the hosted web client.
+  disconnect would reach that machine), when no project is open in the window,
+  and in the hosted web client.
   The brain acts on the project the window names and never boots another one for
   this: a named project that is still loading answers "This project isn't loaded
-  yet. Open it and try again.", and the card shows that message.
+  yet. Open it and try again.", and the card shows that message. A window with no
+  project is refused the same way, before any sync call is made.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` —
   Connections uses the focused `"phone"` and `"web"` variants beneath a
   shared **This computer** card. The card draws the computer as its

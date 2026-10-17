@@ -6475,27 +6475,24 @@ export function registerIpc({
 
   ipcMain.handle(IPC.syncDisconnectFromBrain, async (event): Promise<SyncRoleSnapshot> => {
     // Disconnect acts on the project this window shows, and on no other, and it
-    // never boots one. Neither retry is taken once that project is known: the
-    // one in tryRuntimeSync sends the call again with no project id, so the brain
-    // answers for whichever project it has at hand, and the in-process fallback
-    // below boots the mobile sync host. A project that is not ready is refused.
+    // never boots one. With no such project there is nothing to act on, so it
+    // fails closed: no unscoped runtime call, and no in-process sync service,
+    // since that can select and boot a host project of its own.
     const rootPath = localRuntimeConnectionPool ? getLocalRuntimeRootForEvent(event) : null;
-    if (localRuntimeConnectionPool && rootPath) {
-      try {
-        return await localRuntimeConnectionPool.callSyncForRoot<SyncRoleSnapshot>(
-          rootPath,
-          "sync.disconnectFromBrain",
-        );
-      } catch (error) {
-        if (isSyncServiceUnavailableError(error)) {
-          throw new Error("This project isn't loaded yet. Open it and try again.");
-        }
-        throw error;
-      }
+    if (!localRuntimeConnectionPool || !rootPath) {
+      throw new Error("This project isn't loaded yet. Open it and try again.");
     }
-    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(event, "sync.disconnectFromBrain", {});
-    if (runtimeStatus.handled) return runtimeStatus.result;
-    return await (await requireSyncService()).disconnectFromBrain();
+    try {
+      return await localRuntimeConnectionPool.callSyncForRoot<SyncRoleSnapshot>(
+        rootPath,
+        "sync.disconnectFromBrain",
+      );
+    } catch (error) {
+      if (isSyncServiceUnavailableError(error)) {
+        throw new Error("This project isn't loaded yet. Open it and try again.");
+      }
+      throw error;
+    }
   });
 
   ipcMain.handle(IPC.syncForgetDevice, async (event, arg: { deviceId: string }): Promise<SyncRoleSnapshot> => {
