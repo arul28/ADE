@@ -156,12 +156,14 @@ function changeListScroller(): HTMLElement {
 }
 
 /**
- * jsdom has no layout or scrolling, and keyboard navigation scrolls the list to
- * bring the next row into view. The virtualizer clamps that scroll to
+ * jsdom has no layout or scrolling, and a browser scrolls the list to bring a
+ * focused row into view. The virtualizer clamps that scroll to
  * scrollHeight - clientHeight, so give the list its viewport and content heights,
- * and make scrollTo scroll and fire the scroll event a browser would.
+ * and make scrollTo scroll and fire the scroll event a browser would. With
+ * `deliverScrollEvents: false` the list still scrolls, but the virtualizer never
+ * hears it.
  */
-function stubListScrollTo(scroller: HTMLElement): void {
+function stubListScrollTo(scroller: HTMLElement, { deliverScrollEvents = true }: { deliverScrollEvents?: boolean } = {}): void {
   Object.defineProperty(scroller, "clientHeight", { configurable: true, get: () => CHANGE_LIST_VIEWPORT_PX });
   Object.defineProperty(scroller, "scrollHeight", {
     configurable: true,
@@ -172,7 +174,7 @@ function stubListScrollTo(scroller: HTMLElement): void {
     value: ({ top }: ScrollToOptions) => {
       scroller.scrollTop = top ?? 0;
       // The browser fires the scroll event after the keyboard handler has returned.
-      setTimeout(() => fireEvent.scroll(scroller), 0);
+      if (deliverScrollEvents) setTimeout(() => fireEvent.scroll(scroller), 0);
     },
   });
 }
@@ -897,6 +899,34 @@ describe("LaneGitActionsPane rescue action", () => {
 
     await user.tab();
     expect(focusedControlLabel()).toBe(`Stage ${paths[1]}`);
+  });
+
+  it("Tab still walks past the window when the list never hears its own scroll", async () => {
+    const user = userEvent.setup();
+    const paths = Array.from({ length: 80 }, (_, index) => `src/generated/file-${index}.ts`).sort((a, b) => a.localeCompare(b));
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: paths.map((path) => ({ path, kind: "modified" as const })),
+    };
+
+    renderPane();
+
+    await screen.findByText(paths[0]!);
+    const scroller = changeListScroller();
+    // The list scrolls for Tab, but the scroll event never reaches the window, so the window keeps the rows it had.
+    stubListScrollTo(scroller, { deliverScrollEvents: false });
+    const controls = paths.flatMap((path) => [`Stage ${path}`, `Discard changes to ${path}`]);
+
+    screen.getByRole("button", { name: controls[0]! }).focus();
+    const reached: Array<string | null> = [];
+    for (let step = 1; step < controls.length; step += 1) {
+      await user.tab();
+      reached.push(focusedControlLabel());
+    }
+
+    expect(reached).toEqual(controls.slice(1));
+    await user.tab();
+    expect(scroller.contains(document.activeElement)).toBe(false);
   });
 
   it("Branch mode: Tab reaches every folder, past the mounted window", async () => {
