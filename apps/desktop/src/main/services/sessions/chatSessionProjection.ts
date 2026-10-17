@@ -235,6 +235,20 @@ export function projectChatOntoSession(
       attentionSource: session.attentionSource === "provider_structured" ? null : session.attentionSource,
     };
   }
+  // Accepted but not started: a lazily-started provider runtime is still coming
+  // up, so the chat reads idle. The send already happened, so the turn is in
+  // flight. Without this a just-sent chat is filed as resting ("Done") until the
+  // turn starts.
+  if (chat.status === "idle" && chat.turnAcceptedAt) {
+    return {
+      ...base,
+      currentTurnStartedAt: chat.turnAcceptedAt,
+      runtimeState: "running",
+      chatIdleSinceAt: null,
+      pendingInputItemId: null,
+      attentionSource: session.attentionSource === "provider_structured" ? null : session.attentionSource,
+    };
+  }
   if (chat.status === "idle" || chat.status === "ended") {
     return {
       ...base,

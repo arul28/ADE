@@ -4799,6 +4799,13 @@ type ManagedChatSession = {
   /** Set when deleteSession begins — persistence paths bail to avoid re-creating deleted files. */
   deleted: boolean;
   /**
+   * When the last fresh send was accepted, until its turn starts, ends, or
+   * fails. A lazily-started provider runtime can hold the chat "idle" for
+   * seconds after the send; the list reports it as in flight meanwhile. In
+   * memory only.
+   */
+  turnAcceptedAt?: string | null;
+  /**
    * The chat's personal profile changed while its provider process was
    * mid-turn (`adoptLegacyPersonalSessionAsAssistant`). That process was built
    * for the old profile (prompt, skills, settings), so the next fresh turn
@@ -19795,6 +19802,7 @@ export function createAgentChatService(args: {
   ): void => {
     managed.session.status = "idle";
     managed.session.currentTurnStartedAt = null;
+    managed.turnAcceptedAt = null;
     if (options && "idleSinceAt" in options) {
       managed.session.idleSinceAt = options.idleSinceAt ?? null;
     }
@@ -56935,6 +56943,11 @@ export function createAgentChatService(args: {
       durationMs: Date.now() - dispatchStartedAt,
     });
 
+    // Accepted here, but the provider may still be starting its runtime before
+    // the turn flips the chat active. Report it in flight until the turn starts,
+    // ends, or fails (see `turnAcceptedAt`).
+    const turnAcceptedAt = nowIso();
+    prepared.managed.turnAcceptedAt = turnAcceptedAt;
     void executePreparedSendMessage(prepared).catch((error) => {
       logger.warn("agent_chat.turn_dispatch_failed", {
         sessionId: prepared.sessionId,
@@ -56943,6 +56956,8 @@ export function createAgentChatService(args: {
       });
       rejectDispatch?.(error instanceof Error ? error : new Error(String(error)));
       emitDispatchedSendFailure(prepared, error);
+    }).finally(() => {
+      if (prepared.managed.turnAcceptedAt === turnAcceptedAt) prepared.managed.turnAcceptedAt = null;
     });
 
     if (dispatchPromise) {
@@ -61125,6 +61140,9 @@ export function createAgentChatService(args: {
       currentTurnStartedAt: liveSession?.status === "active"
         ? liveSession.currentTurnStartedAt ?? null
         : null,
+      ...(liveSession?.status === "idle" && liveManaged?.turnAcceptedAt
+        ? { turnAcceptedAt: liveManaged.turnAcceptedAt }
+        : {}),
       idleSinceAt: (liveSession?.status ?? (row.status === "running" ? "idle" : "ended")) === "idle"
         ? liveSession?.idleSinceAt ?? persisted?.idleSinceAt ?? null
         : null,
