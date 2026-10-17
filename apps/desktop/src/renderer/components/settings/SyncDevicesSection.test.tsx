@@ -757,6 +757,19 @@ describe("ThisMacCard", () => {
 
       await waitFor(() => expect(refresh).toHaveBeenCalledWith({ force: true }));
       expect(disconnectFromBrain).not.toHaveBeenCalled();
+      // The card says the read failed, not that the project stopped following.
+      expect(await screen.findByText(/couldn't read this project's sync state: The background service did not answer\./)).toBeTruthy();
+      expect(screen.queryByText(/no longer follows another machine/)).toBeNull();
+    });
+
+    it("hides Stop following in the hosted web client, whose disconnect does nothing", () => {
+      (globalThis.window as any).__adeWebClient = true;
+      try {
+        render(<ThisMacCard sync={makeSync({ status: makeStatus(), projectStatus: followerStatus() })} sessionState="active" />);
+        expect(screen.queryByRole("button", followerButton)).toBeNull();
+      } finally {
+        delete (globalThis.window as any).__adeWebClient;
+      }
     });
 
     it("says the computer already hosts when the project started hosting while the question was open", async () => {

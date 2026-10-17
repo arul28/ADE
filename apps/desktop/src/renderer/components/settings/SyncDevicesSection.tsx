@@ -340,13 +340,22 @@ export function ThisMacCard({
       // in that time (its ghost is reclaimed). The disconnect clears this
       // project's device records, which on a host drops the devices it pairs, so
       // it is sent only while the project still follows another machine. A read
-      // that fails counts as not following.
-      const current = await window.ade.sync.getStatus().catch(() => null);
+      // that fails stops nothing, and says so: it is not "no longer follows".
+      let readError: string | null = null;
+      const current = await window.ade.sync.getStatus().catch((err: unknown) => {
+        readError = stripElectronErrorWrapper(err instanceof Error ? err.message : String(err));
+        return null;
+      });
       // The disconnect acts on the project this window has open now. If the
       // window moved to another project while the question was open, the reader
       // agreed to stop the one they were shown, so nothing is sent.
       if (useAppStore.getState().project?.rootPath !== projectRoot) {
         showToast({ tone: "warning", title: "Nothing was stopped. This window changed projects while you were asked. Try again." });
+        return;
+      }
+      if (readError !== null) {
+        setStopFollowingFailure(`Nothing was stopped. ADE couldn't read this project's sync state: ${readError}`);
+        void refreshSync({ force: true });
         return;
       }
       if (current && isSyncHost(current)) {
