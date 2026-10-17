@@ -78,6 +78,7 @@ import {
   type OpenProjectBinding,
   type TerminalSessionDetail,
   type AgentChatSendArgs,
+  type AgentChatSlashCommand,
   type ChatLaunchChatArgs,
   type ChatLaunchLaneConfig,
   TerminalSessionChangedEvent,
@@ -1018,6 +1019,10 @@ const MAX_AGENT_CHAT_VIEW_CACHE_BYTES_TOTAL = 128 * 1024 * 1024;
  * event landed inside the last interval.
  */
 const ACTIVE_TURN_RECOVERY_INTERVAL_MS = 10_000;
+// Longest wait for an idle slot before the slash-command load runs anyway, so a
+// busy renderer (a streaming turn) still gets its skill chips.
+const SLASH_COMMANDS_IDLE_TIMEOUT_MS = 500;
+const NO_SLASH_COMMANDS: AgentChatSlashCommand[] = [];
 const EMPTY_DRAFT_LAUNCH_JOBS: DraftLaunchJob[] = [];
 // Stable fallbacks: surfaces that seed only part of the app store must not make
 // the lane picker's machine derivation re-run on every render.
@@ -9263,9 +9268,40 @@ export function AgentChatPane({
     setOptimisticOutgoingMessageSynced(null);
   }, [eventsBySession, setOptimisticOutgoingMessageSynced]);
 
-  // Fetch provider slash commands when session, lane, or draft provider changes.
+  // Provider slash commands feed the composer's `/` menu and the transcript's
+  // `/skill` chips. A chat switch does not read them. They load when the
+  // composer takes focus (or a `/` is typed), or once this chat's transcript is
+  // on screen and the renderer is idle, so the read queues behind the transcript
+  // instead of alongside it. A chat switched away from before then never loads them.
+  const slashCommandsScope = `${isPersonalPane ? "personal" : "lane"}|${selectedSessionId ?? ""}|${laneId ?? ""}|${sessionProvider}|${projectRoot ?? ""}`;
+  const [slashCommandsWantedScope, setSlashCommandsWantedScope] = useState<string | null>(null);
+  const requestSlashCommands = useCallback(() => {
+    setSlashCommandsWantedScope(slashCommandsScope);
+  }, [slashCommandsScope]);
+  const transcriptOnScreen = selectedEvents.length > 0;
+  useEffect(() => {
+    if (!isTileActive || !transcriptOnScreen) return undefined;
+    const request = () => setSlashCommandsWantedScope(slashCommandsScope);
+    // jsdom has no idle callbacks.
+    if (typeof window.requestIdleCallback !== "function") {
+      const timer = window.setTimeout(request, 0);
+      return () => window.clearTimeout(timer);
+    }
+    // Cancel only a request that has not fired yet, as the backfill in
+    // AgentChatMessageList does.
+    let pending: number | null = window.requestIdleCallback(() => {
+      pending = null;
+      request();
+    }, { timeout: SLASH_COMMANDS_IDLE_TIMEOUT_MS });
+    return () => {
+      if (pending !== null) window.cancelIdleCallback(pending);
+    };
+  }, [isTileActive, slashCommandsScope, transcriptOnScreen]);
+
+  // Fetch provider slash commands for this chat, once it has asked for them.
   useEffect(() => {
     if (!isTileActive) { setSdkSlashCommands([]); return; }
+    if (slashCommandsWantedScope !== slashCommandsScope) { setSdkSlashCommands(NO_SLASH_COMMANDS); return; }
     if (isPersonalPane) {
       // The personal scope answers for its own chats and its own workspace.
       let cancelledPersonal = false;
@@ -9296,7 +9332,7 @@ export function AgentChatPane({
       .then((cmds) => { if (!cancelled) setSdkSlashCommands(cmds); })
       .catch(() => { if (!cancelled) setSdkSlashCommands([]); });
     return () => { cancelled = true; };
-  }, [isPersonalPane, isTileActive, laneId, modelId, projectRoot, selectedSessionId, selectedSessionModelId, sessionProvider]);
+  }, [isPersonalPane, isTileActive, laneId, modelId, projectRoot, selectedSessionId, selectedSessionModelId, sessionProvider, slashCommandsScope, slashCommandsWantedScope]);
 
   const sessionDeltaTurnActiveRef = useRef(false);
   const sessionDeltaSessionIdRef = useRef<string | null>(null);
@@ -16718,6 +16754,7 @@ export function AgentChatPane({
             isActive={isTileActive}
             shouldAutofocus={layoutVariant === "grid-tile" ? shouldAutofocusComposer : false}
             sdkSlashCommands={sdkSlashCommands}
+            onSlashCommandsRequested={requestSlashCommands}
             modelId={subagentComposerModel?.modelId ?? modelId}
             // A chat launched from a saved preset is named by the preset in the
             // model trigger; the model id moves to the trigger's tooltip.

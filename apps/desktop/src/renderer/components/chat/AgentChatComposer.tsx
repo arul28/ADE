@@ -2295,6 +2295,7 @@ function AgentChatComposerImpl({
   threadCommentsPin = null,
   onJumpToThreadComment,
   sdkSlashCommands = [],
+  onSlashCommandsRequested,
   modelId,
   activeHarnessPresetId = null,
   availableModelIds,
@@ -2482,6 +2483,11 @@ function AgentChatComposerImpl({
   threadCommentsPin?: OpenProjectBinding | null;
   onJumpToThreadComment?: (comment: ChatThreadComment) => void;
   sdkSlashCommands?: AgentChatSlashCommand[];
+  /**
+   * Asked for when the composer takes focus or a `/` is typed. The pane loads
+   * the provider's slash commands then, instead of on every chat switch.
+   */
+  onSlashCommandsRequested?: () => void;
   modelId: string;
   /**
    * The saved harness preset this chat launched from, when there is one. The
@@ -3377,7 +3383,6 @@ function AgentChatComposerImpl({
   const chatRuntimePin = useChatRuntimeScope().pin;
   const chatRuntimePinRef = useRef(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
-  const chatRuntimePinKey = chatRuntimePin?.key ?? null;
   const codexAuth = useProviderAuthStatus({ runtimePin: chatRuntimePin }).status.openai;
   const codexVoiceOffered = Boolean(
     sessionId
@@ -3605,18 +3610,25 @@ function AgentChatComposerImpl({
     return segments;
   }, [draft, mentionLabels, plainComposerTokens, plainOverlayTokenCount, plainUltrathinkTokens, plainUserShellChipRange]);
 
-  // Pre-warm the lane's quick-open file index as soon as the composer is
-  // bound to a session so the first "@" query is served from a warm index.
-  // The empty-query fileSearch is a cheap warm ping: it returns [] right away
-  // and kicks the name-index build in the background.
-  useEffect(() => {
+  // Pre-warm the lane's quick-open file index when the user focuses the
+  // composer, so the first "@" query is served from a warm index. Not on every
+  // bind: a chat switch does not need the file index. The empty-query fileSearch
+  // is a cheap warm ping: it returns [] right away and kicks the name-index build
+  // in the background.
+  const warmFileSearchIndex = useCallback(() => {
     if (!sessionId) return;
     try {
       void agentChatApiRef.current?.fileSearch?.({ sessionId, query: "" }, chatRuntimePinRef.current)?.catch?.(() => {});
     } catch {
       // warming is best-effort
     }
-  }, [chatRuntimePinKey, sessionId]);
+  }, [sessionId]);
+
+  // A `/` typed without a focus event (focus kept across a chat switch) still
+  // needs the provider's slash commands. Focus covers the usual path first.
+  useEffect(() => {
+    if (draft.trimStart().startsWith("/")) onSlashCommandsRequested?.();
+  }, [draft, onSlashCommandsRequested]);
 
   const revokePreviewUrl = useCallback((url: string | null | undefined) => {
     if (!url || !objectPreviewUrlsRef.current.has(url)) return;
@@ -8653,6 +8665,8 @@ function AgentChatComposerImpl({
               // Focusing this composer makes it the dictation insertion target so
               // a transcript lands in whichever composer the user is typing into.
               registerAsDictationTarget();
+              warmFileSearchIndex();
+              onSlashCommandsRequested?.();
             }}
           >
             {modelChipEdit ? (() => {

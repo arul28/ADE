@@ -3673,6 +3673,10 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(/Claude Sonnet 5/i);
 
+    // Commands load when the composer takes focus, not when the model changes.
+    const textbox = await screen.findByRole("textbox");
+    act(() => textbox.focus());
+
     await waitFor(() => {
       expect(window.ade.agentChat.slashCommands).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-1",
@@ -3681,7 +3685,6 @@ describe("AgentChatPane submit recovery", () => {
       }), LOCAL_PROJECT_BINDING);
     });
 
-    const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "/", selectionStart: 1 } });
 
     expect(await screen.findByText("/agents")).toBeTruthy();
@@ -6336,6 +6339,9 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(nextLabelPattern);
 
+    // Commands load when the composer takes focus, not when the model changes.
+    act(() => (screen.getByRole("textbox") as HTMLElement).focus());
+
     await waitFor(() => {
       const pendingFetch = vi.mocked(window.ade.agentChat.slashCommands).mock.calls.find((call) => {
         const args = call[0] as { laneId?: string; provider?: string; sessionId?: string };
@@ -6343,6 +6349,30 @@ describe("AgentChatPane submit recovery", () => {
       });
       expect(pendingFetch).toBeTruthy();
     });
+  });
+
+  it("reads slash commands and warms file search on composer focus, not on bind", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: { sessionId: "session-1", events: [], truncated: false, sessionFound: true },
+    });
+
+    renderPane(session);
+
+    const composer = await screen.findByRole("textbox");
+    await waitFor(() => expect(window.ade.agentChat.getEventHistory).toHaveBeenCalled());
+    expect(window.ade.agentChat.slashCommands).not.toHaveBeenCalled();
+    expect(window.ade.agentChat.fileSearch).not.toHaveBeenCalled();
+
+    act(() => composer.focus());
+
+    await waitFor(() => {
+      const slashArgs = vi.mocked(window.ade.agentChat.slashCommands).mock.calls.map(([args]) => args);
+      expect(slashArgs).toContainEqual(expect.objectContaining({ sessionId: "session-1" }));
+    });
+    const searchArgs = vi.mocked(window.ade.agentChat.fileSearch).mock.calls.map(([args]) => args);
+    expect(searchArgs).toContainEqual(expect.objectContaining({ sessionId: "session-1", query: "" }));
   });
 
   it("keeps the pending model's permission mode local until Send", async () => {
@@ -13073,6 +13103,9 @@ describe("AgentChatPane per-chat runtime routing", () => {
       expect.any(Function),
       machineB,
     );
+    // Commands load when the composer takes focus.
+    const composer = await screen.findByRole("textbox");
+    act(() => composer.focus());
     await waitFor(() => expect(window.ade.agentChat.slashCommands).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "chat-on-b" }),
       machineB,
