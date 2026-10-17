@@ -883,7 +883,11 @@ function runWindowsIdentityCheckedTreeKill(
     "try {",
     `  try { $process = [System.Diagnostics.Process]::GetProcessById(${pid}); $handle = $process.Handle } catch [ArgumentException] { [Console]::Out.Write('absent'); exit 0 }`,
     "  if ($process.HasExited) { [Console]::Out.Write('absent'); exit 0 }",
-    `  if ([Math]::Abs(($process.StartTime.ToUniversalTime() - [DateTime]::FromFileTimeUtc(${startFileTime}).ToUniversalTime()).TotalMilliseconds) -gt 1000) { [Console]::Out.Write('absent'); exit 0 }`,
+    // Exact equality, no tolerance. The sweep and this check both read
+    // Process.StartTime for the same process, so a live brain matches its own
+    // tick value. A reused pid starts at a different tick and must not match.
+    "  try { $started = $process.StartTime.ToFileTimeUtc() } catch { if ($process.HasExited) { [Console]::Out.Write('absent'); exit 0 }; throw }",
+    `  if ($started -ne ${startFileTime}) { [Console]::Out.Write('absent'); exit 0 }`,
     `  & ${powerShellSingleQuotedLiteral(windowsTaskkillCommand())} '/PID' '${pid}' '/T' '/F' | Out-Null`,
     "  if ($process.WaitForExit(5000)) { [Console]::Out.Write('exited') } else { [Console]::Out.Write('survived') }",
     "} finally { if ($null -ne $process) { $process.Dispose() } }",
@@ -1033,6 +1037,22 @@ function pruneWindowsRunValues(
 }
 
 /**
+ * The sweep's `brain <pid> <start ticks>` line, as a PowerShell function. A brain
+ * that exits between the running check and the start-time read is gone, not a
+ * failed sweep: PowerShell throws on `StartTime` for a process that has exited.
+ * A read that fails while the brain still runs is a real failure and rethrows.
+ */
+export function buildWindowsBrainReportFunction(): string {
+  return [
+    "function Write-BrainReport($child) {",
+    "  if ($child.HasExited) { return }",
+    "  try { $started = $child.StartTime.ToFileTimeUtc() } catch { if ($child.HasExited) { return }; throw }",
+    "  [Console]::Out.WriteLine('brain ' + $child.Id + ' ' + $started)",
+    "}",
+  ].join("\n");
+}
+
+/**
  * PIDs of powershell processes whose command line names this launcher, in any
  * session of this user.
  *
@@ -1057,6 +1077,7 @@ async function stopWindowsSupervisorsByCommandLine(
   // one command and taskkilled in a second can target an unrelated reused PID.
   const script = [
     "$ErrorActionPreference = 'Stop'",
+    buildWindowsBrainReportFunction(),
     `$launcher = ${powerShellSingleQuotedLiteral(launcherPath)}`,
     "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
     "$escaped = [Regex]::Escape($launcher)",
@@ -1085,7 +1106,7 @@ async function stopWindowsSupervisorsByCommandLine(
     "      $process.Kill()",
     "      if (-not $process.WaitForExit(5000)) { throw 'Existing ADE supervisor did not stop.' }",
     "      [Console]::Out.WriteLine('supervisor')",
-    "      foreach ($child in $children) { if (-not $child.HasExited) { [Console]::Out.WriteLine('brain ' + $child.Id + ' ' + $child.StartTime.ToFileTimeUtc()) } }",
+    "      foreach ($child in $children) { Write-BrainReport $child }",
     "    } finally { foreach ($child in $children) { $child.Dispose() } }",
     "  } finally { if ($null -ne $process) { $process.Dispose() } }",
     "}",

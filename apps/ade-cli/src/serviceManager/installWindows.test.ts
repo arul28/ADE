@@ -49,6 +49,7 @@ import {
   buildWindowsRuntimeQueryArgs,
   renderWindowsServiceLauncher,
   resolveWindowsBrainOutputLogPath,
+  buildWindowsBrainReportFunction,
 } from "./installWindows";
 import {
   BRAIN_HEARTBEAT_INTERVAL_MS,
@@ -1433,9 +1434,9 @@ describe("Windows background service helpers", () => {
 
 // The predecessor sweep's PowerShell script is the only one that carries this text.
 const PREDECESSOR_SWEEP_MARKER = "Existing ADE supervisor did not stop.";
-// The identity-checked forced kill is the only PowerShell script that converts a
-// FILETIME back into a DateTime.
-const IDENTITY_KILL_MARKER = "FromFileTimeUtc";
+// The identity-checked forced kill is the only PowerShell script that runs a
+// tree kill against a single literal pid.
+const IDENTITY_KILL_MARKER = "'/T' '/F' | Out-Null";
 
 /**
  * Answers the predecessor sweep with `sweepStdout` and records every spawn. The
@@ -1507,6 +1508,7 @@ describe("Windows predecessor supervisor sweep", () => {
     // supervisor lives is relaunched at once.
     expect(script).toContain("$process.Kill()");
     expect(script).toContain("StartTime.ToFileTimeUtc()");
+    expect(script).toContain("foreach ($child in $children) { Write-BrainReport $child }");
   });
 
   it("asks a predecessor brain to shut down over RPC before any tree kill", async () => {
@@ -1569,8 +1571,36 @@ describe("Windows predecessor supervisor sweep", () => {
     expect(events).toEqual([`rpc ${brainPid}`, "forced"]);
     expect(forcedScripts).toHaveLength(1);
     expect(forcedScripts[0]).toContain(`GetProcessById(${brainPid})`);
-    expect(forcedScripts[0]).toContain(`FromFileTimeUtc(${brainStartFileTime})`);
+    expect(forcedScripts[0]).toContain(`$started -ne ${brainStartFileTime}`);
     expect(forcedScripts[0]).toContain(`'/PID' '${brainPid}' '/T' '/F'`);
+  });
+
+  it("compares the brain's start time exactly, with no tolerance window", async () => {
+    const forcedScripts: string[] = [];
+    await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: launcherForSweep(),
+      serviceName,
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: `supervisor\n${brainLine}\n`,
+        forcedKill: (script) => {
+          forcedScripts.push(script);
+          return { status: 0, stdout: "exited", stderr: "" };
+        },
+      }),
+      userName: taskUser,
+      terminateDeps: {
+        pidAlive: () => true,
+        requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
+      },
+    });
+
+    // Both sides read Process.StartTime, so a live brain matches its own ticks
+    // exactly. A window of even one millisecond let a reused pid be tree-killed.
+    const script = forcedScripts[0] ?? "";
+    expect(script).not.toMatch(/TotalMilliseconds|-gt 1000/);
+    expect(script).toContain(`$started -ne ${brainStartFileTime}`);
   });
 
   it("holds the brain's process open across the identity check, the tree kill and the exit wait", async () => {
@@ -1598,7 +1628,7 @@ describe("Windows predecessor supervisor sweep", () => {
     // and the kill must both run inside the process that holds the handle.
     const script = forcedScripts[0] ?? "";
     const opened = script.indexOf("GetProcessById");
-    const identity = script.indexOf("FromFileTimeUtc");
+    const identity = script.indexOf("$started -ne");
     const kill = script.indexOf("'/T' '/F'");
     const waited = script.indexOf("WaitForExit(5000)");
     expect(opened).toBeGreaterThanOrEqual(0);
@@ -2379,5 +2409,178 @@ describe("generated PowerShell parses", () => {
       expect(parsed.output, name).toBe("");
       expect(parsed.status, name).toBe(0);
     }
+  });
+});
+
+// These run the generated PowerShell for real, against throwaway processes this
+// test starts itself. They execute on the `windows-foundation` job, where PowerShell
+// and taskkill are real; elsewhere they skip, as the parse checks above do.
+describe("Windows brain identity check and report, run in PowerShell", () => {
+  const serviceCommand: AdeServiceCommand = {
+    command: "C:\\Program Files\\ADE\\ade.exe",
+    args: ["C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs", "serve"],
+    env: { ADE_HOME: "C:\\Users\\arul\\.ade-beta", ADE_PACKAGE_CHANNEL: "beta" },
+  };
+
+  function runPowerShell(program: string): { status: number | null; stdout: string; stderr: string } {
+    const result = spawnChildSync(windowsPowerShellCommand(), ["-NoProfile", "-NonInteractive", "-Command", program], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+  }
+
+  function startThrowawayProcess(): { pid: number; child: ReturnType<typeof spawn> } {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
+    if (child.pid === undefined) throw new Error("the throwaway process did not start");
+    return { pid: child.pid, child };
+  }
+
+  function startFileTimeOf(pid: number): string {
+    const result = runPowerShell(`[System.Diagnostics.Process]::GetProcessById(${pid}).StartTime.ToFileTimeUtc()`);
+    const ticks = result.stdout.trim();
+    if (!/^\d+$/.test(ticks)) throw new Error(`no start time for pid ${pid}: ${result.stderr}`);
+    return ticks;
+  }
+
+  function isAlive(pid: number): boolean {
+    const result = runPowerShell(
+      `try { $p = [System.Diagnostics.Process]::GetProcessById(${pid}); if ($p.HasExited) { 'gone' } else { 'alive' } } catch [ArgumentException] { 'gone' }`,
+    );
+    return result.stdout.trim() === "alive";
+  }
+
+  /**
+   * The identity-checked kill the sweep would run for `brainLine`, captured
+   * rather than run: the stub answers `absent`, so nothing is killed while
+   * capturing, and the test then runs the captured script itself.
+   */
+  async function identityKillScriptFor(brainLine: string): Promise<string> {
+    const forcedScripts: string[] = [];
+    await uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath: writeScript(makeTempHome("ade-windows-identity-launcher-"), "brain-service.ps1", "old launcher"),
+      serviceName: "com.ade.runtime.beta",
+      spawnSync: predecessorSweepSpawn({
+        calls: [],
+        sweepStdout: `supervisor\n${brainLine}\n`,
+        forcedKill: (script) => {
+          forcedScripts.push(script);
+          return { status: 0, stdout: "absent", stderr: "" };
+        },
+      }),
+      userName: "ADEBOX\\arul",
+      terminateDeps: {
+        pidAlive: () => true,
+        requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
+      },
+    });
+    expect(forcedScripts).toHaveLength(1);
+    return forcedScripts[0] ?? "";
+  }
+
+  itWithPowerShell("leaves a reused pid alone when its start time differs by one tick or one millisecond", async () => {
+    const { pid, child } = startThrowawayProcess();
+    try {
+      const exact = BigInt(startFileTimeOf(pid));
+      for (const drift of [-10_000n, -1n, 1n, 10_000n]) {
+        const script = await identityKillScriptFor(`brain ${pid} ${exact + drift}`);
+        const result = runPowerShell(script);
+        expect(result.stdout.trim(), `drift ${drift} ticks`).toBe("absent");
+        expect(isAlive(pid), `drift ${drift} ticks`).toBe(true);
+      }
+    } finally {
+      child.kill();
+    }
+  }, 120_000);
+
+  itWithPowerShell("tree-kills the brain when its start time matches exactly", async () => {
+    const { pid, child } = startThrowawayProcess();
+    try {
+      const script = await identityKillScriptFor(`brain ${pid} ${startFileTimeOf(pid)}`);
+      const result = runPowerShell(script);
+      expect(result.stdout.trim()).toBe("exited");
+      expect(isAlive(pid)).toBe(false);
+    } finally {
+      child.kill();
+    }
+  }, 120_000);
+
+  /**
+   * The identity script with its process swapped for a stand-in whose `StartTime`
+   * read either exits the process first (the race) or fails while it still runs.
+   * Nothing is killed: both outcomes return before the tree kill.
+   */
+  async function identityScriptWithRacingProcess(exitsDuringRead: boolean): Promise<string> {
+    const script = await identityKillScriptFor("brain 4242 133000000000000000");
+    const standIn = [
+      "$script:exited = $false",
+      "function Get-RacingProcess([int]$Id) {",
+      "  $p = [pscustomobject]@{ Id = $Id }",
+      "  $p | Add-Member -MemberType ScriptProperty -Name Handle -Value { 1 }",
+      "  $p | Add-Member -MemberType ScriptProperty -Name HasExited -Value { $script:exited }",
+      `  $p | Add-Member -MemberType ScriptProperty -Name StartTime -Value { ${exitsDuringRead ? "$script:exited = $true; " : ""}throw 'Process has exited, so the requested information is not available.' }`,
+      "  $p | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($ms) $true }",
+      "  $p | Add-Member -MemberType ScriptMethod -Name Dispose -Value { }",
+      "  return $p",
+      "}",
+    ].join("\n");
+    const raced = script.replace("[System.Diagnostics.Process]::GetProcessById(4242)", "Get-RacingProcess 4242");
+    expect(raced).not.toBe(script);
+    return `${standIn}\n${raced}`;
+  }
+
+  itWithPowerShell("treats a brain that exits between its running check and its start-time read as gone", async () => {
+    const result = runPowerShell(await identityScriptWithRacingProcess(true));
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("absent");
+  });
+
+  itWithPowerShell("fails the identity check when its start-time read fails while the brain still runs", async () => {
+    const result = runPowerShell(await identityScriptWithRacingProcess(false));
+    expect(result.status).not.toBe(0);
+    expect(result.stdout.trim()).toBe("");
+  });
+
+  function brainReportScript(mode: "running" | "exits-during-read" | "read-fails" | "already-exited"): string {
+    const startTime = {
+      running: "[DateTime]::FromFileTimeUtc(133000000000000000)",
+      "exits-during-read": "$script:exited = $true; throw 'Process has exited, so the requested information is not available.'",
+      "read-fails": "throw 'Access is denied.'",
+      "already-exited": "throw 'StartTime was read for a process that had already exited.'",
+    }[mode];
+    return [
+      "$ErrorActionPreference = 'Stop'",
+      buildWindowsBrainReportFunction(),
+      `$script:exited = ${mode === "already-exited" ? "$true" : "$false"}`,
+      "$child = [pscustomobject]@{ Id = 4242 }",
+      "$child | Add-Member -MemberType ScriptProperty -Name HasExited -Value { $script:exited }",
+      `$child | Add-Member -MemberType ScriptProperty -Name StartTime -Value { ${startTime} }`,
+      "Write-BrainReport $child",
+    ].join("\n");
+  }
+
+  itWithPowerShell("reports a running brain as one start-time line", () => {
+    const result = runPowerShell(brainReportScript("running"));
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("brain 4242 133000000000000000");
+  });
+
+  itWithPowerShell("treats a brain that exits during its start-time read as gone, not as a failed sweep", () => {
+    const result = runPowerShell(brainReportScript("exits-during-read"));
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("");
+  });
+
+  itWithPowerShell("does not read the start time of a brain that has already exited", () => {
+    const result = runPowerShell(brainReportScript("already-exited"));
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("");
+  });
+
+  itWithPowerShell("rethrows a start-time read that fails while the brain is still running", () => {
+    const result = runPowerShell(brainReportScript("read-fails"));
+    expect(result.status).not.toBe(0);
+    expect(result.stdout.trim()).toBe("");
   });
 });
