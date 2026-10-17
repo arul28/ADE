@@ -4115,7 +4115,7 @@ describe("AgentChatPane submit recovery", () => {
     vi.mocked(window.ade.sessions.get).mockImplementation(async (id: string) => sessionsById.get(id) ?? null);
     let hostAnswers = false;
     let baselineReads = 0;
-    vi.mocked(window.ade.sessions.list).mockImplementation((async (_args, _pin, options) => {
+    vi.mocked(window.ade.sessions.list).mockImplementation((async (_args: unknown, _pin: unknown, options?: { authoritative?: boolean }) => {
       // Only the pane's authoritative baseline read is in question here.
       if (!options?.authoritative) return [];
       baselineReads += 1;

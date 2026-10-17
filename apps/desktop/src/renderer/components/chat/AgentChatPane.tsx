@@ -374,7 +374,7 @@ import { DraftMachinePicker, type DraftMachineOption } from "./DraftMachinePicke
 import { useNewLaneDraftConfig } from "./useNewLaneDraftConfig";
 import { CursorCloudAdvancedMenu } from "./CursorCloudAdvancedMenu";
 import { useCursorCloudDraftState } from "./useCursorCloudDraftState";
-import { rememberKnownTerminalId } from "./knownTerminalIds";
+import { releaseDeletedTerminalIds, rememberKnownTerminalId } from "./knownTerminalIds";
 import {
   collectDraftVisualAttachmentPaths,
   useDraftAttachmentTransfer,
@@ -4492,10 +4492,13 @@ export function AgentChatPane({
   const terminalRevealNonceRef = useRef(0);
   // Terminals this pane has revealed or seen listed by the chat. Survives the
   // reveal effect's re-subscriptions, so a replayed "created" cannot reopen the
-  // pane. Only a deleted terminal's event releases an id, and the set is capped
-  // (see rememberKnownTerminalId). A chat read never releases one: a list can be
-  // stale or partial, so an id it omits may still be a live terminal.
+  // pane. An id leaves only when its terminal is gone: by its "deleted" event, or,
+  // for a deletion missed while the pane was hidden, when the chat's next read omits
+  // it and a lookup finds no row (see releaseDeletedTerminalIds). An omission alone
+  // never releases one: a list can be stale or partial.
   const knownTerminalIdsRef = useRef(new Set<string>());
+  // Which chat each remembered terminal belongs to, so a chat's read only checks its own ids.
+  const knownTerminalOwnersRef = useRef(new Map<string, string>());
   const hasExternalTerminalPane = Boolean(onToggleTerminalPane || onOpenTerminalPane);
   const openTerminalPanel = useCallback(() => {
     if (onOpenTerminalPane) {
@@ -8734,6 +8737,7 @@ export function AgentChatPane({
     // the machine to hear them from and read them on.
     const pin = chatRuntimePinRef.current;
     const knownTerminalIds = knownTerminalIdsRef.current;
+    const knownTerminalOwners = knownTerminalOwnersRef.current;
     // Re-subscribing replays events the new subscriber missed, so a terminal
     // that already existed (its "created" from minutes ago) arrives again. Every
     // terminal the chat has when this subscription starts is therefore known,
@@ -8759,9 +8763,21 @@ export function AgentChatPane({
           .then((rows) => {
             // Anything but a list is a failed read, not an empty chat.
             if (!Array.isArray(rows)) throw new Error("the chat's terminal list did not come back as a list");
-            // Nothing is released here. A later read can be stale or partial, so
-            // an id this read omits may still be a live terminal.
-            for (const row of rows) rememberKnownTerminalId(knownTerminalIds, row.id);
+            const listedIds = new Set<string>();
+            for (const row of rows) {
+              rememberKnownTerminalId(knownTerminalIds, row.id);
+              knownTerminalOwners.set(row.id, baselineChatSessionId);
+              listedIds.add(row.id);
+            }
+            // An omission alone releases nothing (a read can be stale or partial);
+            // each omitted id of this chat is looked up, and only a gone row lets go.
+            void releaseDeletedTerminalIds({
+              known: knownTerminalIds,
+              owners: knownTerminalOwners,
+              chatSessionId: baselineChatSessionId,
+              listedIds,
+              lookup: (id) => sessionsApi.get(id, pin),
+            });
             baselineLoaded = true;
             return true;
           })
@@ -8798,6 +8814,7 @@ export function AgentChatPane({
       // Each terminal reveals once per pane: a duplicate or replayed "created"
       // for it never reopens the pane the user closed.
       rememberKnownTerminalId(knownTerminalIds, sessionId);
+      knownTerminalOwners.set(sessionId, selectedChatSessionId);
       openTerminalPanel();
       if (!hasExternalTerminalPane) {
         setTerminalRevealRequest({
@@ -8814,6 +8831,7 @@ export function AgentChatPane({
       // id can leave the set. No chat read would ever release it otherwise.
       if (event.reason === "deleted") {
         knownTerminalIds.delete(event.sessionId);
+        knownTerminalOwners.delete(event.sessionId);
         return;
       }
       if (event.reason !== "created") return;
