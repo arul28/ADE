@@ -3626,14 +3626,16 @@ function AgentChatComposerImpl({
 
   // Focus that stays in the composer across a chat switch fires no focus event,
   // so the file-index warm-up is re-issued here when the session or runtime
-  // binding changes. Unfocused switches stay deferred. The slash commands are
-  // not re-issued here: the pane asks for them when the new transcript arrives.
+  // binding changes. Unfocused switches stay deferred. A chat with a session
+  // asks for its slash commands when its transcript arrives (see AgentChatPane);
+  // a draft has no transcript to wait for, so it asks now.
   const chatRuntimePinKey = chatRuntimePin?.key ?? null;
   const composerFocusedRef = useRef(false);
   useEffect(() => {
     if (!composerFocusedRef.current) return;
     warmFileSearchIndex();
-  }, [chatRuntimePinKey, sessionId, warmFileSearchIndex]);
+    if (!sessionId) onSlashCommandsRequested?.();
+  }, [chatRuntimePinKey, onSlashCommandsRequested, sessionId, warmFileSearchIndex]);
 
   // A "/" typed at the caret opens the command menu through the same trigger
   // logic, so that is the moment to request the commands when focus did not.
