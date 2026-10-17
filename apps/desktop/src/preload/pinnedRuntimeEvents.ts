@@ -144,12 +144,57 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
     category?: RemoteRuntimeEventCategory,
   ): string => `${pin.key}:${category ?? "*"}`;
 
+  // Sharing a poll is only safe while main's push subscription for the binding
+  // and category is live. A replay-suppressed anchor opens it; its answer gives
+  // the cursor the subscription starts from, and that start is the mark that the
+  // subscription is live: events past it reach every listener by push, while
+  // events before it only ever arrive by poll. Anything that may have ended the
+  // subscription (a release, a failed poll, a runtime epoch change) forgets the
+  // start and moves the generation on, so polls already in flight are never
+  // joined afterwards. Until a start is set again every poll goes out on its own,
+  // exactly as before sharing existed.
+  type PinnedRuntimeSubscriptionSharing = {
+    start: number | null;
+    generation: number;
+    lastEpoch: string | null;
+  };
+  let sharingGenerations = 0;
+  const pinnedRuntimeSharing = new Map<string, PinnedRuntimeSubscriptionSharing>();
+
+  const sharingFor = (subKey: string): PinnedRuntimeSubscriptionSharing => {
+    let sharing = pinnedRuntimeSharing.get(subKey);
+    if (!sharing) {
+      sharingGenerations += 1;
+      sharing = { start: null, generation: sharingGenerations, lastEpoch: null };
+      pinnedRuntimeSharing.set(subKey, sharing);
+    }
+    return sharing;
+  };
+
+  const endSharing = (sharing: PinnedRuntimeSubscriptionSharing): void => {
+    sharing.start = null;
+    sharingGenerations += 1;
+    sharing.generation = sharingGenerations;
+  };
+
+  const observeSharingEpoch = (
+    sharing: PinnedRuntimeSubscriptionSharing,
+    batch: RemoteRuntimeStreamEventsResult,
+  ): void => {
+    const epoch = normalizePinnedRuntimeEventEpoch(batch.eventEpoch);
+    if (!epoch) return;
+    if (sharing.lastEpoch && epoch !== sharing.lastEpoch) endSharing(sharing);
+    sharing.lastEpoch = epoch;
+  };
+
   // Main derives the same request key from this descriptor that it derived when
   // the pump subscribed, so the renderer never has to guess the key itself.
   const sendRuntimeEventRelease = (
     pin: OpenProjectBinding,
     category?: RemoteRuntimeEventCategory,
   ): void => {
+    // Release tears down main's subscription, so nothing sent after it may rely on the old one.
+    endSharing(sharingFor(subscriptionRefKey(pin, category)));
     const request: RuntimeEventsReleaseRequest = pin.kind === "remote"
       ? { id: pin.targetId, projectId: pin.projectId, ...(category ? { category } : {}) }
       : { rootPath: pin.rootPath, ...(category ? { category } : {}) };
@@ -196,7 +241,7 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
 
   // Every pinned pump reaches its runtime the same way: the channel and argument
   // shape follow from the binding kind alone, never from what is being polled.
-  const invokePinnedRuntimeStreamEvents = (
+  const sendPinnedRuntimeStreamEvents = (
     pin: OpenProjectBinding,
     request: RemoteRuntimeStreamEventsRequest,
   ): Promise<RemoteRuntimeStreamEventsResult> =>
@@ -208,6 +253,83 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
         ? { id: pin.targetId, projectId: pin.projectId, request }
         : { rootPath: pin.rootPath, request },
     ) as Promise<RemoteRuntimeStreamEventsResult>;
+
+  const sendObservedPinnedRuntimeStreamEvents = (
+    pin: OpenProjectBinding,
+    sharing: PinnedRuntimeSubscriptionSharing,
+    request: RemoteRuntimeStreamEventsRequest,
+  ): Promise<RemoteRuntimeStreamEventsResult> => {
+    const call = sendPinnedRuntimeStreamEvents(pin, request);
+    void call.then(
+      (batch) => observeSharingEpoch(sharing, batch),
+      () => endSharing(sharing),
+    );
+    return call;
+  };
+
+  // Listeners on one binding poll the same cursor, and each used to send its own
+  // copy of that call. While the subscription is live, an identical poll still in
+  // flight is joined instead, and main answers every joiner from one batch. Each
+  // listener keeps its own cursor, epoch and replay state from that batch. The
+  // push path is what keeps a joiner on time: once the subscription is live, each
+  // event that reaches main after the batch's snapshot is pushed to every listener
+  // as it arrives, so the batch never holds back an event a joiner would get sooner.
+  const inFlightPinnedRuntimeStreamEvents = new Map<
+    string,
+    Promise<RemoteRuntimeStreamEventsResult>
+  >();
+
+  // `mayJoin` is the listener's own condition: its previous poll gave it nothing
+  // new, so it has been receiving by push. A listener that is still catching up
+  // polls on its own, and so does anyone whose poll would reach below the start.
+  const invokePinnedRuntimeStreamEvents = (
+    pin: OpenProjectBinding,
+    request: RemoteRuntimeStreamEventsRequest,
+    mayJoin: boolean,
+  ): Promise<RemoteRuntimeStreamEventsResult> => {
+    const sharing = sharingFor(subscriptionRefKey(pin, request.category));
+    if (request.replay === false) {
+      // An anchor is never joined: its answer is the subscription itself.
+      const generation = sharing.generation;
+      const anchor = sendObservedPinnedRuntimeStreamEvents(pin, sharing, request);
+      void anchor.then(
+        (batch) => {
+          if (sharing.generation !== generation) return;
+          if (sharing.start === null) {
+            sharing.start = Number.isFinite(batch.nextCursor)
+              ? Math.max(0, Math.floor(batch.nextCursor))
+              : 0;
+          }
+        },
+        () => undefined,
+      );
+      return anchor;
+    }
+    const cursor = request.cursor ?? 0;
+    if (!mayJoin || sharing.start === null || cursor < sharing.start) {
+      return sendObservedPinnedRuntimeStreamEvents(pin, sharing, request);
+    }
+    const key = [sharing.generation, cursor, request.limit ?? ""].join("\u0000");
+    const inFlight = inFlightPinnedRuntimeStreamEvents.get(key);
+    if (inFlight) {
+      // The shared poll may have failed for the listener that sent it, not for
+      // this one. A rejected join retries once on its own rather than inheriting
+      // the failure, so the backoff only starts if this poll fails too.
+      return inFlight.then(
+        (batch) => batch,
+        () => sendObservedPinnedRuntimeStreamEvents(pin, sharing, request),
+      );
+    }
+    const call = sendObservedPinnedRuntimeStreamEvents(pin, sharing, request);
+    inFlightPinnedRuntimeStreamEvents.set(key, call);
+    const settle = (): void => {
+      if (inFlightPinnedRuntimeStreamEvents.get(key) === call) {
+        inFlightPinnedRuntimeStreamEvents.delete(key);
+      }
+    };
+    void call.then(settle, settle);
+    return call;
+  };
 
   // Cursor/epoch/replay/backoff state machine for the per-listener pinned pumps.
   // The PTY pump deliberately does not use this: it is shared across listeners of
@@ -228,13 +350,16 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
     let eventEpoch: string | null = null;
     let replaySuppressed = suppressReplay;
     let consecutiveFailures = 0;
+    let deliveredNewOnLastPoll = false;
     // An event can arrive twice: pushed, then again in the next poll's batch.
     const seenEventIds = new Set<number>();
     retainRuntimeEventSubscription(pin);
 
-    const deliver = (event: RemoteRuntimeBufferedEvent): void => {
-      if (!rememberPinnedRuntimeEventId(seenEventIds, event.id)) return;
+    // Returns false when the event was already delivered, by push or an earlier poll.
+    const deliver = (event: RemoteRuntimeBufferedEvent): boolean => {
+      if (!rememberPinnedRuntimeEventId(seenEventIds, event.id)) return false;
       dispatch(event);
+      return true;
     };
 
     const pollNow = (): void => {
@@ -272,7 +397,11 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
           limit: 200,
           ...(replaySuppressed && cursor === 0 ? { replay: false } : {}),
         } satisfies RemoteRuntimeStreamEventsRequest;
-        const batch = await invokePinnedRuntimeStreamEvents(pin, request);
+        const batch = await invokePinnedRuntimeStreamEvents(
+          pin,
+          request,
+          !deliveredNewOnLastPoll,
+        );
         if (cancelled) return;
         const recoveredFromFailure = consecutiveFailures > 0;
         consecutiveFailures = 0;
@@ -293,13 +422,18 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
           cursor = 0;
           replaySuppressed = suppressReplay;
           seenEventIds.clear();
+          deliveredNewOnLastPoll = false;
           delay = 0;
         } else {
           cursor = Number.isFinite(batch.nextCursor)
             ? Math.max(0, Math.floor(batch.nextCursor))
             : cursor;
           if (request.replay === false) replaySuppressed = false;
-          for (const event of batch.events ?? []) deliver(event);
+          let deliveredNew = false;
+          for (const event of batch.events ?? []) {
+            if (deliver(event)) deliveredNew = true;
+          }
+          deliveredNewOnLastPoll = deliveredNew;
           delay = pinnedRuntimeBatchDelayMs(batch);
         }
         if (epochChanged || batch.gap === true || recoveredFromFailure) onResync?.();
@@ -510,7 +644,8 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
           : {}),
       } satisfies RemoteRuntimeStreamEventsRequest;
       const pin = state.pin;
-      const batch = await invokePinnedRuntimeStreamEvents(pin, request);
+      // The PTY pump is already one poll per binding, so it has nothing to join.
+      const batch = await invokePinnedRuntimeStreamEvents(pin, request, false);
       if (state.cancelled || pinnedPtyEventStates.get(pin.key) !== state) return;
       state.consecutiveFailures = 0;
       if (state.epochGeneration !== pollEpochGeneration) {
