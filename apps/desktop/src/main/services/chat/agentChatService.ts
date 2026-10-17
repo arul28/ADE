@@ -61437,6 +61437,23 @@ export function createAgentChatService(args: {
     return await summarizeSessionRow(row);
   };
 
+  /**
+   * A chat's identity key, read from the same sources in the same order as the
+   * summary's `identityKey`, without summarizing it. The session list asks this of
+   * every page chat the window missed. A summary also reads project config and can
+   * write back (a canonical tool type, an orphaned subagent), which that check does
+   * not need.
+   */
+  const getSessionIdentityKey = async (sessionId: string): Promise<AgentChatIdentityKey | null> => {
+    await scheduledWorkReady;
+    const trimmed = sessionId.trim();
+    if (!trimmed.length) return null;
+    const row = sessionService.get(trimmed);
+    if (!row || !isChatToolType(row.toolType)) return null;
+    const liveSession = managedSessions.get(trimmed)?.session ?? null;
+    return liveSession?.identityKey || readPersistedState(trimmed)?.identityKey || null;
+  };
+
   const getTurnStatus = async (sessionId: string): Promise<ChatTurnStatusSnapshot | null> => {
     const summary = await getSessionSummary(sessionId);
     // Not a chat: a tracked CLI terminal (e.g. a `--mode cli` child) still
@@ -69770,6 +69787,7 @@ export function createAgentChatService(args: {
     listCliChildSessions,
     notifyParentOfCliChildSpawn,
     getSessionSummary,
+    getSessionIdentityKey,
     /** The current turn's start, or the latest one's. Null when none ran in this process. */
     getTurnStartedAt: (sessionId: string): string | null => {
       const live = managedSessions.get(sessionId)?.session;

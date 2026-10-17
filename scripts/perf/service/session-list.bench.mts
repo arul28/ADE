@@ -10,10 +10,12 @@
 // identity chat sits in the 500-row chat window but outside the 200-row page,
 // with three children in the page, so the identity lookup is exercised.
 //
-// Three timed scenarios, each 1 warm-up + 7 timed runs, reported as a median:
+// Four timed scenarios, each 1 warm-up + 7 timed runs, reported as a median:
 //   unscoped  {limit: 500}
 //   lane      {laneId: "lane-1", limit: 200}
 //   chat      {chatSessionId: <chat with three shells>, limit: null}
+//   allRows   {limit: null}  (informational: every row, so the page's chats the
+//             window missed are read by id)
 //
 // Per scenario it also reports the work done in one run:
 //   metadataReads  reads of <chat-sessions>/<id>.json: one readPersistedState per
@@ -23,8 +25,9 @@
 // `--parity-out <file>` writes the projected rows of the timed scenarios plus a
 // few extra shapes (small page, lane page that cuts off the CTO, lane pages whose
 // child's parent sits in another lane, an all-rows page whose child's CTO sits
-// outside the newest-500 chat window, a chat that names itself) as JSON, so two
-// checkouts can be diffed byte for byte.
+// outside the newest-500 chat window, a running-only page whose old CTO no child
+// names, a chat that names itself) as JSON, so two checkouts can be diffed byte
+// for byte.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs";
 import { tmpdir } from "node:os";
@@ -138,6 +141,9 @@ chatByIndex(301).laneId = "lane-4";
 // do not reach it; the allRowsOldCto parity shape does.
 chatByIndex(600).identityKey = "cto";
 chatByIndex(495).parentIndex = 600;
+// A second old CTO that no child names. Nothing on any page points at it, so only
+// a read of the page's own chat ids finds it.
+chatByIndex(610).identityKey = "cto";
 chatByIndex(20).surface = "automation";
 chatByIndex(30).archived = true;
 chatByIndex(31).archived = true;
@@ -194,6 +200,9 @@ for (const chat of chats) {
   };
   writeFileSync(path.join(layout.chatSessionsDir, `${chat.id}.json`), JSON.stringify(state));
 }
+// The old CTO with a child is done, so a status-running page holds only the
+// childless old CTO from outside the window (the oldCtoNoChild parity shape).
+db.run("update terminal_sessions set status = 'completed' where id = ?", [chatByIndex(600).id]);
 
 const sizes = chats.map((chat) => fs.statSync(path.join(layout.chatSessionsDir, `${chat.id}.json`)).size).sort((a, b) => a - b);
 const pct = (p: number) => sizes[Math.min(sizes.length - 1, Math.floor(p * sizes.length))]!;
@@ -248,6 +257,7 @@ const scenarios = {
   unscoped: { limit: 500 },
   lane: { laneId: "lane-1", limit: 200 },
   chat: { chatSessionId: chatSelected, limit: null },
+  allRows: { limit: null },
 } as const;
 
 async function timeScenario(args: Record<string, unknown>) {
@@ -296,6 +306,7 @@ if (parityOut) {
     crossLaneChildOfCto: { laneId: "lane-2", limit: 200 },
     crossLaneChildOfChat: { laneId: "lane-3", limit: 200 },
     allRowsOldCto: { limit: null },
+    oldCtoNoChild: { status: "running", limit: null },
     chatNamesItself: { chatSessionId: chatByIndex(2).id, limit: null },
     chatWithNoShells: { chatSessionId: chatByIndex(6).id, limit: null },
   };

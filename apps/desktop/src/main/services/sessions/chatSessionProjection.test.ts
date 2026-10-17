@@ -345,17 +345,19 @@ describe("chatSessionProjection — model", () => {
 describe("listSessionsWithChatProjection — summarizes only what the page shows", () => {
   /**
    * A chat service that, like the real one, filters lists by lane and summarizes
-   * only the ids it is asked for. `getSessionSummary` reads by id from every chat.
-   * `outsideWindow` ids are chats the list does not return (older than its
-   * newest-chats window), but a read by id still finds them.
+   * only the ids it is asked for. `getSessionSummary` and `getSessionIdentityKey`
+   * read by id from every chat. `outsideWindow` ids are chats the list does not
+   * return (older than its newest-chats window), but a read by id still finds them.
    */
   function chatService(allChats: AgentChatSessionSummary[], outsideWindow: readonly string[] = []) {
     const calls: Array<readonly string[] | undefined> = [];
     const parentReads: string[] = [];
+    const identityReads: string[] = [];
     const windowed = new Set(outsideWindow);
     return {
       calls,
       parentReads,
+      identityReads,
       service: {
         listSessions: async (laneId?: string, options?: { sessionIds?: readonly string[] }) => {
           calls.push(options?.sessionIds);
@@ -368,6 +370,10 @@ describe("listSessionsWithChatProjection — summarizes only what the page shows
         getSessionSummary: async (sessionId: string) => {
           parentReads.push(sessionId);
           return allChats.find((summary) => summary.sessionId === sessionId) ?? null;
+        },
+        getSessionIdentityKey: async (sessionId: string) => {
+          identityReads.push(sessionId);
+          return allChats.find((summary) => summary.sessionId === sessionId)?.identityKey ?? null;
         },
       },
     };
@@ -479,5 +485,93 @@ describe("listSessionsWithChatProjection — summarizes only what the page shows
     expect(rows.map((row) => row.id)).toEqual(["child"]);
     expect(rows[0]?.parentIdentityKey).toBe("cto");
     expect(chats.parentReads).toEqual(["cto-session"]);
+  });
+
+  it("hides an old CTO on the page that no listed child names, as it hides an in-window one", async () => {
+    // Nothing on the page points at this CTO, so no child read finds it. The list
+    // did not return it (it is older than the window), but it is on the page, so it
+    // is read by id and filtered out as an identity row instead of shown as a chat.
+    const chats = chatService(
+      [
+        chat({ sessionId: "cto-old", identityKey: "cto" }),
+        chat({ sessionId: "chat-b" }),
+      ],
+      ["cto-old"],
+    );
+    const rows = await listSessionsWithChatProjection(
+      {
+        sessionService: {
+          list: () => [
+            { ...session(), id: "cto-old", title: "CTO" },
+            { ...session(), id: "chat-b", title: "B" },
+          ],
+          get: () => null,
+        },
+        ptyService: null,
+        agentChatService: chats.service,
+        logger: { warn: () => {} },
+      },
+      { limit: 500 },
+    );
+    expect(rows.map((row) => row.id)).toEqual(["chat-b"]);
+    expect(chats.parentReads).toEqual(["cto-old"]);
+  });
+
+  it("reads an identity chat outside the window only when the page lists it", async () => {
+    // A CTO the window missed and the page does not list is not read at all: the
+    // identity read is bounded to the ids on the returned page.
+    const chats = chatService(
+      [
+        chat({ sessionId: "cto-old", identityKey: "cto" }),
+        chat({ sessionId: "cto-off-page", identityKey: "cto" }),
+        chat({ sessionId: "chat-b" }),
+      ],
+      ["cto-old", "cto-off-page"],
+    );
+    const rows = await listSessionsWithChatProjection(
+      {
+        sessionService: {
+          list: () => [
+            { ...session(), id: "cto-old", title: "CTO" },
+            { ...session(), id: "chat-b", title: "B" },
+          ],
+          get: () => null,
+        },
+        ptyService: null,
+        agentChatService: chats.service,
+        logger: { warn: () => {} },
+      },
+      { limit: 500 },
+    );
+    expect(rows.map((row) => row.id)).toEqual(["chat-b"]);
+    expect(chats.identityReads).toEqual(["cto-old"]);
+    expect(chats.parentReads).toEqual(["cto-old"]);
+  });
+
+  it("checks an out-of-window page chat for identity without summarizing it, and keeps its row", async () => {
+    // Not an identity row, so the page keeps the row it had before: it is not
+    // summarized, and nothing else about it is read.
+    const chats = chatService(
+      [chat({ sessionId: "chat-old" }), chat({ sessionId: "chat-b" })],
+      ["chat-old"],
+    );
+    const rows = await listSessionsWithChatProjection(
+      {
+        sessionService: {
+          list: () => [
+            { ...session(), id: "chat-old", title: "Old" },
+            { ...session(), id: "chat-b", title: "B" },
+          ],
+          get: () => null,
+        },
+        ptyService: null,
+        agentChatService: chats.service,
+        logger: { warn: () => {} },
+      },
+      { limit: 500 },
+    );
+    expect(rows.map((row) => row.id)).toEqual(["chat-old", "chat-b"]);
+    expect(chats.identityReads).toEqual(["chat-old"]);
+    expect(chats.parentReads).toEqual([]);
   });
 });
