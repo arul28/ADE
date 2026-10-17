@@ -512,14 +512,6 @@ export function resolvePathWithinRoot(
   return candidateReal;
 }
 
-function realpathOrNull(filePath: string): string | null {
-  try {
-    return realpathExisting(filePath);
-  } catch {
-    return null;
-  }
-}
-
 function readLinkOrNull(filePath: string): string | null {
   try {
     return fs.readlinkSync(filePath);
@@ -535,55 +527,91 @@ function isMissingEntryError(error: unknown): boolean {
   return code === "ENOENT" || code === "ENOTDIR";
 }
 
-interface RootWalk {
+/**
+ * Link hops one walk follows before it stops. Linux allows 40 nested links and
+ * macOS 32. Past the bound the walk keeps the lexical location. The kernel
+ * refuses a chain that long too, so a present one and a dangling one still end
+ * up the same.
+ */
+const MAX_SYMLINK_HOPS = 40;
+
+interface WalkState {
+  hops: number;
   /**
-   * Where the walk ended. Past the first segment that did not resolve, this is
-   * that segment's target location with the rest of the candidate appended.
+   * Where each spelled name landed. A name reached twice, such as a link target
+   * under the candidate's own folder, is walked once. Which names hit this cache
+   * depends on the spelling alone, never on whether they exist.
    */
-  landed: string;
+  landings: Map<string, string>;
+  /** The first name on the walk that did not resolve. Its error is what a verdict reports. */
   failure: { error: unknown; missing: boolean } | null;
 }
 
+interface RootWalk {
+  /**
+   * Where the walk ended. For a name that resolves, this is its canonical path.
+   * For one that does not, it is where its link chain points, or the lexical
+   * location when the chain ends at a missing name.
+   */
+  landed: string;
+  failure: WalkState["failure"];
+}
+
 /**
- * Walk `candidate` from `root` one segment at a time, following symbolic links.
- *
- * Every segment makes the same three calls whether its name exists, is missing
- * or is a dangling link: `realpath` of the entry, `readlink` of the entry, and
- * `realpath` of the directory its target lives in. Nothing is skipped after a
- * failure, so the work done does not depend on what sits at the target. The
- * caller reads the outcome afterwards and decides the message. Nothing throws.
+ * Walk `candidate` from `root` one name at a time, following symbolic links one
+ * hop at a time. Each name makes the same two calls whether it resolves, is
+ * missing or dangles: `realpath` and `readlink`. A link is followed through its
+ * target whether or not the target exists, so a chain that dangles lands where
+ * the same chain would if it resolved. The walk never stops early on a failure,
+ * so the work done does not depend on what sits at the end of the chain. The
+ * caller reads the outcome afterwards. Nothing throws.
  */
 function walkWithinRoot(root: string, candidate: string): RootWalk {
   const { root: start, segments } = splitPathSegments(candidateExpressionFromRoot(root, candidate));
+  const state: WalkState = { hops: 0, landings: new Map(), failure: null };
+  const landed = walkSegments(start, segments, state);
+  return { landed, failure: state.failure };
+}
+
+function walkSegments(start: string, segments: readonly string[], state: WalkState): string {
   let cursor = start;
-  let failure: RootWalk["failure"] = null;
   for (const segment of segments) {
     if (segment === "." || segment === "") continue;
     if (segment === "..") {
       cursor = path.dirname(cursor);
       continue;
     }
-    const entry = path.join(cursor, segment);
-    let resolved: string | null = null;
-    let resolveError: unknown = null;
-    try {
-      resolved = realpathExisting(entry);
-    } catch (error) {
-      resolveError = error;
-    }
-    const linkTarget = readLinkOrNull(entry);
-    const target = linkTarget === null ? entry : path.resolve(cursor, linkTarget);
-    const targetParent = realpathOrNull(path.dirname(target));
-    if (resolved !== null) {
-      cursor = resolved;
-      continue;
-    }
-    if (failure === null) {
-      failure = { error: resolveError, missing: isMissingEntryError(resolveError) };
-    }
-    cursor = targetParent === null ? target : path.join(targetParent, path.basename(target));
+    cursor = walkName(cursor, segment, state);
   }
-  return { landed: cursor, failure };
+  return cursor;
+}
+
+/** Where `name`, directly inside the canonical directory `dir`, lands. */
+function walkName(dir: string, name: string, state: WalkState): string {
+  const entry = path.join(dir, name);
+  const known = state.landings.get(entry);
+  if (known !== undefined) return known;
+  let resolved: string | null = null;
+  let resolveError: unknown = null;
+  try {
+    resolved = realpathExisting(entry);
+  } catch (error) {
+    resolveError = error;
+  }
+  if (resolved === null && state.failure === null) {
+    state.failure = { error: resolveError, missing: isMissingEntryError(resolveError) };
+  }
+  let landed = entry;
+  const linkTarget = readLinkOrNull(entry);
+  if (linkTarget !== null && state.hops < MAX_SYMLINK_HOPS) {
+    state.hops += 1;
+    // Not `path.resolve`, which would collapse a `..` before the link in front of it is followed.
+    const target = splitPathSegments(candidateExpressionFromRoot(dir, linkTarget));
+    landed = walkSegments(target.root, target.segments, state);
+  }
+  const landing = resolved ?? landed;
+  state.landings.set(entry, landing);
+  return landing;
 }
 
 /**
@@ -592,15 +620,15 @@ function walkWithinRoot(root: string, candidate: string): RootWalk {
  * Otherwise the candidate is refused in one of two ways, kept apart so that an
  * outside target reveals nothing:
  *
- * - The candidate lands outside every root: directly, through a link, or as a
- *   missing or dangling name under one. The caller gets `refusalMessage`, the
+ * - The candidate lands outside every root: directly, through a link chain, or as
+ *   a missing or dangling name under one. The caller gets `refusalMessage`, the
  *   same text for all of these, with no path in it. Whether the outside target
- *   exists, is a link, or cannot be read changes neither the message nor the
- *   filesystem calls.
+ *   exists, is a link, or cannot be read gives the same message, and names of the
+ *   same kind make the same filesystem calls.
  * - The candidate is spelled inside a root and does not resolve there: the
  *   resolver's own `Path does not exist: <candidate>`, or the underlying error
- *   for an unreadable entry. That path is inside the root, so nothing outside
- *   is named.
+ *   for an unreadable entry. That path is inside the root, so nothing outside is
+ *   named. A root that is not on disk reports its own realpath error.
  *
  * A failure from a root the candidate is not spelled inside says nothing about
  * the candidate, so it is ignored. Reporting it would tell the renderer whether
@@ -611,13 +639,19 @@ export function resolveWithinAllowedRoots(
   candidate: string,
   refusalMessage: string,
 ): string {
-  const rootReals = roots.map((root) => realpathOrNull(path.resolve(root)));
+  const rootReals: Array<{ real: string | null; error: unknown }> = roots.map((root) => {
+    try {
+      return { real: realpathExisting(path.resolve(root)), error: null };
+    } catch (error) {
+      return { real: null, error };
+    }
+  });
   const landsInsideAnyRoot = (filePath: string): boolean =>
-    rootReals.some((real) => real !== null && isWithinDir(real, filePath));
+    rootReals.some(({ real }) => real !== null && isWithinDir(real, filePath));
   let sawEscape = false;
   let ownRootFailure: unknown = null;
   for (const [index, root] of roots.entries()) {
-    const real = rootReals[index];
+    const { real, error: rootError } = rootReals[index];
     const walk = walkWithinRoot(root, candidate);
     if (walk.failure === null) {
       if (real !== null && isWithinDir(real, walk.landed)) return walk.landed;
@@ -629,9 +663,11 @@ export function resolveWithinAllowedRoots(
     if (!landsInsideAnyRoot(walk.landed)) {
       sawEscape = true;
     } else if (ownRootFailure === null) {
-      ownRootFailure = walk.failure.missing
-        ? new Error(`Path does not exist: ${candidate}`)
-        : walk.failure.error;
+      ownRootFailure = real === null
+        ? rootError
+        : walk.failure.missing
+          ? new Error(`Path does not exist: ${candidate}`)
+          : walk.failure.error;
     }
   }
   if (sawEscape || ownRootFailure === null) {

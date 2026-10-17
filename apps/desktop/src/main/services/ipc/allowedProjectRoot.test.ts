@@ -29,12 +29,20 @@ afterAll(() => {
 
 const allowedRoots = [allowedRoot, secondAllowedRoot];
 
+function maskLeaves(text: string, leaves: readonly string[]): string {
+  return leaves.reduce((masked, leaf) => masked.split(leaf).join("<leaf>"), text);
+}
+
 // The refusal a candidate gets, and every filesystem call made while producing
-// it, in order. The target's own name is masked, because the present, missing
-// and dangling cases each use a different name; nothing else may differ.
-// `denyRealpathOf` makes `realpath` fail with EACCES for matching paths.
-function refusalOf(candidate: string, opts: { denyRealpathOf?: string } = {}): { message: string; calls: string[] } {
-  const leaf = path.basename(candidate);
+// it, in order. The candidate's own name and each name in `maskNames` are
+// masked, because the present, missing and dangling cases each use a different
+// name; nothing else may differ. `denyRealpathOf` makes `realpath` fail with
+// EACCES for matching paths.
+function refusalOf(
+  candidate: string,
+  opts: { denyRealpathOf?: string; maskNames?: string[] } = {},
+): { message: string; calls: string[] } {
+  const leaves = [path.basename(candidate), ...(opts.maskNames ?? [])];
   const realpathNative = fs.realpathSync.native;
   const spies = {
     lstat: vi.spyOn(fs, "lstatSync"),
@@ -63,7 +71,7 @@ function refusalOf(candidate: string, opts: { denyRealpathOf?: string } = {}): {
       spy.mock.calls.forEach((args, index) => {
         seen.push({
           order: spy.mock.invocationCallOrder[index],
-          text: `${name}(${String((args as unknown[])[0]).split(leaf).join("<leaf>")})`,
+          text: `${name}(${maskLeaves(String((args as unknown[])[0]), leaves)})`,
         });
       });
     }
@@ -209,35 +217,41 @@ describe("resolveWithinAllowedProjectRoots", () => {
       .toBe(fs.realpathSync.native(insideSecond));
   });
 
-  // Outside targets must look the same from outside. A present, a missing and a
-  // dangling name behind a link that leaves the roots get the same filesystem
-  // calls, in the same order, and the same message, so neither can show which
-  // one exists. This is a call-sequence check, not a timing one.
+  // Outside targets must look the same from outside. A present and a missing
+  // name behind a link that leaves the roots get the same filesystem calls, in
+  // the same order, and the same message, so neither can show which one exists.
+  // Following a link costs more than a plain name, so a present and a dangling
+  // link are compared with each other, not with a plain file. This is a
+  // call-sequence check, not a timing one.
   it("refuses a present, a missing and a dangling name behind a symlink that leaves the roots the same way", (ctx) => {
     const escapeDir = path.join(allowedRoot, "walk-escape-dir");
-    // The dangling link's target is spelled canonically, the way the walk sees the
-    // outside folder. A different spelling of the same folder would change only the
-    // path text passed to realpath, which is fixed on disk, not an existence signal.
+    // The link targets are spelled canonically, the way the walk sees the outside
+    // folder. A spelling through another link (macOS's /var is one) adds that
+    // link's calls to the walk. The link is fixed on disk, so that is not an
+    // existence signal, but both sides of a comparison must use the same spelling.
     const outsideCanonical = fs.realpathSync.native(outsideRoot);
     const viaTmpSpelling = path.join(allowedRoot, "dangling-via-tmp-spelling.txt");
     try {
       fs.symlinkSync(outsideRoot, escapeDir, "dir");
       fs.symlinkSync(path.join(outsideCanonical, "no-such.txt"), path.join(outsideRoot, "dangling.txt"), "file");
       fs.symlinkSync(path.join(outsideRoot, "no-such.txt"), viaTmpSpelling, "file");
+      fs.symlinkSync(path.join(outsideCanonical, "secret.txt"), path.join(outsideRoot, "linked.txt"), "file");
     } catch {
       ctx.skip();
       return;
     }
     const present = refusalOf(path.join(escapeDir, "secret.txt"));
     const missing = refusalOf(path.join(escapeDir, "not-there.txt"));
-    const dangling = refusalOf(path.join(escapeDir, "dangling.txt"));
+    const linked = refusalOf(path.join(escapeDir, "linked.txt"), { maskNames: ["secret.txt"] });
+    const dangling = refusalOf(path.join(escapeDir, "dangling.txt"), { maskNames: ["no-such.txt"] });
     expect(present.message).toBe(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
     expect(missing.message).toBe(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
+    expect(linked.message).toBe(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
     expect(dangling.message).toBe(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
     expect(refusalOf(viaTmpSpelling).message).toBe(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
     expect(present.calls.length, "the spies saw the walk").toBeGreaterThan(0);
     expect(missing.calls).toEqual(present.calls);
-    expect(dangling.calls).toEqual(present.calls);
+    expect(dangling.calls).toEqual(linked.calls);
   });
 
   // An in-root link is the other way an outside target is reached. Whether its
@@ -253,8 +267,8 @@ describe("resolveWithinAllowedProjectRoots", () => {
       ctx.skip();
       return;
     }
-    const present = refusalOf(toPresent);
-    const missing = refusalOf(toMissing);
+    const present = refusalOf(toPresent, { maskNames: [path.basename(outsideFile)] });
+    const missing = refusalOf(toMissing, { maskNames: ["not-there.txt"] });
     expect(present.message).toBe(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
     expect(missing.message).toBe(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
     expect(missing.calls).toEqual(present.calls);
@@ -284,6 +298,66 @@ describe("resolveWithinAllowedProjectRoots", () => {
   // into that root's error.
   it("keeps the allowlist verdict when another root is missing from disk", () => {
     expect(() => resolveWithinAllowedProjectRoots([missingAllowedRoot, allowedRoot], outsideFile))
+      .toThrow(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
+  });
+
+  // The two-link oracle: an in-root link to another in-root link to an outside
+  // target. The walk must keep following the chain past its first link. A present
+  // end and a dangling end refuse with the same message and make the same calls.
+  it("refuses a two-link chain out of the roots the same way whether its end exists or not", (ctx) => {
+    const presentStart = path.join(allowedRoot, "chain-present-a");
+    const presentHop = path.join(allowedRoot, "chain-present-b");
+    const danglingStart = path.join(allowedRoot, "chain-dangling-a");
+    const danglingHop = path.join(allowedRoot, "chain-dangling-b");
+    try {
+      fs.symlinkSync(outsideFile, presentHop, "file");
+      fs.symlinkSync(presentHop, presentStart, "file");
+      fs.symlinkSync(path.join(outsideRoot, "no-such.txt"), danglingHop, "file");
+      fs.symlinkSync(danglingHop, danglingStart, "file");
+    } catch {
+      ctx.skip();
+      return;
+    }
+    const present = refusalOf(presentStart, { maskNames: ["chain-present-b", "secret.txt"] });
+    const dangling = refusalOf(danglingStart, { maskNames: ["chain-dangling-b", "no-such.txt"] });
+    expect(present.message).toBe(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
+    expect(dangling.message).toBe(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
+    expect(dangling.calls).toEqual(present.calls);
+  });
+
+  // A chain that stays inside the roots resolves to its canonical end when that
+  // end exists, and keeps its own missing reason when it does not.
+  it("accepts a two-link chain that ends inside an allowed root, and reports a missing end as missing", (ctx) => {
+    const insideStart = path.join(allowedRoot, "chain-inside-a");
+    const insideHop = path.join(allowedRoot, "chain-inside-b");
+    const missingStart = path.join(allowedRoot, "chain-inside-missing-a");
+    const missingHop = path.join(allowedRoot, "chain-inside-missing-b");
+    try {
+      fs.symlinkSync(insideFirst, insideHop, "dir");
+      fs.symlinkSync(insideHop, insideStart, "dir");
+      fs.symlinkSync(path.join(allowedRoot, "no-such-inside"), missingHop, "dir");
+      fs.symlinkSync(missingHop, missingStart, "dir");
+    } catch {
+      ctx.skip();
+      return;
+    }
+    expect(resolveWithinAllowedProjectRoots(allowedRoots, insideStart))
+      .toBe(fs.realpathSync.native(insideFirst));
+    expect(() => resolveWithinAllowedProjectRoots(allowedRoots, missingStart))
+      .toThrow(`Path does not exist: ${missingStart}`);
+  });
+
+  // A root that is not on disk fails with its own realpath error. When another
+  // root contains the folder beneath it, that error is the one reported, as it
+  // was before the walk was shared; with no such root the refusal is the same
+  // allowlist message as any other outside path.
+  it("reports a root that is not on disk by its own realpath error when another root contains the folder", () => {
+    const beneath = path.join(missingAllowedRoot, "child");
+    expect(() => resolveWithinAllowedProjectRoots([missingAllowedRoot, tempRoot], beneath))
+      .toThrow(/^ENOENT: no such file or directory, realpath '.*allowed-but-not-there'$/);
+    expect(() => resolveWithinAllowedProjectRoots([missingAllowedRoot, tempRoot], missingAllowedRoot))
+      .toThrow(/^ENOENT: no such file or directory, realpath '.*allowed-but-not-there'$/);
+    expect(() => resolveWithinAllowedProjectRoots([missingAllowedRoot], beneath))
       .toThrow(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
   });
 });
