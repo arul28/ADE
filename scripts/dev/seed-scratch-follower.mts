@@ -5,7 +5,11 @@
 // 192.0.2.1 is TEST-NET-1 (RFC 5737), a documentation range that is never routed.
 // The script writes only under a new directory that mkdtemp creates atomically in the OS temp dir; it takes
 // no path from the caller, and it re-checks that the result is not under ~/ADE or ~/.ade. It never starts a runtime,
-// never reads or writes the machine's secrets, and never touches a socket.
+// never reads or writes the machine's secrets, and never touches a socket. It writes the saved connection the
+// runtime follows (sync-peer-draft.json and the bootstrap token) under <root>/home/.ade/secrets only, so a runtime
+// started with HOME=<root>/home comes up as a viewer of the fake host. Sync is on only in the machine's default
+// home, and that runtime shares the machine's sync host (port 8787, one per Mac). Run it only when no other
+// ADE is hosting sync on this Mac; otherwise the runtime is refused by the sync-host singleton.
 // The runtime treats a cluster record whose brain was last seen more than 5 minutes ago as stale and reclaims
 // it on refresh (syncService.ts STALE_BRAIN_LAST_SEEN_MS). So check within that window, or seed a new root.
 import { execFileSync } from "node:child_process";
@@ -89,8 +93,12 @@ function git(cwd: string, args: string[]): void {
 async function main(): Promise<void> {
   const options = parseOptions(process.argv.slice(2));
   const root = createScratchRoot();
-  // The dev app's private ADE home, named in the summary below. The script never writes to it.
-  fs.mkdirSync(path.join(root, "ade-home"), { recursive: true });
+  // A scratch HOME. The runtime treats <HOME>/.ade as the machine's own ADE home, the
+  // only home where it enables sync, so the runtime is started with HOME set to this
+  // scratch home. Nothing here is the real home, and the machine's secrets are never touched.
+  const scratchHome = path.join(root, "home");
+  const adeHome = path.join(scratchHome, ".ade");
+  fs.mkdirSync(adeHome, { recursive: true });
 
   const projectRoot = path.join(root, "project");
   fs.mkdirSync(path.join(projectRoot, ".ade"), { recursive: true });
@@ -139,11 +147,33 @@ async function main(): Promise<void> {
     db.close();
   }
 
+  // The runtime already follows the cluster's brain from the cluster row alone; what
+  // stops a runtime from following is running with sync off (see the scratch HOME
+  // above). These two files are the record the app persists when it connects: the
+  // bootstrap token and a peer draft naming this project's site id, the one the
+  // database created on first open. They match what a real connection leaves behind.
+  const secretsDir = path.join(adeHome, "secrets");
+  fs.mkdirSync(secretsDir, { recursive: true });
+  const projectSiteId = fs.readFileSync(path.join(projectRoot, ".ade", "secrets", "sync-site-id"), "utf8").trim().toLowerCase();
+  fs.writeFileSync(path.join(secretsDir, "sync-bootstrap-token"), `${randomBytes(24).toString("hex")}\n`, { mode: 0o600 });
+  fs.writeFileSync(
+    path.join(secretsDir, "sync-peer-draft.json"),
+    `${JSON.stringify({
+      host: options.host,
+      port: options.port,
+      authKind: "bootstrap",
+      pairedDeviceId: null,
+      lastRemoteDbVersion: 0,
+      projectSiteId,
+    }, null, 2)}\n`,
+  );
+
   process.stdout.write([
     `Scratch follower project seeded at ${projectRoot}`,
     `  follows: ${options.machine} at ${options.host}:${options.port} (unreachable by design)`,
     `  last seen: ${options.lastSeenMinutes} minute(s) ago`,
-    `  dev app: run it with ADE_HOME=${path.join(root, "ade-home")} on a private socket, never ~/.ade.`,
+    `  saved connection: ${path.join(secretsDir, "sync-peer-draft.json")}`,
+    `  run a runtime on a private socket with HOME=${scratchHome} (ADE home ${adeHome}); sync is only on in the machine's default home.`,
     `  open ${projectRoot} there, then check Connections > This computer.`,
     "",
   ].join("\n"));
