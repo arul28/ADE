@@ -89,6 +89,7 @@ import type { AppleDeviceRemoteService, AppleStreamTicketIssuer } from "./appleR
 import {
   buildAddressCandidates,
   buildPairingConnectInfo,
+  isLoopbackHost,
   tailscaleDnsNameFromDevice,
 } from "./syncPairingConnectInfo";
 import { buildRelayRouteHealth, deriveListenerHealth } from "./syncRouteHealth";
@@ -809,11 +810,30 @@ export function createSyncService(args: SyncServiceArgs) {
     return adopted;
   };
 
+  // A draft saved before the loopback fix can still name 127.0.0.1 while the
+  // cluster brain is another machine, and dialing it reaches this machine's own
+  // listener. Only the dial ignores such a draft: the file is user state and
+  // stays, and the viewer falls back to the brain's registry address (or dials
+  // nothing) through resolveViewerDraftFromRegistry.
+  const savedDraftDialsOwnListener = (draft: SyncDesktopConnectionDraft): boolean => {
+    const cluster = deviceRegistryService.getClusterState();
+    if (!cluster || cluster.brainDeviceId === deviceRegistryService.getLocalDeviceId()) return false;
+    const host = normalizeHostKey(draft.host);
+    return host != null && isLoopbackHost(host);
+  };
+
+  let loopbackDraftSkipLogged = false;
   const readSavedDraft = (): SyncDesktopConnectionDraft | null => {
     if (forceHostRole) return null;
     const raw = readSavedDraftFile() ?? adoptLegacyProjectDraft();
     if (!raw || !savedDraftAppliesToProject(raw)) return null;
-    return sanitizeDraft(raw, readToken());
+    const draft = sanitizeDraft(raw, readToken());
+    if (!draft || !savedDraftDialsOwnListener(draft)) return draft;
+    if (!loopbackDraftSkipLogged) {
+      loopbackDraftSkipLogged = true;
+      args.logger.warn("sync.role.saved_draft_loopback_ignored", { host: draft.host, port: draft.port });
+    }
+    return null;
   };
 
   const writeSavedDraft = (draft: SyncDesktopConnectionDraft | null): void => {

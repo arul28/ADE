@@ -11,7 +11,7 @@ function normalizeHost(host: string | null | undefined): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
-function isLoopbackHost(normalized: string): boolean {
+export function isLoopbackHost(normalized: string): boolean {
   return normalized === "localhost"
     || normalized === "::1"
     || normalized.startsWith("127.")
