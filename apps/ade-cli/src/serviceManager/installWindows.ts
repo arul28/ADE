@@ -1053,6 +1053,37 @@ export function buildWindowsBrainReportFunction(): string {
 }
 
 /**
+ * The sweep's candidate check, as PowerShell functions. A candidate row is only
+ * a claim from an earlier CIM query, and its pid may have been reused since. So
+ * the caller opens the process first, and this compares the open process with
+ * the row, then re-reads the row for that pid while the handle is still held.
+ *
+ * CIM's DMTF datetimes carry whole microseconds, and `Process.StartTime` carries
+ * 100 ns ticks. Both sides are cut to whole microseconds in UTC and must be
+ * equal, with no window. A sub-microsecond digit CIM cannot carry is not a
+ * different process. A reused pid starts at another microsecond, and it fails.
+ */
+function buildWindowsProcessIdentityFunctions(): string {
+  return [
+    "function Get-AdeWholeMicroseconds($time) {",
+    "  $fileTime = ([DateTime]$time).ToUniversalTime().ToFileTimeUtc()",
+    "  return $fileTime - ($fileTime % 10)",
+    "}",
+    "function Test-AdeProcessIdentity($process, $candidate, $commandLinePattern, $sid, $parentPid) {",
+    "  try { $started = Get-AdeWholeMicroseconds $process.StartTime } catch { if ($process.HasExited) { return $false }; throw }",
+    "  if ($started -ne (Get-AdeWholeMicroseconds $candidate.CreationDate)) { return $false }",
+    "  $fresh = @(Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $process.Id))",
+    "  if ($fresh.Count -ne 1) { return $false }",
+    "  if ($started -ne (Get-AdeWholeMicroseconds $fresh[0].CreationDate)) { return $false }",
+    "  if (-not $fresh[0].CommandLine -or $fresh[0].CommandLine -notmatch $commandLinePattern) { return $false }",
+    "  if ($null -ne $parentPid -and [int]$fresh[0].ParentProcessId -ne [int]$parentPid) { return $false }",
+    "  $owner = Invoke-CimMethod -InputObject $fresh[0] -MethodName GetOwnerSid",
+    "  return ($owner.ReturnValue -eq 0 -and $owner.Sid -eq $sid)",
+    "}",
+  ].join("\n");
+}
+
+/**
  * PIDs of powershell processes whose command line names this launcher, in any
  * session of this user.
  *
@@ -1073,15 +1104,19 @@ async function stopWindowsSupervisorsByCommandLine(
   launcherPath: string,
   brain: { socketPath: string; terminateDeps?: WindowsServiceManagerDeps["terminateDeps"] },
 ): Promise<WindowsTaskRemovalResult> {
-  // Hold the process handle before checking its identity. A PID collected in
-  // one command and taskkilled in a second can target an unrelated reused PID.
+  // Every candidate is identity-checked while its process handle is held, and
+  // only then reported or killed. The enumeration is a claim from an earlier
+  // CIM query, and a PID named in it can have been reused since.
   const script = [
     "$ErrorActionPreference = 'Stop'",
     buildWindowsBrainReportFunction(),
+    buildWindowsProcessIdentityFunctions(),
     `$launcher = ${powerShellSingleQuotedLiteral(launcherPath)}`,
     "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
     "$escaped = [Regex]::Escape($launcher)",
     `$pattern = '(?i)(?:^|\\s)-File\\s+(?:"' + $escaped + '"|' + $escaped + ')(?=\\s|$)'`,
+    // A brain is the supervisor's child, started with `serve` as its last argument.
+    "$brainPattern = '(?i)(?:^|\\s)serve\\s*$'",
     "foreach ($row in @(Get-CimInstance Win32_Process -Filter \"Name = 'powershell.exe'\")) {",
     "  if (-not $row.CommandLine -or $row.CommandLine -notmatch $pattern) { continue }",
     "  $owner = Invoke-CimMethod -InputObject $row -MethodName GetOwnerSid",
@@ -1090,7 +1125,7 @@ async function stopWindowsSupervisorsByCommandLine(
     "  try {",
     "    try { $process = [System.Diagnostics.Process]::GetProcessById([int]$row.ProcessId); $handle = $process.Handle } catch [ArgumentException] { continue }",
     "    if ($process.HasExited) { continue }",
-    "    if ([Math]::Abs(($process.StartTime.ToUniversalTime() - $row.CreationDate.ToUniversalTime()).TotalMilliseconds) -gt 1000) { throw 'Supervisor identity changed during repair.' }",
+    "    if (-not (Test-AdeProcessIdentity $process $row $pattern $sid $null)) { [Console]::Out.WriteLine('skipped ' + $row.ProcessId); continue }",
     "    $children = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()",
     "    try {",
     "      foreach ($childRow in @(Get-CimInstance Win32_Process -Filter ('ParentProcessId = ' + $row.ProcessId))) {",
@@ -1099,9 +1134,13 @@ async function stopWindowsSupervisorsByCommandLine(
     "        $child = $null",
     "        try {",
     "          $child = [System.Diagnostics.Process]::GetProcessById([int]$childRow.ProcessId); $childHandle = $child.Handle",
-    "          if ($child.HasExited -or $child.StartTime.ToUniversalTime() -lt $process.StartTime.ToUniversalTime() -or [Math]::Abs(($child.StartTime.ToUniversalTime() - $childRow.CreationDate.ToUniversalTime()).TotalMilliseconds) -gt 1000) { $child.Dispose(); $child = $null; continue }",
+    "          if ($child.HasExited) { continue }",
+    // A brain is only ever a child of the supervisor it was started under, and
+    // starts after it. A pid whose parent was reused can name an orphan instead.
+    "          if ($child.StartTime.ToUniversalTime() -lt $process.StartTime.ToUniversalTime()) { continue }",
+    "          if (-not (Test-AdeProcessIdentity $child $childRow $brainPattern $sid $row.ProcessId)) { [Console]::Out.WriteLine('skipped ' + $childRow.ProcessId); continue }",
     "          $children.Add($child); $child = $null",
-    "        } catch [ArgumentException] { } finally { if ($null -ne $child) { $child.Dispose() } }",
+    "        } catch [ArgumentException], [System.InvalidOperationException] { } finally { if ($null -ne $child) { $child.Dispose() } }",
     "      }",
     "      $process.Kill()",
     "      if (-not $process.WaitForExit(5000)) { throw 'Existing ADE supervisor did not stop.' }",
@@ -1122,6 +1161,14 @@ async function stopWindowsSupervisorsByCommandLine(
   const alive = brain.terminateDeps?.pidAlive ?? isPidAlive;
   const failures: string[] = [];
   for (const line of lines) {
+    const skipped = /^skipped (\d+)$/.exec(line);
+    if (skipped) {
+      // The pid no longer holds the process the sweep found, so nothing under it is touched.
+      try {
+        process.stderr.write(`ADE left pid ${skipped[1]} alone during the Windows sweep: it is no longer the process it was found as.\n`);
+      } catch { /* logging is best effort */ }
+      continue;
+    }
     const report = /^brain (\d+) (\d+)$/.exec(line);
     if (!report) continue;
     const brainPid = Number(report[1]);
