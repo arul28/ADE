@@ -10,6 +10,7 @@
 //   node music-library.mjs scroll                      -> scroll the Playlists grid down and back: long tasks, requests
 //   node music-library.mjs memory "<t1>|<t2>|..."      -> open each playlist to its full list, back out, GC: renderer JS heap
 // The main process caches Apple responses for 60 s: wait that long between cold runs.
+import { findPage } from "./target.mjs";
 const port = Number(process.env.CDP_PORT ?? 9222);
 const [cmd, arg] = process.argv.slice(2);
 
@@ -38,7 +39,7 @@ async function connect(url) {
 }
 
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-const page = list.find((t) => t.type === "page" && t.url.includes(process.env.CDP_TARGET_URL ?? "//localhost:"));
+const page = findPage(list);
 if (!page) throw new Error(`no renderer page on port ${port}`);
 const r = await connect(page.webSocketDebuggerUrl);
 const main = process.env.MAIN_WS ? await connect(process.env.MAIN_WS) : null;

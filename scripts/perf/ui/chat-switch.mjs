@@ -1,14 +1,17 @@
 // node scripts/perf/ui/chat-switch.mjs [rounds]
 // Click through N chat session cards in the Work sidebar; measure time-to-content and long tasks per switch.
+// --hash, or a file: page (the packaged app), navigates to #/work; see target.mjs.
+import { findPage, navigateStatement, positionalArgs, useHashRoutes } from "./target.mjs";
 const list = await (await fetch("http://127.0.0.1:9222/json/list")).json();
-const page = list.find((x) => x.type === "page" && x.url.includes(process.env.CDP_TARGET_URL ?? "//localhost:"));
+const page = findPage(list);
+const hash = useHashRoutes(page);
 const ws = new WebSocket(page.webSocketDebuggerUrl); let id = 1; const pend = new Map();
 await new Promise((r) => (ws.onopen = r));
 ws.onmessage = (e) => { const m = JSON.parse(String(e.data)); if (m.id && pend.has(m.id)) { pend.get(m.id)(m.result ?? {}); pend.delete(m.id); } };
 const send = (method, params = {}) => new Promise((r) => { const i = id++; pend.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
 const ev = async (expression) => (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result?.value;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-await ev(`(() => { history.pushState({}, "", "/work"); dispatchEvent(new PopStateEvent("popstate")); return 1 })()`);
+await ev(`(() => { ${navigateStatement("/work", hash)} return 1 })()`);
 await sleep(2000);
 await ev(`(() => { window.__lt2 = []; if (!window.__lt2Obs) { window.__lt2Obs = new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__lt2.push({ s: e.startTime, d: e.duration }); }); window.__lt2Obs.observe({ type: "longtask" }); } return 1 })()`);
 const cards = await ev(`JSON.stringify([...document.querySelectorAll("[data-session-id]")].filter(e=>e.offsetParent && true).map(e=>e.getAttribute("data-session-id")).slice(0, 8))`);
@@ -18,7 +21,7 @@ if (!ids.length) {
   ids = JSON.parse(alt || "[]");
 }
 console.log(`cards: ${ids.length}`);
-const rounds = Number(process.argv[2] ?? 2);
+const rounds = Number(positionalArgs()[0] ?? 2);
 const results = [];
 for (let r = 0; r < rounds; r++) {
   for (const sid of ids.slice(0, 5)) {

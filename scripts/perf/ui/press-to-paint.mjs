@@ -15,10 +15,12 @@
 //             of the whole burst
 // Env: CDP_PORT (9222), CDP_TARGET_URL, HOVER_MS (250), HOLD_MS (90),
 //      CHATS (6), INTERVAL_MS (120), RAPID_HOLD_MS (40), GAP_MS (700)
+// --hash, or a file: page (the packaged app), navigates the hash routes; see target.mjs.
 // Round 1 is the cold visit; the summary reports the warm rounds.
 import os from "node:os";
+import { findPage, navigateStatement, positionalArgs, useHashRoutes } from "./target.mjs";
 
-const [mode = "chats", roundsArg] = process.argv.slice(2);
+const [mode = "chats", roundsArg] = positionalArgs();
 const rounds = Number(roundsArg ?? 4);
 const HOVER_MS = Number(process.env.HOVER_MS ?? 250);
 const HOLD_MS = Number(process.env.HOLD_MS ?? 90);
@@ -28,7 +30,8 @@ const INTERVAL_MS = Number(process.env.INTERVAL_MS ?? 120);
 const RAPID_HOLD_MS = Number(process.env.RAPID_HOLD_MS ?? 40);
 
 const list = await (await fetch(`http://127.0.0.1:${process.env.CDP_PORT ?? 9222}/json/list`)).json();
-const page = list.find((x) => x.type === "page" && x.url.includes(process.env.CDP_TARGET_URL ?? "//localhost:"));
+const page = findPage(list);
+const hash = useHashRoutes(page);
 const ws = new WebSocket(page.webSocketDebuggerUrl); let id = 1; const pend = new Map();
 await new Promise((r) => (ws.onopen = r));
 ws.onmessage = (e) => { const m = JSON.parse(String(e.data)); if (m.id && pend.has(m.id)) { pend.get(m.id)(m.result ?? {}); pend.delete(m.id); } };
@@ -136,7 +139,7 @@ await ev(`(() => {
   return 1;
 })()`);
 
-const navigate = (route) => ev(`(() => { history.pushState({}, "", ${JSON.stringify(route)}); dispatchEvent(new PopStateEvent("popstate")); return 1 })()`);
+const navigate = (route) => ev(`(() => { ${navigateStatement(route, hash)} return 1 })()`);
 const chatRow = (sid) => `[...document.querySelectorAll('[data-session-row][data-session-id="${sid}"]')].find((e) => e.offsetParent && !e.closest("[data-ade-surface-hidden]"))`;
 const chatContent = (sid) => `() => window.__adeShownChat() === ${JSON.stringify(sid)}`;
 const metrics = async () => Object.fromEntries((await send("Performance.getMetrics")).metrics.map((m) => [m.name, m.value]));
