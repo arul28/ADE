@@ -941,6 +941,15 @@ export type ListSessionsOptions = {
   authoritative?: boolean;
 };
 
+/**
+ * How a single-session read treats a host that cannot answer. Web clients resolve
+ * an unanswered read to `null` by default, which reads like "no such session".
+ * `authoritative` rejects instead, so `null` only ever means the row is gone.
+ */
+export type GetSessionOptions = {
+  authoritative?: boolean;
+};
+
 export type DeleteSessionArgs = {
   sessionId: string;
 };

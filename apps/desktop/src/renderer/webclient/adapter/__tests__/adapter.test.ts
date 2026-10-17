@@ -1345,6 +1345,30 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("an authoritative session read rejects when the host gives no answer, instead of null", async () => {
+    // The host does not serve work.getSession. A plain read resolves null, which reads
+    // like "no such terminal"; an authoritative read has to say the host did not answer.
+    fake.descriptors = descriptors(["lanes.list"]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.sessions.get("terminal-1", undefined, { authoritative: true })).rejects.toThrow("work.getSession");
+    await expect(adapter.ade.sessions.get("terminal-1")).resolves.toBeNull();
+
+    adapter.dispose();
+  });
+
+  it("an authoritative session read rejects on a dropped connection, instead of null", async () => {
+    fake.descriptors = descriptors(["work.getSession"]);
+    fake.commandErrors.set("work.getSession", Object.assign(new Error("request timed out"), { code: "timeout" }));
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.sessions.get("terminal-1", undefined, { authoritative: true })).rejects.toThrow("request timed out");
+
+    adapter.dispose();
+  });
+
   it("batches lane sync-status reads through git.getSyncStatuses on a capable host", async () => {
     const statuses = {
       "lane-1": {

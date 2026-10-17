@@ -1,6 +1,7 @@
 import type {
   ChatTerminalPreviewResult,
   ChatTerminalReadResult,
+  GetSessionOptions,
   ListSessionsOptions,
   PtyCreateResult,
   PtyDisposeResult,
@@ -291,11 +292,13 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
 
   const sessions: Record<string, unknown> = {
     list: listSessions,
-    get: async (sessionId: string, pin?: RuntimePinArg) => {
+    get: async (sessionId: string, pin?: RuntimePinArg, options?: GetSessionOptions) => {
       assertWebRuntimePinRoutable("sessions.get", pin, infra);
+      // An authoritative read rejects when the host cannot answer, so its null means "gone".
       const detail = await commands.call<TerminalSessionDetail | null>("work.getSession", { sessionId }, {
         fallback: null,
         idempotent: true,
+        authoritative: options?.authoritative === true,
       });
       // Same overlay as the list read, so opening a row you just snoozed does
       // not show it un-snoozed while the machine catches up.

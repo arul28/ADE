@@ -57,4 +57,24 @@ describe("releaseDeletedTerminalIds", () => {
     expect(looked.sort()).toEqual(["gone", "live-omitted", "lookup-fails"]);
     expect(known.size).toBe(5);
   });
+
+  it("looks ids up one at a time", async () => {
+    const known = new Set(["a", "b", "c"]);
+    const owners = new Map([["a", "chat-a"], ["b", "chat-a"], ["c", "chat-a"]]);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    await releaseDeletedTerminalIds({
+      known, owners, chatSessionId: "chat-a", listedIds: new Set(),
+      lookup: async () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        inFlight -= 1;
+        return null;
+      },
+    });
+
+    expect(maxInFlight).toBe(1);
+    expect(known.size).toBe(0);
+  });
 });

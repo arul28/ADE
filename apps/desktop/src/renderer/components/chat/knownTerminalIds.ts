@@ -26,15 +26,17 @@ export async function releaseDeletedTerminalIds(args: {
 }): Promise<void> {
   const { known, owners, chatSessionId, listedIds, lookup } = args;
   const candidates = [...owners].filter(([id, owner]) => owner === chatSessionId && !listedIds.has(id)).map(([id]) => id);
-  await Promise.all(candidates.map(async (id) => {
+  // One lookup at a time: a partial read that omits many live terminals costs a
+  // short queue of reads, never a burst of them at the host.
+  for (const id of candidates) {
     let found: unknown;
     try {
       found = await lookup(id);
     } catch {
-      return;
+      continue;
     }
-    if (found !== null) return;
+    if (found !== null) continue;
     known.delete(id);
     owners.delete(id);
-  }));
+  }
 }

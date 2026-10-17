@@ -724,6 +724,7 @@ import type {
   ListOperationsArgs,
   ListSessionsArgs,
   ListSessionsOptions,
+  GetSessionOptions,
   DeleteSessionArgs,
   ListTestRunsArgs,
   OperationRecord,
@@ -2278,6 +2279,7 @@ declare global {
         get: (
           sessionId: string,
           pin?: OpenProjectBinding | null,
+          options?: GetSessionOptions,
         ) => Promise<TerminalSessionDetail | null>;
         delete: (
           args: DeleteSessionArgs,

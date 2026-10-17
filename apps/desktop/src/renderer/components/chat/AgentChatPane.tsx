@@ -8776,7 +8776,8 @@ export function AgentChatPane({
               owners: knownTerminalOwners,
               chatSessionId: baselineChatSessionId,
               listedIds,
-              lookup: (id) => sessionsApi.get(id, pin),
+              // Authoritative, so an unanswered read rejects and keeps the id rather than reading as "gone".
+              lookup: (id) => sessionsApi.get(id, pin, { authoritative: true }),
             });
             baselineLoaded = true;
             return true;
