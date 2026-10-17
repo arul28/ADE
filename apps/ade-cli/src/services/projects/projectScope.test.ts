@@ -874,6 +874,51 @@ describe("ProjectScopeRegistry", () => {
     await scopeRegistry.disposeAll();
   });
 
+  it("keeps the current host hosting when a reader is served a project that follows another machine", async () => {
+    const { registry, first, second } = createRegistry();
+    const firstSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+      getHostBlocker: vi.fn(() => null),
+    };
+    const secondSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+      getHostBlocker: vi.fn(() => ({ reason: "saved_connection" as const, host: "remote.invalid", port: 1 })),
+    };
+    createAdeRuntimeMock
+      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: firstSyncService })
+      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: secondSyncService });
+    const scopeRegistry = new ProjectScopeRegistry(registry, {
+      syncRuntime: {
+        enabled: true,
+        hostStartupEnabled: true,
+        hostDiscoveryEnabled: true,
+        forceHostRole: false,
+        runtimeKind: "daemon",
+      },
+    });
+
+    await scopeRegistry.switchSyncHost(first.projectId);
+    firstSyncService.setHostDiscoveryEnabled.mockClear();
+    firstSyncService.setHostStartupEnabled.mockClear();
+
+    // The brain's startup loop serves its preferred project this way while
+    // another project hosts. A blocked reader is adopted read-only: the current
+    // host keeps its lease and discovery, and the reader is not published over it.
+    const served = await scopeRegistry.switchSyncHost(second.projectId, { purpose: "serve" });
+
+    expect(served?.registryProjectId).toBe(second.projectId);
+    expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(first.projectId);
+    expect(firstSyncService.setHostDiscoveryEnabled).not.toHaveBeenCalled();
+    expect(firstSyncService.setHostStartupEnabled).not.toHaveBeenCalled();
+    expect(secondSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(true);
+
+    await scopeRegistry.disposeAll();
+  });
+
   it("promotes an existing warm project when selecting the default sync host", async () => {
     const { registry, first, second } = createRegistry();
     const firstSyncService = {
