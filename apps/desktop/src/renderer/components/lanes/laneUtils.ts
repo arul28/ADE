@@ -132,6 +132,11 @@ export function validateBranchName(input: string): { ok: boolean; reason?: strin
   return { ok: true };
 }
 
+/** A branch known only by name, for a ref that is missing from the branch list. */
+export function refOnlyBranch(name: string, isRemote = false): LaneBranchOption {
+  return { name, isCurrent: false, isRemote, upstream: null };
+}
+
 export function stripRemotePrefix(name: string): string {
   if (name.startsWith("refs/remotes/")) {
     const rest = name.slice("refs/remotes/".length);

@@ -1,5 +1,5 @@
 import type { BranchPullRequest } from "../../../shared/types";
-import type { LaneBranchOption } from "./laneUtils";
+import { stripRemotePrefix, type LaneBranchOption } from "./laneUtils";
 
 /**
  * Tokens that can be ANDed together in the search bar.
@@ -90,6 +90,23 @@ export type BranchMatchContext = {
   /** Reference time for stale comparisons, defaults to Date.now(). */
   now?: number;
 };
+
+/** Index open PRs by head branch for {@link findBranchPullRequest}. */
+export function indexPullRequestsByBranch(pullRequests: readonly BranchPullRequest[] | undefined): Map<string, BranchPullRequest> {
+  const map = new Map<string, BranchPullRequest>();
+  for (const pr of pullRequests ?? []) map.set(pr.branch, pr);
+  return map;
+}
+
+/** The open PR for a branch; a remote ref (`origin/feat/x`) also matches its local head. */
+export function findBranchPullRequest(
+  prByBranch: ReadonlyMap<string, BranchPullRequest>,
+  branch: Pick<LaneBranchOption, "name" | "isRemote">,
+): BranchPullRequest | null {
+  return prByBranch.get(branch.name)
+    ?? (branch.isRemote ? prByBranch.get(stripRemotePrefix(branch.name)) : undefined)
+    ?? null;
+}
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 

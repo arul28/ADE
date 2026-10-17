@@ -407,7 +407,7 @@ export function defaultLaneMachineId(options: readonly LaneMachineOption[]): str
  * or the option list is empty. Offline machines are already absent — only
  * `connected` connections become options.
  */
-export function chooseLaneMachineByLoad(options: readonly LaneMachineOption[]): string {
+function chooseLaneMachineByLoad(options: readonly LaneMachineOption[]): string {
   const eligible = options.filter(canCreateLaneOnMachine);
   // One machine (or none) is nothing to balance. The single eligible machine is
   // the answer even when it is not the first option — a repo-missing machine
@@ -416,6 +416,16 @@ export function chooseLaneMachineByLoad(options: readonly LaneMachineOption[]): 
   if (eligible.length === 1) return eligible[0]!.id;
   const best = [...eligible].sort(compareLaneMachineLoad)[0];
   return best?.id ?? defaultLaneMachineId(options);
+}
+
+/**
+ * The machine an "Auto — least loaded" choice would pick, or null when fewer
+ * than two machines can host this repo and there is nothing to balance.
+ */
+export function autoLaneMachine(options: readonly LaneMachineOption[]): LaneMachineOption | null {
+  if (options.filter(canCreateLaneOnMachine).length < 2) return null;
+  const id = chooseLaneMachineByLoad(options);
+  return options.find((machine) => machine.id === id) ?? null;
 }
 
 function compareLaneMachineLoad(a: LaneMachineOption, b: LaneMachineOption): number {
