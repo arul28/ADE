@@ -10,6 +10,10 @@
  *
  * `ADE_DEFAULT_ROLE` is here because the host may itself run inside an agent
  * shell. Tracked agent CLIs set their role explicitly after this strip.
+ *
+ * `NODE_COMPILE_CACHE` is the brain's own compile cache (its service definition
+ * sets it). A Node program a user or an agent starts would otherwise write into
+ * that cache, and Node never prunes it.
  */
 export const HOST_RUNTIME_ENV_KEYS = [
   "ELECTRON_RUN_AS_NODE",
@@ -17,6 +21,7 @@ export const HOST_RUNTIME_ENV_KEYS = [
   "ADE_DEFAULT_ROLE",
   "ADE_RUNTIME_PARENT_PID",
   "ADE_RUNTIME_IDLE_EXIT_MS",
+  "NODE_COMPILE_CACHE",
 ] as const;
 
 /**
