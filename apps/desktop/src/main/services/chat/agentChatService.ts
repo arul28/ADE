@@ -12252,6 +12252,12 @@ export function createAgentChatService(args: {
    */
   let serviceDisposed = false;
   /**
+   * The bound on each chat's accepted-but-not-started turn (see
+   * `turnAcceptedAt`), by chat. One per chat, like the marker it bounds. Every
+   * path that ends the marker clears its entry, and dispose clears them all.
+   */
+  const acceptedStartWatches = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
    * When each chat's latest turn started. `currentTurnStartedAt` clears when
    * the turn settles, and the proof broker still needs the time afterwards to
    * tell a fresh video from an older one. An entry goes when its session ends
@@ -19792,6 +19798,19 @@ export function createAgentChatService(args: {
     }
   };
 
+  const clearAcceptedStartWatch = (sessionId: string): void => {
+    const watch = acceptedStartWatches.get(sessionId);
+    if (!watch) return;
+    clearTimeout(watch);
+    acceptedStartWatches.delete(sessionId);
+  };
+
+  /** Ends a chat's accepted-but-not-started turn and the bound on it together. */
+  const clearTurnAccepted = (managed: ManagedChatSession): void => {
+    managed.turnAcceptedAt = null;
+    clearAcceptedStartWatch(managed.session.id);
+  };
+
   const setSessionActive = (managed: ManagedChatSession): void => {
     if (managed.session.status !== "active") {
       managed.session.currentTurnStartedAt = nowIso();
@@ -19803,7 +19822,7 @@ export function createAgentChatService(args: {
     managed.session.status = "active";
     managed.session.idleSinceAt = null;
     // The accepted turn has started, so it no longer waits on a provider start.
-    managed.turnAcceptedAt = null;
+    clearTurnAccepted(managed);
   };
 
   const setSessionIdle = (
@@ -19812,7 +19831,7 @@ export function createAgentChatService(args: {
   ): void => {
     managed.session.status = "idle";
     managed.session.currentTurnStartedAt = null;
-    managed.turnAcceptedAt = null;
+    clearTurnAccepted(managed);
     if (options && "idleSinceAt" in options) {
       managed.session.idleSinceAt = options.idleSinceAt ?? null;
     }
@@ -26006,6 +26025,7 @@ export function createAgentChatService(args: {
     }
 
     managedSessions.delete(managed.session.id);
+    clearAcceptedStartWatch(managed.session.id);
     claudePluginUi.end(managed.session.id);
     lastTurnStartedAtBySession.delete(managed.session.id);
     lastTurnIdBySession.delete(managed.session.id);
@@ -56959,13 +56979,19 @@ export function createAgentChatService(args: {
     // counting after TURN_ACCEPTED_START_TIMEOUT_MS; the send itself is left
     // alone, so a start error that lands later still surfaces.
     const turnAcceptedAt = nowIso();
+    clearTurnAccepted(prepared.managed);
     prepared.managed.turnAcceptedAt = turnAcceptedAt;
     const acceptedStartWatch = setTimeout(() => {
       const { managed } = prepared;
       if (managed.turnAcceptedAt !== turnAcceptedAt) return;
-      managed.turnAcceptedAt = null;
+      clearTurnAccepted(managed);
+      // A disposed service has no listener left, and an archived or deleted chat is
+      // out of the list, so neither has a row to refresh.
+      if (serviceDisposed || managedSessions.get(prepared.sessionId) !== managed) return;
       // Only an idle chat's summary reads the marker, so only then does the row need a refresh.
       if (managed.session.status !== "idle" || managed.deleted) return;
+      const row = sessionService.get(prepared.sessionId);
+      if (!row || row.archivedAt) return;
       logger.warn("agent_chat.turn_accepted_start_timed_out", {
         sessionId: prepared.sessionId,
         provider: managed.session.provider,
@@ -56974,6 +57000,7 @@ export function createAgentChatService(args: {
       emitTransientChatEnvelope(prepared.sessionId, { type: "session_meta_updated" });
     }, TURN_ACCEPTED_START_TIMEOUT_MS);
     acceptedStartWatch.unref?.();
+    acceptedStartWatches.set(prepared.sessionId, acceptedStartWatch);
     void executePreparedSendMessage(prepared).catch((error) => {
       logger.warn("agent_chat.turn_dispatch_failed", {
         sessionId: prepared.sessionId,
@@ -56983,8 +57010,7 @@ export function createAgentChatService(args: {
       rejectDispatch?.(error instanceof Error ? error : new Error(String(error)));
       emitDispatchedSendFailure(prepared, error);
     }).finally(() => {
-      clearTimeout(acceptedStartWatch);
-      if (prepared.managed.turnAcceptedAt === turnAcceptedAt) prepared.managed.turnAcceptedAt = null;
+      if (prepared.managed.turnAcceptedAt === turnAcceptedAt) clearTurnAccepted(prepared.managed);
     });
 
     if (dispatchPromise) {
@@ -62164,6 +62190,7 @@ export function createAgentChatService(args: {
     flushQueuedTranscriptWrite(managed.transcriptPath);
     flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sessionId}.jsonl`));
     managedSessions.delete(sessionId);
+    clearAcceptedStartWatch(sessionId);
     claudePluginUi.end(sessionId);
     lastTurnStartedAtBySession.delete(sessionId);
     lastTurnIdBySession.delete(sessionId);
@@ -64643,6 +64670,7 @@ export function createAgentChatService(args: {
       ]);
       teardownRuntime(managed, "ended_session");
       managedSessions.delete(trimmedSessionId);
+      clearAcceptedStartWatch(trimmedSessionId);
       claudePluginUi.end(trimmedSessionId);
       forgetCursorCloudHydrationState(trimmedSessionId);
       forgetDevinCloudAttentionState(trimmedSessionId);
@@ -64732,6 +64760,9 @@ export function createAgentChatService(args: {
           scheduledWorkScheduler!.cancel(schedule.id)),
       );
     }
+    // An archived chat stops waiting on a provider start, so its bound goes with it.
+    const archivedManaged = managedSessions.get(trimmedSessionId);
+    if (archivedManaged) clearTurnAccepted(archivedManaged);
     sessionService.archiveSession(trimmedSessionId);
     notifyChatSessionEnded(trimmedSessionId);
   };
@@ -64762,6 +64793,8 @@ export function createAgentChatService(args: {
     serviceDisposed = true;
     runtimeBudget.unregister(runtimeBudgetParticipant);
     clearTimeout(mcpAppOrphanSweepTimer);
+    for (const watch of acceptedStartWatches.values()) clearTimeout(watch);
+    acceptedStartWatches.clear();
     if (crossMachineHandoffSweepTimer) clearTimeout(crossMachineHandoffSweepTimer);
     crossMachineHandoffSweepTimer = null;
     hostSleepChips.dispose();

@@ -1183,9 +1183,10 @@ Controls and summaries project this runtime state rather than owning it:
 - A send the brain has accepted, before its provider has started the turn (a
   lazily started OpenCode runtime, for one), reads **Working** rather than
   **Done**: the summary carries `turnAcceptedAt` while the chat stays `idle`.
-  The marker clears when the turn starts, ends, or fails, and after
-  `TURN_ACCEPTED_START_TIMEOUT_MS` (60 s) with no turn, so a hung start cannot
-  hold a row on **Working**. A start error that lands later still reaches the chat.
+  The marker clears when the turn starts, ends, or fails, when the chat is
+  archived, and after `TURN_ACCEPTED_START_TIMEOUT_MS` (60 s) with no turn, so a
+  hung start cannot hold a row on **Working**. A start error that lands later
+  still reaches the chat.
 - Account-wide Activity applies the same two facts, so the sidebar and the phone
   cannot disagree about whether a turn is over. The push publisher tracks live
   background-task ids per run and holds a completed turn at `running`, parking
