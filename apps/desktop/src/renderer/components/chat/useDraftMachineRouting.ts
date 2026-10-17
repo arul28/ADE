@@ -298,8 +298,6 @@ export function useDraftMachineRouting({
   const [machineId, setMachineId] = useState(() => desiredMachineId);
   const machineIdRef = useRef(machineId);
   machineIdRef.current = machineId;
-  const laneIdRef = useRef(laneId);
-  laneIdRef.current = laneId;
   /**
    * The machine and lane a machine switch came FROM, set only when this hook
    * switches the machine itself (the user's pick, or the fallback off an
@@ -317,12 +315,18 @@ export function useDraftMachineRouting({
   const [reconciledRoutingInputKey, setReconciledRoutingInputKey] =
     useState(() => routingInputKey);
   const chooseMachine = useCallback((nextMachineId: string) => {
-    if (nextMachineId !== machineIdRef.current) {
-      pendingLaneRemapRef.current ??= { machineId: machineIdRef.current, laneId: laneIdRef.current };
+    const pending = pendingLaneRemapRef.current;
+    if (pending && nextMachineId === pending.machineId) {
+      // Back on the machine the lane came from: that lane is current again.
+      pendingLaneRemapRef.current = null;
+    } else if (nextMachineId !== machineId) {
+      // Chained switches keep the first origin: the in-between machine never
+      // resolved a lane of its own.
+      pendingLaneRemapRef.current ??= { machineId, laneId };
     }
     setMachineId(nextMachineId);
     onDraftMachineChange?.(nextMachineId === boundMachineId ? null : nextMachineId);
-  }, [boundMachineId, onDraftMachineChange]);
+  }, [boundMachineId, laneId, machineId, onDraftMachineChange]);
 
   useEffect(() => {
     // An outside machine change (not the echo of `chooseMachine`) brings its
@@ -488,9 +492,7 @@ export function useDraftMachineRouting({
     if (!enabled) return;
     const previous = pendingLaneRemapRef.current;
     if (!previous) return;
-    // The switch has not rendered yet, or the user switched back before it
-    // resolved: the lane still belongs to this machine. Keep the entry; it is
-    // dropped once it remaps or an outside machine change supersedes it.
+    // The fallback's switch has not rendered yet: wait for it.
     if (previous.machineId === machineId) return;
     // Hold the selection unresolved until the new machine's catalog lands;
     // remapping against an empty list would pick nothing and then look like the

@@ -339,9 +339,9 @@ describe("useDraftMachineRouting", () => {
   });
 
   it.each([
-    ["the machine and lane arrive together", false],
-    ["the lane arrives a render after the machine", true],
-  ])("keeps a lane handed in with its machine when %s", async (_label, laneLags) => {
+    ["the machine and lane arrive together", ["mac-feature"]],
+    ["the lane arrives a render after the machine", ["studio-primary", "mac-feature"]],
+  ])("keeps a lane handed in with its machine when %s", async (_label, laneSequence) => {
     // "New chat in this lane" and "Start chat in lane" write the machine and
     // the lane in one patch. The hook must open on exactly that lane, never
     // re-derive one from the lane the draft held before.
@@ -354,10 +354,9 @@ describe("useDraftMachineRouting", () => {
     );
     await waitFor(() => expect(result.current.machineOptions).toHaveLength(2));
 
-    if (laneLags) {
-      rerender({ crossMachineLanesByMachineId, laneId: "studio-primary", initialDraftMachineId: "this-mac" });
+    for (const laneId of laneSequence) {
+      rerender({ crossMachineLanesByMachineId, laneId, initialDraftMachineId: "this-mac" });
     }
-    rerender({ crossMachineLanesByMachineId, laneId: "mac-feature", initialDraftMachineId: "this-mac" });
 
     await waitFor(() => expect(result.current.selectedMachineId).toBe("this-mac"));
     expect(result.current.selectorValue).toBe("mac-feature");
