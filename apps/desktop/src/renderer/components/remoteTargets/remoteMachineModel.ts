@@ -455,6 +455,28 @@ export function connectionStateLabel(
   return "Not connected";
 }
 
+/**
+ * Why a saved machine that is not connected will not come back on its own, in
+ * words for its row. Null when it will reconnect, or when it never connected
+ * (a first Connect turns auto-connect on, so there is nothing to explain yet).
+ * A manual disconnect is the stronger reason and wins over the preference.
+ */
+export function autoConnectOffReason(
+  target: Pick<RemoteRuntimeTarget, "autoConnect" | "lastConnectedAt" | "manuallyDisconnectedAt">,
+): string | null {
+  if (target.manuallyDisconnectedAt != null) {
+    const day = new Date(target.manuallyDisconnectedAt).toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    });
+    return `you disconnected it on ${day}`;
+  }
+  if (target.autoConnect === false && target.lastConnectedAt != null) {
+    return "Reconnect automatically is off";
+  }
+  return null;
+}
+
 /** True when a discovered machine is a raw SSH peer with no ADE runtime. */
 export function isSshOnlyDiscovered(
   machine: RemoteRuntimeDiscoveredMachine,

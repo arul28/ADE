@@ -10,6 +10,7 @@ import {
   PUBLISH_FAILING_ALARM_MS,
   accountMachineMatchesTarget,
   assignMachineSections,
+  autoConnectOffReason,
   describeMachineUpdateAttempt,
   describePublishHealth,
   formatLastSeen,
@@ -391,6 +392,36 @@ describe("formatLastSeen", () => {
   it("uses a relative last-connected phrase", () => {
     expect(formatLastSeen(null)).toBe("Never connected");
     expect(formatLastSeen(Date.now() - 2 * 60 * 60_000)).toBe("Last connected 2h ago");
+  });
+});
+
+describe("autoConnectOffReason", () => {
+  it.each([
+    [
+      "a machine that reconnects on its own says nothing",
+      { autoConnect: true, lastConnectedAt: 1_700_000_000, manuallyDisconnectedAt: null },
+      null,
+    ],
+    [
+      "a switched-off machine that connected before says why",
+      { autoConnect: false, lastConnectedAt: 1_700_000_000, manuallyDisconnectedAt: null },
+      "Reconnect automatically is off",
+    ],
+    [
+      "a machine never connected says nothing yet",
+      { autoConnect: false, lastConnectedAt: null, manuallyDisconnectedAt: null },
+      null,
+    ],
+  ])("%s", (_name, target, expected) => {
+    expect(autoConnectOffReason(target)).toBe(expected);
+  });
+
+  it("names the day of a manual disconnect, which wins over the preference", () => {
+    expect(autoConnectOffReason({
+      autoConnect: false,
+      lastConnectedAt: 1_700_000_000,
+      manuallyDisconnectedAt: 1_700_000_100_000,
+    })).toMatch(/^you disconnected it on /);
   });
 });
 
