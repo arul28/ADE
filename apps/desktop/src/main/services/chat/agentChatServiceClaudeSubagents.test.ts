@@ -1219,6 +1219,69 @@ describe("createAgentChatService", () => {
       expect((await service.getSessionSummary(child.id))?.spawnKind).toBe("peer");
     });
 
+    it("repairs an orphan that a list reads but does not return, as a summary does", async () => {
+      const { service } = createService();
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const orphan = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+      const shown = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await service.deleteSession({ sessionId: parent.id });
+      // A fresh brain over the same files: nothing is live, so the list reads the orphan from disk.
+      const { service: restarted } = createService();
+
+      const page = await restarted.listSessions(undefined, { sessionIds: [shown.id] });
+
+      expect(page.map((row) => row.sessionId)).toEqual([shown.id]);
+      expect(readPersistedChatState(orphan.id).spawnKind).toBe("peer");
+    });
+
+    it("repairs a listed orphan before returning it", async () => {
+      const { service } = createService();
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const orphan = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+      await service.deleteSession({ sessionId: parent.id });
+      const { service: restarted } = createService();
+
+      const page = await restarted.listSessions(undefined, { sessionIds: [orphan.id] });
+
+      expect(page).toEqual([expect.objectContaining({ sessionId: orphan.id, spawnKind: "peer" })]);
+    });
+
+    it("picks up a parent link another brain wrote after an earlier list", async () => {
+      const { service } = createService();
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+      const shown = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const { service: restarted } = createService();
+      await restarted.listSessions(undefined, { sessionIds: [shown.id] });
+      expect(readPersistedChatState(child.id).spawnKind).toBe("subagent");
+
+      writePersistedChatState(child.id, {
+        ...readPersistedChatState(child.id),
+        orchestrationParentSessionId: "parent-gone",
+      });
+      await restarted.listSessions(undefined, { sessionIds: [shown.id] });
+
+      expect(readPersistedChatState(child.id).spawnKind).toBe("peer");
+    });
+
     it("sets parent links for users while limiting agent adoption and release", async () => {
       const { service } = createService();
       const parentA = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });

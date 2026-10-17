@@ -61271,6 +61271,55 @@ export function createAgentChatService(args: {
     } satisfies AgentChatSessionSummary;
   };
 
+  /**
+   * A chat's spawn parent and kind as its metadata file records them, for a
+   * chat that is not live. Memoized per file: the stat (inode, size, mtime)
+   * says whether the cached read still holds, so a list parses only the files
+   * that changed since the last one.
+   */
+  const persistedSpawnLineageMemo = new Map<string, {
+    stamp: string;
+    parentId: string;
+    spawnKind: AgentChatSession["spawnKind"] | null;
+  }>();
+  const persistedSpawnLineage = (sessionId: string) => {
+    const stat = fs.statSync(metadataPathFor(sessionId), { throwIfNoEntry: false });
+    const stamp = stat ? `${stat.ino}:${stat.size}:${stat.mtimeMs}` : "";
+    const memo = persistedSpawnLineageMemo.get(sessionId);
+    if (stamp && memo?.stamp === stamp) return memo;
+    const persisted = readPersistedState(sessionId);
+    const lineage = {
+      stamp,
+      parentId: persisted?.orchestrationParentSessionId?.trim() || "",
+      spawnKind: persisted?.spawnKind ?? null,
+    };
+    if (stamp) persistedSpawnLineageMemo.set(sessionId, lineage);
+    return lineage;
+  };
+
+  /**
+   * The orphan repair a summary does, for the window rows a named list does
+   * not summarize. Summarizing every window row used to run it for each one on
+   * every list. Only a subagent whose parent chat is gone is handed to
+   * `reconcileOrphanedSubagent`, which re-checks the parent itself.
+   */
+  const repairOrphanedChildren = (rows: readonly { id: string }[]): void => {
+    for (const row of rows) {
+      const live = managedSessions.get(row.id);
+      if (live) {
+        reconcileOrphanedSubagent(live);
+        continue;
+      }
+      const { parentId, spawnKind } = persistedSpawnLineage(row.id);
+      if (spawnKind !== "subagent" || !parentId || parentId === row.id || parentChatStillExists(parentId)) continue;
+      try {
+        reconcileOrphanedSubagent(ensureManagedSession(row.id));
+      } catch {
+        // Listing must not fail because an orphaned child cannot be loaded.
+      }
+    }
+  };
+
   const listSessions = async (
     laneId?: string,
     options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean; sessionIds?: readonly string[] },
@@ -61286,6 +61335,9 @@ export function createAgentChatService(args: {
     // that shows a few chats names them and only those are summarized. The
     // 500-row window is unchanged: a named chat outside it is still not listed.
     const namedIds = options?.sessionIds ? new Set(options.sessionIds) : null;
+    // Summarizing a row also repairs its orphan, so the rows left unsummarized
+    // are repaired here. An unnamed list summarizes every row and needs nothing.
+    if (namedIds) repairOrphanedChildren(chatRows);
     const summarizedRows = namedIds ? chatRows.filter((row) => namedIds.has(row.id)) : chatRows;
     const includeIdentity = options?.includeIdentity === true;
     const includeAutomation = options?.includeAutomation === true;
