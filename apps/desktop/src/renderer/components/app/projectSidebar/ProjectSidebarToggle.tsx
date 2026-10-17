@@ -24,7 +24,8 @@ export function ProjectSidebarToggle({ shortcut, locked = false }: { shortcut: s
       content={{
         label: "Toggle sidebar",
         description,
-        shortcut: shortcut ?? undefined,
+        // The shortcut does nothing on Settings, so the hint is not offered there.
+        shortcut: locked ? undefined : shortcut ?? undefined,
       }}
       wrapperStyle={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
     >
