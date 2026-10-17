@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { useStableBinding } from "../../state/laneMachineRouting";
 import type { LaneDiffMode } from "../../../shared/types";
 import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitBranch, GitCommit, Stack, Trash } from "@phosphor-icons/react";
@@ -428,6 +428,19 @@ function flattenChangeTreeRows(
   for (const file of files) {
     rows.push({ key: `${mode}:wrap:${file.path}`, kind: "file", mode, file, depth });
   }
+}
+
+/** The buttons a Files row holds keyboard focus on, in the order Tab visits them. */
+const CHANGE_LIST_CONTROL_SELECTOR = "button:not(:disabled)";
+
+/** Index of the next row after `from` that has a control Tab can stop on, or -1 at the end of the list. */
+function nextChangeListRowWithControls(rows: ChangeListRow[], from: number, step: 1 | -1): number {
+  for (let index = from + step; index >= 0 && index < rows.length; index += step) {
+    const row = rows[index];
+    // Section labels and branch file rows are plain text; folders, notices and uncommitted file rows hold buttons.
+    if (row && (row.kind === "folder" || row.kind === "notice" || (row.kind === "file" && row.mode !== "branch"))) return index;
+  }
+  return -1;
 }
 
 function getAutoRebaseBannerConfig(state: AutoRebaseLaneStatus["state"]): {
@@ -1043,6 +1056,10 @@ export function LaneGitActionsPane({
     collapsedChangeFolders,
   ]);
   const changesScrollRef = useRef<HTMLDivElement>(null);
+  // Key of the row that holds keyboard focus. The window keeps that row mounted, so focus survives it scrolling out of view.
+  const focusedChangeRowKeyRef = useRef<string | null>(null);
+  // A Tab that crossed into a row the window has not mounted yet: focus its first or last control once it mounts.
+  const pendingChangeFocusRef = useRef<{ index: number; edge: "first" | "last"; from: HTMLElement } | null>(null);
   const changeListVirtualizer = useVirtualizer({
     count: changeListRows.length,
     getScrollElement: () => changesScrollRef.current,
@@ -1050,7 +1067,61 @@ export function LaneGitActionsPane({
     estimateSize: () => CHANGE_LIST_ROW_ESTIMATE_PX,
     overscan: 4,
     gap: CHANGE_LIST_ROW_GAP_PX,
+    rangeExtractor: (range) => {
+      const indexes = defaultRangeExtractor(range);
+      const focusedKey = focusedChangeRowKeyRef.current;
+      const focusedIndex = focusedKey == null ? -1 : changeListRows.findIndex((row) => row.key === focusedKey);
+      if (focusedIndex < 0 || indexes.includes(focusedIndex)) return indexes;
+      return [...indexes, focusedIndex].sort((a, b) => a - b);
+    },
   });
+
+  // Tab order must match the unvirtualized list. The window only mounts some rows, so when Tab would leave
+  // the mounted rows while more rows with controls follow, the next row is scrolled in and focused here.
+  const focusPendingChangeRow = () => {
+    const pending = pendingChangeFocusRef.current;
+    const list = changesScrollRef.current;
+    if (!pending || !list) return;
+    // Focus moved somewhere else since that Tab, so the navigation is over.
+    if (document.activeElement !== pending.from) {
+      pendingChangeFocusRef.current = null;
+      return;
+    }
+    const row = list.querySelector<HTMLElement>(`[data-index="${pending.index}"]`);
+    if (!row) return; // Not mounted yet. The next render tries again.
+    const controls = row.querySelectorAll<HTMLElement>(CHANGE_LIST_CONTROL_SELECTOR);
+    pendingChangeFocusRef.current = null;
+    (pending.edge === "first" ? controls[0] : controls[controls.length - 1])?.focus();
+  };
+  useEffect(() => {
+    focusPendingChangeRow();
+  });
+
+  const onChangeListKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey) return;
+    const active = document.activeElement;
+    const row = active instanceof HTMLElement ? active.closest<HTMLElement>("[data-index]") : null;
+    if (!(active instanceof HTMLElement) || !row || !event.currentTarget.contains(row)) return;
+    const forward = !event.shiftKey;
+    const controls = row.querySelectorAll<HTMLElement>(CHANGE_LIST_CONTROL_SELECTOR);
+    // Inside a row the browser's own Tab order is already right. Only the row's edge crosses into another row.
+    if (active !== (forward ? controls[controls.length - 1] : controls[0])) return;
+    const index = nextChangeListRowWithControls(changeListRows, Number(row.dataset.index), forward ? 1 : -1);
+    if (index < 0) return; // End of the list: Tab leaves it as it always did.
+    event.preventDefault();
+    pendingChangeFocusRef.current = { index, edge: forward ? "first" : "last", from: active };
+    changeListVirtualizer.scrollToIndex(index, { align: "auto" });
+    focusPendingChangeRow();
+  };
+  const onChangeListFocus = (event: React.FocusEvent<HTMLDivElement>) => {
+    const row = (event.target as HTMLElement).closest<HTMLElement>("[data-index]");
+    focusedChangeRowKeyRef.current = changeListRows[Number(row?.dataset.index)]?.key ?? null;
+  };
+  const onChangeListBlur = (event: React.FocusEvent<HTMLDivElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    focusedChangeRowKeyRef.current = null;
+    pendingChangeFocusRef.current = null;
+  };
 
   useEffect(() => {
     setScopeChoice(null);
@@ -3040,7 +3111,7 @@ export function LaneGitActionsPane({
             ) : null}
 
             {gitScope === "branch" ? (
-              <div ref={changesScrollRef} style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minHeight: 0, overflow: "auto" }} data-testid="git-pane-branch">
+              <div ref={changesScrollRef} onKeyDown={onChangeListKeyDown} onFocus={onChangeListFocus} onBlur={onChangeListBlur} style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minHeight: 0, overflow: "auto" }} data-testid="git-pane-branch">
                 {branchError ? (
                   <div className="px-1 py-3 text-[12px] text-muted-fg">{branchError}</div>
                 ) : !branchChanges ? (
@@ -3052,7 +3123,7 @@ export function LaneGitActionsPane({
                 )}
               </div>
             ) : (
-            <div ref={changesScrollRef} style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1, minHeight: 0, overflow: "auto" }} data-testid="git-pane-uncommitted">
+            <div ref={changesScrollRef} onKeyDown={onChangeListKeyDown} onFocus={onChangeListFocus} onBlur={onChangeListBlur} style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1, minHeight: 0, overflow: "auto" }} data-testid="git-pane-uncommitted">
               {changes.staged.length === 0 && changes.unstaged.length === 0 ? (
                   <div className="px-1 py-3 text-[12px] text-muted-fg" data-testid="git-pane-clean">
                     Clean · nothing to commit
