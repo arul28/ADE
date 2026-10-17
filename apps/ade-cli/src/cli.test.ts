@@ -2174,6 +2174,23 @@ describe("ADE CLI", () => {
         params: {
           includeTransferReadiness: true,
           forceTransferReadiness: false,
+          awaitTransferReadiness: true,
+        },
+      },
+    ]);
+
+    // The plain status read is the light one; it must ask to wait for a cold cache, or it reports "not ready".
+    const plainStatus = buildCliPlan(["sync", "status"]);
+    expect(plainStatus.kind).toBe("execute");
+    if (plainStatus.kind !== "execute") return;
+    expect(plainStatus.steps).toEqual([
+      {
+        key: "result",
+        method: "sync.getStatus",
+        params: {
+          includeTransferReadiness: false,
+          forceTransferReadiness: false,
+          awaitTransferReadiness: true,
         },
       },
     ]);

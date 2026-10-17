@@ -432,6 +432,7 @@ const CANONICAL_SYNC_PORT_MIGRATE_FIRST_MS = 2_000;
 const CANONICAL_SYNC_PORT_MIGRATE_MS = 15_000;
 const TRANSFER_READINESS_CACHE_MS = 15_000;
 const LIGHTWEIGHT_TRANSFER_READINESS_WAIT_MS = 2_000;
+const TRANSFER_READINESS_RETRY_COOLDOWN_MS = 5_000;
 const STALE_BRAIN_LAST_SEEN_MS = 5 * 60_000;
 const STALE_VIEWER_DRAFT_BRAIN_LAST_SEEN_MS = 3 * 24 * 60 * 60_000;
 const GHOST_BRAIN_LAST_SEEN_MS = 60 * 60_000;
@@ -716,6 +717,10 @@ export function createSyncService(args: SyncServiceArgs) {
   let hostDiscoveryEnabled = args.hostDiscoveryEnabled !== false;
   let transferReadinessCache: { value: SyncTransferReadiness; expiresAtMs: number } | null = null;
   let transferReadinessInFlight: Promise<SyncTransferReadiness> | null = null;
+  // Set when a computation fails. Awaiting light reads do not start another one
+  // before this passes, so a readiness that keeps throwing is not re-enumerated
+  // on every poll.
+  let transferReadinessRetryAtMs = 0;
   const forceHostRole = args.forceHostRole === true;
   const isCrdtSyncAvailable = (): boolean => args.db.sync.isAvailable?.() !== false;
   const assertPhonePairingAvailable = (): void => {
@@ -1611,6 +1616,10 @@ export function createSyncService(args: SyncServiceArgs) {
         };
         return value;
       })
+      .catch((error: unknown) => {
+        transferReadinessRetryAtMs = Date.now() + TRANSFER_READINESS_RETRY_COOLDOWN_MS;
+        throw error;
+      })
       .finally(() => {
         transferReadinessInFlight = null;
       });
@@ -1619,16 +1628,33 @@ export function createSyncService(args: SyncServiceArgs) {
 
   /**
    * Lightweight status reads take the cached value. Before the first computation
-   * lands there is no cache, and a caller that acts on `ready` (the CLI and SSH
-   * pairing do) must not read the skipped placeholder as "not ready" just
-   * because the brain is still starting. So a read with no cache joins the
-   * running computation, or starts one, and waits for it. The wait is bounded:
-   * the computation waits on the chat scheduler and summarizes every chat, and a
-   * status read must not hang on that. Past the bound the read returns the
-   * placeholder, and the computation still fills the cache for the next read.
+   * lands there is no cache, and the skipped placeholder reads "not ready".
+   *
+   * A read that acts on `ready` (`awaitTransferReadiness`: `ade sync status`)
+   * joins the running computation, or starts one, and waits for it. The wait is
+   * bounded: the computation waits on the chat scheduler and summarizes every
+   * chat, and a status read must not hang on that. Past the bound the read
+   * returns the placeholder, and the computation still fills the cache for the
+   * next read. A computation that just failed is not started again by these
+   * reads until the retry cooldown passes.
+   *
+   * Every other lightweight read (the desktop top bar's) keeps the behavior it
+   * had before this option: the cache, the computation already running, or the
+   * placeholder. It never starts a computation, so it cannot wait on a cold one.
    */
-  const getLightweightTransferReadiness = async (): Promise<SyncTransferReadiness> => {
+  const getLightweightTransferReadiness = async (
+    awaitReadiness: boolean,
+  ): Promise<SyncTransferReadiness> => {
     if (transferReadinessCache) return transferReadinessCache.value;
+    if (!awaitReadiness) {
+      if (transferReadinessInFlight) {
+        return transferReadinessInFlight.catch(() => buildSkippedTransferReadiness());
+      }
+      return buildSkippedTransferReadiness();
+    }
+    if (!transferReadinessInFlight && Date.now() < transferReadinessRetryAtMs) {
+      return buildSkippedTransferReadiness();
+    }
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     const bound = new Promise<SyncTransferReadiness>((resolve) => {
       timeoutId = setTimeout(
@@ -1826,7 +1852,7 @@ export function createSyncService(args: SyncServiceArgs) {
         routeHealth,
         client,
         transferReadiness: options?.includeTransferReadiness === false
-          ? await getLightweightTransferReadiness()
+          ? await getLightweightTransferReadiness(options?.awaitTransferReadiness === true)
           : await getTransferReadiness({ force: options?.forceTransferReadiness === true }),
         crdtSyncAvailable,
         survivableStateText:

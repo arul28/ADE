@@ -2945,6 +2945,7 @@ export function createMultiProjectRpcRequestHandler(
       return await syncService.getStatus({
         includeTransferReadiness: params.includeTransferReadiness === true,
         forceTransferReadiness: params.forceTransferReadiness === true,
+        awaitTransferReadiness: params.awaitTransferReadiness === true,
       });
     }
 

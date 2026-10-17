@@ -326,6 +326,14 @@ export type SyncGetStatusArgs = {
    */
   includeTransferReadiness?: boolean;
   forceTransferReadiness?: boolean;
+  /**
+   * Only with `includeTransferReadiness` off. With nothing cached yet, the read
+   * computes the readiness and waits for it (bounded) instead of returning the
+   * skipped placeholder. Set by a caller that acts on `ready`, such as
+   * `ade sync status`. Left off, the read gets the placeholder without starting
+   * the computation.
+   */
+  awaitTransferReadiness?: boolean;
 };
 
 export type SyncDeviceRuntimeState = SyncDeviceRecord & {
