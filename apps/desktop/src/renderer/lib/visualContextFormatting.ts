@@ -341,6 +341,9 @@ export function formatBuiltInBrowserContextForPrompt(items: BuiltInBrowserContex
       inputType: metadata.inputType,
       disabled: metadata.disabled,
       checked: metadata.checked,
+      exactSource: item.sourceFile ? { sourceFile: item.sourceFile, sourceLine: item.sourceLine } : null,
+      frameworkSource: metadata.frameworkSource ?? null,
+      computedStyle: metadata.computedStyle ?? null,
       viewport: metadata.viewport,
       scroll: metadata.scroll,
       captureFrame: metadata.captureFrame,
@@ -350,12 +353,17 @@ export function formatBuiltInBrowserContextForPrompt(items: BuiltInBrowserContex
       sourceConfidence: metadata.sourceConfidence,
       selectionExplanation: metadata.selectionExplanation,
     };
-    return `${index + 1}. ${builtInBrowserContextLabel(item)} (global browser, frame=${frame})\nPacket:\n${JSON.stringify(packet, null, 2)}`;
+    const source = item.sourceFile ? `, source=${item.sourceFile}${item.sourceLine ? `:${item.sourceLine}` : ""}` : "";
+    const html = typeof metadata.html === "string" && metadata.html.trim().length
+      ? `\nElement HTML:\n${metadata.html}`
+      : "";
+    return `${index + 1}. ${builtInBrowserContextLabel(item)} (global browser, frame=${frame}${source})\nPacket:\n${JSON.stringify(packet, null, 2)}${html}`;
   });
   return [
     "Built-in browser visual and DOM context attached by the user.",
     "Each packet came from ADE's global built-in browser, which is not lane-scoped. Image attachments/crops are visual evidence for the same page area and use browser viewport coordinates.",
-    "Use selectors, ARIA labels, attributes, text, URL/title, and the screenshot together. Do not assume the selected page belongs to the current lane unless the URL or user message says so.",
+    "Use selectors, ARIA labels, attributes, text, URL/title, the element HTML, computedStyle, and the screenshot together. Do not assume the selected page belongs to the current lane unless the URL or user message says so.",
+    "frameworkSource is what the page's own dev build reports. confidence exact (also in exactSource) is the file and line where the element was written; approximate is a dev-server path and a bundled line, so open the file and search near it; component-file names the component file only. componentStack lists the enclosing components, innermost first. When frameworkSource is null (production build or no framework), find the source by searching for the text, test id, or class names.",
     ...rows,
     "",
   ].join("\n");
