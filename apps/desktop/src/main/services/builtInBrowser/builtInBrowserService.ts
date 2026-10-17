@@ -7426,6 +7426,138 @@ ${ZOOM_HIT_PROBES_SNIPPET}
 `;
 }
 
+/** In-page collectors for the HTML, computed CSS and source location of an inspected element. */
+const ELEMENT_CONTEXT_SNIPPET = String.raw`
+  // Attribute names that tend to carry credentials; their values never reach the agent.
+  const sensitiveAttributePattern = /token|secret|passw|auth|csrf|xsrf|session|api[-_]?key|nonce|signature|credential/i;
+  const isSensitiveAttributeName = (name) => sensitiveAttributePattern.test(name);
+  // Markup the agent can match against source. Field values, script bodies and
+  // secret-looking attributes are dropped; a large subtree keeps only its open tag.
+  const HTML_SUBTREE_LIMIT = 300;
+  const inputTypesWithLabelValues = new Set(["button", "submit", "reset", "checkbox", "radio", "image", "color", "range"]);
+  // A field's value is what the user typed or the server prefilled; only
+  // label-like inputs (buttons, checkboxes) carry a value worth showing.
+  const hidesValue = (node) => node.localName === "input"
+    && !inputTypesWithLabelValues.has(String(node.getAttribute("type") || "text").toLowerCase());
+  const scrubForPrompt = (node) => {
+    for (const attr of Array.from(node.attributes || [])) {
+      if (isSensitiveAttributeName(attr.name)) node.setAttribute(attr.name, "[redacted]");
+    }
+    if (hidesValue(node)) node.removeAttribute("value");
+    if (node.localName === "textarea" || node.localName === "script") node.textContent = "";
+  };
+  const hasMoreDescendantsThan = (root, limit) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    let count = 0;
+    while (walker.nextNode()) {
+      count += 1;
+      if (count > limit) return true;
+    }
+    return false;
+  };
+  const elementHtmlFor = (element) => {
+    try {
+      const deep = !hasMoreDescendantsThan(element, HTML_SUBTREE_LIMIT);
+      const clone = element.cloneNode(deep);
+      scrubForPrompt(clone);
+      if (deep) {
+        for (const node of Array.from(clone.querySelectorAll ? clone.querySelectorAll("*") : [])) scrubForPrompt(node);
+      }
+      const markup = deep
+        ? clone.outerHTML
+        : clone.outerHTML.replace(/<\/[^>]+>$/, "") + "<!-- children omitted -->";
+      return markup.length > 2000 ? markup.slice(0, 2000) + "<!-- truncated -->" : markup;
+    } catch {
+      return null;
+    }
+  };
+  // The computed values that decide how the element looks, minus defaults.
+  const computedStyleFor = (element) => {
+    try {
+      const style = window.getComputedStyle(element);
+      const out = {};
+      const props = [
+        "display", "position", "box-sizing", "width", "height", "margin", "padding", "gap",
+        "flex-direction", "justify-content", "align-items", "grid-template-columns",
+        "color", "background-color", "background-image", "border", "border-radius", "box-shadow",
+        "font-family", "font-size", "font-weight", "line-height", "letter-spacing", "text-align",
+        "opacity", "z-index", "overflow", "cursor", "transform"
+      ];
+      const defaults = new Set(["", "none", "normal", "auto", "0px", "static", "visible", "rgba(0, 0, 0, 0)", "start", "content-box"]);
+      for (const prop of props) {
+        const propValue = style.getPropertyValue(prop).trim();
+        if (defaults.has(propValue) || propValue.startsWith("0px none")) continue;
+        if (prop === "opacity" && propValue === "1") continue;
+        if (prop === "flex-direction" && !/flex/.test(style.display)) continue;
+        if (prop === "font-weight" && propValue === "400") continue;
+        if (prop === "cursor" && propValue === "default") continue;
+        out[prop] = propValue;
+      }
+      return out;
+    } catch {
+      return null;
+    }
+  };
+  // Where the element was written, as the page's own dev build reports it.
+  // Production builds carry none of this, so null is the common case there.
+  const frameworkSourceFor = (element) => {
+    try {
+      let host = element;
+      for (let hops = 0; host && hops < 10; hops += 1) {
+        const fiberKey = Object.keys(host).find((key) => key.startsWith("__reactFiber$") || key.startsWith("__reactInternalInstance$"));
+        if (fiberKey) {
+          const components = [];
+          let source = null;
+          let fiber = host[fiberKey];
+          for (let depth = 0; fiber && depth < 60; depth += 1) {
+            if (!source && fiber._debugSource && fiber._debugSource.fileName) {
+              source = {
+                file: fiber._debugSource.fileName,
+                line: fiber._debugSource.lineNumber ?? null,
+                column: fiber._debugSource.columnNumber ?? null,
+                confidence: "exact",
+                via: "react _debugSource"
+              };
+            }
+            // React 19 dropped _debugSource; the JSX call site lives in _debugStack.
+            if (!source && fiber._debugStack && typeof fiber._debugStack.stack === "string") {
+              for (const frame of fiber._debugStack.stack.split("\n").slice(1)) {
+                const match = frame.match(/\(?((?:https?|file|webpack[^:]*):\/\/[^\s)]+?):(\d+):(\d+)\)?\s*$/);
+                if (!match || /node_modules|react-dom|react_jsx|jsx-dev-runtime/.test(match[1])) continue;
+                let file = match[1].replace(/[?#].*$/, "");
+                try {
+                  if (/^https?:/.test(file)) file = new URL(file).pathname;
+                } catch {}
+                source = { file, line: Number(match[2]), column: Number(match[3]), confidence: "approximate", via: "react _debugStack (dev-server path, bundled line)" };
+                break;
+              }
+            }
+            const type = fiber.type;
+            if (type && typeof type !== "string" && components.length < 8) {
+              const name = type.displayName || type.name || (type.render && (type.render.displayName || type.render.name));
+              if (name && components[components.length - 1] !== name) components.push(name);
+            }
+            fiber = fiber.return;
+          }
+          return { framework: "react", componentStack: components, ...(source || {}) };
+        }
+        const vue = host.__vueParentComponent || (host.__vue__ && { type: host.__vue__.$options });
+        if (vue && vue.type && vue.type.__file) {
+          return { framework: "vue", file: vue.type.__file, line: null, confidence: "component-file", via: "vue __file", componentStack: [vue.type.name || vue.type.__name].filter(Boolean) };
+        }
+        const svelteLoc = host.__svelte_meta && host.__svelte_meta.loc;
+        if (svelteLoc && svelteLoc.file) {
+          return { framework: "svelte", file: svelteLoc.file, line: svelteLoc.line ?? null, column: svelteLoc.column ?? null, confidence: "approximate", via: "svelte __svelte_meta" };
+        }
+        host = host.parentElement;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  };
+`;
+
 const NODE_METADATA_FUNCTION = String.raw`
 function(pointArg) {
   const original = this;
@@ -7439,7 +7571,7 @@ function(pointArg) {
     ? { x: finiteNumber(pointArg.x), y: finiteNumber(pointArg.y) }
     : null;
   const hasInspectPoint = inspectPoint && inspectPoint.x !== null && inspectPoint.y !== null;
-${ZOOM_HIT_PROBES_SNIPPET}  const rectContainsPoint = (rect, point) => (
+${ZOOM_HIT_PROBES_SNIPPET}${ELEMENT_CONTEXT_SNIPPET}  const rectContainsPoint = (rect, point) => (
     rect
     && rect.width > 0
     && rect.height > 0
@@ -7615,7 +7747,8 @@ ${ZOOM_HIT_PROBES_SNIPPET}  const rectContainsPoint = (rect, point) => (
   const attributes = {};
   for (const attr of Array.from(element.attributes || [])) {
     if (Object.keys(attributes).length >= 80) break;
-    attributes[attr.name] = attr.value;
+    if (attr.name === "value" && hidesValue(element)) continue;
+    attributes[attr.name] = isSensitiveAttributeName(attr.name) ? "[redacted]" : attr.value;
   }
   const labelledBy = element.getAttribute("aria-labelledby");
   const labelledByText = labelledBy
@@ -7635,118 +7768,15 @@ ${ZOOM_HIT_PROBES_SNIPPET}  const rectContainsPoint = (rect, point) => (
     || element.getAttribute("data-test-id")
     || element.getAttribute("data-cy")
     || null;
-  const isPasswordInput = element.tagName === "INPUT"
+  const isSecretInput = element.tagName === "INPUT"
     && typeof element.type === "string"
-    && element.type.toLowerCase() === "password";
-  const value = isPasswordInput
+    && (element.type.toLowerCase() === "password" || element.type.toLowerCase() === "hidden");
+  const value = isSecretInput
     ? null
     : "value" in element ? String(element.value).slice(0, 300) : null;
-  // Markup the agent can match against source. Password and hidden input
-  // values (CSRF tokens) are dropped; a large subtree keeps only its open tag.
-  const html = (() => {
-    try {
-      const scrub = (node) => {
-        if (node.localName !== "input") return;
-        const type = String(node.getAttribute("type") || "").toLowerCase();
-        if (type === "password" || type === "hidden") node.removeAttribute("value");
-      };
-      const descendants = element.getElementsByTagName("*").length;
-      const clone = element.cloneNode(descendants <= 300);
-      scrub(clone);
-      for (const input of Array.from(clone.querySelectorAll ? clone.querySelectorAll("input") : [])) scrub(input);
-      const markup = descendants <= 300
-        ? clone.outerHTML
-        : clone.outerHTML.replace(/<\/[^>]+>$/, "") + "<!-- " + descendants + " descendants omitted -->";
-      return markup.length > 2000 ? markup.slice(0, 2000) + "<!-- truncated -->" : markup;
-    } catch {
-      return null;
-    }
-  })();
-  // The computed values that decide how the element looks, minus defaults.
-  const computedStyle = (() => {
-    try {
-      const style = window.getComputedStyle(element);
-      const out = {};
-      const props = [
-        "display", "position", "box-sizing", "width", "height", "margin", "padding", "gap",
-        "flex-direction", "justify-content", "align-items", "grid-template-columns",
-        "color", "background-color", "background-image", "border", "border-radius", "box-shadow",
-        "font-family", "font-size", "font-weight", "line-height", "letter-spacing", "text-align",
-        "opacity", "z-index", "overflow", "cursor", "transform"
-      ];
-      const defaults = new Set(["", "none", "normal", "auto", "0px", "static", "visible", "rgba(0, 0, 0, 0)", "start", "content-box"]);
-      for (const prop of props) {
-        const propValue = style.getPropertyValue(prop).trim();
-        if (defaults.has(propValue) || propValue.startsWith("0px none")) continue;
-        if (prop === "opacity" && propValue === "1") continue;
-        if (prop === "flex-direction" && !/flex/.test(style.display)) continue;
-        if (prop === "font-weight" && propValue === "400") continue;
-        if (prop === "cursor" && propValue === "default") continue;
-        out[prop] = propValue;
-      }
-      return out;
-    } catch {
-      return null;
-    }
-  })();
-  // Where the element was written, as the page's own dev build reports it.
-  // Production builds carry none of this, so null is the common case there.
-  const frameworkSource = (() => {
-    try {
-      let host = element;
-      for (let hops = 0; host && hops < 10; hops += 1) {
-        const fiberKey = Object.keys(host).find((key) => key.startsWith("__reactFiber$") || key.startsWith("__reactInternalInstance$"));
-        if (fiberKey) {
-          const components = [];
-          let source = null;
-          let fiber = host[fiberKey];
-          for (let depth = 0; fiber && depth < 60; depth += 1) {
-            if (!source && fiber._debugSource && fiber._debugSource.fileName) {
-              source = {
-                file: fiber._debugSource.fileName,
-                line: fiber._debugSource.lineNumber ?? null,
-                column: fiber._debugSource.columnNumber ?? null,
-                confidence: "exact",
-                via: "react _debugSource"
-              };
-            }
-            // React 19 dropped _debugSource; the JSX call site lives in _debugStack.
-            if (!source && fiber._debugStack && typeof fiber._debugStack.stack === "string") {
-              for (const frame of fiber._debugStack.stack.split("\n").slice(1)) {
-                const match = frame.match(/\(?((?:https?|file|webpack[^:]*):\/\/[^\s)]+?):(\d+):(\d+)\)?\s*$/);
-                if (!match || /node_modules|react-dom|react_jsx|jsx-dev-runtime/.test(match[1])) continue;
-                let file = match[1].replace(/[?#].*$/, "");
-                try {
-                  if (/^https?:/.test(file)) file = new URL(file).pathname;
-                } catch {}
-                source = { file, line: Number(match[2]), column: Number(match[3]), confidence: "approximate", via: "react _debugStack (dev-server path, bundled line)" };
-                break;
-              }
-            }
-            const type = fiber.type;
-            if (type && typeof type !== "string" && components.length < 8) {
-              const name = type.displayName || type.name || (type.render && (type.render.displayName || type.render.name));
-              if (name && components[components.length - 1] !== name) components.push(name);
-            }
-            fiber = fiber.return;
-          }
-          return { framework: "react", componentStack: components, ...(source || {}) };
-        }
-        const vue = host.__vueParentComponent || (host.__vue__ && { type: host.__vue__.$options });
-        if (vue && vue.type && vue.type.__file) {
-          return { framework: "vue", file: vue.type.__file, line: null, confidence: "component-file", via: "vue __file", componentStack: [vue.type.name || vue.type.__name].filter(Boolean) };
-        }
-        const svelteLoc = host.__svelte_meta && host.__svelte_meta.loc;
-        if (svelteLoc && svelteLoc.file) {
-          return { framework: "svelte", file: svelteLoc.file, line: svelteLoc.line ?? null, column: svelteLoc.column ?? null, confidence: "approximate", via: "svelte __svelte_meta" };
-        }
-        host = host.parentElement;
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  })();
+  const html = elementHtmlFor(element);
+  const computedStyle = computedStyleFor(element);
+  const frameworkSource = frameworkSourceFor(element);
   return {
     tagName: element.tagName ? element.tagName.toLowerCase() : null,
     role: element.getAttribute("role"),
