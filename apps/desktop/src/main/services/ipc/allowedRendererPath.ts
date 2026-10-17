@@ -45,28 +45,39 @@ export const PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE = "Path is outside allowed direct
  *   has to be ignored, or a probe for `/outside/<name>` would tell the renderer
  *   whether that file exists.
  *
+ * Every refusal also runs the landing check, whether the file exists or not,
+ * and only after every directory has refused. A present target and a missing one
+ * therefore walk the same path components, so how long a rejection takes does
+ * not reveal which one it was.
+ *
  * Rejection behavior is unchanged: a path is accepted under exactly the same
  * conditions as before, so this narrows nothing and widens nothing. Only the
- * diagnosis changes.
+ * diagnosis and the work done to reach it change.
  */
 export function resolveWithinAllowedDirs(
   allowedDirs: readonly string[],
   candidate: string,
 ): string {
-  let ownRootFailure: unknown = null;
-  let sawEscape = false;
+  const refusals: Array<{ dir: string; error: unknown }> = [];
   for (const dir of allowedDirs) {
     try {
       return resolvePathWithinRoot(dir, candidate);
     } catch (error) {
-      if (isPathEscapeError(error)) {
+      refusals.push({ dir, error });
+    }
+  }
+  let ownRootFailure: unknown = null;
+  let sawEscape = false;
+  for (const { dir, error } of refusals) {
+    // Run for every refusal, so a present and a missing target walk the same way.
+    const landsOutside = escapesAllRootsWhenMissingAllowed(allowedDirs, dir, candidate);
+    if (isPathEscapeError(error)) {
+      sawEscape = true;
+    } else if (isLexicallyWithinRoot(dir, candidate)) {
+      if (landsOutside) {
         sawEscape = true;
-      } else if (isLexicallyWithinRoot(dir, candidate)) {
-        if (escapesAllRootsWhenMissingAllowed(allowedDirs, dir, candidate)) {
-          sawEscape = true;
-        } else if (ownRootFailure === null) {
-          ownRootFailure = error;
-        }
+      } else if (ownRootFailure === null) {
+        ownRootFailure = error;
       }
     }
   }

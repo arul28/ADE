@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE,
   resolveWithinAllowedDirs,
@@ -25,6 +25,27 @@ afterAll(() => {
 });
 
 const allowedDirs = [allowedDir, secondAllowedDir];
+
+// The refusal a candidate gets, and the paths `fs.lstatSync` was asked about
+// while producing it. Every walk stats each component in order, so two walks
+// over the same components ask about the same paths. The target's own name is
+// masked, because a present and a missing target cannot share one.
+function refusalOf(candidate: string): { message: string; walk: string[] } {
+  const lstat = vi.spyOn(fs, "lstatSync");
+  try {
+    let message = "";
+    try {
+      resolveWithinAllowedDirs(allowedDirs, candidate);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    const leaf = path.basename(candidate);
+    const walk = lstat.mock.calls.map(([target]) => String(target).split(leaf).join("<leaf>"));
+    return { message, walk };
+  } finally {
+    lstat.mockRestore();
+  }
+}
 
 describe("resolveWithinAllowedDirs", () => {
   it("accepts a file inside an allowed directory, in canonical form", () => {
@@ -160,6 +181,25 @@ describe("resolveWithinAllowedDirs", () => {
       .toThrow(`Path does not exist: ${path.join(intoSecond, "not-there.png")}`);
     expect(resolveWithinAllowedDirs(allowedDirs, path.join(intoSecond, "linked.txt")))
       .toBe(fs.realpathSync.native(linked));
+  });
+
+  // The timing half of the same oracle: refusing a missing name must not take a
+  // longer walk than refusing a present one. Both refusals answer with the
+  // allowlist message and walk the same path components.
+  it("refuses a present and a missing name behind a symlink that leaves the allowlist the same way", (ctx) => {
+    const walkEscapeDir = path.join(allowedDir, "walk-escape-dir");
+    try {
+      fs.symlinkSync(outsideDir, walkEscapeDir, "dir");
+    } catch {
+      ctx.skip();
+      return;
+    }
+    const present = refusalOf(path.join(walkEscapeDir, "secret.txt"));
+    const missing = refusalOf(path.join(walkEscapeDir, "not-there.png"));
+    expect(present.message).toBe(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+    expect(missing.message).toBe(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+    expect(present.walk.length, "the spy saw the walk").toBeGreaterThan(0);
+    expect(missing.walk).toEqual(present.walk);
   });
 
   // A root that is itself missing fails for a reason that has nothing to do

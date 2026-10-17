@@ -45,28 +45,39 @@ export const ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE = "rootPath is outside k
  *   failure has to be ignored, or a probe for `/outside/<name>` would tell the
  *   renderer whether that folder exists.
  *
+ * Every refusal also runs the landing check, whether the candidate exists or
+ * not, and only after every root has refused. A present target and a missing one
+ * therefore walk the same path components, so how long a rejection takes does
+ * not reveal which one it was.
+ *
  * Rejection behavior is unchanged: a root is accepted under exactly the same
  * conditions as before, so this narrows nothing and widens nothing. Only the
- * diagnosis changes.
+ * diagnosis and the work done to reach it change.
  */
 export function resolveWithinAllowedProjectRoots(
   allowedRoots: readonly string[],
   candidate: string,
 ): string {
-  let ownRootFailure: unknown = null;
-  let sawEscape = false;
+  const refusals: Array<{ root: string; error: unknown }> = [];
   for (const root of allowedRoots) {
     try {
       return resolvePathWithinRoot(root, candidate);
     } catch (error) {
-      if (isPathEscapeError(error)) {
+      refusals.push({ root, error });
+    }
+  }
+  let ownRootFailure: unknown = null;
+  let sawEscape = false;
+  for (const { root, error } of refusals) {
+    // Run for every refusal, so a present and a missing target walk the same way.
+    const landsOutside = escapesAllRootsWhenMissingAllowed(allowedRoots, root, candidate);
+    if (isPathEscapeError(error)) {
+      sawEscape = true;
+    } else if (isLexicallyWithinRoot(root, candidate)) {
+      if (landsOutside) {
         sawEscape = true;
-      } else if (isLexicallyWithinRoot(root, candidate)) {
-        if (escapesAllRootsWhenMissingAllowed(allowedRoots, root, candidate)) {
-          sawEscape = true;
-        } else if (ownRootFailure === null) {
-          ownRootFailure = error;
-        }
+      } else if (ownRootFailure === null) {
+        ownRootFailure = error;
       }
     }
   }
