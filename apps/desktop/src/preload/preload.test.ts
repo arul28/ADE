@@ -9109,6 +9109,120 @@ describe("per-chat runtime routing", () => {
     }
   });
 
+  it("keeps a re-anchoring pinned session feed on the live head when the anchor reports no head", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, invoke } = await mountBridge();
+      const streamRequests: Array<Record<string, unknown>> = [];
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.runtimeEventsRelease) return { released: 0 };
+        if (channel !== IPC.remoteRuntimeStreamEvents) {
+          throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+        }
+        streamRequests.push((arg as { request: Record<string, unknown> }).request);
+        // The first anchor has no head to give (a subscription still opening).
+        // Read from cursor 0 without `replay: false`, the pump would replay the
+        // buffer's oldest events; the next anchor reports the real head.
+        return streamRequests.length === 1
+          ? { events: [], nextCursor: 0, hasMore: false, eventEpoch: "epoch-b" }
+          : { events: [], nextCursor: 40, hasMore: false, eventEpoch: "epoch-b" };
+      });
+
+      const unsubscribe = bridge.sessions.onChanged(vi.fn(), machineB);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(streamRequests).toEqual([
+        { cursor: 0, limit: 200, replay: false },
+        { cursor: 0, limit: 200, replay: false },
+        { cursor: 40, limit: 200 },
+      ]);
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a re-anchoring pinned PTY feed on replay:false when the anchor reports no head", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, invoke } = await mountBridge();
+      const streamRequests: Array<Record<string, unknown>> = [];
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.runtimeEventsRelease) return { released: 0 };
+        if (channel !== IPC.remoteRuntimeStreamEvents) {
+          throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+        }
+        streamRequests.push((arg as { request: Record<string, unknown> }).request);
+        return streamRequests.length === 1
+          ? { events: [], nextCursor: 0, hasMore: false, eventEpoch: "epoch-b" }
+          : { events: [], nextCursor: 40, hasMore: false, eventEpoch: "epoch-b" };
+      });
+
+      const removeData = bridge.pty.onData(vi.fn(), machineB);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(streamRequests).toEqual([
+        { cursor: 0, limit: 200, category: "pty", replay: false },
+        { cursor: 0, limit: 200, category: "pty", replay: false },
+        { cursor: 40, limit: 200, category: "pty" },
+      ]);
+      removeData();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops a local pinned session feed's events stamped before it started", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-01T12:00:00.000Z"));
+    try {
+      const { bridge, invoke } = await mountBridge(machineB);
+      const sessionCreated = (id: number, timestamp: string, sessionId: string) => ({
+        id,
+        timestamp,
+        category: "session",
+        payload: {
+          type: "terminal_session_changed",
+          event: { sessionId, reason: "created" },
+        },
+      });
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.runtimeEventsRelease) return { released: 0 };
+        if (channel !== IPC.localRuntimeStreamEvents) {
+          throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+        }
+        const request = (arg as { request: Record<string, unknown> }).request;
+        if (request.replay === false) {
+          return { events: [], nextCursor: 5, hasMore: false, eventEpoch: "epoch-a" };
+        }
+        return {
+          events: [
+            // Stamped two minutes before this pump started: history it never read.
+            sessionCreated(6, "2026-08-01T11:58:00.000Z", "shell-old"),
+            sessionCreated(7, "2026-08-01T12:00:00.500Z", "shell-new"),
+          ],
+          nextCursor: 7,
+          hasMore: false,
+          eventEpoch: "epoch-a",
+        };
+      });
+
+      const onChanged = vi.fn();
+      const unsubscribe = bridge.sessions.onChanged(onChanged, machineA);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(onChanged.mock.calls.map(([event]) => event.sessionId)).toEqual(["shell-new"]);
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("delivers a remote pinned chat's pushed events at once, once, and re-polls on a restarted runtime's push", async () => {
     vi.useFakeTimers();
     try {

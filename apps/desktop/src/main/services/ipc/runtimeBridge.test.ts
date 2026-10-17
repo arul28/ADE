@@ -1150,6 +1150,183 @@ describe("registerRuntimeBridge", () => {
       expect(subscriptions[1].cleanup).toHaveBeenCalledTimes(1);
     });
 
+    // A re-subscribed pump anchors with `replay: false`. Answering it with cursor 0
+    // because the subscription already exists makes the pump read the buffer from
+    // its oldest event, which is how a closed Tools pane reopened on old output.
+    const runtimeEventNamed = (id: number) => ({
+      id,
+      timestamp: "2026-08-01T00:00:00.000Z",
+      category: "runtime" as const,
+      payload: {
+        type: "terminal_session_changed",
+        event: { sessionId: `shell-${id}`, reason: "meta-updated" },
+      },
+    });
+
+    it("anchors a re-subscribed remote pump on the live head, not on cursor 0", async () => {
+      remoteRegistryGetMock.mockReturnValue(target);
+      const pushes: Array<(event: unknown, eventEpoch?: string | null) => void> = [];
+      remoteSubscribeEventsForTargetMock.mockImplementation(
+        async (
+          _target: unknown,
+          _projectId: string,
+          _request: unknown,
+          onEvent: (event: unknown, eventEpoch?: string | null) => void,
+          _onEnded: unknown,
+          onSubscribed?: (result: Record<string, unknown>) => void,
+        ) => {
+          pushes.push(onEvent);
+          onSubscribed?.({ events: [], nextCursor: 7, hasMore: false, eventEpoch: "epoch-remote-1" });
+          return vi.fn();
+        },
+      );
+      const { pool } = recordingLocalRuntimePool();
+      registerWithPool(pool);
+      const streamRemote = ipcHandlers.get(IPC.remoteRuntimeStreamEvents)!;
+      const active = destroyableSender(217);
+      const anchor = () =>
+        streamRemote(eventForSender(active.webContents), {
+          id: target.id,
+          projectId: "project-1",
+          request: { cursor: 0, limit: 200, replay: false },
+        });
+
+      await expect(anchor()).resolves.toEqual({
+        events: [],
+        nextCursor: 7,
+        hasMore: false,
+        eventEpoch: "epoch-remote-1",
+      });
+      // The live stream moves on past its head before the next pump starts.
+      pushes[0](runtimeEventNamed(8), "epoch-remote-1");
+      pushes[0](runtimeEventNamed(9), "epoch-remote-1");
+      expect(active.webContents.send).toHaveBeenCalledTimes(2);
+
+      await expect(anchor()).resolves.toEqual({
+        events: [],
+        nextCursor: 9,
+        hasMore: false,
+        eventEpoch: "epoch-remote-1",
+      });
+      expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledTimes(1);
+      expect(remoteStreamEventsForTargetMock).not.toHaveBeenCalled();
+    });
+
+    it("holds a pump that anchors while another is still opening until the head is known", async () => {
+      remoteRegistryGetMock.mockReturnValue(target);
+      let finishOpening!: () => void;
+      const opened = new Promise<void>((resolve) => {
+        finishOpening = resolve;
+      });
+      remoteSubscribeEventsForTargetMock.mockImplementation(
+        async (
+          _target: unknown,
+          _projectId: string,
+          _request: unknown,
+          _onEvent: unknown,
+          _onEnded: unknown,
+          onSubscribed?: (result: Record<string, unknown>) => void,
+        ) => {
+          await opened;
+          onSubscribed?.({ events: [], nextCursor: 7, hasMore: false, eventEpoch: "epoch-remote-1" });
+          return vi.fn();
+        },
+      );
+      const { pool } = recordingLocalRuntimePool();
+      registerWithPool(pool);
+      const streamRemote = ipcHandlers.get(IPC.remoteRuntimeStreamEvents)!;
+      const active = destroyableSender(218);
+      const anchor = () =>
+        streamRemote(eventForSender(active.webContents), {
+          id: target.id,
+          projectId: "project-1",
+          request: { cursor: 0, limit: 200, replay: false },
+        });
+
+      // Two pumps start in the same tick, as the per-listener pumps do.
+      const opening = anchor();
+      const joining = anchor();
+      finishOpening();
+
+      await expect(opening).resolves.toMatchObject({ nextCursor: 7 });
+      await expect(joining).resolves.toMatchObject({ nextCursor: 7 });
+      expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses an anchor that joins a subscription which failed to open", async () => {
+      remoteRegistryGetMock.mockReturnValue(target);
+      let settleOpening!: (error?: Error) => void;
+      const opening = new Promise<Error | undefined>((resolve) => {
+        settleOpening = resolve;
+      });
+      remoteSubscribeEventsForTargetMock.mockImplementation(async () => {
+        const error = await opening;
+        if (error) throw error;
+        return vi.fn();
+      });
+      const { pool } = recordingLocalRuntimePool();
+      registerWithPool(pool);
+      const streamRemote = ipcHandlers.get(IPC.remoteRuntimeStreamEvents)!;
+      const active = destroyableSender(220);
+      const anchor = () =>
+        streamRemote(eventForSender(active.webContents), {
+          id: target.id,
+          projectId: "project-1",
+          request: { cursor: 0, limit: 200, replay: false },
+        });
+
+      const outcomes = Promise.allSettled([anchor(), anchor()]);
+      settleOpening(new Error("runtime went away"));
+
+      // Answering 0 here would hand the joiner a replay of the whole buffer.
+      const settled = await outcomes;
+      expect(settled.map((outcome) => outcome.status)).toEqual(["rejected", "rejected"]);
+      expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("anchors a re-subscribed local pump on the live head, not on cursor 0", async () => {
+      const pushes: Array<(event: unknown, eventEpoch?: string | null) => void> = [];
+      const pool = {
+        subscribeEventsForRoot: vi.fn(
+          async (
+            _rootPath: string,
+            _request: Record<string, unknown>,
+            onEvent: (event: unknown, eventEpoch?: string | null) => void,
+            _onEnded: unknown,
+            onSubscribed?: (result: Record<string, unknown>) => void,
+          ) => {
+            pushes.push(onEvent);
+            onSubscribed?.({ nextCursor: 7, hasMore: false, eventEpoch: "epoch-local-1" });
+            return vi.fn();
+          },
+        ),
+        streamEventsForRoot: vi.fn(),
+      };
+      const stream = registerWithPool(pool);
+      const active = destroyableSender(219);
+      const anchor = () =>
+        stream(eventForSender(active.webContents), {
+          rootPath: "/repo",
+          request: { cursor: 0, limit: 200, replay: false },
+        });
+
+      await expect(anchor()).resolves.toEqual({
+        events: [],
+        nextCursor: 7,
+        hasMore: false,
+        eventEpoch: "epoch-local-1",
+      });
+      pushes[0](runtimeEventNamed(8), "epoch-local-1");
+
+      await expect(anchor()).resolves.toMatchObject({
+        events: [],
+        nextCursor: 8,
+        eventEpoch: "epoch-local-1",
+      });
+      expect(pool.subscribeEventsForRoot).toHaveBeenCalledTimes(1);
+      expect(pool.streamEventsForRoot).not.toHaveBeenCalled();
+    });
+
     it("stops the idle sweeper when an ended subscription empties the registry", async () => {
       const previous = process.env.ADE_DISABLE_REMOTE_AUTOCONNECT;
       process.env.ADE_DISABLE_REMOTE_AUTOCONNECT = "1";

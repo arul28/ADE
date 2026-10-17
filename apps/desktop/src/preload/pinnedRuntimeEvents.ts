@@ -228,11 +228,15 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
     let eventEpoch: string | null = null;
     let replaySuppressed = suppressReplay;
     let consecutiveFailures = 0;
+    // Only a local pin's timestamps come from this machine's clock. A remote
+    // pump's cutoff would compare against another machine's clock, so it stays off.
+    const startedAtMs = pin.kind === "local" ? Date.now() : 0;
     // An event can arrive twice: pushed, then again in the next poll's batch.
     const seenEventIds = new Set<number>();
     retainRuntimeEventSubscription(pin);
 
     const deliver = (event: RemoteRuntimeBufferedEvent): void => {
+      if (suppressReplay && isPinnedRuntimeEventStale(startedAtMs, event.timestamp)) return;
       if (!rememberPinnedRuntimeEventId(seenEventIds, event.id)) return;
       dispatch(event);
     };
@@ -298,7 +302,9 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
           cursor = Number.isFinite(batch.nextCursor)
             ? Math.max(0, Math.floor(batch.nextCursor))
             : cursor;
-          if (request.replay === false) replaySuppressed = false;
+          // A zero or missing anchor names no head. Clearing suppression on it would
+          // read the buffer from its oldest event, so the next poll anchors again.
+          if (request.replay === false && cursor > 0) replaySuppressed = false;
           for (const event of batch.events ?? []) deliver(event);
           delay = pinnedRuntimeBatchDelayMs(batch);
         }
@@ -530,7 +536,8 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
         state.cursor = Number.isFinite(batch.nextCursor)
           ? Math.max(state.cursor, 0, Math.floor(batch.nextCursor))
           : state.cursor;
-        if (request.replay === false) state.replaySuppressed = false;
+        // Same rule as the listener pump: a zero anchor keeps suppression on.
+        if (request.replay === false && state.cursor > 0) state.replaySuppressed = false;
         if (batch.gap === true) resetPinnedPtyEventDedup(state);
         for (const event of batch.events ?? []) {
           dispatchPinnedPtyRuntimeEvent(state, event);

@@ -273,6 +273,15 @@ type RuntimeEventSubscriptionInit = Pick<
   "nextCursor" | "hasMore" | "eventEpoch" | "gap" | "oldestCursor"
 >;
 
+/** Where a live subscription has got to, for a `replay: false` anchor to read. */
+type RuntimeEventHead = {
+  /** The subscription's position at open, then the newest event id it was handed. */
+  nextCursor: number;
+  eventEpoch: string | null;
+  /** Settles when the subscribe call does, and rejects if it failed. */
+  opened: Promise<void>;
+};
+
 type RuntimeEventSubscribe = (
   onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
   onEnded: () => void,
@@ -826,37 +835,65 @@ export function registerRuntimeBridge({
     }
   };
 
+  // The head of every live subscription this registration opened. Weak, so the
+  // subscription object alone decides how long its head is kept.
+  const runtimeEventHeads = new WeakMap<RuntimeEventWindowSubscription, RuntimeEventHead>();
+
+  // An anchor on a subscription that is already open reports the head it has
+  // tracked, after waiting for it to finish opening. Cursor 0 is never the answer:
+  // the pump reads it as "replay the buffer from its oldest event".
+  const runtimeEventSubscriptionHead = async (
+    subscription: RuntimeEventWindowSubscription,
+  ): Promise<RuntimeEventSubscriptionInit> => {
+    const head = runtimeEventHeads.get(subscription);
+    if (!head) throw new Error("Runtime event subscription has no recorded head.");
+    await head.opened;
+    return { nextCursor: head.nextCursor, hasMore: false, eventEpoch: head.eventEpoch };
+  };
+
   const ensureRuntimeEventSubscription = async (
     sender: WebContents,
     bindingKey: string,
     requestKey: string,
     subscribe: RuntimeEventSubscribe,
     fileWatchRuntimeKey: string,
+    anchor: boolean,
   ): Promise<RuntimeEventSubscriptionInit | null> => {
     // `requestKey` is prefixed with `bindingKey`, so an identical request key is
     // an identical binding: this pump already owns a live subscription and only
-    // needs its idle-expiry clock refreshed.
+    // needs its idle-expiry clock refreshed. An anchor also needs that
+    // subscription's head, which is what it answers with.
     const existing = refreshRuntimeEventSubscription(sender.id, requestKey);
-    if (existing) return null;
+    if (existing) return anchor ? await runtimeEventSubscriptionHead(existing) : null;
     const subscription = addRuntimeEventSubscription({
       sender,
       bindingKey,
       requestKey,
       cleanup: null,
     });
+    const head: RuntimeEventHead = { nextCursor: 0, eventEpoch: null, opened: Promise.resolve() };
+    runtimeEventHeads.set(subscription, head);
     const onEnded = () => {
       removeRuntimeEventSubscription(sender.id, requestKey, subscription);
       notePageRuntimeDisconnected(sender.id, fileWatchRuntimeKey);
     };
     let subscriptionInit: RuntimeEventSubscriptionInit | null = null;
     try {
-      const cleanup = await subscribe(
-        (event, eventEpoch) => sendRuntimeEvent(subscription, event, eventEpoch),
+      const subscribed = subscribe(
+        (event, eventEpoch) => {
+          head.nextCursor = Math.max(head.nextCursor, event.id);
+          sendRuntimeEvent(subscription, event, eventEpoch);
+        },
         onEnded,
         (result) => {
           subscriptionInit = result;
+          head.nextCursor = Math.max(head.nextCursor, result.nextCursor);
+          head.eventEpoch = result.eventEpoch ?? null;
         },
       );
+      head.opened = subscribed.then(() => undefined);
+      void head.opened.catch(() => {});
+      const cleanup = await subscribed;
       if (
         !attachRuntimeEventSubscriptionCleanup(
           sender.id,
@@ -1738,6 +1775,7 @@ export function registerRuntimeBridge({
           requestKey,
           subscribe,
           localFileWatchRuntimeKey(rootPath),
+          request.replay === false,
         );
         return {
           events: [],
@@ -1799,6 +1837,7 @@ export function registerRuntimeBridge({
           requestKey,
           subscribe,
           remoteFileWatchRuntimeKey(target.id, projectId),
+          true,
         );
         return {
           events: [],
@@ -1824,6 +1863,7 @@ export function registerRuntimeBridge({
         requestKey,
         subscribe,
         remoteFileWatchRuntimeKey(target.id, projectId),
+        false,
       ).catch(() => {});
       return result;
     },
