@@ -875,9 +875,6 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
         .object(["id": .string("mode"), "currentValue": .string("plan")]),
       ]),
     ])
-    let copilotPlan = RemoteJSONValue.object([
-      "currentModeId": .string("https://agentclientprotocol.com/protocol/session-modes#plan"),
-    ])
     let acpBooleanMode = RemoteJSONValue.object([
       "configOptions": .array([
         .object(["id": .string("mode"), "currentValue": .bool(true)]),
@@ -901,7 +898,8 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       ("OpenCode legacy permission", makeChatSummary(status: "active", awaitingInput: false, provider: "opencode", interactionMode: "plan", permissionMode: "plan"), false),
       ("Qwen native mode", makeChatSummary(status: "active", awaitingInput: false, provider: "qwen", acpConfigSnapshot: acpModePlan), true),
       ("Kimi mode option", makeChatSummary(status: "active", awaitingInput: false, provider: "kimi", acpConfigSnapshot: acpConfigOptionPlan), true),
-      ("Copilot protocol mode", makeChatSummary(status: "active", awaitingInput: false, provider: "copilot", acpConfigSnapshot: copilotPlan), true),
+      ("Copilot permission level", makeChatSummary(status: "active", awaitingInput: false, provider: "copilot", copilotPermissionMode: "plan"), true),
+      ("Copilot ignores an ACP mode snapshot", makeChatSummary(status: "active", awaitingInput: false, provider: "copilot", copilotPermissionMode: "ask", acpConfigSnapshot: acpModePlan), false),
       ("ACP boolean option", makeChatSummary(status: "active", awaitingInput: false, provider: "qwen", acpConfigSnapshot: acpBooleanMode), false),
       ("Grok has no trustworthy mode", makeChatSummary(status: "active", awaitingInput: false, provider: "grok", acpConfigSnapshot: acpModePlan), false),
       ("Pi has no provider mode", makeChatSummary(status: "active", awaitingInput: false, provider: "pi", interactionMode: "plan"), false),
@@ -1335,10 +1333,11 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     cursorModeSnapshot: RemoteJSONValue? = nil,
     cursorModeId: String? = nil,
     cursorModeIdWasCleared: Bool? = nil,
+    copilotPermissionMode: String? = nil,
     acpConfigSnapshot: RemoteJSONValue? = nil,
     acpConfigSnapshotWasCleared: Bool? = nil
   ) -> AgentChatSessionSummary {
-    AgentChatSessionSummary(
+    var summary = AgentChatSessionSummary(
       sessionId: "chat-1",
       laneId: "lane-1",
       provider: provider,
@@ -1386,6 +1385,8 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       threadId: nil,
       requestedCwd: nil
     )
+    summary.copilotPermissionMode = copilotPermissionMode
+    return summary
   }
 
   // MARK: - Codex web_search results contract (desktop chat.ts parity)

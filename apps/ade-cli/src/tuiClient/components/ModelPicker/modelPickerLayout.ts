@@ -33,14 +33,14 @@ const RAIL_PROVIDER_ORDER: readonly AdeCodeProvider[] = PROVIDER_ORDER;
 /**
  * The ACP providers. They report through the same optional
  * `availableProviders` / `providerConnections` / `models` slots, so one list
- * drives the greying arm instead of four copies of it. Mirrors
- * `ACP_PICKER_FAMILIES` in desktop's useProviderAuthStatus.
+ * drives the greying arm instead of four copies of it. Copilot is an SDK
+ * provider now and reports the way Droid does. Mirrors `ACP_PICKER_FAMILIES` in
+ * desktop's useProviderAuthStatus.
  */
-const ACP_PROVIDERS: readonly Extract<AdeCodeProvider, "qwen" | "kimi" | "grok" | "copilot" | "devin">[] = [
+const ACP_PROVIDERS: readonly Extract<AdeCodeProvider, "qwen" | "kimi" | "grok" | "devin">[] = [
   "qwen",
   "kimi",
   "grok",
-  "copilot",
   "devin",
 ];
 
@@ -60,7 +60,7 @@ function providerSignInHint(provider: AdeCodeProvider): string {
 
 function providerModelsCount(status: AiSettingsStatus | null | undefined, provider: AdeCodeProvider): number {
   if (!status) return 0;
-  if (provider === "claude" || provider === "codex" || provider === "muse" || provider === "cursor" || provider === "droid" || isAcpProvider(provider)) {
+  if (provider === "claude" || provider === "codex" || provider === "muse" || provider === "cursor" || provider === "droid" || provider === "copilot" || isAcpProvider(provider)) {
     return status.models?.[provider]?.length ?? 0;
   }
   if (provider === "pi") return status.piInstallation?.availableModelIds.length ?? 0;
@@ -103,7 +103,7 @@ export function modelPickerProviderAuthStatus(
     }
     return "unavailable";
   }
-  if (provider === "codex" || provider === "muse" || provider === "droid") {
+  if (provider === "codex" || provider === "muse" || provider === "droid" || provider === "copilot") {
     const connection = status.providerConnections?.[provider];
     if (connection?.authAvailable || connection?.runtimeAvailable || status.availableProviders?.[provider] === true || providerModelsCount(status, provider) > 0) {
       return "ready";
@@ -215,7 +215,7 @@ function entriesFromCatalog(
             : null;
           const catalogSubProvider = family === "pi"
             ? subsection.label || model.providerName || provider.displayName || providerLabel(family)
-            : family === "cursor" || family === "droid"
+            : family === "cursor" || family === "droid" || family === "copilot"
             ? subsection.label || model.providerName || provider.displayName || undefined
             : family === "claude" || family === "codex" || isAcpProvider(family)
               // Single-vendor rails: one tab named after the provider, rather
@@ -225,7 +225,7 @@ function entriesFromCatalog(
               : model.providerName || provider.displayName || subsection.label || undefined;
           const catalogSubProviderKey = family === "pi"
             ? subsection.key || model.providerId || provider.key || family
-            : family === "cursor" || family === "droid"
+            : family === "cursor" || family === "droid" || family === "copilot"
             ? subsection.key || model.providerId || provider.key || undefined
             : family === "claude" || family === "codex" || isAcpProvider(family)
               ? model.credentialId || family

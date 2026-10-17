@@ -457,6 +457,9 @@ struct ChatLaunchChatConfig: Equatable {
   var opencodePermissionMode: String? = nil
   var droidPermissionMode: String? = nil
   var musePermissionMode: String? = nil
+  var copilotPermissionMode: String? = nil
+  var copilotContextTier: String? = nil
+  var copilotAutoTier: String? = nil
   var cursorModeId: String? = nil
 }
 
@@ -550,6 +553,9 @@ extension ChatLaunchRequest {
         opencodePermissionMode: wire.opencodePermissionMode,
         droidPermissionMode: wire.droidPermissionMode,
         musePermissionMode: wire.musePermissionMode,
+        copilotPermissionMode: wire.copilotPermissionMode,
+        copilotContextTier: wire.copilotContextTier,
+        copilotAutoTier: wire.copilotAutoTier,
         cursorModeId: wire.cursorModeId
       ),
       projectId: projectId,

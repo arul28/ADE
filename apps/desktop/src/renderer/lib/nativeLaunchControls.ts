@@ -96,6 +96,9 @@ export function summarizeNativeControls(
   | "codexConfigSource"
   | "opencodePermissionMode"
   | "droidPermissionMode"
+  | "copilotPermissionMode"
+  | "copilotContextTier"
+  | "copilotAutoTier"
   | "musePermissionMode"
   | "permissionMode"
   | "cursorModeId"
@@ -169,6 +172,18 @@ export function summarizeNativeControls(
       permissionMode: controls.interactionMode === "plan"
         ? "plan"
         : legacyPermissionModeFromMusePermissionMode(controls.musePermissionMode),
+    };
+  }
+  if (provider === "copilot") {
+    const copilotMode = controls.copilotPermissionMode ?? "ask";
+    return {
+      copilotPermissionMode: copilotMode,
+      permissionMode: copilotMode === "plan" ? "plan"
+        : copilotMode === "full-auto" ? "full-auto"
+          : copilotMode === "auto-edit" || copilotMode === "assisted" ? "edit"
+            : "default",
+      copilotContextTier: controls.copilotContextTier ?? "default",
+      copilotAutoTier: controls.copilotAutoTier ?? null,
     };
   }
   // Pi's native permission field IS `permissionMode` — it has no provider
@@ -269,6 +284,12 @@ export function applyUnifiedPermissionToNativeControls(
   if (provider === "droid") {
     const droidPermissionMode = droidPermissionModeFromLegacyPermissionMode(mode) ?? "auto-high";
     return { ...next, droidPermissionMode };
+  }
+
+  if (provider === "copilot") {
+    const copilotPermissionMode: NonNullable<NativeControlState["copilotPermissionMode"]> =
+      mode === "plan" ? "plan" : mode === "edit" ? "auto-edit" : mode === "full-auto" ? "full-auto" : "ask";
+    return { ...next, copilotPermissionMode };
   }
 
   if (provider === "muse") {

@@ -23,6 +23,7 @@ import {
   isValidMcpRegistryName,
   mcpOAuthTokenState,
   mcpOAuthVaultKey,
+  mcpRegistryState,
   mcpSecretVaultKey,
   mcpSecretVaultKeyPrefix,
   mcpSecretVaultKeys,
@@ -80,6 +81,61 @@ const REFRESH_WITHIN_MS = 15 * 60 * 1000;
 const RENEW_EVERY_MS = 5 * 60 * 1000;
 /** How long one "does this server want a sign-in" answer is reused. */
 const PROBE_TTL_MS = 10 * 60 * 1000;
+const renewingMcpOAuthTokens = new Map<string, Promise<McpOAuthToken>>();
+
+export function createMcpRegistryAuthTokenResolver(args: {
+  adeHome: string;
+  readSecret: (key: string) => string | null | Promise<string | null>;
+  writeSecret: (key: string, value: string) => boolean | Promise<boolean>;
+  logger?: { warn: (event: string, meta?: Record<string, unknown>) => void } | null;
+  fetch?: McpFetch;
+}): (serverUrl: string) => Promise<{ accessToken?: string; expiresIn?: number; registryConfigured: boolean }> {
+  const fetchImpl = args.fetch ?? fetch;
+  return async (serverUrl) => {
+    const url = serverUrl.trim();
+    if (!url) return { registryConfigured: false };
+    try {
+      const { cached } = readCachedMcpRegistry(args.adeHome, null);
+      if (!cached) return { registryConfigured: false };
+      const server = cached.servers.find((candidate) => candidate.url === url);
+      if (!server) return { registryConfigured: false };
+      if (mcpRegistryState(server, { machine: cached.off.machine, project: cached.off.project }) !== "on") {
+        return { registryConfigured: true };
+      }
+      const key = mcpOAuthVaultKey(server.name);
+      const token = parseMcpOAuthToken(await args.readSecret(key));
+      if (!token || mcpOAuthTokenState(token, server) === "none") return { registryConfigured: true };
+      let current = token;
+      if (token.refreshToken && token.expiresAt && Date.parse(token.expiresAt) - Date.now() < REFRESH_WITHIN_MS) {
+        let pending = renewingMcpOAuthTokens.get(key);
+        if (!pending) {
+          pending = (async () => {
+            const refreshed = await refreshMcpOAuthToken(token, fetchImpl);
+            if (typeof refreshed === "string") {
+              args.logger?.warn("mcp_registry.oauth_refresh_failed", { reason: refreshed });
+              return token;
+            }
+            if (await args.writeSecret(key, JSON.stringify(refreshed))) return refreshed;
+            args.logger?.warn("mcp_registry.oauth_refresh_not_saved", { server: server.name });
+            return token;
+          })().finally(() => renewingMcpOAuthTokens.delete(key));
+          renewingMcpOAuthTokens.set(key, pending);
+        }
+        current = await pending;
+      }
+      if (mcpOAuthTokenState(current, server) !== "valid") return { registryConfigured: true };
+      const expiresIn = current.expiresAt
+        ? Math.max(0, Math.ceil((Date.parse(current.expiresAt) - Date.now()) / 1000))
+        : 3600;
+      return { accessToken: current.accessToken, expiresIn, registryConfigured: true };
+    } catch (error) {
+      args.logger?.warn("mcp_registry.oauth_chat_lookup_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { registryConfigured: false };
+    }
+  };
+}
 
 const INVALID_SECRET: McpRegistryResult<null> = {
   ok: false,
@@ -136,8 +192,6 @@ export function createMcpRegistryService(options: McpRegistryServiceOptions) {
 
   // One renewal per vault key at a time. A server that rotates refresh tokens
   // treats a second use of the old one as a replay and can revoke the grant.
-  const renewing = new Map<string, Promise<McpOAuthToken>>();
-
   /** The server's stored sign-in, renewed first when it is due. */
   const currentSignIn = async (server: McpRegistryServer): Promise<McpRegistryResult<McpOAuthToken | null>> => {
     const key = mcpOAuthVaultKey(server.name);
@@ -148,7 +202,7 @@ export function createMcpRegistryService(options: McpRegistryServiceOptions) {
       || Date.parse(token.expiresAt) - Date.now() >= REFRESH_WITHIN_MS) {
       return { ok: true, value: token };
     }
-    let pending = renewing.get(key);
+    let pending = renewingMcpOAuthTokens.get(key);
     if (!pending) {
       pending = (async () => {
         const renewed = await refreshMcpOAuthToken(token, fetchImpl);
@@ -162,8 +216,8 @@ export function createMcpRegistryService(options: McpRegistryServiceOptions) {
         if (saved.ok) return renewed;
         options.logger?.warn("mcp_registry.oauth_refresh_not_saved", { reason: saved.message });
         return token;
-      })().finally(() => renewing.delete(key));
-      renewing.set(key, pending);
+      })().finally(() => renewingMcpOAuthTokens.delete(key));
+      renewingMcpOAuthTokens.set(key, pending);
     }
     return { ok: true, value: await pending };
   };

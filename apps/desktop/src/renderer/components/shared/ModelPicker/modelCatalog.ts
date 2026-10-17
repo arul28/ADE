@@ -473,6 +473,10 @@ export function descriptorsFromAgentChatModelCatalog(
                 ? { cursorCliVariants: base.cursorCliVariants }
                 : {}),
             ...(model.openCodeFast ? { openCodeFast: model.openCodeFast } : {}),
+            // Copilot reports its context tiers and window sizes per model.
+            ...(model.supportedContextTiers?.length ? { supportedContextTiers: model.supportedContextTiers } : {}),
+            ...(typeof model.contextWindow === "number" && model.contextWindow > 0 ? { contextWindow: model.contextWindow } : {}),
+            ...(typeof model.longContextWindow === "number" && model.longContextWindow > 0 ? { longContextWindow: model.longContextWindow } : {}),
             subProvider: useSubsectionAsProvider
               ? subsection.label || model.providerName || provider.displayName || undefined
               : model.providerName || provider.displayName || subsection.label || undefined,

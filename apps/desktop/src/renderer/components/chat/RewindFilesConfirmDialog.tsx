@@ -248,7 +248,7 @@ export function RewindFilesConfirmDialog({
       onOpenChange={(next) => {
         if (!next) onCancel();
       }}
-      title={contextRollback ? "Rewind Codex context" : "Undo file changes"}
+      title={contextRollback ? "Rewind chat context" : "Undo file changes"}
       description={
         <span className="rounded-md border border-amber-200/10 bg-amber-300/[0.06] px-2 py-0.5 font-mono text-[10px] text-amber-100/58">
           +{preview.insertions} / -{preview.deletions}
@@ -359,7 +359,7 @@ export function RewindFilesConfirmDialog({
 
           <div className="mt-4 rounded-md border border-fg/[0.055] bg-black/14 px-3 py-2 text-[12px] text-fg/48">
             {contextRollback
-              ? "Codex conversation context will roll back. Saved ADE transcript stays visible."
+              ? "The agent's conversation context will roll back. Saved ADE transcript stays visible."
               : "Conversation history is not affected."}
           </div>
     </Dialog>

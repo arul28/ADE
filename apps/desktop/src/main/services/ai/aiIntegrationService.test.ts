@@ -653,27 +653,27 @@ describe("aiIntegrationService", () => {
     });
     mockState.getCachedCliAuthStatuses.mockReturnValue([
       {
-        cli: "copilot",
+        cli: "qwen",
         installed: true,
-        path: "/usr/local/bin/copilot",
+        path: "/usr/local/bin/qwen",
         authenticated: false,
         verified: false,
       },
     ]);
     mockState.detectAllAuth.mockResolvedValue([]);
     mockState.probeAllAcpProviderAuth.mockResolvedValue({
-      copilot: { state: "ready", message: null },
+      qwen: { state: "ready", message: null },
     });
     const base = makeProviderConnections({ claude: false, codex: false, cursor: false, droid: false });
     mockState.buildProviderConnections.mockResolvedValue({
       ...base,
-      copilot: {
-        provider: "copilot",
+      qwen: {
+        provider: "qwen",
         authAvailable: true,
         runtimeDetected: true,
         runtimeAvailable: true,
         usageAvailable: false,
-        path: "/usr/local/bin/copilot",
+        path: "/usr/local/bin/qwen",
         blocker: null,
         lastCheckedAt: "2025-01-01T00:00:00.000Z",
         sources: [],
@@ -683,19 +683,13 @@ describe("aiIntegrationService", () => {
     const status = await service.getStatus({ force: true });
 
     expect(mockState.probeAllAcpProviderAuth).toHaveBeenCalledWith(expect.objectContaining({
-      providers: ["copilot"],
+      providers: ["qwen"],
       cwd: "/tmp/project",
     }));
-    expect(status.availableProviders.copilot).toBe(true);
-    expect(status.models.copilot?.map((model) => model.id)).toEqual([
-      "github-copilot/claude-sonnet-4.6",
-      "github-copilot/claude-opus-4.6",
-      "github-copilot/gpt-5.4",
-      "github-copilot/gpt-5.3-codex",
-    ]);
+    expect(status.availableProviders.qwen).toBe(true);
     expect(status.detectedAuth).toContainEqual(expect.objectContaining({
       type: "cli-subscription",
-      cli: "copilot",
+      cli: "qwen",
       authenticated: true,
       verified: true,
     }));

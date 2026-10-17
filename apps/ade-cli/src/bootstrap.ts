@@ -264,6 +264,7 @@ import {
 import { ADE_ACCENT_COLOR } from "../../desktop/src/shared/themeTokens";
 import type { AccountVaultStore } from "./services/account/accountVaultStore";
 import { MCP_SECRET_VAULT_KIND } from "../../desktop/src/shared/mcpRegistry";
+import { createMcpRegistryAuthTokenResolver } from "../../desktop/src/main/services/mcp/mcpRegistryService";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot, PrSummary } from "../../desktop/src/shared/types";
@@ -2317,6 +2318,12 @@ export async function createAdeRuntime(args: {
         machineAdeHome: resolveMachineAdeLayout().adeDir,
         // The MCP registry's secret values: the generic vault kind, account-wide.
         readAccountSecret: (vaultKey) => accountVaultStore?.get("all", MCP_SECRET_VAULT_KIND, vaultKey) ?? null,
+        resolveMcpAuthToken: createMcpRegistryAuthTokenResolver({
+          adeHome: resolveMachineAdeLayout().adeDir,
+          readSecret: (key) => accountVaultStore?.get("all", MCP_SECRET_VAULT_KIND, key) ?? null,
+          writeSecret: (key, value) => accountVaultStore?.set("all", MCP_SECRET_VAULT_KIND, key, value) ?? false,
+          logger,
+        }),
         runtimeBudget: chatRuntimeBudget,
         releaseChatBrowser,
         projectRoot,

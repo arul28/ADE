@@ -28,6 +28,7 @@ const NATIVE_COMPACT_PROVIDERS: Record<Exclude<AgentChatCompactProvider, AcpChat
   opencode: true,
   cursor: true,
   droid: true,
+  copilot: true,
   pi: true,
   muse: true,
 };

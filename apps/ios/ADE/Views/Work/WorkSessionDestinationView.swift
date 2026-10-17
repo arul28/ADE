@@ -1638,6 +1638,7 @@ struct WorkSessionDestinationView: View {
       onSelectRuntimeMode: selectRuntimeMode,
       onSelectEffort: selectReasoningEffort,
       onSelectCodexFastMode: selectCodexFastMode,
+      onSelectCopilotTiers: selectCopilotTiers,
       // Memberwise-init argument order follows property declaration order in
       // WorkChatSessionView, where onOpenParentSession sits after the model
       // controls.

@@ -17,7 +17,7 @@ import {
   describeProviderCredentialLine,
   shortCredentialSource,
 } from "./cliTools";
-import { ClaudeAuthActions, CodexAuthActions, DroidAuthActions } from "./bodies/CliAuthActions";
+import { ClaudeAuthActions, CodexAuthActions, DroidAuthActions, CopilotAuthActions } from "./bodies/CliAuthActions";
 import { CodexBody } from "./bodies/CodexBody";
 import { CursorAuthActions, cursorOauthSignedIn } from "./bodies/CursorBody";
 import { PiBody } from "./bodies/PiBody";
@@ -88,7 +88,7 @@ function probeFailedView(ctx: ProvidersViewContext, who: string): ProviderStatus
 }
 
 /** Status for the three providers ADE only detects on PATH. */
-function cliStatus(ctx: ProvidersViewContext, cli: "codex" | "droid" | "cursor"): ProviderStatusView {
+function cliStatus(ctx: ProvidersViewContext, cli: "codex" | "droid" | "cursor" | "copilot"): ProviderStatusView {
   if (statusProbeFailed(ctx)) return probeFailedView(ctx, cliTool(cli).label);
   if (ctx.isInitialCheckInFlight) return CHECKING;
   const tool = cliTool(cli);
@@ -226,6 +226,24 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
     ],
     credentialLine: (ctx) => credentialLine(ctx, "droid"),
     AuthActions: DroidAuthActions,
+  },
+  {
+    id: "copilot",
+    label: "GitHub Copilot",
+    tagline: "Uses your GitHub Copilot sign-in through the Copilot CLI and SDK.",
+    logo: (size) => <ProviderLogo family="github-copilot" size={size} />,
+    permissions: { family: "github-copilot", isCliWrapped: true, key: "copilot" },
+    status: (ctx) => cliStatus(ctx, "copilot"),
+    models: (ctx) => descriptorModels(ctx.status?.models?.copilot ?? []),
+    facts: (ctx) => {
+      const login = ctx.status?.detectedAuth?.find((entry) => entry.cli === "copilot")?.login;
+      return [
+        ...pathFacts(ctx.status?.providerConnections?.copilot?.path, "Binary"),
+        ...(login ? [{ label: "Signed in", value: login }] : []),
+      ];
+    },
+    credentialLine: (ctx) => shortCredentialSource(ctx.status?.providerConnections?.copilot ?? null),
+    AuthActions: CopilotAuthActions,
   },
   {
     id: "muse",

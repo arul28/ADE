@@ -16,7 +16,7 @@ struct WorkSessionHandoffSubject: Identifiable, Equatable {
 /// in `shared/types/chat.ts`.
 func workProviderSupportsHandoffFork(_ provider: String?) -> Bool {
   guard let provider = provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }
-  return ["claude", "codex", "opencode", "droid", "cursor", "muse"].contains(provider)
+  return ["claude", "codex", "opencode", "droid", "copilot", "cursor", "muse"].contains(provider)
 }
 
 // MARK: - Session menu: Hand off ▸

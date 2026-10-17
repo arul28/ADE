@@ -108,7 +108,7 @@ const PROVIDER_TINTS: Record<AgentChatCompactProvider, { ring: string; border: s
   qwen: { ring: "ring-indigo-400/25", border: "border-indigo-400/30" },
   kimi: { ring: "ring-teal-400/25", border: "border-teal-400/30" },
   grok: { ring: "ring-zinc-300/25", border: "border-zinc-300/30" },
-  copilot: { ring: "ring-emerald-400/25", border: "border-emerald-400/30" },
+  copilot: { ring: "ring-violet-400/25", border: "border-violet-400/30" },
   devin: { ring: "ring-purple-400/25", border: "border-purple-400/30" },
 };
 

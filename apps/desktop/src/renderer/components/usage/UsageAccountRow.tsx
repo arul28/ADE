@@ -406,6 +406,9 @@ function WindowMeter({
       >
         <span className="usage-limit-label" aria-hidden>
           {shortWindowLabel(segment.window)}
+          {segment.window.unlimited ? " · Unlimited" : segment.window.usedCount != null && segment.window.entitlementCount != null
+            ? ` · ${segment.window.usedCount}/${segment.window.entitlementCount}`
+            : ""}
         </span>
         {/* A thin neutral meter whose fill is the HEADROOM — the same quantity
             the number names, so "85% left" is a bar 85% full. It only takes a

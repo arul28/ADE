@@ -12,6 +12,7 @@ export default defineConfig({
     "main/main": "src/main/main.ts",
     "main/cursorSdkWorker": "src/main/services/chat/cursorSdkWorker.ts",
     "main/droidSdkWorker": "src/main/services/chat/droidSdkWorker.ts",
+    "main/copilotSdkWorker": "src/main/services/chat/copilotSdkWorker.ts",
     "main/piSdkWorker": "src/main/services/chat/piSdkWorker.ts",
     "main/ptyHostWorker": "src/main/services/pty/ptyHostWorker.ts",
     "main/usageLedgerWorker": "src/main/services/usage/usageLedgerWorkerEntry.ts",
@@ -26,7 +27,7 @@ export default defineConfig({
   target: "node18",
   // Electron provides the "electron" module at runtime; bundling the npm package breaks it.
   // node-pty is native and must be resolved at runtime for Electron.
-  external: ["electron", "node-pty", "@cursor/sdk", "@factory/droid-sdk"],
+  external: ["electron", "node-pty", "@cursor/sdk", "@factory/droid-sdk", "@github/copilot-sdk"],
   // @opencode/client is ESM-only (no "require" export); force-inline it so
   // the CJS bundle doesn't emit a bare require() that Node/Electron can't resolve.
   // It is a devDependency, so neither it nor its `effect` dependency ships.

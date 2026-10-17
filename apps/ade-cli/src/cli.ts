@@ -1936,6 +1936,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --droid-permission-mode <m>
                            Droid only: read-only | auto-low | auto-medium | auto-high | agi.
                            Aliases: --droid-autonomy, --autonomy.
+    --copilot-permission-mode <m>
+                           Copilot only: plan | ask | assisted | auto-edit | full-auto.
+    --copilot-context-tier <t>
+                           Copilot only: default | long_context (long context costs more per token).
+    --copilot-auto-tier <p> Copilot Auto only: efficiency | balance | intelligence.
     --fast                 Request fast service tier when supported.
     --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard  Disable fast service tier explicitly.
@@ -2289,6 +2294,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat list --include-automation --text
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --no-parent --reasoning-effort xhigh --no-fast --permissions full-auto
     $ ade chat create --personal --provider codex --model openai/gpt-5.6-sol --prompt "Plan my trip"
+    $ ade chat create --personal --provider copilot --model github-copilot/auto --copilot-auto-tier balance
     $ ade chat create --personal --provider claude --model anthropic/claude-opus-5 --arg-json mcpServers='{"docs":{"type":"http","url":"https://mcp.example/mcp"}}'
                                                     Inject caller-owned MCP servers into one chat. There is no typed
                                                     --mcp-server flag: the config is nested JSON, which --arg-json
@@ -2508,6 +2514,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --droid-permission-mode <m>
                             Droid only: read-only | auto-low | auto-medium | auto-high | agi.
                             Aliases: --droid-autonomy, --autonomy.
+    --copilot-permission-mode <m>
+                            Copilot only: plan | ask | assisted | auto-edit | full-auto.
+    --copilot-context-tier <t>
+                            Copilot only: default | long_context (long context costs more per token).
+    --copilot-auto-tier <p> Copilot Auto only: efficiency | balance | intelligence.
     --fast                  Request fast service tier when supported.
     --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard   Disable fast mode explicitly.
@@ -4006,6 +4017,52 @@ const DROID_PERMISSION_MODE_FLAGS = [
   "--droid-autonomy",
   "--autonomy",
 ];
+
+const COPILOT_PERMISSION_MODE_FLAGS = ["--copilot-permission-mode"] as const;
+const COPILOT_CONTEXT_TIER_FLAGS = ["--copilot-context-tier"] as const;
+const COPILOT_AUTO_TIER_FLAGS = ["--copilot-auto-tier"] as const;
+const COPILOT_PERMISSION_MODE_VALUES = ["plan", "ask", "assisted", "auto-edit", "full-auto"] as const;
+const COPILOT_CONTEXT_TIER_VALUES = ["default", "long_context"] as const;
+const COPILOT_AUTO_TIER_VALUES = ["efficiency", "balance", "intelligence"] as const;
+
+/**
+ * The Copilot-only chat flags. They mean something only for a Copilot chat, so
+ * any of them on another provider is refused rather than dropped. Each value is
+ * checked against the contract's own list.
+ */
+function readCopilotLaunchFlags(args: string[], provider: string): {
+  copilotPermissionMode?: (typeof COPILOT_PERMISSION_MODE_VALUES)[number];
+  copilotContextTier?: (typeof COPILOT_CONTEXT_TIER_VALUES)[number];
+  copilotAutoTier?: (typeof COPILOT_AUTO_TIER_VALUES)[number];
+} {
+  const permission = readValue(args, COPILOT_PERMISSION_MODE_FLAGS)?.trim().toLowerCase();
+  const context = readValue(args, COPILOT_CONTEXT_TIER_FLAGS)?.trim().toLowerCase();
+  const auto = readValue(args, COPILOT_AUTO_TIER_FLAGS)?.trim().toLowerCase();
+  if (permission == null && context == null && auto == null) return {};
+  if (provider !== "copilot") {
+    throw new CliUsageError("--copilot-permission-mode, --copilot-context-tier and --copilot-auto-tier apply to Copilot chats only.");
+  }
+  const flags: ReturnType<typeof readCopilotLaunchFlags> = {};
+  if (permission != null) {
+    if (!(COPILOT_PERMISSION_MODE_VALUES as readonly string[]).includes(permission)) {
+      throw new CliUsageError(`--copilot-permission-mode must be one of ${COPILOT_PERMISSION_MODE_VALUES.join(", ")}.`);
+    }
+    flags.copilotPermissionMode = permission as (typeof COPILOT_PERMISSION_MODE_VALUES)[number];
+  }
+  if (context != null) {
+    if (!(COPILOT_CONTEXT_TIER_VALUES as readonly string[]).includes(context)) {
+      throw new CliUsageError(`--copilot-context-tier must be one of ${COPILOT_CONTEXT_TIER_VALUES.join(", ")}.`);
+    }
+    flags.copilotContextTier = context as (typeof COPILOT_CONTEXT_TIER_VALUES)[number];
+  }
+  if (auto != null) {
+    if (!(COPILOT_AUTO_TIER_VALUES as readonly string[]).includes(auto)) {
+      throw new CliUsageError(`--copilot-auto-tier must be one of ${COPILOT_AUTO_TIER_VALUES.join(", ")}.`);
+    }
+    flags.copilotAutoTier = auto as (typeof COPILOT_AUTO_TIER_VALUES)[number];
+  }
+  return flags;
+}
 
 function readDroidPermissionMode(args: string[]): AgentChatDroidPermissionMode | null {
   const value = readValue(args, DROID_PERMISSION_MODE_FLAGS);
@@ -6532,6 +6589,10 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   // and the profile the merged arg bag is checked against cannot drift.
   const launchOpts = { allowShell: mode !== "chat" };
   const provider = requireLaunchProfile(providerRaw, launchOpts) ?? "codex";
+  const copilotFlags = readCopilotLaunchFlags(args, provider);
+  if (mode !== "chat" && Object.keys(copilotFlags).length > 0) {
+    throw new CliUsageError("--copilot-permission-mode, --copilot-context-tier and --copilot-auto-tier apply to chat mode only.");
+  }
   const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, {
     provider: providerRaw,
     model: modelArg,
@@ -6568,6 +6629,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         permissionMode,
         ...lineageArgs,
         ...(droidPermissionMode ? { droidPermissionMode } : {}),
+        ...copilotFlags,
         title,
         surface: readValue(args, ["--surface"]) ?? "work",
         ...(instanceId ? { instanceId } : {}),
@@ -10186,6 +10248,7 @@ function buildChatPlan(args: string[]): CliPlan {
         "--permissions",
       ]),
       droidPermissionMode: readDroidPermissionMode(args),
+      ...readCopilotLaunchFlags(args, provider ?? ""),
       title: readValue(args, ["--title"]),
       surface: readValue(args, ["--surface"]) ?? "work",
       // Which of this machine's provider accounts the session signs in as.
@@ -11814,6 +11877,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     const provider = readValue(args, ["--provider"]);
     const prompt = readValue(args, ["--prompt", "--kickoff", "--kickoff-prompt"]);
     const droidPermissionMode = readDroidPermissionMode(args);
+    const copilotFlags = readCopilotLaunchFlags(args, provider ?? "");
     const fastMode = readFastModeFlag(args);
     const createArgs = collectGenericObjectArgs(args, {
       // A chat started from ADE's own CLI is the user's assistant, like one
@@ -11827,6 +11891,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       reasoningEffort: readValue(args, ["--reasoning-effort", "--effort"]),
       permissionMode: readValue(args, ["--permission-mode", "--permissions"]),
       ...(droidPermissionMode ? { droidPermissionMode } : {}),
+      ...copilotFlags,
       ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
       ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
       ...(prompt ? { kickoffText: prompt } : {}),

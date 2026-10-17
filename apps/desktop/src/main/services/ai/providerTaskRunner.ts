@@ -31,13 +31,14 @@ import {
   resolveGrokCliModelForLaunch,
   resolveKimiCliModelForLaunch,
   resolveCodexCliModelForLaunch,
-  resolveCopilotCliModelForLaunch,
   resolveQwenCliModelForLaunch,
 } from "../../../shared/cliLaunch";
 import { resolveCliProviderForModel } from "../../../shared/modelRegistry";
 import type { Item } from "@muse-code/sdk/dist/src/msp.js";
 import { isMuseKnownNotification, startPinnedMuseHost } from "../chat/museSdkHost";
 import { addUsage, museCompletionUsage, type MuseTurnUsage } from "../chat/museSdkEventMapper";
+import { acquireCopilotSdkConnection, releaseCopilotSdkConnection } from "../chat/copilotSdkPool";
+import { copilotConfigHome } from "../shared/providerConfigHomes";
 
 export type ProviderTaskRunnerArgs = {
   cwd: string;
@@ -619,33 +620,37 @@ function rejectUnsupportedAcpTaskImages(args: ProviderTaskRunnerArgs, providerLa
 }
 
 async function runCopilotTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
+  rejectUnsupportedAcpTaskImages(args, "Copilot");
   const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
   const combinedPrompt = args.system?.trim()
     ? `${args.system.trim()}\n\n${prompt}`
     : prompt;
-  const cliArgs = [
-    "--no-auto-update",
-    "--no-color",
-    "--no-ask-user",
-    "--disable-builtin-mcps",
-    "--deny-tool=*",
-    "--deny-url=*",
-    "--output-format",
-    "text",
-  ];
-  const model = resolveCopilotCliModelForLaunch(args.descriptor.providerModelId);
-  if (model) cliArgs.push("--model", model);
-  for (const imagePath of args.imagePaths ?? []) {
-    cliArgs.push("--attachment", imagePath);
-  }
-
   const resolved = resolveCopilotExecutable({ auth: args.auth });
-  return await runAcpOneShotTask(args, {
-    command: resolved.path,
-    argv: cliArgs,
-    providerLabel: "Copilot",
-    stdinText: combinedPrompt,
+  const baseEnv = userProcessEnv({ ...process.env, ...(args.accountEnv ?? {}) });
+  const baseDirectory = copilotConfigHome({ env: baseEnv });
+  const acquired = await acquireCopilotSdkConnection({
+    cliPath: resolved.path,
+    baseDirectory,
+    baseEnv,
   });
+  try {
+    const response = await acquired.pooled.utility({
+      cwd: args.cwd,
+      prompt: combinedPrompt,
+      model: args.descriptor.providerModelId === "auto" ? undefined : args.descriptor.providerModelId,
+      systemMessage: "Return only the requested metadata. Do not use tools or access external resources.",
+    });
+    const record = response && typeof response === "object" ? response as Record<string, unknown> : {};
+    const data = record.data && typeof record.data === "object" ? record.data as Record<string, unknown> : {};
+    const text = typeof data.content === "string"
+      ? data.content
+      : typeof record.content === "string"
+        ? record.content
+        : typeof record.message === "string" ? record.message : "";
+    return { text: text.trim(), structuredOutput: args.jsonSchema ? parseStructuredOutput(text) : null, sessionId: null };
+  } finally {
+    releaseCopilotSdkConnection(acquired.poolKey, acquired.generation);
+  }
 }
 
 async function runQwenTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {

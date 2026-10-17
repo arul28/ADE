@@ -153,7 +153,7 @@ export function reasoningEffortLabel(effort: string | null, model?: ModelDescrip
  * rows apart (the route, e.g. "Anthropic (via Cursor)", and the context size).
  * The line can then be empty; the row keeps its height either way.
  */
-export function modelDetailLine(model: ModelDescriptor, options?: { omitProvider?: boolean }): string {
+export function modelDetailLine(model: ModelDescriptor, options?: { omitProvider?: boolean; omitContext?: boolean }): string {
   const parts: string[] = [];
   const family = providerLabel(model.family);
   const sub = subProviderLabel(model);
@@ -163,7 +163,7 @@ export function modelDetailLine(model: ModelDescriptor, options?: { omitProvider
   } else {
     parts.push(distinctSub ? `${family} · ${distinctSub}` : family);
   }
-  const context = formatContextWindow(model.contextWindow);
+  const context = options?.omitContext ? null : formatContextWindow(model.contextWindow);
   if (context) parts.push(context);
   return parts.join(" · ");
 }

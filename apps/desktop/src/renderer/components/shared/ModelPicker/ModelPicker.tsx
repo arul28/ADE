@@ -140,6 +140,8 @@ export type ModelPickerProps = {
   serviceTierMode?: boolean;
   serviceTier?: CursorCloudServiceTier | null;
   onServiceTierChange?: (next: CursorCloudServiceTier | null) => void;
+  copilotContextTier?: "default" | "long_context";
+  onCopilotContextTierChange?: (modelId: string, next: "default" | "long_context") => void;
   allowCliOnlyModels?: boolean;
   /**
    * Whether the Custom rail entry is offered at all. It shows in chat and CLI
@@ -196,6 +198,8 @@ export const ModelPicker = memo(function ModelPicker({
   serviceTierMode = false,
   serviceTier = null,
   onServiceTierChange,
+  copilotContextTier = "default",
+  onCopilotContextTierChange,
   allowCliOnlyModels = false,
   listsHarnessPresets = true,
   harnessLaunchMode = allowCliOnlyModels ? "cli" : "chat",
@@ -568,6 +572,7 @@ export const ModelPicker = memo(function ModelPicker({
                     setOpen(false);
                   },
                 } : {})}
+                {...(onCopilotContextTierChange ? { copilotContextTier, onCopilotContextTierChange } : {})}
                 {...(filter ? { registryFilter: filter } : {})}
                 {...(onOpenSignIn ? { onOpenSignIn: handleOpenSignIn } : {})}
                 {...(runtimePin ? { runtimePin } : {})}

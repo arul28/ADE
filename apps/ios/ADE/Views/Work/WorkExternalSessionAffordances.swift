@@ -319,11 +319,13 @@ let workImportSessionProviders = [
   "claude", "codex", "cursor", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok", "copilot",
 ]
 
-/// The ACP providers a host learned together with `work.getExternalSessionDetail`.
+/// The providers a host learned together with `work.getExternalSessionDetail`.
+/// Copilot is here for its CLI history import, which the SDK provider change
+/// leaves alone; its chat provider is no longer ACP.
 let workImportAcpProviders: Set<String> = ["qwen", "kimi", "grok", "copilot"]
 
 /// Providers worth asking this host about. An older host (no
-/// `work.getExternalSessionDetail`) refuses the ACP providers by name, so the
+/// `work.getExternalSessionDetail`) refuses these providers by name, so the
 /// phone does not ask it about them at all.
 func workImportScanProviders(hostKnowsAcpProviders: Bool) -> [String] {
   hostKnowsAcpProviders

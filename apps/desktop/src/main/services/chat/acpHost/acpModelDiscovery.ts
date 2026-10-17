@@ -1,5 +1,5 @@
 /**
- * Live model catalogs for the ACP providers (Qwen, Kimi, Grok, Copilot, Devin).
+ * Live model catalogs for the ACP providers (Qwen, Kimi, Grok, Devin).
  *
  * Every one of these providers decides its model list on its own server, per
  * account. ADE's curated rows for them are only the offline fallback: once the
@@ -29,7 +29,6 @@ import os from "node:os";
 import path from "node:path";
 import {
   createDynamicAcpModelDescriptor,
-  curatedReasoningHintForModelName,
   getLiveAcpModelDescriptors,
   hasLiveAcpModelCatalog,
   mergeDynamicAcpModelDescriptors,
@@ -44,7 +43,6 @@ import { resolveAcpExecutable } from "../../ai/acpExecutables";
 import { prepareAcpProbeSpawnPlan } from "../../ai/acpProbeSpawnPlan";
 import { createAcpConnection, initializeAcpConnection } from "./acpConnection";
 import { acpDialectFor } from "./acpDialects";
-import { COPILOT_REASONING_EFFORTS } from "./acpDialects/copilot";
 import { ACP_EFFORT_LADDER } from "./acpDialects/shared";
 import { resolveAdeCacheFile } from "../../shared/adeCacheFile";
 import { writeTextAtomic } from "../../shared/utils";
@@ -78,9 +76,6 @@ export type LiveAcpModelEntry = { id: string; name?: string | null };
  * current model takes the listed efforts; any other model keeps what the
  * registry already holds for it (a curated row's researched tiers, or what it
  * had when it was current). A model with neither:
- * - Copilot: its documented levels, unless the model is Auto or is known not
- *   to reason. Copilot falls back on its own when a level does not apply, and
- *   ADE only sends the session option when the session lists the level.
  * - Others: the session's listed efforts, the only evidence there is.
  */
 export function buildLiveAcpModelDescriptors(args: {
@@ -99,13 +94,7 @@ export function buildLiveAcpModelDescriptors(args: {
     // Read before the merge replaces it.
     const learned = resolveAcpModelDescriptor(args.provider, modelId)?.reasoningTiers ?? [];
     let reasoningTiers: string[];
-    if (args.provider === "copilot") {
-      reasoningTiers = modelId === args.currentModelId && advertised.length
-        ? advertised
-        : learned.length
-          ? [...learned]
-          : copilotFallbackTiers(modelId);
-    } else {
+    {
       reasoningTiers = modelId === args.currentModelId || !learned.length ? advertised : [...learned];
     }
     const name = entry.name?.trim();
@@ -115,14 +104,6 @@ export function buildLiveAcpModelDescriptors(args: {
     }));
   }
   return out;
-}
-
-function copilotFallbackTiers(modelId: string): string[] {
-  const id = modelId.toLowerCase();
-  if (id === "auto") return [];
-  if (/^gpt-(3|4)/.test(id)) return [];
-  if (curatedReasoningHintForModelName(modelId) === false) return [];
-  return [...COPILOT_REASONING_EFFORTS];
 }
 
 // ── Persistence ──────────────────────────────────────────────────────────────
@@ -163,16 +144,7 @@ function readFile(): PersistedFile {
       const entry = raw as Record<string, unknown>;
       if (typeof entry.savedAt !== "number" || !Number.isFinite(entry.savedAt)) continue;
       if (!Array.isArray(entry.models)) continue;
-      const models = entry.models.filter((model): model is ModelDescriptor => isDescriptorFor(provider, model)).map((model) => {
-        // Older catalogs predate Copilot's --effort support. Restore the
-        // fallback immediately, rather than hiding the control until the
-        // six-hour catalog refresh. Keep any provider-reported tiers intact.
-        if (provider !== "copilot" || model.reasoningTiers?.length) return model;
-        const tiers = copilotFallbackTiers(model.providerModelId);
-        return tiers.length
-          ? { ...model, reasoningTiers: tiers, capabilities: { ...model.capabilities, reasoning: true } }
-          : model;
-      });
+      const models = entry.models.filter((model): model is ModelDescriptor => isDescriptorFor(provider, model));
       if (models.length) providers[provider] = { savedAt: entry.savedAt, models };
     }
     fileMemo = { version: CACHE_FILE_VERSION, providers };
@@ -263,8 +235,8 @@ function recordProbedCatalog(provider: AcpModelProviderGroup, descriptors: Model
 /** Spawn one ACP agent, open a session, read its model list, close. No prompt. */
 async function probeAcpModels(provider: Exclude<AcpModelProviderGroup, "devin">, env: NodeJS.ProcessEnv): Promise<ModelDescriptor[]> {
   const dialect = acpDialectFor(provider);
-  // A throwaway cwd: agents that keep a session record per cwd (Copilot's
-  // session-state) file the probe away from every project.
+  // A throwaway cwd: agents that keep a session record per cwd file the probe
+  // away from every project.
   const cwd = path.join(os.tmpdir(), "ade-acp-model-probe");
   fs.mkdirSync(cwd, { recursive: true });
   const executable = resolveAcpExecutable(provider, { env });

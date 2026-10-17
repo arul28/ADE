@@ -22,7 +22,7 @@ import { readFiniteNumber } from "../acpTelemetryReaders";
 import { uncachedInputTokens } from "../../../usage/tokenSplit";
 import { asRecord } from "../../../shared/utils";
 
-/** ADE's full effort ladder, lowest first. Copilot accepts every level on it. */
+/** ADE's full effort ladder, lowest first. */
 export const ACP_EFFORT_LADDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 /** ADE's identity at `initialize`. */
@@ -59,7 +59,7 @@ export const standardSetConfigOption: AcpSessionConfigBehavior = ({ sessionId, c
       : { sessionId, configId, value },
 });
 
-/** Copilot's model setter is a provider-native ACP method, not a config option. */
+/** Sets the model through `session/set_model`, not a config option. */
 export const standardSetModel: AcpModelSelectionBehavior = ({ sessionId, modelId }) => ({
   method: ACP_METHOD.sessionSetModel,
   params: { sessionId, modelId },
@@ -111,7 +111,7 @@ export function withOptionalEnv(
 
 /**
  * Read the ACP `session/prompt` result `usage` (the unstable Usage schema that
- * Copilot and Kimi both implement). `inputTokens` there counts the cache, so
+ * Kimi implements). `inputTokens` there counts the cache, so
  * the sample carries the uncached share.
  */
 export function readAcpPromptUsage(promptUsage: AcpPromptUsage | null | undefined): AcpUsageSample | null {

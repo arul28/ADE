@@ -555,6 +555,7 @@ func workPreviewChatSessionView(
     onSelectRuntimeMode: { _ in true },
     onSelectEffort: { _ in },
     onSelectCodexFastMode: { _ in true },
+    onSelectCopilotTiers: { _, _ in true },
     resolvedSessionStatus: compactFirst ? "idle" : normalizedWorkChatSessionStatus(
       session: WorkPreviewData.terminalSession,
       summary: WorkPreviewData.chatSummary

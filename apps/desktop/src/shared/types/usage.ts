@@ -728,6 +728,10 @@ export type UsageWindow = {
    */
   accountId?: string;
   modelBreakdown?: Record<string, number>;
+  /** Exact request meter when the provider exposes counts (e.g. Copilot premium requests). */
+  usedCount?: number;
+  entitlementCount?: number;
+  unlimited?: boolean;
   percentUsed: number;
   resetsAt: string;
   resetsInMs: number;

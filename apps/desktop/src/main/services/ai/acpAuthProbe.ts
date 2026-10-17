@@ -1,5 +1,5 @@
 /**
- * Protocol-level auth probe for the four ACP providers.
+ * Protocol-level auth probe for the ACP providers.
  *
  * `authDetector` can only read a credential file off disk, so it reports
  * `verified: false` and says so. This module asks the agent itself: it spawns
@@ -10,7 +10,7 @@
  *
  * ## Where this may run
  *
- * NEVER on the catalog read path. Spawning four CLIs to answer "which models
+ * NEVER on the catalog read path. Spawning CLIs to answer "which models
  * exist" is exactly the mistake `claudeRuntimeProbe` exists to avoid, and it is
  * why `getAvailableModels` reads `detectCliAuthStatuses({ skipAuthProbe: true })`
  * instead. Call `probeAcpProviderAuth` from a force refresh, from a settings
@@ -32,7 +32,6 @@ import { acpDialectFor } from "../chat/acpHost/acpDialects";
 import { ACP_METHOD } from "../chat/acpHost/acpProtocolTypes";
 import type { Logger } from "../logging/logger";
 import {
-  copilotConfigHome,
   grokConfigHome,
   kimiCodeConfigHome,
   qwenConfigHome,
@@ -78,8 +77,6 @@ export function acpProbeConfigHome(
       return qwenConfigHome({ env });
     case "kimi":
       return kimiCodeConfigHome({ env });
-    case "copilot":
-      return copilotConfigHome({ env });
     case "grok":
       return grokConfigHome({ env });
     // Devin reads `~/.config/devin` (%APPDATA%\devin on Windows) and honors

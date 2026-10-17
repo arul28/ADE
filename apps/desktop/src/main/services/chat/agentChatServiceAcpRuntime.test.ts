@@ -24,7 +24,7 @@ import { afterEach, describe, expect, it, test, vi } from "vitest";
 
 
 // ---------------------------------------------------------------------------
-// ACP providers (qwen, kimi, grok, copilot)
+// ACP providers (qwen, kimi, grok, devin)
 // ---------------------------------------------------------------------------
 //
 // These drive the real ACP host: the scripted agent is a fake child process, so
@@ -50,7 +50,7 @@ describe("acp chat runtime", () => {
   });
 
   async function openAcpHarness(options: {
-    provider: "qwen" | "kimi" | "grok" | "copilot";
+    provider: "qwen" | "kimi" | "grok";
     modelId: string;
     model: string;
     /** Extra `session/new` result fields, for config-option tests. */
@@ -159,61 +159,6 @@ describe("acp chat runtime", () => {
     const statuses = eventsOfType(harness, "status").map((event) => event.turnStatus);
     expect(statuses).toContain("started");
     expect(statuses).toContain("completed");
-  });
-
-  it("configures Copilot's native ACP mode without sending an unsupported model option", async () => {
-    const harness = await openAcpHarness({
-      provider: "copilot",
-      model: "claude-sonnet-4.6",
-      modelId: "github-copilot/claude-sonnet-4.6",
-      sessionOverrides: { permissionMode: "plan" },
-    });
-    scriptPrompt(harness.agent, []);
-
-    await harness.service.sendMessage({ sessionId: harness.session.id, text: "plan this" });
-    await vi.waitFor(() => {
-      expect(eventTypes(harness)).toContain("done");
-    });
-
-    const configCalls = harness.agent.received.filter((entry) => entry.method === "session/set_config_option");
-    expect(configCalls).toHaveLength(1);
-    expect(configCalls[0]?.params).toMatchObject({
-      configId: "mode",
-      value: "https://agentclientprotocol.com/protocol/session-modes#plan",
-    });
-    expect(configCalls.some((entry) => (entry.params as { configId?: string }).configId === "model")).toBe(false);
-  });
-
-  it("logs an ACP turn that another model answered through the generic served-model check", async () => {
-    // Copilot's own `model` option names the model it runs. It is not the one
-    // the chat picked, so the turn's done event carries it as `servedModel`.
-    const harness = await openAcpHarness({
-      provider: "copilot",
-      model: "claude-sonnet-4.6",
-      modelId: "github-copilot/claude-sonnet-4.6",
-      sessionExtra: {
-        configOptions: [{
-          type: "select",
-          id: "model",
-          name: "Model",
-          currentValue: "gpt-5.6-luna",
-          options: [{ value: "gpt-5.6-luna", name: "GPT-5.6 Luna" }, { value: "claude-sonnet-4.6", name: "Claude Sonnet 4.6" }],
-        }],
-      },
-    });
-    scriptPrompt(harness.agent, [{ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Hi." } }]);
-
-    await harness.service.sendMessage({ sessionId: harness.session.id, text: "who answers?" });
-    await vi.waitFor(() => {
-      expect(eventTypes(harness)).toContain("done");
-    });
-
-    expect(eventsOfType(harness, "done").at(-1)?.servedModel).toBe("gpt-5.6-luna");
-    expect(harness.logger.warn).toHaveBeenCalledWith("agent_chat.served_model_mismatch", expect.objectContaining({
-      sessionId: harness.session.id,
-      provider: "copilot",
-      servedModel: "gpt-5.6-luna",
-    }));
   });
 
   it("applies Qwen's selected model and reasoning effort at session startup", async () => {
@@ -544,12 +489,12 @@ describe("acp chat runtime", () => {
   });
 
   it("reports a cancelled turn as interrupted even when the agent says end_turn", async () => {
-    // Copilot's known bug (github/copilot-cli #4561). ADE's own cancel record
-    // is the deciding source, never the agent's stopReason.
+    // ADE's own cancel record is the deciding source, never the agent's
+    // stopReason: an agent can answer a cancelled prompt with end_turn.
     const harness = await openAcpHarness({
-      provider: "copilot",
-      model: "claude-sonnet-4.6",
-      modelId: "github-copilot/claude-sonnet-4.6",
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
     });
     let releasePrompt: (() => void) | null = null;
     harness.agent.on("session/prompt", async () => {
@@ -664,14 +609,13 @@ describe("acp chat runtime", () => {
 
   it("reopens an ACP runtime when permission mode changes during a turn", async () => {
     const harness = await openAcpHarness({
-      provider: "copilot",
-      model: "claude-sonnet-4.6",
-      modelId: "github-copilot/claude-sonnet-4.6",
+      provider: "grok",
+      model: "grok-4.6",
+      modelId: "xai/grok-4-6",
       sessionOverrides: { permissionMode: "full-auto" },
     });
     let releaseFirstPrompt: (() => void) | null = null;
     let promptCount = 0;
-    let permissionAnswer: Record<string, unknown> | null = null;
     harness.agent.on("session/prompt", async (params) => {
       promptCount += 1;
       const sessionId = (params as { sessionId: string }).sessionId;
@@ -679,7 +623,7 @@ describe("acp chat runtime", () => {
         await new Promise<void>((resolve) => { releaseFirstPrompt = resolve; });
         return { result: { stopReason: "end_turn" } };
       }
-      permissionAnswer = await harness.agent.callClient("session/request_permission", {
+      await harness.agent.callClient("session/request_permission", {
         sessionId,
         toolCall: { toolCallId: "tool-1", title: "Write src/index.ts", kind: "edit" },
         options: [
@@ -712,19 +656,9 @@ describe("acp chat runtime", () => {
       method === "session/new" || method === "session/load" || method === "session/resume",
     );
     expect(sessionEntries).toHaveLength(2);
-
-    await harness.service.respondToInput({
-      sessionId: harness.session.id,
-      itemId: eventsOfType(harness, "approval_request")[0]!.itemId,
-      decision: "accept",
-    });
-    await vi.waitFor(() => {
-      expect(permissionAnswer).not.toBeNull();
-      expect(eventsOfType(harness, "done")).toHaveLength(2);
-    });
-    expect(permissionAnswer).toMatchObject({
-      outcome: { outcome: "selected", optionId: "allow" },
-    });
+    expect(harness.agent.methodsReceived()).toContain("session/close");
+    // Answering the card is owned by "raises a permission request as a card
+    // and forwards the chosen option"; here the card itself is the contract.
   });
 
   it("folds Grok's prompt-result usage into the turn", async () => {
@@ -968,19 +902,17 @@ describe("acp chat runtime", () => {
     expect(agent.methodsReceived()).not.toContain("session/new");
   });
 
-  it("offers the agent's advertised slash commands, deduped and TUI-filtered", async () => {
+  it("offers the agent's advertised slash commands once, even when re-sent", async () => {
     const harness = await openAcpHarness({
-      provider: "copilot",
-      model: "claude-sonnet-4.6",
-      modelId: "github-copilot/claude-sonnet-4.6",
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
     });
     harness.agent.on("session/prompt", async (params) => {
       const sessionId = (params as { sessionId: string }).sessionId;
       const availableCommands = [
         { name: "review", description: "Review the diff" },
-        // Copilot's terminal-only commands would reach the model as prose.
-        { name: "diff", description: "Show the diff" },
-        { name: "login", description: "Sign in" },
+        { name: "compress", description: "Compress the context" },
       ];
       agentEmitCommands(harness.agent, sessionId, availableCommands);
       // Re-sent on the same turn: the picker must not show it twice.
@@ -996,8 +928,7 @@ describe("acp chat runtime", () => {
     const commands = harness.service.getSlashCommands({ sessionId: harness.session.id });
     const names = commands.map((command) => command.name);
     expect(names.filter((name) => name === "/review")).toHaveLength(1);
-    expect(names).not.toContain("/diff");
-    expect(names).not.toContain("/login");
+    expect(names.filter((name) => name === "/compress")).toHaveLength(1);
   });
 
   describe("leading-slash prompts", () => {

@@ -2344,6 +2344,13 @@ function AgentChatComposerImpl({
   codexConfigSource,
   opencodePermissionMode,
   droidPermissionMode,
+  copilotPermissionMode = "ask",
+  onCopilotPermissionModeChange,
+  copilotContextTier = "default",
+  onCopilotContextTierChange,
+  copilotAutoTier = null,
+  copilotAutoTierPending = false,
+  onCopilotAutoTierChange,
   musePermissionMode,
   cursorModeSnapshot,
   iosElementContextItems = [],
@@ -2570,6 +2577,13 @@ function AgentChatComposerImpl({
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  copilotPermissionMode?: "plan" | "ask" | "assisted" | "auto-edit" | "full-auto";
+  onCopilotPermissionModeChange?: (mode: "plan" | "ask" | "assisted" | "auto-edit" | "full-auto") => void;
+  copilotContextTier?: "default" | "long_context";
+  onCopilotContextTierChange?: (modelId: string, tier: "default" | "long_context") => void;
+  copilotAutoTier?: "efficiency" | "balance" | "intelligence" | null;
+  copilotAutoTierPending?: boolean;
+  onCopilotAutoTierChange?: (tier: "efficiency" | "balance" | "intelligence") => void;
   musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot | null;
   executionMode?: AgentChatExecutionMode | null;
@@ -6015,6 +6029,17 @@ function AgentChatComposerImpl({
       );
     }
 
+    if (sp === "copilot") {
+      const options: PermissionModePickerOption<"plan" | "ask" | "assisted" | "auto-edit" | "full-auto">[] = [
+        { value: "plan", label: "Plan", detail: "Read-only planning mode.", tone: "slate", icon: "plan" },
+        { value: "ask", label: "Ask", detail: "Ask before each action.", tone: "slate", icon: "manual" },
+        { value: "assisted", label: "Assisted", detail: "Copilot reviews each tool call with a safety model and approves the safe ones; asks you for the rest.", tone: "purple", icon: "agent" },
+        { value: "auto-edit", label: "Auto-edit", detail: "Automatically approve file changes in the workspace.", tone: "amber", icon: "edit" },
+        { value: "full-auto", label: "Full-auto", detail: "Allow all actions for this session.", tone: "red", icon: "full" },
+      ];
+      return <PermissionModePicker ariaLabel="Copilot permission mode" selectedValue={copilotPermissionMode} options={options} disabled={nativeControlsDisabled || !onCopilotPermissionModeChange} onSelect={(mode) => onCopilotPermissionModeChange?.(mode)} />;
+    }
+
     if (sp === "muse") {
       const applyMuseMode = (value: MusePermissionPickerValue) => {
         const interaction: AgentChatInteractionMode = value === "plan" ? "plan" : "default";
@@ -6091,6 +6116,8 @@ function AgentChatComposerImpl({
     onInteractionModeChange,
     onCursorModeChange,
     onDroidPermissionModeChange,
+    copilotPermissionMode,
+    onCopilotPermissionModeChange,
     onMusePermissionModeChange,
     onOpenCodePermissionModeChange,
     cmsUse,
@@ -8171,6 +8198,7 @@ function AgentChatComposerImpl({
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
                   catalogScopeKey={modelCatalogScopeKey}
+                  catalogRevision={runtimeCatalogTick}
                 />
               </>
             ) : null}
@@ -8212,6 +8240,8 @@ function AgentChatComposerImpl({
                     serviceTier: cursorCloudServiceTier,
                     onServiceTierChange: onCursorCloudServiceTierChange,
                   } : onFastModeChange ? { onFastModeChange } : {})}
+                  copilotContextTier={copilotContextTier}
+                  {...(onCopilotContextTierChange ? { onCopilotContextTierChange } : {})}
                 />
                 <ReasoningEffortPicker
                   modelId={modelId}
@@ -8221,7 +8251,11 @@ function AgentChatComposerImpl({
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
                   catalogScopeKey={modelCatalogScopeKey}
+                  catalogRevision={runtimeCatalogTick}
                   ultrathink={ultrathinkControl}
+                  copilotAutoTier={copilotAutoTier}
+                  copilotAutoTierPending={copilotAutoTierPending}
+                  {...(onCopilotAutoTierChange ? { onCopilotAutoTierChange } : {})}
                 />
               </>
             ) : null}

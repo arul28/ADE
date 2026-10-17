@@ -70,7 +70,7 @@ export function behaviorOf<TBehavior>(entry: AcpCapability<TBehavior>): TBehavio
 /**
  * How to stop a running turn.
  *
- * Grok, Copilot, Qwen, Kimi, and Devin answer a `session/cancel` REQUEST with
+ * Grok, Qwen, Kimi, and Devin answer a `session/cancel` REQUEST with
  * -32601 on every version checked and accept the same call as a notification.
  * A request that meets -32601 falls back to the notification, so a wrong style
  * still stops the turn.
@@ -207,8 +207,8 @@ export type AcpReasoningEffortOption = {
  *
  * `inputTokens` is the UNCACHED input. Cache reads and cache writes are their
  * own fields and are never inside `inputTokens`, so `input + cacheRead +
- * cacheWrite` is the whole input side. Copilot, Grok's turn totals, and Qwen
- * report an inclusive input count; their readers subtract the cache first.
+ * cacheWrite` is the whole input side. Grok's turn totals and Qwen report an
+ * inclusive input count; their readers subtract the cache first.
  */
 export type AcpUsageSample = {
   inputTokens?: number;
@@ -298,11 +298,11 @@ export type AcpLocalTurnUsage = {
   /** Account facts the store rows carry, when they beat the config read. */
   account?: AgentChatUsageAccount;
   /**
-   * Compactions the store recorded during the turn. Copilot runs its
-   * compaction as a model request (`initiator = "compaction"`) and never sends
-   * an ACP compaction update, so the ledger is the only provider signal.
-   * `preTokens` is the context that was summarised. There is no post figure:
-   * the request's output is the summary alone, not the context that follows.
+   * Compactions the provider's store recorded during the turn. A provider that
+   * sends no ACP compaction update leaves its store as the only signal.
+   * `preTokens` is the context that was summarised. The store has no post
+   * figure: the request's output is the summary alone, not the context that
+   * follows.
    */
   compactions?: Array<{ preTokens?: number }>;
   subagents: Array<{
@@ -316,8 +316,8 @@ export type AcpLocalTurnUsage = {
 };
 
 /**
- * Per-session reader for a provider's own on-disk usage ledger (Copilot's
- * `session-store.db`, Qwen's `token-usage-*.jsonl`). Read-only, always.
+ * Per-session reader for a provider's own on-disk usage ledger (Qwen's
+ * `token-usage-*.jsonl`). Read-only, always.
  */
 export type AcpLocalUsageReader = {
   /**

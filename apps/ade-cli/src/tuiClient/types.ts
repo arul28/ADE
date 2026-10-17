@@ -8,6 +8,9 @@ import type {
   AgentChatCursorConfigValue,
   AgentChatDroidPermissionMode,
   AgentChatMusePermissionMode,
+  AgentChatCopilotAutoTier,
+  AgentChatCopilotContextTier,
+  AgentChatCopilotPermissionMode,
   AgentChatEventEnvelope,
   AgentChatEventHistorySnapshot,
   AgentChatContextUsage,
@@ -139,6 +142,12 @@ export type AdeCodeModelState = Partial<LaunchIdentity> & {
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
   droidPermissionMode: AgentChatDroidPermissionMode;
   musePermissionMode: AgentChatMusePermissionMode;
+  /** Copilot's round-3 settings. Optional so state built before them still type-checks; readers default them. */
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
+  copilotContextTier?: AgentChatCopilotContextTier;
+  copilotAutoTier?: AgentChatCopilotAutoTier | null;
+  /** True while a Copilot Auto profile change waits for the next message. */
+  copilotAutoTierPending?: boolean;
   cursorModeId: string | null;
   cursorAvailableModeIds: string[];
   cursorConfigValues: Record<string, AgentChatCursorConfigValue>;
@@ -162,6 +171,7 @@ export type SetupPaneRowKind =
   | "reasoning"
   | "permission"
   | "codex-fast"
+  | "copilot-context"
   | "output-style"
   | "refresh-status"
   | "apply";

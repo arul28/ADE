@@ -2456,7 +2456,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     // rather than reading This computer's answer and labelling it theirs.
     acpProviderDiagnostics: (args?: { provider?: string; runDoctor?: boolean }) => {
       const provider = args?.provider;
-      if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, copilot, devin.");
+      if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, devin.");
       return collectAcpProviderDiagnostics({
         provider,
         cwd: runtime.projectRoot,
@@ -2465,7 +2465,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     acpProviderUpdate: (args?: { provider?: string }) => {
       const provider = args?.provider;
-      if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, copilot, devin.");
+      if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, devin.");
       return runAcpProviderUpdate({ provider, cwd: runtime.projectRoot }).then((result) => {
         captureProviderCliUpdateAnalytics({
           analytics: runtime.productAnalyticsService,

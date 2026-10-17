@@ -23,8 +23,9 @@ public enum ADESharedTheme {
     public static let brandXAI      = Color(red: 0xB4 / 255.0, green: 0xB4 / 255.0, blue: 0xBD / 255.0) // #B4B4BD
     public static let brandGroq     = Color(red: 0x06 / 255.0, green: 0xB6 / 255.0, blue: 0xD4 / 255.0) // #06B6D4
     public static let brandCTO      = Color(red: 0xC4 / 255.0, green: 0xB5 / 255.0, blue: 0xFD / 255.0) // #C4B5FD
-    // ACP providers. Hexes mirror the shared TypeScript table; Grok reuses
-    // brandXAI, which carries the xAI group color.
+    // Brand colors for Qwen, Kimi, Copilot (an SDK provider now) and Grok. Hexes
+    // mirror the shared TypeScript table; Grok reuses brandXAI, which carries
+    // the xAI group color.
     public static let brandQwen     = Color(red: 0x6D / 255.0, green: 0x4A / 255.0, blue: 0xFF / 255.0) // #6D4AFF
     public static let brandKimi     = Color(red: 0x1F / 255.0, green: 0x1F / 255.0, blue: 0x1F / 255.0) // #1F1F1F
     public static let brandCopilot  = Color(red: 0x3F / 255.0, green: 0xB9 / 255.0, blue: 0x50 / 255.0) // #3FB950
@@ -73,7 +74,7 @@ public enum ADESharedTheme {
         if raw.hasPrefix("cursor") { return "cursor" }
         if raw == "factory" || raw.hasPrefix("droid") { return "droid" }
         if raw == "gemini" || raw.hasPrefix("google") { return "google" }
-        // Copilot before the bare `github` fold: `github-copilot` is the ACP
+        // Copilot before the bare `github` fold: `github-copilot` is the legacy
         // provider, not the GitHub integration that fold was written for.
         if raw == "github-copilot" || raw == "githubcopilot" || raw.hasPrefix("copilot") { return "copilot" }
         if raw.hasPrefix("github") { return "github" }
@@ -176,9 +177,9 @@ public enum ADESharedTheme {
     public static func providerSlug(forModel model: String?) -> String? {
         guard let model else { return nil }
         let value = model.lowercased()
-        // ACP registry ids are namespaced and go first: `github-copilot/...`
-        // ids name the upstream vendor after the slash, so the vendor checks
-        // below would otherwise claim them.
+        // Legacy ACP-era registry ids are namespaced and go first:
+        // `github-copilot/...` ids name the upstream vendor after the slash, so
+        // the vendor checks below would otherwise claim them.
         if value.hasPrefix("github-copilot/") { return "copilot" }
         if value.hasPrefix("qwen/") || value.contains("qwen") { return "qwen" }
         if value.hasPrefix("moonshot/") || value.contains("kimi") { return "kimi" }

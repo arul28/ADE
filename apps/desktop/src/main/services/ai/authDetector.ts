@@ -40,10 +40,10 @@ type CliName =
   | "devin";
 
 /**
- * CLIs ADE reaches over the Agent Client Protocol. Their auth state is read
- * from disk, not from a spawn: see `inspectAcpCliCredentials`.
+ * ACP CLIs whose auth state is read from disk, not from a spawn: see
+ * `inspectAcpCliCredentials`.
  */
-const ACP_CLI_NAMES = ["qwen", "kimi", "grok", "copilot", "devin"] as const;
+const ACP_CLI_NAMES = ["qwen", "kimi", "grok", "devin"] as const;
 type AcpCliName = (typeof ACP_CLI_NAMES)[number];
 
 function isAcpCliName(cli: CliName): cli is AcpCliName {
@@ -74,10 +74,11 @@ export type CliAuthStatus = {
 export type DetectedAuth =
   | {
       type: "cli-subscription";
-      cli: "claude" | "codex" | "cursor" | "droid" | "muse" | AcpCliName;
+      cli: "claude" | "codex" | "cursor" | "droid" | "muse" | "copilot" | AcpCliName;
       path: string;
       authenticated: boolean;
       verified: boolean;
+      login?: string;
       /** Cursor: false when CLI reports hobby/free tier (chat may still open with a notice). */
       paidPlan?: boolean;
     }
@@ -122,6 +123,7 @@ const CLI_AUTH_PROBES: Record<CliName, string[][]> = {
   qwen: [],
   kimi: [],
   grok: [],
+  // The SDK uses the installed CLI's login state; no extra probe subprocess.
   copilot: [],
   // `devin auth status` is a real, non-interactive subcommand; the
   // protocol-level handshake is still authoritative.
@@ -193,15 +195,18 @@ async function inspectAcpCliCredentials(
     return { authenticated: false, verified: false };
   }
 
+  return { authenticated: false, verified: false };
+}
+
+async function inspectCopilotCliCredentials(): Promise<{ authenticated: boolean; verified: false }> {
+  const env = process.env;
+  const home = homedir();
   // Copilot's durable login is normally keychain/session-state backed, not a
-  // reliable JSON field in config.json. Environment tokens are still a useful
-  // presence hint; the ACP handshake remains the authority. Keep the legacy
-  // JSON read as a best-effort fallback, and never write or rewrite this file
-  // (it is JSONC on current Copilot versions).
+  // reliable JSON field in config.json. The SDK performs live auth verification.
   if (env.GITHUB_TOKEN?.trim() || env.GH_TOKEN?.trim()) {
     return { authenticated: true, verified: false };
   }
-  const root = dir(env.COPILOT_HOME, ".copilot");
+  const root = env.COPILOT_HOME?.trim() ? path.resolve(env.COPILOT_HOME) : path.join(home, ".copilot");
   try {
     const raw = await readFile(path.join(root, "config.json"), "utf8");
     const parsed = JSON.parse(raw) as { logged_in_users?: unknown };
@@ -1289,6 +1294,10 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
           authenticated: false,
           verified: false,
         };
+      }
+      if (cli === "copilot") {
+        const auth = await inspectCopilotCliCredentials();
+        return { cli, installed, path, authenticated: auth.authenticated, verified: auth.verified };
       }
       if (isAcpCliName(cli)) {
         // Disk-only, so there is nothing for `skipAuthProbe` to skip.

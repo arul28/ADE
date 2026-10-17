@@ -43,6 +43,14 @@ struct WorkModelPickerSheet: View {
   /// The preset the surface currently runs on, so the Custom list marks the
   /// chosen setup by its id rather than by "some row shares its model".
   let selectedPresetId: String?
+  /// Copilot's context tier and Auto profile the chat runs on. Empty for
+  /// every other provider. `copilotAutoTierPending` is true while the runtime
+  /// holds a profile change until the next message.
+  let currentCopilotContextTier: String
+  let currentCopilotAutoTier: String?
+  let copilotAutoTierPending: Bool
+  /// Reports the Copilot tiers with each selection, before `onSelect` fires.
+  let onSelectCopilotTiers: ((String, String?) -> Void)?
   let onSelect: (WorkModelOption, String?, String, Bool) -> Void
 
   init(
@@ -59,6 +67,10 @@ struct WorkModelPickerSheet: View {
     modelFilter: ((WorkModelOption) -> Bool)? = nil,
     onSelectPreset: ((SyncMachineInventoryPreset) -> Void)? = nil,
     selectedPresetId: String? = nil,
+    currentCopilotContextTier: String = "default",
+    currentCopilotAutoTier: String? = nil,
+    copilotAutoTierPending: Bool = false,
+    onSelectCopilotTiers: ((String, String?) -> Void)? = nil,
     onSelect: @escaping (WorkModelOption, String?, String, Bool) -> Void
   ) {
     self.currentModelId = currentModelId
@@ -74,11 +86,17 @@ struct WorkModelPickerSheet: View {
     self.harnessPresets = harnessPresets
     self.onSelectPreset = onSelectPreset
     self.selectedPresetId = selectedPresetId
+    self.currentCopilotContextTier = workCopilotContextTier(currentCopilotContextTier)
+    self.currentCopilotAutoTier = currentCopilotAutoTier
+    self.copilotAutoTierPending = copilotAutoTierPending
+    self.onSelectCopilotTiers = onSelectCopilotTiers
     self.onSelect = onSelect
     _selectedModelId = State(initialValue: currentModelId)
     _selectedRuntimeProvider = State(initialValue: currentProvider)
     _selectedReasoningEffort = State(initialValue: currentReasoningEffort)
     _selectedCodexFastMode = State(initialValue: currentCodexFastMode)
+    _selectedCopilotContextTier = State(initialValue: workCopilotContextTier(currentCopilotContextTier))
+    _selectedCopilotAutoTier = State(initialValue: currentCopilotAutoTier)
   }
 
   @StateObject private var picker = ModelPickerStore()
@@ -101,6 +119,8 @@ struct WorkModelPickerSheet: View {
   @State private var selectedRuntimeProvider: String
   @State private var selectedReasoningEffort: String
   @State private var selectedCodexFastMode: Bool
+  @State private var selectedCopilotContextTier: String
+  @State private var selectedCopilotAutoTier: String?
   @State private var fallbackLoginLanes: [LaneSummary] = []
   @State private var claudeLoginBusy = false
   @State private var claudeLoginError: String?
@@ -251,6 +271,11 @@ struct WorkModelPickerSheet: View {
                 onSelect: { model in select(model: model) },
                 onSelectReasoning: { model, effort in select(reasoningEffort: effort, for: model) },
                 onToggleFastMode: { model, enabled in select(fastMode: enabled, for: model) },
+                selectedCopilotContextTier: selectedCopilotContextTier,
+                selectedCopilotAutoTier: selectedCopilotAutoTier,
+                copilotAutoTierPending: copilotAutoTierPending,
+                onToggleCopilotContext: { model, tier in select(copilotContextTier: tier, for: model) },
+                onSelectCopilotAutoTier: { model, tier in select(copilotAutoTier: tier, for: model) },
                 onSelectProviderTab: { selectedProviderTabKey = $0 },
                 onToggleFavorite: { modelId in
                   guard commandScope == .project else { return }
@@ -812,11 +837,35 @@ struct WorkModelPickerSheet: View {
     emitSelection(model)
   }
 
+  private func select(copilotContextTier tier: String, for model: WorkModelOption) {
+    guard model.isAvailable else { return }
+    if !workModelIdsEquivalent(model.id, selectedModelId) {
+      selectedModelId = model.id
+      selectedRuntimeProvider = runtimeProvider(for: model)
+    }
+    selectedCopilotContextTier = workCopilotContextTier(tier)
+    emitSelection(model)
+  }
+
+  private func select(copilotAutoTier tier: String, for model: WorkModelOption) {
+    guard model.isAvailable else { return }
+    if !workModelIdsEquivalent(model.id, selectedModelId) {
+      selectedModelId = model.id
+      selectedRuntimeProvider = runtimeProvider(for: model)
+    }
+    selectedCopilotAutoTier = tier
+    emitSelection(model)
+  }
+
   private func emitSelection(_ model: WorkModelOption) {
     let normalizedEffort = selectedReasoningEffort
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased()
     let effortPayload = normalizedEffort.isEmpty ? nil : normalizedEffort
+    // The tiers go out first, so a parent that dismisses on `onSelect` already holds them.
+    if providerFamilyKey(runtimeProvider(for: model)) == "copilot" {
+      onSelectCopilotTiers?(selectedCopilotContextTier, selectedCopilotAutoTier)
+    }
     onSelect(
       model,
       effortPayload,
@@ -995,6 +1044,11 @@ struct ModelPickerContentPane: View {
   let onSelect: (WorkModelOption) -> Void
   let onSelectReasoning: (WorkModelOption, String) -> Void
   let onToggleFastMode: (WorkModelOption, Bool) -> Void
+  let selectedCopilotContextTier: String
+  let selectedCopilotAutoTier: String?
+  let copilotAutoTierPending: Bool
+  let onToggleCopilotContext: (WorkModelOption, String) -> Void
+  let onSelectCopilotAutoTier: (WorkModelOption, String) -> Void
   let onSelectProviderTab: (String) -> Void
   let onToggleFavorite: (String) -> Void
   let onClaudeLogin: (() -> Void)?
@@ -1085,6 +1139,11 @@ struct ModelPickerContentPane: View {
                     onSelect: { onSelect(model) },
                     onSelectReasoning: { effort in onSelectReasoning(model, effort) },
                     onToggleFastMode: { enabled in onToggleFastMode(model, enabled) },
+                    selectedCopilotContextTier: selectedCopilotContextTier,
+                    selectedCopilotAutoTier: selectedCopilotAutoTier,
+                    copilotAutoTierPending: copilotAutoTierPending,
+                    onToggleCopilotContext: { tier in onToggleCopilotContext(model, tier) },
+                    onSelectCopilotAutoTier: { tier in onSelectCopilotAutoTier(model, tier) },
                     onToggleFavorite: { onToggleFavorite(model.id) },
                     onClaudeLogin: onClaudeLogin,
                     isClaudeLoginBusy: isClaudeLoginBusy,
@@ -1411,6 +1470,11 @@ struct ModelPickerListRow: View {
   let onSelect: () -> Void
   let onSelectReasoning: (String) -> Void
   let onToggleFastMode: (Bool) -> Void
+  var selectedCopilotContextTier: String = "default"
+  var selectedCopilotAutoTier: String? = nil
+  var copilotAutoTierPending: Bool = false
+  var onToggleCopilotContext: (String) -> Void = { _ in }
+  var onSelectCopilotAutoTier: (String) -> Void = { _ in }
   let onToggleFavorite: () -> Void
   let onClaudeLogin: (() -> Void)?
   let isClaudeLoginBusy: Bool
@@ -1469,11 +1533,16 @@ struct ModelPickerListRow: View {
 
       if isHighlighted && shouldShowSelectedControls {
         VStack(alignment: .leading, spacing: 8) {
-          if !supportedTiers.isEmpty {
+          if isCopilotAutoRow {
+            copilotAutoProfilePills
+          } else if !supportedTiers.isEmpty {
             reasoningPills(tiers: supportedTiers)
             if selectedReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ultra" {
               ultraReasoningWarning
             }
+          }
+          if supportsCopilotContextToggle {
+            copilotContextToggle
           }
           if model.supportsCodexFastMode {
             fastModeToggle
@@ -1500,7 +1569,16 @@ struct ModelPickerListRow: View {
   }
 
   private var shouldShowSelectedControls: Bool {
-    !supportedTiers.isEmpty || model.supportsCodexFastMode
+    !supportedTiers.isEmpty || model.supportsCodexFastMode || isCopilotAutoRow || supportsCopilotContextToggle
+  }
+
+  private var isCopilotAutoRow: Bool {
+    workCopilotIsAutoModel(modelId: model.id, provider: model.provider)
+  }
+
+  /// A Copilot model whose catalog lists the long tier gets the context toggle.
+  private var supportsCopilotContextToggle: Bool {
+    providerFamilyKey(model.provider) == "copilot" && model.contextTiers.contains("long_context")
   }
 
   @ViewBuilder
@@ -1668,6 +1746,64 @@ struct ModelPickerListRow: View {
   }
 
   @ViewBuilder
+  /// Copilot's Auto profiles, in place of the effort pills. Only one profile is
+  /// active; a change the runtime has not confirmed yet says so under it.
+  private var copilotAutoProfilePills: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      HStack(spacing: 8) {
+        ForEach(workCopilotAutoTiers, id: \.self) { tier in
+          let isActiveTier = selectedCopilotAutoTier == tier
+          Button {
+            onSelectCopilotAutoTier(tier)
+          } label: {
+            Text(workCopilotAutoTierLabel(tier))
+              .font(.system(size: 12.5, weight: isActiveTier ? .semibold : .medium))
+              .foregroundStyle(isActiveTier ? ADEColor.textPrimary : ADEColor.textSecondary)
+              .padding(.horizontal, 10)
+              .padding(.vertical, 4)
+              .background(isActiveTier ? ADEColor.accent.opacity(0.14) : Color.clear, in: Capsule())
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("\(model.displayName) · Auto profile \(workCopilotAutoTierLabel(tier))")
+          .accessibilityAddTraits(isActiveTier ? .isSelected : [])
+        }
+      }
+      if copilotAutoTierPending, selectedCopilotAutoTier != nil {
+        Text("applies from the next message")
+          .font(.system(size: 11.5))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+  }
+
+  /// The long-context toggle: the default window on one side, the long window on
+  /// the other. Long context costs more per token, so the hint says so.
+  private var copilotContextToggle: some View {
+    HStack(spacing: 8) {
+      ForEach(["default", "long_context"], id: \.self) { tier in
+        let isActiveTier = selectedCopilotContextTier == tier
+        Button {
+          onToggleCopilotContext(tier)
+        } label: {
+          Text(workCopilotContextTierLabel(
+            tier,
+            contextWindow: model.contextWindow,
+            longContextWindow: model.longContextWindow
+          ))
+            .font(.system(size: 12.5, weight: isActiveTier ? .semibold : .medium))
+            .foregroundStyle(isActiveTier ? ADEColor.textPrimary : ADEColor.textSecondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(isActiveTier ? ADEColor.accent.opacity(0.14) : Color.clear, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(model.displayName) · context \(workCopilotContextTierLabel(tier, contextWindow: model.contextWindow, longContextWindow: model.longContextWindow))")
+        .accessibilityHint(tier == "long_context" ? "Long context costs more per token." : "Default context window.")
+        .accessibilityAddTraits(isActiveTier ? .isSelected : [])
+      }
+    }
+  }
+
   private var fastModeToggle: some View {
     Toggle(isOn: Binding(
       get: { selectedCodexFastMode },

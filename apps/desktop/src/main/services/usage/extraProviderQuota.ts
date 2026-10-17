@@ -18,6 +18,7 @@ import type {
   UsageWindow,
 } from "../../../shared/types";
 import { getApiKey } from "../ai/apiKeyStore";
+import { readCopilotAccountQuota } from "../chat/copilotSdkPool";
 import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
 import { resolveKimiCodeLogin } from "../shared/kimiCodeLogin";
 import { copilotConfigHome, grokConfigHome, openCodeDataDirs } from "../shared/providerConfigHomes";
@@ -38,6 +39,8 @@ import type { UsageProviderPollContext, UsageProviderPollResult } from "./usageP
 
 const HTTP_TIMEOUT_MS = 4_000;
 const GH_TOKEN_TTL_MS = 15 * 60_000;
+const SDK_QUOTA_TTL_MS = 15 * 60_000;
+let copilotSdkQuotaCache: { at: number; quota: unknown } | null = null;
 
 const CURSOR_USAGE_URL = "https://cursor.com/api/usage-summary";
 const COPILOT_USAGE_URL = "https://api.github.com/copilot_internal/user";
@@ -606,7 +609,34 @@ export async function pollCopilotQuota(
     parseCopilotIdentity,
   );
   const parsed = parseCopilotQuota(response.body, resolved.nowMs, identity.email);
-  return freshResult("copilot", parsed.windows, { email: identity.email, plan: parsed.plan }, "usage response had no premium quota");
+  // The SDK read starts a Copilot runtime, so it runs only when the GitHub
+  // endpoint lacks counts, and at most once per SDK_QUOTA_TTL_MS unless the
+  // user asked for a refresh.
+  let sdkParsed: ReturnType<typeof parseCopilotQuota> | null = null;
+  const hasCounts = parsed.windows.some((window) => window.entitlementCount != null || window.unlimited);
+  if (!hasCounts || !parsed.plan) {
+    const cached = copilotSdkQuotaCache;
+    if (cached && context.reason !== "user" && resolved.nowMs - cached.at < SDK_QUOTA_TTL_MS) {
+      sdkParsed = cached.quota == null ? null : parseCopilotQuota(cached.quota, resolved.nowMs, identity.email);
+    } else {
+      let quota: unknown = null;
+      try {
+        quota = await readCopilotAccountQuota({
+          env: resolved.env,
+          baseDirectory: copilotConfigHome({ env: resolved.env, homeDir: resolved.homeDir }),
+          ...(token ? { gitHubToken: token } : {}),
+        });
+      } catch (error) {
+        // Older Copilot CLI runtimes may not expose account.getQuota; the
+        // GitHub endpoint stays the fallback.
+        console.warn("[usage] copilot SDK quota read failed:", error instanceof Error ? error.message : String(error));
+      }
+      copilotSdkQuotaCache = { at: resolved.nowMs, quota };
+      sdkParsed = quota == null ? null : parseCopilotQuota(quota, resolved.nowMs, identity.email);
+    }
+  }
+  const windows = sdkParsed?.windows.length ? sdkParsed.windows : parsed.windows;
+  return freshResult("copilot", windows, { email: identity.email, plan: sdkParsed?.plan ?? parsed.plan }, "usage response had no premium quota");
 }
 
 export async function pollGrokQuota(

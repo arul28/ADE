@@ -30,7 +30,7 @@
  *
  * `KIMI_CODE_HOME` names the config directory itself, and it defaults to
  * `~/.kimi-code`. The config file inside is `config.toml`. ADE does not write
- * that file — same rule as Copilot's config.json.
+ * that file.
  *
  * Auth: `authenticate` method id `login`, type `terminal` (`kimi login` /
  * `kimi acp --login`). Region is `--region global` (kimi.ai) or

@@ -25,8 +25,8 @@ export type CursorSdkOrphanSweepResult = {
   skippedPids: number[];
 };
 
-/** Script name of the worker bundle. Both the desktop and CLI builds use it. */
-const CURSOR_SDK_WORKER_SCRIPT_PATTERN = /(?:^|[\\/"\s])cursorSdkWorker\.cjs(?=["\s]|$)/;
+/** Script names of SDK workers sharing the same dead-owner sweep. */
+const SDK_WORKER_SCRIPT_PATTERN = /(?:^|[\\/"\s])(?:cursor|copilot)SdkWorker\.cjs(?=["\s]|$)/;
 /**
  * An installed app running the worker from its own bundle:
  * `/Applications/ADE Beta.app/Contents/MacOS/ADE Beta /Applications/ADE Beta.app/Contents/Resources/…/cursorSdkWorker.cjs`.
@@ -35,14 +35,14 @@ const CURSOR_SDK_WORKER_SCRIPT_PATTERN = /(?:^|[\\/"\s])cursorSdkWorker\.cjs(?=[
  * does not match.
  */
 const LEGACY_APP_WORKER_PATTERN =
-  /^"?(\/(?:[^\n]*\/)?(ADE(?: Beta| Alpha)?)\.app)\/Contents\/MacOS\/\2"?\s+"?\1\/Contents\/Resources\/(?:[^\n"]*\/)?cursorSdkWorker\.cjs"?\s*$/;
+  /^"?(\/(?:[^\n]*\/)?(ADE(?: Beta| Alpha)?)\.app)\/Contents\/MacOS\/\2"?\s+"?\1\/Contents\/Resources\/(?:[^\n"]*\/)?(?:cursor|copilot)SdkWorker\.cjs"?\s*$/;
 /**
  * `node` or Electron running the worker from an absolute path, as a dev brain
  * or the npm CLI forks it. Neither path may hold a space, so a command such as
  * `tail -f /x/cursorSdkWorker.cjs` cannot pass for one.
  */
 const LEGACY_NODE_WORKER_PATTERN =
-  /^"?(?:[^\s"]*[\\/])?(?:node|nodejs|electron|Electron)(?:\.exe)?"?\s+"?(?:\/|[A-Za-z]:[\\/])[^\s"]*[\\/]cursorSdkWorker\.cjs"?\s*$/;
+  /^"?(?:[^\s"]*[\\/])?(?:node|nodejs|electron|Electron)(?:\.exe)?"?\s+"?(?:\/|[A-Za-z]:[\\/])[^\s"]*[\\/](?:cursor|copilot)SdkWorker\.cjs"?\s*$/;
 
 /**
  * Whether a command line is a worker as builds before the owner marker forked
@@ -75,7 +75,7 @@ export function selectOrphanedCursorSdkWorkers(
   const orphans: Array<{ pid: number; ppid: number; ownerPid: number | null }> = [];
   for (const row of rows) {
     if (row.pid === args.selfPid) continue;
-    if (!CURSOR_SDK_WORKER_SCRIPT_PATTERN.test(row.command)) continue;
+    if (!SDK_WORKER_SCRIPT_PATTERN.test(row.command)) continue;
     const ownerPid = readCursorSdkOwnerPid(row.command);
     const orphaned = ownerPid != null
       ? ownerPid !== args.selfPid && !args.isAlive(ownerPid)

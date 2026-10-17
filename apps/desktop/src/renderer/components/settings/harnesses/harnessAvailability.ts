@@ -68,10 +68,9 @@ export function harnessAvailability(
     if (pi.blocker) return { available: false, reason: pi.blocker };
     return { available: true, reason: "" };
   }
-  // The ACP CLIs (qwen, kimi, grok, copilot) report a plain boolean, and an
-  // absent key means the probe predates that provider rather than that the
-  // provider is missing.
-  const acp = providers?.[harness as "qwen" | "kimi" | "grok" | "copilot"];
+  // The remaining ACP CLIs report a plain boolean, and an absent key means
+  // the probe predates that provider rather than that the provider is missing.
+  const acp = providers?.[harness as "qwen" | "kimi" | "grok"];
   if (acp === undefined) return UNKNOWN;
   return acp
     ? { available: true, reason: "" }

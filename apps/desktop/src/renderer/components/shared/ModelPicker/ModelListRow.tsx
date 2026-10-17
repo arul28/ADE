@@ -12,6 +12,7 @@ import type { CursorCloudServiceTier } from "../../../../shared/types/config";
 import { ModelRowLogo } from "../ProviderLogos";
 import {
   capitalizeWord,
+  formatTokenCount,
   isLocalModel,
   modelDetailLine,
   subProviderLabel,
@@ -86,6 +87,8 @@ export type ModelListRowProps = {
   serviceTierMode?: boolean;
   serviceTier?: CursorCloudServiceTier | null;
   onServiceTierChange?: (modelId: string, next: CursorCloudServiceTier | null) => void;
+  copilotContextTier?: "default" | "long_context";
+  onCopilotContextTierChange?: (modelId: string, next: "default" | "long_context") => void;
   /** The list is scoped to this row's provider, so the detail line need not name it. */
   omitProviderInDetail?: boolean;
 };
@@ -111,16 +114,22 @@ export const ModelListRow = memo(function ModelListRow({
   serviceTierMode = false,
   serviceTier = null,
   onServiceTierChange,
+  copilotContextTier = "default",
+  onCopilotContextTierChange,
   omitProviderInDetail = false,
 }: ModelListRowProps) {
   const sub = subProviderLabel(model);
-  const details = modelDetailLine(model, { omitProvider: omitProviderInDetail });
+  const showCopilotContextChip = Boolean(onCopilotContextTierChange)
+    && model.family === "github-copilot"
+    && model.supportedContextTiers?.includes("long_context") === true;
+  const details = modelDetailLine(model, { omitProvider: omitProviderInDetail, omitContext: showCopilotContextChip });
   const localBadge = isLocalModel(model);
   const showFastChip = !serviceTierMode && Boolean(onFastModeChange) && modelSupportsFastMode(model);
   const fastBlocked = showFastChip && Boolean(fastUnavailableReason);
   const showServiceTierChip = serviceTierMode
     && Boolean(onServiceTierChange)
     && (modelSupportsServiceTier(model, "fast") || modelSupportsServiceTier(model, "standard"));
+  const showAnyModeChip = showFastChip || showServiceTierChip || showCopilotContextChip;
   // A model whose catalog offers Ultrafast cycles Off → Fast → Ultrafast → Off.
   const offersUltrafast = ultrafastEnabled && showFastChip && modelSupportsUltrafast(model);
   const ultrafastOn = offersUltrafast && fastModeOn && fastTier === "ultrafast";
@@ -255,6 +264,22 @@ export const ModelListRow = memo(function ModelListRow({
     [handleServiceTierClick],
   );
 
+  const handleCopilotContextTierClick = useCallback((event: React.MouseEvent) => {
+    event.stopPropagation();
+    event.preventDefault();
+    onCopilotContextTierChange?.(model.id, copilotContextTier === "long_context" ? "default" : "long_context");
+  }, [copilotContextTier, model.id, onCopilotContextTierChange]);
+
+  const handleCopilotContextTierKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    event.stopPropagation();
+    onCopilotContextTierChange?.(model.id, copilotContextTier === "long_context" ? "default" : "long_context");
+  }, [copilotContextTier, model.id, onCopilotContextTierChange]);
+
+  const defaultContextLabel = formatTokenCount(model.contextWindow) ?? "Default";
+  const longContextLabel = formatTokenCount(model.longContextWindow) ?? "Long";
+
   const handleRowKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
       if (event.key === "Enter" || event.key === " ") {
@@ -385,21 +410,26 @@ export const ModelListRow = memo(function ModelListRow({
             </span>
           </span>
 
-          {showFastChip || showServiceTierChip ? (
+          {showAnyModeChip ? (
             <button
               type="button"
               tabIndex={isFocused ? 0 : -1}
               data-model-picker-fast-toggle={showFastChip ? "true" : undefined}
               data-model-picker-service-tier={showServiceTierChip ? "true" : undefined}
-              aria-label={showServiceTierChip
+              data-model-picker-context-tier={showCopilotContextChip ? "true" : undefined}
+              aria-label={showCopilotContextChip
+                ? `Context window for ${model.displayName}`
+                : showServiceTierChip
                 ? `Service tier for ${model.displayName}`
                 : `Fast mode for ${model.displayName}`}
-              aria-pressed={activeTier != null}
+              aria-pressed={showCopilotContextChip ? copilotContextTier === "long_context" : activeTier != null}
               data-fast-on={activeTier === "fast" ? "true" : undefined}
               data-fast-tier={ultrafastOn ? "ultrafast" : undefined}
               data-fast-unavailable={fastBlocked ? "true" : undefined}
               title={
-                showServiceTierChip
+                showCopilotContextChip
+                  ? `${copilotContextTier === "long_context" ? longContextLabel : defaultContextLabel} context window; long context may cost more`
+                  : showServiceTierChip
                   ? activeTier
                     ? `${activeTier === "fast" ? "Fast" : "Standard"} tier selected — click to cycle`
                     : "Leave service tier unset — click to choose a tier"
@@ -415,8 +445,8 @@ export const ModelListRow = memo(function ModelListRow({
               }
               // Fast that cannot run must not turn on; one that is on can still turn off.
               disabled={fastBlocked && !fastModeOn}
-              onClick={showServiceTierChip ? handleServiceTierClick : handleFastChipClick}
-              onKeyDown={showServiceTierChip ? handleServiceTierKeyDown : handleFastChipKeyDown}
+              onClick={showCopilotContextChip ? handleCopilotContextTierClick : showServiceTierChip ? handleServiceTierClick : handleFastChipClick}
+              onKeyDown={showCopilotContextChip ? handleCopilotContextTierKeyDown : showServiceTierChip ? handleServiceTierKeyDown : handleFastChipKeyDown}
               className={cn(
                 "inline-flex h-6 shrink-0 items-center justify-center gap-1 self-center rounded-full border",
                 showServiceTierChip ? "w-[78px]" : "w-[58px]",
@@ -426,14 +456,16 @@ export const ModelListRow = memo(function ModelListRow({
                 // Rest reads as plainly off; hover only darkens; the press itself
                 // is the depress; "on" is the only violet state.
                 reducedMotion ? "transition-none" : "transition-[color,background-color,border-color,transform] duration-100",
-                activeTier
+                (showCopilotContextChip ? copilotContextTier === "long_context" : Boolean(activeTier))
                   ? "border-violet-400/50 bg-violet-500/85 text-white shadow-[0_0_0_1px_rgba(139,92,246,0.20)] hover:bg-violet-500 active:bg-violet-500/70"
                   : "border-fg/[0.08] bg-fg/[0.02] text-muted-fg/55 hover:border-fg/[0.18] hover:bg-fg/[0.08] hover:text-fg/80 active:bg-fg/[0.12]",
               )}
             >
-              <Lightning size={10} weight={activeTier === "fast" ? "fill" : "regular"} />
-              {ultrafastOn ? <Lightning size={10} weight="fill" className="-ml-1.5" aria-hidden /> : null}
-              <span>{showServiceTierChip ? (activeTier === "fast" ? "Fast" : activeTier === "standard" ? "Standard" : "Tier") : ultrafastOn ? "Ultra" : "Fast"}</span>
+              {showCopilotContextChip ? null : <Lightning size={10} weight={activeTier === "fast" ? "fill" : "regular"} />}
+              {ultrafastOn && !showCopilotContextChip ? <Lightning size={10} weight="fill" className="-ml-1.5" aria-hidden /> : null}
+              <span>{showCopilotContextChip
+                ? copilotContextTier === "long_context" ? longContextLabel : defaultContextLabel
+                : showServiceTierChip ? (activeTier === "fast" ? "Fast" : activeTier === "standard" ? "Standard" : "Tier") : ultrafastOn ? "Ultra" : "Fast"}</span>
             </button>
           ) : reservesSpeedSlot ? (
             <span aria-hidden className={cn("shrink-0", serviceTierMode ? "w-[78px]" : "w-[58px]")} />

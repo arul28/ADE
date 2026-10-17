@@ -185,7 +185,7 @@ function acpSessionAdvertisesEffort<TSteer>(runtime: AcpRuntimeState<TSteer>): b
  * session offers the requested effort through its config option: setting the
  * option then moves the session's effort, so a restart would buy nothing. A
  * build that does not advertise the option (Grok before 1.0.40), or a session
- * that does not offer that level (a Copilot model listing only low and
+ * that does not offer that level (a model whose listing has only low and
  * medium), takes the effort only from the flag, so it restarts; the flag is
  * process-wide, and reusing the process would keep the old effort.
  */
@@ -253,8 +253,8 @@ export function resolveAcpConfigValue(
 
 /**
  * Keep the option set an agent reported back from a config change. An agent
- * that accepted the change and reported no options (Kimi, Copilot's
- * `session/set_model`) runs the value ADE sent, so the local option takes it.
+ * that accepted the change and reported no options (Kimi) runs the value ADE
+ * sent, so the local option takes it.
  * Otherwise a later call would skip a value as current when it is not.
  */
 function recordConfigChange<TSteer>(
@@ -364,9 +364,9 @@ export async function setAcpReasoningEffort<TSteer>(
 /**
  * Put the chat's model on an open session.
  *
- * Copilot takes it through `session/set_model`; Grok, Qwen, and Kimi take it
- * through the `model` config option. A resumed session comes back on the model
- * it last ran, whatever the spawn flag says (Grok 1.0.40), so this runs after
+ * Grok, Qwen, and Kimi take it through the `model` config option. A resumed
+ * session comes back on the model it last ran, whatever the spawn flag says
+ * (Grok 1.0.40), so this runs after
  * every entry, not only after `session/new`. A model the agent does not offer
  * is logged and the session keeps its own model; the turn still runs, and the
  * served-model notice tells the user which model answered. A model the agent

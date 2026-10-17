@@ -378,7 +378,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     getAvailableModels: {
       description: "List available chat models, optionally filtered by provider.",
-      input: "object { provider?: \"claude\" | \"codex\" | \"cursor\" | \"droid\" | \"opencode\" }",
+      input: "object { provider?: \"claude\" | \"codex\" | \"cursor\" | \"droid\" | \"copilot\" | \"opencode\" }",
       example: "ade actions run chat.getAvailableModels --input-json '{\"provider\":\"codex\"}'",
     },
     getSessionSummary: {

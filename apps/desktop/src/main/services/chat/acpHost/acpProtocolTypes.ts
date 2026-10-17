@@ -220,7 +220,7 @@ export type AcpSessionConfigOption = {
 };
 
 /**
- * Copilot ACP (and possibly other agents) sends `currentValue` instead of
+ * Some ACP agents send `currentValue` instead of
  * `value`, and nested choices as `{ value, name }` instead of `{ id, name }`.
  * Canonicalize onto ADE's `value` / `options[].id` shape so a live snapshot
  * does not land as "no current mode".
@@ -716,7 +716,7 @@ export const ACP_RPC_METHOD_NOT_FOUND = -32601;
 /** JSON-RPC "invalid request". Some agents answer an unknown notification with it. */
 export const ACP_RPC_INVALID_REQUEST = -32600;
 /**
- * ACP "resource not found". Copilot and Qwen answer `session/load` and
+ * ACP "resource not found". Qwen answers `session/load` and
  * `session/resume` with it for a session id they never persisted, such as one
  * that never finished a turn.
  */

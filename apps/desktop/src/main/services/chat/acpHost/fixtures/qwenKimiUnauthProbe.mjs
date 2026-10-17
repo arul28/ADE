@@ -3,8 +3,8 @@
  * Unauthenticated Qwen + Kimi verification.
  *
  * Config homes and scratch cwds live under os.tmpdir() only. Does not write
- * ~/.qwen, ~/.kimi-code (beyond the installer), ~/.claude, ~/.grok, or
- * ~/.copilot. Does not run login or spend API keys.
+ * ~/.qwen, ~/.kimi-code (beyond the installer), ~/.claude, or ~/.grok. Does not
+ * run login or spend API keys.
  *
  * Usage: node qwenKimiUnauthProbe.mjs
  */

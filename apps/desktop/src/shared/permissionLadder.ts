@@ -38,6 +38,7 @@ import type {
   AgentChatCodexApprovalPolicy,
   AgentChatCodexSandbox,
   AgentChatDroidPermissionMode,
+  AgentChatCopilotPermissionMode,
   AgentChatMusePermissionMode,
   AgentChatOpenCodePermissionMode,
 } from "./types/chat";
@@ -53,6 +54,7 @@ export type PermissionLadderFamily =
   | "codex"
   | "opencode"
   | "droid"
+  | "copilot"
   | "acp"
   | "cursor"
   | "muse";
@@ -205,6 +207,7 @@ export type PermissionLadderControls = {
   cursorModeId: string | null | undefined;
   /** Optional so surfaces that never show Muse keep compiling; absent reads as Muse's default. */
   musePermissionMode?: AgentChatMusePermissionMode | null;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode | null;
 };
 
 /**
@@ -218,6 +221,9 @@ export function permissionLevelForFamily(family: PermissionLadderFamily, control
     case "opencode":
     case "acp": return permissionLevelForOpenCode(controls.opencodePermissionMode);
     case "droid": return permissionLevelForDroid(controls.droidPermissionMode);
+    case "copilot": return controls.copilotPermissionMode === "assisted"
+      ? "auto-edit"
+      : controls.copilotPermissionMode ?? "ask";
     case "cursor": return permissionLevelForCursorMode(controls.cursorModeId);
     case "muse": return permissionLevelForMuse(controls.musePermissionMode ?? "onRequest");
   }
@@ -301,6 +307,7 @@ export type SessionPermissionFields = {
   codexConfigSource?: string | null;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode | null;
   droidPermissionMode?: AgentChatDroidPermissionMode | null;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode | null;
   acpPermissionMode?: AgentChatAcpPermissionMode | null;
   cursorModeId?: string | null;
   musePermissionMode?: AgentChatMusePermissionMode | null;
@@ -360,6 +367,9 @@ export function sessionPermissionLevel(
   if (provider === "droid") {
     return fields.droidPermissionMode ? permissionLevelForDroid(fields.droidPermissionMode) : unknown;
   }
+  if (provider === "copilot") {
+    return fields.copilotPermissionMode === "assisted" ? "auto-edit" : fields.copilotPermissionMode ?? "ask";
+  }
   if (provider === "opencode") {
     if (!fields.opencodePermissionMode || fields.opencodePermissionMode === "config-toml") {
       return levelForGenericMode(fields.permissionMode) ?? unknown;
@@ -404,6 +414,7 @@ export type PermissionFieldsPatch = {
   codexConfigSource?: "flags";
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
   acpPermissionMode?: AgentChatAcpPermissionMode;
   cursorModeId?: string;
   musePermissionMode?: AgentChatMusePermissionMode;
@@ -437,6 +448,8 @@ export function permissionFieldsForLevel(
       return { cursorModeId: resolved.cursorModeId, permissionMode: GENERIC_BY_LEVEL[resolved.level] };
     case "droid":
       return { droidPermissionMode: resolved.droidPermissionMode, interactionMode: level === "plan" ? "plan" : "default" };
+    case "copilot":
+      return { copilotPermissionMode: level };
     case "opencode":
       return { opencodePermissionMode: resolved.opencodePermissionMode };
     case "muse":

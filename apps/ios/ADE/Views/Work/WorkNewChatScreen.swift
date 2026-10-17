@@ -676,6 +676,9 @@ struct WorkNewChatScreen: View {
   @State private var runtimeMode: String = "default"
   @State private var reasoningEffort: String = ""
   @State private var codexFastMode: Bool = false
+  /// Copilot's context tier and Auto profile for the chat about to be created.
+  @State private var copilotContextTier: String = "default"
+  @State private var copilotAutoTier: String? = nil
   /// The catalog option the picker handed us, kept so fast-tier support is read
   /// from the live host-advertised model (its `serviceTiers`) rather than
   /// re-derived from the curated iOS catalog — which can miss a freshly
@@ -795,6 +798,8 @@ struct WorkNewChatScreen: View {
     provider = workNormalizedChatProvider(defaults.provider)
     modelId = defaults.modelId
     reasoningEffort = defaults.reasoningEffort ?? ""
+    copilotContextTier = workCopilotContextTier(defaults.copilotContextTier)
+    copilotAutoTier = defaults.copilotAutoTier
     codexFastMode = defaults.fastMode ?? false
     let mode = workRuntimeMode(
       provider: defaults.provider,
@@ -807,7 +812,8 @@ struct WorkNewChatScreen: View {
       opencodePermissionMode: defaults.opencodePermissionMode,
       cursorModeId: defaults.cursorModeId,
       droidPermissionMode: defaults.droidPermissionMode,
-      musePermissionMode: defaults.musePermissionMode
+      musePermissionMode: defaults.musePermissionMode,
+      copilotPermissionMode: defaults.copilotPermissionMode
     )
     runtimeMode = mode.isEmpty ? workDefaultRuntimeMode(provider: provider) : mode
     checkModelOnMachine()
@@ -1051,6 +1057,12 @@ struct WorkNewChatScreen: View {
           machineModelHint = nil
         },
         selectedPresetId: selectedPreset?.id,
+        currentCopilotContextTier: copilotContextTier,
+        currentCopilotAutoTier: copilotAutoTier,
+        onSelectCopilotTiers: { context, auto in
+          copilotContextTier = context
+          copilotAutoTier = auto
+        },
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           selectedPreset = nil
           selectedModelOption = option
@@ -1709,6 +1721,9 @@ struct WorkNewChatScreen: View {
         opencodePermissionMode: wire.opencodePermissionMode,
         droidPermissionMode: wire.droidPermissionMode,
         musePermissionMode: wire.musePermissionMode,
+        copilotPermissionMode: wire.copilotPermissionMode,
+        copilotContextTier: providerFamilyKey(provider) == "copilot" ? copilotContextTier : nil,
+        copilotAutoTier: providerFamilyKey(provider) == "copilot" ? copilotAutoTier : nil,
         cursorModeId: wire.cursorModeId,
         targetProjectId: targetScope.projectId,
         targetProjectRootPath: targetScope.projectRootPath,

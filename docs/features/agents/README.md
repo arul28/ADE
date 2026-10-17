@@ -168,7 +168,7 @@ Each ADE-launched session receives the canonical root through
   skill-delivery telemetry point, in `skillDelivery.ts` — with mechanism
   `cursor-workspace-dirs`; a failed materialization falls back to
   `ADE_AGENT_SKILLS_DIRS` plus the catalog rather than failing the launch.
-- Droid and the remaining ACP providers (Kimi, Grok, Copilot) have no
+- Droid and the remaining ACP providers (Kimi, Grok) have no
   extra-skill-root option ADE can set without writing a provider config home,
   so they use the catalog plus the provider-independent
   `ade skill list --text` / `ade skill show <name> --text` activation path.

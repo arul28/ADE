@@ -2,14 +2,14 @@
  * Dialect claims vs captured initialize responses from real binaries.
  *
  * These fixtures were recorded on 2026-10-05 against the latest CLI releases:
- * Copilot 1.0.91, Grok 1.0.46, Qwen Code 0.25.0, Kimi Code 2.1.1, and Devin
+ * Grok 1.0.46, Qwen Code 0.25.0, Kimi Code 2.1.1, and Devin
  * 3000.11.3. Each one was diffed against the older build installed on the
  * capture machine; the handshakes differ only in the version string.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { copilotDialect, devinDialect, grokDialect, kimiDialect, qwenDialect, readGrokPromptUsage } from "./acpDialects";
+import { devinDialect, grokDialect, kimiDialect, qwenDialect, readGrokPromptUsage } from "./acpDialects";
 import { normalizeAcpConfigOptions, type AcpInitializeResponse } from "./acpProtocolTypes";
 
 const fixturesDir = path.join(__dirname, "fixtures");
@@ -19,24 +19,6 @@ function loadFixture<T>(name: string): T {
 }
 
 describe("captured initialize fixtures", () => {
-  it("copilot 1.0.91 advertises load, close, MCP, and image, not resume", () => {
-    const init = loadFixture<AcpInitializeResponse>("copilot.initialize.json");
-    expect(init.protocolVersion).toBe(1);
-    expect(init.agentInfo?.version).toBe("1.0.91");
-    expect(init.agentCapabilities?.loadSession).toBe(true);
-    expect(init.agentCapabilities?.mcpCapabilities).toEqual({ http: true, sse: true });
-    expect(init.agentCapabilities?.promptCapabilities?.image).toBe(true);
-    expect(init.agentCapabilities?.sessionCapabilities).toMatchObject({ close: {}, list: {} });
-    expect(init.agentCapabilities?.sessionCapabilities).not.toHaveProperty("resume");
-    expect(copilotDialect.sessionConfig.declared).toBe(true);
-    expect(copilotDialect.configOptionIds).toEqual(["mode", "allow_all"]);
-    expect(copilotDialect.closeStyle).toBe("close_request");
-    expect(copilotDialect.loadPolicy).toBe("load_only");
-    expect(copilotDialect.resumeSession.declared).toBe(false);
-    expect(copilotDialect.cancelStyle).toBe("notification");
-    expect(copilotDialect.imagePrompts.declared).toBe(true);
-    expect(copilotDialect.mcpInjection.declared).toBe(true);
-  });
 
   it("grok remains first-class while preserving its honest capability gates", () => {
     const init = loadFixture<AcpInitializeResponse>("grok.initialize.json");
@@ -116,18 +98,6 @@ describe("captured initialize fixtures", () => {
     expect(usage?.costUsd).toBeLessThan(1);
   });
 
-  it("copilot config_option_update currentValue maps onto ADE value/id", () => {
-    const raw = loadFixture<unknown[]>("copilot.config-options.json");
-    const options = normalizeAcpConfigOptions(raw);
-    const mode = options.find((option) => option.id === "mode");
-    expect(mode?.value).toBe("https://agentclientprotocol.com/protocol/session-modes#agent");
-    expect(mode?.options?.map((entry) => entry.id)).toEqual([
-      "https://agentclientprotocol.com/protocol/session-modes#agent",
-      "https://agentclientprotocol.com/protocol/session-modes#plan",
-      "https://agentclientprotocol.com/protocol/session-modes#autopilot",
-    ]);
-    expect(options.find((option) => option.id === "allow_all")?.value).toBe("off");
-  });
 
   it("qwen 0.25.0 advertises resume and image/audio, not close", () => {
     const init = loadFixture<AcpInitializeResponse>("qwen.initialize.json");

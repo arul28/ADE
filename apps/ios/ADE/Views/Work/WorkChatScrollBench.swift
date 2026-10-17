@@ -404,6 +404,7 @@ struct WorkChatScrollBenchScreen: View {
       onSelectRuntimeMode: { _ in true },
       onSelectEffort: { _ in },
       onSelectCodexFastMode: { _ in true },
+      onSelectCopilotTiers: { _, _ in true },
       lanesRenderSignature: workLaneListRenderSignature([]),
       subagentSnapshotsRenderSignature: workSubagentSnapshotsRenderSignature([]),
       scheduledWorkSnapshots: benchScheduledWork,

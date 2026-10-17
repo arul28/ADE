@@ -319,28 +319,40 @@ export function parseCopilotQuota(payload: unknown, nowMs: number, email?: strin
   const root = asRecord(payload);
   const snapshots = asRecord(root?.quotaSnapshots) ?? asRecord(root?.quota_snapshots);
   const premium = asRecord(snapshots?.premiumInteractions) ?? asRecord(snapshots?.premium_interactions);
-  const remaining = wholePercent(premium?.percentRemaining) ?? wholePercent(premium?.percent_remaining);
-  const percent = remaining == null ? null : wholePercent(100 - remaining);
+  const remaining = wholePercent(premium?.percentRemaining) ?? wholePercent(premium?.percent_remaining)
+    ?? wholePercent(premium?.remainingPercentage) ?? wholePercent(premium?.remaining_percentage);
+  // The SDK names counts `entitlementRequests`/`usedRequests`; GitHub's
+  // copilot_internal endpoint names them `entitlement`/`remaining`.
+  const entitlementCount = finiteNumberOrNull(premium?.entitlementRequests ?? premium?.entitlement_requests ?? premium?.entitlement);
+  const remainingCount = finiteNumberOrNull(premium?.remaining);
+  const usedCount = finiteNumberOrNull(premium?.usedRequests ?? premium?.used_requests)
+    ?? (entitlementCount != null && entitlementCount > 0 && remainingCount != null ? Math.max(0, entitlementCount - remainingCount) : null);
+  const unlimited = premium?.unlimited === true || premium?.isUnlimitedEntitlement === true || premium?.is_unlimited_entitlement === true || entitlementCount === -1;
+  const percent = remaining == null
+    ? entitlementCount != null && entitlementCount > 0 && usedCount != null
+      ? wholePercent(usedCount / entitlementCount * 100)
+      : unlimited ? 0 : null
+    : wholePercent(100 - remaining);
   if (percent == null) return { windows: [], plan: null };
-  const plan = stringField(root, "copilotPlan", "copilot_plan");
-  const resetsAt = isoField(premium, "resetAt", "reset_at")
+  const plan = stringField(root, "copilotPlan", "copilot_plan", "planTier", "plan_tier");
+  const resetsAt = isoField(premium, "resetAt", "reset_at", "resetDate", "reset_date")
     ?? isoField(root,
       "quotaResetAt",
       "quota_reset_at",
-      "quotaResetDateUtc",
-      "quota_reset_date_utc",
       "quotaResetDate",
       "quota_reset_date",
+      "quotaResetDateUtc",
+      "quota_reset_date_utc",
     );
   return {
-    windows: [quotaWindow({
+    windows: [{ ...quotaWindow({
       provider: "copilot",
       windowType: "monthly",
       percentUsed: percent,
       resetsAt,
       nowMs,
       email,
-    })],
+    }), ...(usedCount != null ? { usedCount } : {}), ...(entitlementCount != null ? { entitlementCount } : {}), ...(unlimited ? { unlimited: true } : {}) }],
     plan,
   };
 }

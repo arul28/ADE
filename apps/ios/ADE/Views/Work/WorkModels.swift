@@ -704,7 +704,12 @@ struct WorkActiveSendCapability: Equatable {
       // boundary ("send during turn") or after the current reply (queue). No
       // interrupt: like Codex there is no cancel-and-resend.
       return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "OpenCode", interruptContinues: false)
-    // The four ACP providers are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
+    // Copilot is an SDK provider: `session.send` with `mode: "immediate"` joins
+    // the live turn and `enqueue` waits for it. Like Codex and OpenCode there is
+    // no cancel-and-resend, so interrupt just stops the turn.
+    case "copilot":
+      return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "GitHub Copilot", interruptContinues: false)
+    // The three ACP providers are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
     // which is what the default arm already gives them. They are listed anyway
     // so the label reads with the provider's name instead of "the agent", and
     // so the next person diffing this table against the TS one sees them here.
@@ -714,8 +719,6 @@ struct WorkActiveSendCapability: Equatable {
       return WorkActiveSendCapability(modes: [.queue], agentLabel: "Kimi", interruptContinues: false)
     case "grok":
       return WorkActiveSendCapability(modes: [.queue], agentLabel: "Grok", interruptContinues: false)
-    case "copilot":
-      return WorkActiveSendCapability(modes: [.queue], agentLabel: "GitHub Copilot", interruptContinues: false)
     default:
       return WorkActiveSendCapability(modes: [.queue], agentLabel: "the agent", interruptContinues: false)
     }

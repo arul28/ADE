@@ -260,6 +260,10 @@ struct WorkChatSummaryRenderContext: Equatable {
   let contextWindowFallback: Int?
   let claudeGoal: AgentChatClaudeGoal?
   let codexGoal: AgentChatCodexGoal?
+  /// Copilot's context tier, Auto profile, and whether a profile change is still pending.
+  let copilotContextTier: String
+  let copilotAutoTier: String?
+  let copilotAutoTierPending: Bool
   let spawnKind: AgentChatSpawnKind?
   let orchestrationParentSessionId: String?
   let subagentTakeoverPromptShownAt: String?
@@ -304,6 +308,9 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.contextWindowFallback = nil
       self.claudeGoal = nil
       self.codexGoal = nil
+      self.copilotContextTier = "default"
+      self.copilotAutoTier = nil
+      self.copilotAutoTierPending = false
       self.spawnKind = nil
       self.orchestrationParentSessionId = nil
       self.subagentTakeoverPromptShownAt = nil
@@ -343,6 +350,9 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.contextWindowFallback = workContextWindowFallback(modelId: summary.modelId, model: summary.model)
     self.claudeGoal = summary.claudeGoal
     self.codexGoal = summary.codexGoal
+    self.copilotContextTier = workCopilotContextTier(summary.copilotContextTier)
+    self.copilotAutoTier = summary.copilotAutoTier
+    self.copilotAutoTierPending = summary.copilotAutoTierPending == true
     self.spawnKind = summary.spawnKind
     self.orchestrationParentSessionId = summary.orchestrationParentSessionId
     self.subagentTakeoverPromptShownAt = summary.subagentTakeoverPromptShownAt
@@ -632,6 +642,7 @@ struct WorkChatSessionView: View {
   let onSelectRuntimeMode: @MainActor (String) async -> Bool
   let onSelectEffort: @MainActor (String) async -> Void
   let onSelectCodexFastMode: @MainActor (Bool) async -> Bool
+  let onSelectCopilotTiers: @MainActor (String, String?) async -> Bool
 
   /// Opens the parent chat for a standalone spawned child session. The nested
   /// transcript viewer uses its own back control and leaves this unset.
@@ -711,6 +722,8 @@ struct WorkChatSessionView: View {
   @StateObject var handoffSendGate = WorkHandoffSendGate()
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
+  /// The Copilot tiers the picker reported for the selection in progress.
+  @State var pickedCopilotTiers: (String, String?)? = nil
   @State var toolActivitySheet: WorkToolActivitySheetSelection?
   @State var modelUpdateInFlight = false
   /// Bumped each time a NEW blocking pending input arrives so the body can fire
@@ -2322,6 +2335,10 @@ struct WorkChatSessionView: View {
             lanes: lanes,
             commandScope: isPersonalChat ? .personal : .project,
             isBusy: modelUpdateInFlight,
+            currentCopilotContextTier: chatSummaryContext.copilotContextTier,
+            currentCopilotAutoTier: chatSummaryContext.copilotAutoTier,
+            copilotAutoTierPending: chatSummaryContext.copilotAutoTierPending,
+            onSelectCopilotTiers: { context, auto in pickedCopilotTiers = (context, auto) },
             onSelect: { option, pickedReasoning, _, pickedFastMode in
               Task { @MainActor in
                 modelUpdateInFlight = true
@@ -2340,6 +2357,13 @@ struct WorkChatSessionView: View {
                 if chatSummaryContext.effectiveFastMode != pickedFastMode {
                   _ = await onSelectCodexFastMode(pickedFastMode)
                 }
+                guard !Task.isCancelled else { return }
+                // Apply Copilot's tiers only when they differ from what the chat already runs on.
+                if let picked = pickedCopilotTiers,
+                   picked.0 != chatSummaryContext.copilotContextTier || picked.1 != chatSummaryContext.copilotAutoTier {
+                  _ = await onSelectCopilotTiers(picked.0, picked.1)
+                }
+                pickedCopilotTiers = nil
               }
             }
           )

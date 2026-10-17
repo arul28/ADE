@@ -90,7 +90,7 @@ export type AgentChatProvider =
  * one session-config shape, so surfaces branch on this list instead of naming
  * the four providers again.
  */
-export const ACP_CHAT_PROVIDERS = ["qwen", "kimi", "grok", "copilot", "devin"] as const;
+export const ACP_CHAT_PROVIDERS = ["qwen", "kimi", "grok", "devin"] as const;
 export type AcpChatProvider = (typeof ACP_CHAT_PROVIDERS)[number];
 
 /**
@@ -182,7 +182,7 @@ export type AgentChatPlanUsageUnit = "premium_request" | "nano_aiu" | "cursor_re
 export type AgentChatPlanUsage = { unit: AgentChatPlanUsageUnit; amount: number };
 
 /** Providers whose compactions ADE records. */
-export type AgentChatCompactProvider = "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi" | "muse" | AcpChatProvider;
+export type AgentChatCompactProvider = "claude" | "codex" | "opencode" | "cursor" | "droid" | "copilot" | "pi" | "muse" | AcpChatProvider;
 
 /**
  * `provider` means the runtime reported the compaction itself. `inferred`
@@ -379,6 +379,10 @@ export type AgentChatCodexConfigSource = "flags" | "config-toml";
 export type AgentChatCodexCollaborationMode = "default" | "plan";
 export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto" | "config-toml";
 export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high" | "agi";
+/** GitHub Copilot SDK approval level. Missing values are treated as `ask`. */
+export type AgentChatCopilotPermissionMode = "plan" | "ask" | "assisted" | "auto-edit" | "full-auto";
+export type AgentChatCopilotContextTier = "default" | "long_context";
+export type AgentChatCopilotAutoTier = "efficiency" | "balance" | "intelligence";
 /**
  * Muse Code's own approval modes (MSP `ApprovalMode`), most cautious first. The
  * value is sent verbatim as `approvalMode` on `session/start` and
@@ -2383,6 +2387,11 @@ export type AgentChatEvent =
       codexConfigSource?: AgentChatCodexConfigSource;
       opencodePermissionMode?: AgentChatOpenCodePermissionMode;
       droidPermissionMode?: AgentChatDroidPermissionMode;
+      copilotPermissionMode?: AgentChatCopilotPermissionMode;
+      copilotContextTier?: AgentChatCopilotContextTier;
+      copilotAutoTier?: AgentChatCopilotAutoTier | null;
+      copilotAutoTierPending?: boolean;
+      claudeGoal?: ClaudeActiveGoal | null;
       musePermissionMode?: AgentChatMusePermissionMode;
       cursorModeId?: string | null;
       cursorModeSnapshot?: AgentChatCursorModeSnapshot;
@@ -3010,6 +3019,10 @@ export type AgentChatSession = PersonalAttachmentRootsField & {
   /** Muse Code MSP session id (UUIDv7) used for `session/resume` and CLI handoff. */
   museSessionId?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
+  copilotContextTier?: AgentChatCopilotContextTier;
+  copilotAutoTier?: AgentChatCopilotAutoTier | null;
+  copilotAutoTierPending?: boolean;
   musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
@@ -3213,6 +3226,10 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   /** Muse Code MSP session id (UUIDv7) used for `session/resume` and CLI handoff. */
   museSessionId?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
+  copilotContextTier?: AgentChatCopilotContextTier;
+  copilotAutoTier?: AgentChatCopilotAutoTier | null;
+  copilotAutoTierPending?: boolean;
   musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
@@ -3722,6 +3739,12 @@ export type AgentChatModelInfo = {
     cli: boolean;
     sdk: boolean;
   };
+  /** Copilot SDK context-window options advertised by its live model catalog. */
+  supportedContextTiers?: string[];
+  /** Default Copilot context window in tokens. */
+  contextWindow?: number;
+  /** Copilot long-context window in tokens, when advertised. */
+  longContextWindow?: number;
   cursorCliVariants?: Array<{
     modelId: string;
     reasoningEffort?: string;
@@ -4076,6 +4099,9 @@ export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
   /** Muse Code MSP session id (UUIDv7) used for `session/resume` and CLI handoff. */
   museSessionId?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
+  copilotContextTier?: AgentChatCopilotContextTier;
+  copilotAutoTier?: AgentChatCopilotAutoTier | null;
   musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
@@ -4306,13 +4332,13 @@ export type AgentChatRuntimeMode = "interactive" | "print";
  * the same replay used when an agent rotates. Fork requires source and target
  * on the same provider; the model may still change within that provider.
  *
- * The ACP providers (qwen, kimi, grok, copilot) are deliberately absent. ACP
+ * The ACP providers (qwen, kimi, grok, devin) are deliberately absent. ACP
  * has no fork method, and ADE cannot replay a transcript into an ACP session
  * without a per-dialect load/resume path it does not yet have, so a handoff
  * from one of them is brief-only. Adding one here would promise a copied thread
  * that no dialect can produce.
  */
-export const HANDOFF_FORK_PROVIDERS = ["claude", "codex", "opencode", "droid", "cursor", "muse"] as const;
+export const HANDOFF_FORK_PROVIDERS = ["claude", "codex", "opencode", "droid", "copilot", "cursor", "muse"] as const;
 
 export function providerSupportsHandoffFork(provider: AgentChatProvider | null | undefined): boolean {
   return provider != null && (HANDOFF_FORK_PROVIDERS as readonly string[]).includes(provider);
@@ -4341,7 +4367,9 @@ export function providerForkReplaysTranscript(provider: AgentChatProvider | null
 // Cross-machine fork now covers every handoff-capable provider: providers
 // without a native (portable) session use the ADE-side full-transcript replay
 // onto a fresh destination thread, which is machine-independent.
-export const CROSS_MACHINE_HANDOFF_FORK_PROVIDERS = HANDOFF_FORK_PROVIDERS;
+// Copilot's server-level fork belongs to the source CLI's connection and cannot
+// be resumed by a different machine's Copilot installation.
+export const CROSS_MACHINE_HANDOFF_FORK_PROVIDERS = ["claude", "codex", "opencode", "droid", "cursor", "muse"] as const;
 
 export function providerSupportsCrossMachineHandoffFork(provider: string | null | undefined): boolean {
   return provider != null
@@ -4386,6 +4414,9 @@ export type AgentChatHandoffArgs = {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
+  copilotContextTier?: AgentChatCopilotContextTier;
+  copilotAutoTier?: AgentChatCopilotAutoTier | null;
   musePermissionMode?: AgentChatMusePermissionMode;
   permissionMode?: AgentChatPermissionMode;
   cursorModeId?: string | null;
@@ -4424,6 +4455,9 @@ export type AgentChatCrossMachineTargetConfig = {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
+  copilotContextTier?: AgentChatCopilotContextTier;
+  copilotAutoTier?: AgentChatCopilotAutoTier | null;
   musePermissionMode?: AgentChatMusePermissionMode;
   permissionMode?: AgentChatPermissionMode;
   cursorModeId?: string | null;
@@ -4975,7 +5009,7 @@ export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, reado
   qwen: ["queue"],
   kimi: ["queue"],
   grok: ["queue"],
-  copilot: ["queue"],
+  copilot: ["inline", "queue"],
 };
 
 /**
@@ -5418,6 +5452,9 @@ export type AgentChatLaunchDefaults = {
   codexConfigSource?: AgentChatCodexConfigSource | null;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode | null;
   droidPermissionMode?: AgentChatDroidPermissionMode | null;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode | null;
+  copilotContextTier?: AgentChatCopilotContextTier | null;
+  copilotAutoTier?: AgentChatCopilotAutoTier | null;
   musePermissionMode?: AgentChatMusePermissionMode | null;
   acpPermissionMode?: AgentChatAcpPermissionMode | null;
   cursorModeId?: string | null;
@@ -5834,6 +5871,9 @@ export type AgentChatUpdateSessionArgs = {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
+  copilotContextTier?: AgentChatCopilotContextTier;
+  copilotAutoTier?: AgentChatCopilotAutoTier | null;
   musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
