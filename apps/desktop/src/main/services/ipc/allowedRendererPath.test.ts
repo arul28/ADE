@@ -142,6 +142,26 @@ describe("resolveWithinAllowedDirs", () => {
       .toThrow(`Path does not exist: ${path.join(innerDir, "not-there.png")}`);
   });
 
+  // A link from one allowed directory into another stays inside the allowlist,
+  // so a missing name under it keeps its own reason, and a file that exists
+  // there still resolves through the link.
+  it("keeps the missing-file reason for a name under a symlink into another allowed directory", (ctx) => {
+    const intoSecond = path.join(allowedDir, "into-second");
+    const linked = path.join(secondAllowedDir, "linked.txt");
+    fs.writeFileSync(linked, "linked");
+    try {
+      fs.symlinkSync(secondAllowedDir, intoSecond, "dir");
+    } catch {
+      ctx.skip();
+      return;
+    }
+    expect(fs.lstatSync(intoSecond).isSymbolicLink(), "symlink setup").toBe(true);
+    expect(() => resolveWithinAllowedDirs(allowedDirs, path.join(intoSecond, "not-there.png")))
+      .toThrow(`Path does not exist: ${path.join(intoSecond, "not-there.png")}`);
+    expect(resolveWithinAllowedDirs(allowedDirs, path.join(intoSecond, "linked.txt")))
+      .toBe(fs.realpathSync.native(linked));
+  });
+
   // A root that is itself missing fails for a reason that has nothing to do
   // with the candidate; it must not downgrade a real containment rejection
   // into that root's error.

@@ -513,21 +513,35 @@ export function resolvePathWithinRoot(
 }
 
 /**
- * Whether `candidate` would fail the containment rule if names it does not find
- * were allowed.
+ * Whether `candidate`, resolved from `root` with names it does not find allowed,
+ * lands outside every root in `roots`.
  *
  * A missing name under an in-root symlink that points outside fails on that
  * name before containment is checked, so the plain resolve reports "does not
  * exist" for a path that is really outside the root. Resolving again with
- * missing names allowed reaches the containment rule.
+ * missing names allowed shows where the path really lands. That spot still
+ * counts as allowed when another root contains it: a link under `A` that points
+ * into `B` leaves `A`, but a missing name under it is a missing file in `B`.
  */
-export function escapesRootWhenMissingAllowed(root: string, candidate: string): boolean {
+export function escapesAllRootsWhenMissingAllowed(
+  roots: readonly string[],
+  root: string,
+  candidate: string,
+): boolean {
+  let landed: string;
   try {
-    resolvePathWithinRoot(root, candidate, { allowMissing: true });
+    landed = resolveCandidatePath(root, candidate, { allowMissing: true });
+  } catch {
     return false;
-  } catch (error) {
-    return isPathEscapeError(error);
   }
+  return !roots.some((other) => {
+    try {
+      resolvePathWithinRoot(other, landed, { allowMissing: true });
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function openReadOnlyNoFollow(filePath: string): number {

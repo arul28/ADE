@@ -1,5 +1,5 @@
 import {
-  escapesRootWhenMissingAllowed,
+  escapesAllRootsWhenMissingAllowed,
   isLexicallyWithinRoot,
   isPathEscapeError,
   resolvePathWithinRoot,
@@ -33,10 +33,12 @@ export const ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE = "rootPath is outside k
  * - a failure from a root that lexically contains the candidate is the real
  *   cause (for a folder that is gone, the resolver's own
  *   `Path does not exist: <path>`), unless the candidate would leave that root
- *   through a symlink. A missing name under an in-root symlink that points
- *   outside fails on that name before the containment rule runs, so such a
- *   failure is checked again with missing names allowed, and a containment
- *   failure there counts as an escape. Otherwise it is rethrown.
+ *   through a symlink and land outside every allowed project root. A missing
+ *   name under an in-root symlink that points outside fails on that name before
+ *   the containment rule runs, so such a failure is checked again with missing
+ *   names allowed, and a landing spot outside every allowed project root counts
+ *   as an escape. A landing spot inside another allowed root (a link into a
+ *   second root) keeps the real cause. Otherwise it is rethrown.
  * - a non-containment failure from a root the candidate is not lexically inside
  *   says nothing about the candidate. The resolver reports a missing component
  *   before it checks containment, so for a folder outside every root that
@@ -60,7 +62,7 @@ export function resolveWithinAllowedProjectRoots(
       if (isPathEscapeError(error)) {
         sawEscape = true;
       } else if (isLexicallyWithinRoot(root, candidate)) {
-        if (escapesRootWhenMissingAllowed(root, candidate)) {
+        if (escapesAllRootsWhenMissingAllowed(allowedRoots, root, candidate)) {
           sawEscape = true;
         } else if (ownRootFailure === null) {
           ownRootFailure = error;

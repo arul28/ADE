@@ -146,6 +146,24 @@ describe("resolveWithinAllowedProjectRoots", () => {
       .toThrow(`Path does not exist: ${path.join(innerDir, "not-there")}`);
   });
 
+  // A link from one allowed root into another stays inside the allowed roots, so
+  // a missing folder under it keeps its own reason, and a folder that exists
+  // there still resolves through the link.
+  it("keeps the missing-folder reason for a folder under a symlink into another allowed root", (ctx) => {
+    const intoSecond = path.join(allowedRoot, "into-second");
+    try {
+      fs.symlinkSync(secondAllowedRoot, intoSecond, "dir");
+    } catch {
+      ctx.skip();
+      return;
+    }
+    expect(fs.lstatSync(intoSecond).isSymbolicLink(), "symlink setup").toBe(true);
+    expect(() => resolveWithinAllowedProjectRoots(allowedRoots, path.join(intoSecond, "not-there")))
+      .toThrow(`Path does not exist: ${path.join(intoSecond, "not-there")}`);
+    expect(resolveWithinAllowedProjectRoots(allowedRoots, path.join(intoSecond, "child")))
+      .toBe(fs.realpathSync.native(insideSecond));
+  });
+
   // A root that is itself missing fails for a reason that has nothing to do
   // with the candidate; it must not downgrade a real containment rejection
   // into that root's error.

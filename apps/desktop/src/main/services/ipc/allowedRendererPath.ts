@@ -1,5 +1,5 @@
 import {
-  escapesRootWhenMissingAllowed,
+  escapesAllRootsWhenMissingAllowed,
   isLexicallyWithinRoot,
   isPathEscapeError,
   resolvePathWithinRoot,
@@ -32,11 +32,13 @@ export const PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE = "Path is outside allowed direct
  *   into a "missing file" one.
  * - a failure from a root that lexically contains the candidate is the real
  *   cause (for a missing file, the resolver's own `Path does not exist: <path>`),
- *   unless the candidate would leave that root through a symlink. A missing name
- *   under an in-root symlink that points outside fails on that name before the
- *   containment rule runs, so such a failure is checked again with missing names
- *   allowed, and a containment failure there counts as an escape. Otherwise it
- *   is rethrown.
+ *   unless the candidate would leave that root through a symlink and land
+ *   outside every allowed directory. A missing name under an in-root symlink that
+ *   points outside fails on that name before the containment rule runs, so such
+ *   a failure is checked again with missing names allowed, and a landing spot
+ *   outside every allowed directory counts as an escape. A landing spot inside
+ *   another allowed directory (a link into a second root) keeps the real cause.
+ *   Otherwise it is rethrown.
  * - a non-containment failure from a root the candidate is not lexically inside
  *   says nothing about the candidate. The resolver reports a missing component
  *   before it checks containment, so for a path outside every root that failure
@@ -60,7 +62,7 @@ export function resolveWithinAllowedDirs(
       if (isPathEscapeError(error)) {
         sawEscape = true;
       } else if (isLexicallyWithinRoot(dir, candidate)) {
-        if (escapesRootWhenMissingAllowed(dir, candidate)) {
+        if (escapesAllRootsWhenMissingAllowed(allowedDirs, dir, candidate)) {
           sawEscape = true;
         } else if (ownRootFailure === null) {
           ownRootFailure = error;
